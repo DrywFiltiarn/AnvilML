@@ -1,0 +1,13 @@
+{
+  "completed": [],
+  "in_progress": "P1-A1",
+  "plan_approved": true,
+  "current_plan": "[DRY RUN] Plan for P1-A1",
+  "failed": [],
+  "needs_review": [],
+  "last_updated": "2026-05-29T13:34:24Z",
+  "plan_approval_message_id": "1509912704125632534",
+  "push_approval_message_id": null,
+  "plan_report_message_id": null,
+  "impl_report_message_id": null
+}
