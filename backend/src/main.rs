@@ -1,5 +1,5 @@
 //! AnvilML launcher binary (sindristudio).
 
 fn main() {
-    println!("backend stub");
+    println!("AnvilML v0.0.0 — scaffold stub");
 }
