@@ -1,0 +1,65 @@
+[
+  {
+    "id": "P1-A1",
+    "description": "anvilml: Cargo workspace root, crate skeletons, and .gitattributes",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": [],
+    "context": "Create Cargo workspace Cargo.toml listing all 8 crates + backend binary. Create each crate under crates/ with minimal Cargo.toml + src/lib.rs stub (src/main.rs for openapi). Add rust-toolchain.toml (stable channel, components: rustfmt, clippy). Add anvilml.toml placeholder. Add .gitattributes: `* text=auto`, `*.sh text eol=lf`, `*.ps1 text eol=crlf`, `*.py text eol=lf`, `*.rs text eol=lf`. `cargo build --workspace --features mock-hardware` exits 0.",
+    "tags": [
+      "scaffold"
+    ]
+  },
+  {
+    "id": "P1-A2",
+    "description": "anvilml: Linux CI jobs (rust, python-worker, openapi-diff)",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": [
+      "P1-A1"
+    ],
+    "context": "Create .github/workflows/ci.yml with three jobs on ubuntu-latest. `rust`: fmt --all --check, clippy --workspace --features mock-hardware -D warnings, cargo test --workspace --features mock-hardware (separate steps). `python-worker`: pip install -r worker/requirements/base.txt, then ANVILML_WORKER_MOCK=1 pytest worker/tests/ -v (0 collected tests OK). `openapi-diff`: cargo run -p anvilml-openapi then git diff --exit-code backend/openapi.json. Cache Cargo registry + target dir. All three jobs must pass.",
+    "tags": [
+      "scaffold"
+    ]
+  },
+  {
+    "id": "P1-A3",
+    "description": "anvilml: Windows CI job (rust full suite on windows-latest)",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": [
+      "P1-A2"
+    ],
+    "context": "Add a fourth job `rust-windows` to .github/workflows/ci.yml running on windows-latest. Steps: checkout, stable toolchain + rustfmt + clippy, cache Cargo (use a separate cache key suffix `-windows`), cargo clippy --workspace --features mock-hardware -- -D warnings, cargo test --workspace --features mock-hardware. No fmt-check (fmt is platform-neutral, running it once on Linux is sufficient). No python-worker or openapi-diff steps on Windows. Job must pass with only stub crates.",
+    "tags": [
+      "scaffold"
+    ]
+  },
+  {
+    "id": "P1-A4",
+    "description": "anvilml: backend directory structure, migration scaffold, and ipc.py stub",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": [
+      "P1-A1"
+    ],
+    "context": "Create backend/src/main.rs stub, backend/openapi.json ({}), backend/migrations/.gitkeep, backend/scripts/install_worker_deps.sh + .ps1 stubs, backend/scripts/test_inference.py stub, worker/worker_main.py stub (prints to stderr, exits 1). Create worker/ipc.py: at module top, set stdin+stdout to binary mode on Windows via msvcrt.setmode (ANVILML_DESIGN \u00a77.1); add stub read_frame/write_frame functions.  exits 0.",
+    "tags": [
+      "scaffold"
+    ]
+  },
+  {
+    "id": "P1-B1",
+    "description": "anvilml: worker/ Python package structure and pytest skeleton",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": [
+      "P1-A4"
+    ],
+    "context": "Add worker/__init__.py, worker/nodes/__init__.py, worker/tests/__init__.py, worker/tests/test_placeholder.py (def test_placeholder(): assert True). Add worker/requirements/base.txt: msgpack>=1.0, pillow>=10.0, pytest>=8.0. Add worker/requirements/cuda.txt, rocm.txt, cpu.txt as comment-only stubs (# populated in phase 009). `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` exits 0 with 1 test passing.",
+    "tags": [
+      "scaffold"
+    ]
+  }
+]

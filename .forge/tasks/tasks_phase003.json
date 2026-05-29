@@ -1,0 +1,47 @@
+[
+  {
+    "id": "P3-A1",
+    "description": "anvilml-hardware: DeviceDetector trait and CPU detector",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": ["P2-A4"],
+    "context": "Implement crates/anvilml-hardware/src/lib.rs: DeviceDetector trait with method detect() -> Result<Vec<GpuDevice>, AnvilError> and refresh_vram(index) -> Result<(u32,u32), AnvilError>. Implement cpu.rs: CpuDetector returning one GpuDevice with DeviceType::Cpu, vram fields set to 0. Add public fn detect_all_devices(override: Option<HardwareOverrideConfig>) -> HardwareInfo. `cargo test -p anvilml-hardware -- cpu` exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P3-A2",
+    "description": "anvilml-hardware: mock detector driven by env vars",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": ["P3-A1"],
+    "context": "Implement crates/anvilml-hardware/src/mock.rs behind feature flag mock-hardware. MockDetector reads ANVILML_MOCK_DEVICE_TYPE (cpu/cuda/rocm), ANVILML_MOCK_VRAM_MIB, ANVILML_MOCK_GFX_ARCH from env and returns a deterministic Vec<GpuDevice>. detect_all_devices() uses MockDetector when mock-hardware feature is active. `cargo test -p anvilml-hardware --features mock-hardware -- mock` exits 0 with >=3 fixture tests.",
+    "tags": []
+  },
+  {
+    "id": "P3-A3",
+    "description": "anvilml-hardware: CUDA detector via nvidia-smi",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": ["P3-A2"],
+    "context": "Implement crates/anvilml-hardware/src/cuda.rs: CudaDetector invokes `nvidia-smi --query-gpu=index,name,memory.total,memory.free,driver_version --format=csv,noheader,nounits` and parses output into Vec<GpuDevice> with DeviceType::Cuda. If nvidia-smi is absent or fails, return Ok(vec![]). InferenceCaps: fp16=true, bf16=true, flash_attention probed via driver_version >= 525. `cargo test -p anvilml-hardware -- cuda` exits 0 (tests use fixture strings, no GPU required).",
+    "tags": []
+  },
+  {
+    "id": "P3-A4",
+    "description": "anvilml-hardware: ROCm detector via rocm-smi",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": ["P3-A3"],
+    "context": "Implement crates/anvilml-hardware/src/rocm.rs: RocmDetector invokes `rocm-smi --showmeminfo vram --json` and parses output into Vec<GpuDevice> with DeviceType::Rocm and vram_total/free_mib. If rocm-smi absent or fails, return Ok(vec![]). InferenceCaps: fp16=true, bf16 determined by gfx_arch from HardwareOverrideConfig or rocm-smi (gfx1100+ = true). `cargo test -p anvilml-hardware -- rocm` exits 0 with fixture-based tests.",
+    "tags": []
+  },
+  {
+    "id": "P3-B1",
+    "description": "anvilml-hardware: HardwareOverrideConfig integration and detect_all_devices tests",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": ["P3-A4"],
+    "context": "Wire detect_all_devices(override) in lib.rs: if override.force_device_type is set, skip real detectors and use only the matching one. If no GPUs found after all detectors run, fall back to CpuDetector. Populate HardwareInfo.host via sys-info or sysinfo crate (os, cpu_model, ram_total_mib, ram_free_mib). `cargo test -p anvilml-hardware --features mock-hardware` exits 0 with >=8 total tests including override scenarios.",
+    "tags": ["reasoning"]
+  }
+]

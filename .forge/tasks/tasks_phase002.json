@@ -1,0 +1,70 @@
+[
+  {
+    "id": "P2-A1",
+    "description": "anvilml-core: error types and crate-level re-exports",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": [
+      "P1-A2"
+    ],
+    "context": "Implement crates/anvilml-core/src/error.rs: AnvilError enum with variants ConfigLoad, Io, Json, InvalidGraph, WorkerDead, JobNotFound, ArtifactNotFound, DbError, PrefixedPayloadTooBig. Implement Display + std::error::Error. Add thiserror dependency. Re-export from lib.rs. `cargo test -p anvilml-core` exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P2-A2",
+    "description": "anvilml-core: configuration types",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": [
+      "P2-A1"
+    ],
+    "context": "Implement crates/anvilml-core/src/config.rs: ServerConfig, ModelDirConfig, RocmConfig, HardwareOverrideConfig, FrontendConfig (mode: Local|Proxy|Headless), GpuSelectionConfig, LimitsConfig per ANVILML_DESIGN \u00a73.1. All fields have documented defaults. Derive serde Deserialize/Serialize, Clone, Debug. Add serde + toml deps. `cargo test -p anvilml-core -- config` exits 0 with config round-trip test.",
+    "tags": []
+  },
+  {
+    "id": "P2-A3",
+    "description": "anvilml-core: domain types \u2014 Job, Model, Artifact",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": [
+      "P2-A2"
+    ],
+    "context": "Implement crates/anvilml-core/src/types/: job.rs (Job, JobStatus, JobSettings, SubmitJobRequest, SubmitJobResponse), model.rs (ModelMeta, ModelKind, DType), artifact.rs (ArtifactMeta). All types derive Serialize, Deserialize, Clone, Debug, utoipa::ToSchema. Add uuid (features: v4, serde), chrono (features: serde), utoipa deps. `cargo test -p anvilml-core -- types` exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P2-A4",
+    "description": "anvilml-core: hardware and worker types + WebSocket event types",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": [
+      "P2-A3"
+    ],
+    "context": "Implement types/hardware.rs (HardwareInfo, GpuDevice, DeviceType, HostInfo, InferenceCaps), types/worker.rs (WorkerInfo, WorkerStatus), types/events.rs (WsEvent enum + all event structs per ANVILML_DESIGN \u00a74.5). Serialize WsEvent as {event, timestamp, ...fields} using serde tag. Re-export all types from anvilml-core lib.rs. `cargo test -p anvilml-core` exits 0 with >=10 tests total.",
+    "tags": []
+  },
+  {
+    "id": "P2-B1",
+    "description": "anvilml-ipc: message types (Rust\u2192Python and Python\u2192Rust)",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": [
+      "P2-A4"
+    ],
+    "context": "Implement crates/anvilml-ipc/src/messages.rs: WorkerMessage enum (Ping, Shutdown, InitializeHardware, Execute, CancelJob, MemoryQuery) and WorkerEvent enum (Pong, Ready, Progress, ImageReady, MemoryReport, Completed, Failed, Cancelled, Dying). All variants carry the fields from ANVILML_DESIGN \u00a77.2\u20137.3. Add rmp-serde, serde deps. `cargo test -p anvilml-ipc -- messages` exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P2-B2",
+    "description": "anvilml-ipc: length-prefixed msgpack framing",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": [
+      "P2-B1"
+    ],
+    "context": "Implement crates/anvilml-ipc/src/framing.rs: async fn write_frame(writer, msg: &WorkerMessage) and async fn read_frame(reader, max_mib: u32) -> WorkerEvent using 4-byte big-endian u32 length prefix + msgpack. Both functions MUST read/write fully in a loop (pipe reads on Windows frequently return fewer bytes than requested). Enforce max_mib before buffer allocation; return Err on oversize or deser failure. Add tokio (features: io-util) dep. cargo test -p anvilml-ipc -- framing exits 0 with round-trip test and oversize-rejection test.",
+    "tags": [
+      "reasoning"
+    ]
+  }
+]
