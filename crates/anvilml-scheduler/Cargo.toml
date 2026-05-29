@@ -1,0 +1,5 @@
+[package]
+name = "anvilml-scheduler"
+version = "0.1.0"
+edition = "2021"
+description = "Job scheduler for AnvilML"

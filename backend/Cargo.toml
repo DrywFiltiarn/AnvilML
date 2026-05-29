@@ -1,0 +1,9 @@
+[package]
+name = "backend"
+version = "0.1.0"
+edition = "2021"
+description = "AnvilML launcher binary (sindristudio)"
+
+[[bin]]
+name = "sindristudio"
+path = "src/main.rs"

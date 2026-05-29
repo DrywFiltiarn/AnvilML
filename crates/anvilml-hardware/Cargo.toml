@@ -1,0 +1,9 @@
+[package]
+name = "anvilml-hardware"
+version = "0.1.0"
+edition = "2021"
+description = "Hardware detection for AnvilML"
+
+[features]
+default = []
+mock-hardware = []

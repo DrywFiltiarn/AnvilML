@@ -1,0 +1,9 @@
+[package]
+name = "anvilml-openapi"
+version = "0.1.0"
+edition = "2021"
+description = "OpenAPI specification generation for AnvilML"
+
+[[bin]]
+name = "anvilml-openapi"
+path = "src/main.rs"

@@ -1,0 +1,13 @@
+[workspace]
+members = [
+    "backend",
+    "crates/anvilml-core",
+    "crates/anvilml-hardware",
+    "crates/anvilml-registry",
+    "crates/anvilml-ipc",
+    "crates/anvilml-worker",
+    "crates/anvilml-scheduler",
+    "crates/anvilml-server",
+    "crates/anvilml-openapi",
+]
+resolver = "2"

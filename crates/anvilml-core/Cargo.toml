@@ -1,0 +1,5 @@
+[package]
+name = "anvilml-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core domain types and configuration for AnvilML"
