@@ -84,9 +84,11 @@ mod tests {
         let json_err = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
         let err: AnvilError = json_err.into();
         // thiserror transparent delegates the inner Display
-        assert!(err.to_string().contains("expected ident")
-            || err.to_string().contains("expected value")
-            || err.to_string().contains("invalid"));
+        assert!(
+            err.to_string().contains("expected ident")
+                || err.to_string().contains("expected value")
+                || err.to_string().contains("invalid")
+        );
     }
 
     #[test]

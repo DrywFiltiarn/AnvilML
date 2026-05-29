@@ -90,20 +90,11 @@ impl Default for ServerConfig {
 }
 
 /// A model directory entry.
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub struct ModelDirConfig {
     pub path: PathBuf,
     #[serde(default)]
     pub kind: Option<ModelKind>,
-}
-
-impl Default for ModelDirConfig {
-    fn default() -> Self {
-        Self {
-            path: PathBuf::new(),
-            kind: None,
-        }
-    }
 }
 
 /// ROCm backend settings.
@@ -143,18 +134,10 @@ impl Default for HardwareOverrideConfig {
 }
 
 /// Frontend serving configuration.
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub struct FrontendConfig {
     #[serde(default)]
     pub mode: FrontendMode,
-}
-
-impl Default for FrontendConfig {
-    fn default() -> Self {
-        Self {
-            mode: FrontendMode::default(),
-        }
-    }
 }
 
 /// How the frontend is served.
@@ -162,7 +145,10 @@ impl Default for FrontendConfig {
 #[serde(tag = "mode")]
 pub enum FrontendMode {
     /// Serve static files from a local directory (default: ./bloomery).
-    Local { #[serde(default = "default_frontend_path")] path: PathBuf },
+    Local {
+        #[serde(default = "default_frontend_path")]
+        path: PathBuf,
+    },
     /// Reverse-proxy non-API requests to a remote frontend dev server.
     Remote { url: String },
     /// Serve no frontend; API-only.
@@ -329,7 +315,9 @@ mod tests {
             num_threads: 32,
             num_interop_threads: 8,
             frontend: FrontendConfig {
-                mode: FrontendMode::Remote { url: "http://localhost:5173".to_string() },
+                mode: FrontendMode::Remote {
+                    url: "http://localhost:5173".to_string(),
+                },
             },
             gpu_selection: GpuSelectionConfig {
                 default_device: "0".to_string(),
@@ -343,7 +331,8 @@ mod tests {
         };
 
         let toml_str = toml::to_string(&config).expect("serialize ServerConfig to TOML");
-        let deserialized: ServerConfig = toml::from_str(&toml_str).expect("deserialize ServerConfig from TOML");
+        let deserialized: ServerConfig =
+            toml::from_str(&toml_str).expect("deserialize ServerConfig from TOML");
 
         assert_eq!(config.host, deserialized.host);
         assert_eq!(config.port, deserialized.port);
@@ -356,14 +345,23 @@ mod tests {
         assert_eq!(config.db_path, deserialized.db_path);
         assert_eq!(config.venv_path, deserialized.venv_path);
         assert_eq!(config.rocm.use_hipblaslt, deserialized.rocm.use_hipblaslt);
-        assert_eq!(config.rocm.hsa_override_gfx_version, deserialized.rocm.hsa_override_gfx_version);
+        assert_eq!(
+            config.rocm.hsa_override_gfx_version,
+            deserialized.rocm.hsa_override_gfx_version
+        );
         assert_eq!(
             config.hardware_override.as_ref().map(|h| &h.device_type),
-            deserialized.hardware_override.as_ref().map(|h| &h.device_type)
+            deserialized
+                .hardware_override
+                .as_ref()
+                .map(|h| &h.device_type)
         );
         assert_eq!(
             config.hardware_override.as_ref().map(|h| h.vram_total_mib),
-            deserialized.hardware_override.as_ref().map(|h| h.vram_total_mib)
+            deserialized
+                .hardware_override
+                .as_ref()
+                .map(|h| h.vram_total_mib)
         );
         assert_eq!(config.worker_log_dir, deserialized.worker_log_dir);
         assert_eq!(config.num_threads, deserialized.num_threads);
@@ -372,11 +370,26 @@ mod tests {
             (FrontendMode::Remote { url: a }, FrontendMode::Remote { url: b }) => assert_eq!(a, b),
             _ => panic!("frontend mode mismatch"),
         }
-        assert_eq!(config.gpu_selection.default_device, deserialized.gpu_selection.default_device);
-        assert_eq!(config.limits.max_ipc_payload_mib, deserialized.limits.max_ipc_payload_mib);
-        assert_eq!(config.limits.list_default_limit, deserialized.limits.list_default_limit);
-        assert_eq!(config.limits.list_max_limit, deserialized.limits.list_max_limit);
-        assert_eq!(config.limits.ws_broadcast_capacity, deserialized.limits.ws_broadcast_capacity);
+        assert_eq!(
+            config.gpu_selection.default_device,
+            deserialized.gpu_selection.default_device
+        );
+        assert_eq!(
+            config.limits.max_ipc_payload_mib,
+            deserialized.limits.max_ipc_payload_mib
+        );
+        assert_eq!(
+            config.limits.list_default_limit,
+            deserialized.limits.list_default_limit
+        );
+        assert_eq!(
+            config.limits.list_max_limit,
+            deserialized.limits.list_max_limit
+        );
+        assert_eq!(
+            config.limits.ws_broadcast_capacity,
+            deserialized.limits.ws_broadcast_capacity
+        );
     }
 
     /// Minimal TOML (empty table) deserializes into a ServerConfig with all
@@ -386,7 +399,10 @@ mod tests {
         let toml_str = "";
         let config: ServerConfig = toml::from_str(toml_str).expect("deserialize empty TOML");
 
-        assert_eq!(config.host, IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)));
+        assert_eq!(
+            config.host,
+            IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1))
+        );
         assert_eq!(config.port, 8488);
         assert!(config.model_dirs.is_empty());
         assert_eq!(config.artifact_dir, PathBuf::from("./artifacts"));
@@ -413,7 +429,9 @@ mod tests {
         // Local mode
         let local = ServerConfig {
             frontend: FrontendConfig {
-                mode: FrontendMode::Local { path: PathBuf::from("./custom") },
+                mode: FrontendMode::Local {
+                    path: PathBuf::from("./custom"),
+                },
             },
             ..Default::default()
         };
@@ -427,7 +445,9 @@ mod tests {
         // Remote mode
         let remote = ServerConfig {
             frontend: FrontendConfig {
-                mode: FrontendMode::Remote { url: "http://example.com:3000".to_string() },
+                mode: FrontendMode::Remote {
+                    url: "http://example.com:3000".to_string(),
+                },
             },
             ..Default::default()
         };
