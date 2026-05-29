@@ -65,3 +65,28 @@ jobs:
 
       - name: Diff against committed spec
         run: git diff --exit-code backend/openapi.json
+
+  rust-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: [rustfmt, clippy]
+
+      - name: Cache Cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target/
+          key: cargo-Windows-${{ hashFiles('Cargo.lock') }}-windows
+
+      - name: Clippy lint
+        run: cargo clippy --workspace --features mock-hardware -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --features mock-hardware
