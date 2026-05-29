@@ -109,9 +109,24 @@
 #
 # Output path: .forge/reports/<TASK_ID>_plan.md
 #
-# The report MUST use exactly the following structure. Sections are mandatory.
-# Omitting a section or adding unlabelled free-text outside sections is an error.
-# Do NOT include any model thinking, reasoning traces, or internal notes.
+# STRUCTURAL RULE: Every section in the template below is MANDATORY. Sections
+# MUST appear in exactly the order shown. If a section has no applicable content
+# (e.g. Tests for a config-only task), write "None." under the heading — never
+# omit the heading itself. Do not merge sections. Do not add free-text outside
+# a named section. Do not include reasoning traces or internal notes.
+# Simple tasks do not justify shorter reports — the structure is fixed regardless
+# of task complexity.
+#
+# PRE-STOP CHECK — before updating CURRENT_TASK.md and stopping, verify:
+#   ☐ Header table present with all seven fields (Task ID through Attempt)
+#   ☐ ## Objective — one paragraph, present
+#   ☐ ## Scope — contains ### In Scope and ### Out of Scope subsections
+#   ☐ ## Approach — numbered steps, each specific enough to execute deterministically
+#   ☐ ## Files Affected — table with Action / Path / Description columns
+#   ☐ ## Tests — table present (or "None." if task writes no test files)
+#   ☐ ## CI Impact — paragraph present (or "No CI changes required.")
+#   ☐ ## Risks and Mitigations — table present
+#   ☐ ## Acceptance Criteria — checklist with verifiable, command-based items
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # # Plan Report: <TASK_ID>
@@ -188,6 +203,46 @@
 # ── 4. IMPLEMENTATION REPORT FORMAT ─────────────────────────────────────────────
 #
 # Output path: .forge/reports/<TASK_ID>_implement.md
+#
+# STRUCTURAL RULE: Every section below is MANDATORY and must appear in the exact
+# order shown. Do not omit, merge, or reorder sections. If a section has no
+# applicable content, write "None." under the heading — never omit the heading.
+# Simple tasks do not justify shorter reports — the structure is fixed regardless
+# of task complexity.
+#
+# SECTION DISTINCTION — ## Files Changed vs ## Commit Log:
+# These two sections are NOT interchangeable. BOTH MUST be present. Using one
+# in place of the other is a formatting violation.
+#
+#   ## Files Changed
+#     A STATIC TABLE describing what this task touched. Mirrors the plan's
+#     "Files Affected" table, extended with any unplanned files actually modified.
+#     Action MUST be one of: CREATE | MODIFY | DELETE.
+#     Populated from the plan + your own changes — NOT derived from git output.
+#     Example row:
+#       | MODIFY | .github/workflows/ci.yml | Added rust-windows job (+25 lines) |
+#
+#   ## Commit Log
+#     The LIVE GIT STAGING STATE. Run `git status --short` in the project repo
+#     immediately before writing this section. Paste the raw output verbatim
+#     inside a fenced code block. Do NOT replace this with a table or prose.
+#     Do NOT write "No changes" unless the staging area is genuinely empty.
+#     Example:
+#       ```
+#       M  .github/workflows/ci.yml
+#       A  .forge/reports/P1-A3_implement.md
+#       M  .forge/state/CURRENT_TASK.md
+#       ```
+#
+# PRE-STOP CHECK — before setting Status=COMPLETE and stopping, verify:
+#   ☐ Header table present with all six fields (Task ID through Attempt)
+#   ☐ ## Summary — one paragraph, present
+#   ☐ ## Files Changed — table with Action / Path / Description rows, NOT git output
+#   ☐ ## Test Results — final passing run output verbatim in a code block
+#   ☐ ## CI Changes — present (or "No CI changes made.")
+#   ☐ ## Commit Log — raw `git status --short` output in a code block, NOT a table
+#   ☐ ## Acceptance Criteria — Verification table with PASS/FAIL rows for every
+#      criterion from the plan
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # # Implementation Report: <TASK_ID>
@@ -511,6 +566,22 @@
 #   008  Launcher & Graceful Shutdown
 #   009  Python Worker — ZiT
 #   010  SDXL & Hardening
+
+
+# 9.8  Output structure discipline (35B A3B): The 35B A3B model variant tends
+#      to abbreviate or drop report sections when the task appears simple.
+#      This is never acceptable — report structure is fixed regardless of task
+#      size. Specific patterns to avoid:
+#        • Omitting ## Files Changed because ## Commit Log is present (or vice
+#          versa) — both are always required; they serve different purposes
+#        • Writing a prose summary instead of the header table
+#        • Collapsing ## In Scope / ## Out of Scope into a single paragraph
+#        • Skipping ## Risks and Mitigations with "no risks identified"
+#          (write the table with at least one row; if genuinely none apply,
+#           write a single row with Risk="None identified" and Mitigation="n/a")
+#        • Writing ## Test Results as a summary sentence rather than verbatim
+#          test runner output
+#      Use the PRE-STOP CHECK in §3 and §4 as a mechanical gate before stopping.
 
 
 # ── END OF .clinerules ──────────────────────────────────────────────────────────
