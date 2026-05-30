@@ -19,10 +19,7 @@ pub struct MockDetector;
 
 impl DeviceDetector for MockDetector {
     fn detect(&self) -> Result<Vec<GpuDevice>, AnvilError> {
-        let device_type = match std::env::var("ANVILML_MOCK_DEVICE_TYPE")
-            .ok()
-            .as_deref()
-        {
+        let device_type = match std::env::var("ANVILML_MOCK_DEVICE_TYPE").ok().as_deref() {
             Some("cuda") | Some("CUDA") => DeviceType::Cuda,
             Some("rocm") | Some("ROCm") | Some("ROCM") => DeviceType::Rocm,
             _ => DeviceType::Cpu,
