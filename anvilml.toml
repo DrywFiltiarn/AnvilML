@@ -1,3 +1,5 @@
 # AnvilML default configuration file.
 # This file is a placeholder and will be populated as the
 # project evolves. See the design document for all config keys.
+
+db_path = "./anvilml.db"

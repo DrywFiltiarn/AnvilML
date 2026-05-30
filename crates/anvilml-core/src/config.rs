@@ -219,7 +219,7 @@ fn default_artifact_dir() -> PathBuf {
 }
 
 fn default_db_path() -> PathBuf {
-    PathBuf::from("./sindristudio.db")
+    PathBuf::from("./anvilml.db")
 }
 
 fn default_venv_path() -> PathBuf {
@@ -406,7 +406,7 @@ mod tests {
         assert_eq!(config.port, 8488);
         assert!(config.model_dirs.is_empty());
         assert_eq!(config.artifact_dir, PathBuf::from("./artifacts"));
-        assert_eq!(config.db_path, PathBuf::from("./sindristudio.db"));
+        assert_eq!(config.db_path, PathBuf::from("./anvilml.db"));
         assert_eq!(config.venv_path, PathBuf::from("./venv"));
         assert!(config.hardware_override.is_none());
         assert_eq!(config.worker_log_dir, Some(PathBuf::from("./logs")));

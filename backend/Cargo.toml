@@ -2,8 +2,8 @@
 name = "backend"
 version = "0.1.0"
 edition = "2021"
-description = "AnvilML launcher binary (sindristudio)"
+description = "AnvilML launcher binary (anvilml)"
 
 [[bin]]
-name = "sindristudio"
+name = "anvilml"
 path = "src/main.rs"
