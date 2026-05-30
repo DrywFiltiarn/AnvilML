@@ -1,0 +1,39 @@
+[
+  {
+    "id": "P5-A1",
+    "description": "anvilml-worker: env.rs \u2014 build_worker_env per device type",
+    "phase": "5",
+    "project": "anvilml",
+    "prereqs": [
+      "P4-A3"
+    ],
+    "context": "Implement crates/anvilml-worker/src/env.rs: fn build_worker_env(device: &GpuDevice, cfg: &ServerConfig) -> HashMap<String,String>. Per DeviceType inject: Cuda=CUDA_VISIBLE_DEVICES; Rocm=HIP_VISIBLE_DEVICES, ROCBLAS_USE_HIPBLASLT, HSA_OVERRIDE_GFX_VERSION if set; all=OMP_NUM_THREADS, MKL_NUM_THREADS, OPENBLAS_NUM_THREADS, VECLIB_MAXIMUM_THREADS, ANVILML_NUM_THREADS, ANVILML_NUM_INTEROP_THREADS, ANVILML_WORKER_ID, ANVILML_DEVICE_INDEX, ANVILML_WORKER_MOCK if set. cargo test -p anvilml-worker -- env exits 0 with fixture tests for all three device types.",
+    "tags": []
+  },
+  {
+    "id": "P5-A2",
+    "description": "anvilml-worker: ManagedWorker \u2014 spawn, IPC bridge, watchdog",
+    "phase": "5",
+    "project": "anvilml",
+    "prereqs": [
+      "P5-A1"
+    ],
+    "context": "Implement managed.rs: ManagedWorker with worker_id, device_index, status: Arc<RwLock<WorkerStatus>>, tx: mpsc::Sender<WorkerMessage>, event_tx: broadcast::Sender<(String,WorkerEvent)>. spawn(): resolve venv interpreter (cross-platform \u00a76), Command with build_worker_env, pipe stdin/stdout, stderr to rotating log. Two async tasks: stdin-writer (mpsc->write_frame); stdout-reader (read_frame->broadcast). On EOF: set Dead, broadcast WorkerStatusChanged, respawn after 2s. Linux: PR_SET_PDEATHSIG. Windows: Job Object KILL_ON_JOB_CLOSE. cargo test -p anvilml-worker --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P5-A3",
+    "description": "anvilml-worker: WorkerPool \u2014 spawn_all, acquire_idle, set_busy/idle, keepalive ping",
+    "phase": "5",
+    "project": "anvilml",
+    "prereqs": [
+      "P5-A2"
+    ],
+    "context": "Implement pool.rs: WorkerPool holding Vec<Arc<ManagedWorker>>. spawn_all(hw,cfg): one ManagedWorker per GpuDevice, one CPU worker if gpus empty. list()->Vec<WorkerInfo>. acquire_idle(device_index)->Option<WorkerRef>. set_busy/set_idle update status. subscribe_events()->broadcast::Receiver. send(worker_id,msg). restart(worker_id): Shutdown->wait 5s for Dying->force-kill->respawn. shutdown_all: Shutdown each, wait 10s, kill. Ping 30s; no Pong in 10s->force-kill. cargo test -p anvilml-worker --features mock-hardware exits 0; spawn-ping-pong test with ANVILML_WORKER_MOCK=1.",
+    "tags": [
+      "reasoning"
+    ]
+  }
+]

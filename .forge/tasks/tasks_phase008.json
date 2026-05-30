@@ -1,0 +1,52 @@
+[
+  {
+    "id": "P8-A1",
+    "description": "backend/main.rs: CLI parsing and config loading",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": [
+      "P7-B2"
+    ],
+    "context": "Implement backend/src/main.rs CLI with clap (derive): --config <path>, --host <ip>, --port <u16>, --no-browser, --log-format plain|json. Load config: built-in defaults -> anvilml.toml -> ANVILML_* env -> CLI flags (figment or layered config crate). Init tracing subscriber with EnvFilter from ANVILML_LOG/RUST_LOG default=info; select human vs JSON formatter via --log-format. Add clap, config/figment, tracing-subscriber (features: env-filter, json), anvilml-server as deps of backend. cargo build --release exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P8-A2",
+    "description": "backend/main.rs: startup sequence (DB, ghost-job reset, hardware, preflight, workers, server bind)",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": [
+      "P8-A1"
+    ],
+    "context": "Full startup per \u00a716.2: open SqlitePool+PRAGMAs+migrations; reset ghost jobs; detect_all_devices; Python preflight (interpreter exists, python --version warn, import torch check)->EnvReport; initial model scan async; spawn WorkerPool; build AppState; start dispatch loop + system.stats tick; bind axum on host:port (preflight failure->jobs 503 but server still binds); open browser unless --no-browser or Headless. cargo run -- --no-browser starts and GET /health returns 200.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P8-A3",
+    "description": "backend/main.rs: graceful shutdown (cross-platform signal handling)",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": [
+      "P8-A2"
+    ],
+    "context": "Implement graceful shutdown per \u00a716.3: build shutdown future from tokio::signal::ctrl_c() joined with platform-specific sources (#[cfg(unix)] SIGTERM via tokio::signal::unix; #[cfg(windows)] ctrl_close+ctrl_shutdown via tokio::signal::windows). On fire: stop accepting new job submissions (POST /v1/jobs -> 503); send Shutdown IPC to all workers; wait up to 10s for each Dying; force-kill stragglers via Child::kill(); close sqlx pool (flush WAL); exit 0. cargo test --features mock-hardware -- shutdown exits 0: confirm Ctrl-C signal triggers worker shutdown sequence in integration test.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P8-B1",
+    "description": "Integration tests: api_*.rs full suite and CI openapi-diff gate",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": [
+      "P8-A3"
+    ],
+    "context": "Create backend/tests/: api_health.rs, api_jobs.rs (submit 422/202, list, get, cancel, delete), api_models.rs, api_workers.rs, api_artifacts.rs, api_ws.rs (tokio-tungstenite: connect /v1/events, system.stats within 6s, mock job->job.image_ready). All use --features mock-hardware + in-process axum TestServer. Update openapi-diff CI step: cargo run -p anvilml-openapi then git diff --exit-code backend/openapi.json. cargo test --workspace --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  }
+]

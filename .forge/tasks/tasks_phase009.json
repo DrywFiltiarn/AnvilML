@@ -1,0 +1,87 @@
+[
+  {
+    "id": "P9-A1",
+    "description": "worker: ipc.py \u2014 read_frame/write_frame (Python side framing)",
+    "phase": "9",
+    "project": "anvilml",
+    "prereqs": [
+      "P8-B1"
+    ],
+    "context": "Replace stubs in worker/ipc.py with real implementation. read_frame()->dict: read exactly 4 bytes from sys.stdin.buffer (loop), decode big-endian u32 N, read exactly N bytes (loop), msgpack.unpackb(payload, raw=False). write_frame(msg: dict): encode via msgpack.packb(msg, use_bin_type=True), prepend 4-byte big-endian u32 len, write to sys.stdout.buffer, flush. Binary-mode guard at top is already present from P1-A4. All reads use explicit loop until buffer full (never single call). pytest worker/tests/test_ipc.py exits 0: round-trip test in-process.",
+    "tags": []
+  },
+  {
+    "id": "P9-A2",
+    "description": "worker: worker_main.py \u2014 startup sequence and message loop",
+    "phase": "9",
+    "project": "anvilml",
+    "prereqs": [
+      "P9-A1"
+    ],
+    "context": "Replace stub worker/worker_main.py per \u00a714.1: parse --worker-id --device-index; set OMP/MKL/OPENBLAS/VECLIB num-threads before any import; if ANVILML_WORKER_MOCK=1 skip torch; else import torch, set_num_threads, tf32=False; wait InitializeHardware->send Ready{vram_total_mib}; start MemoryReport thread (10s); blocking msgpack message loop dispatching handle_message(). ANVILML_WORKER_MOCK=1 python worker/worker_main.py --worker-id worker-0 --device-index 0 receives Ping->Pong, exits on Shutdown.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P9-A3",
+    "description": "worker: nodes/base.py \u2014 BaseNode, NodeContext, NODE_REGISTRY, @register",
+    "phase": "9",
+    "project": "anvilml",
+    "prereqs": [
+      "P9-A2"
+    ],
+    "context": "Implement worker/nodes/base.py: NodeContext dataclass (pipeline_cache, device_str, emit_fn, cancel_flag: threading.Event). BaseNode ABC with NODE_TYPE, INPUT_SLOTS, OUTPUT_SLOTS ClassVars; __init__(ctx); abstract execute(**inputs)->dict. NODE_REGISTRY: dict[str,type[BaseNode]]. @register decorator: set NODE_REGISTRY[cls.NODE_TYPE]=cls, return cls. nodes/__init__.py auto-imports all node modules so registry is populated on import. pytest worker/tests/test_nodes_base.py exits 0: verify @register populates registry; verify missing execute raises TypeError.",
+    "tags": []
+  },
+  {
+    "id": "P9-A4",
+    "description": "worker: executor.py \u2014 run_graph with topo-sort, cancel_flag, and exception handling",
+    "phase": "9",
+    "project": "anvilml",
+    "prereqs": [
+      "P9-A3"
+    ],
+    "context": "Implement worker/executor.py: run_graph(graph,settings,device_str,cancel_flag,emit_fn)->None per \u00a714.2. Kahn topo-sort (defensive). Per node: check cancel_flag->emit Cancelled return; resolve inputs; NODE_REGISTRY[type](ctx).execute(**inputs)->dict; store outputs; emit Progress. CancelledError from sampler callback->emit Cancelled. Any Exception->emit Failed{error,traceback}. Finish->emit Completed{elapsed_ms}. pytest worker/tests/test_executor.py exits 0: valid graph, cycle, bad ref, exception->Failed, cancel->Cancelled.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P9-A5",
+    "description": "worker: pipeline_cache.py \u2014 LRU cache and OOM trap",
+    "phase": "9",
+    "project": "anvilml",
+    "prereqs": [
+      "P9-A4"
+    ],
+    "context": "Implement worker/pipeline_cache.py: PipelineCache(max_entries=4). get_or_load(model_id,dtype,loader): hit->MRU return; miss->evict LRU while free_vram<est_vram (del pipeline, torch.cuda.empty_cache() once per eviction), then load. In executor.py wrap node.execute() catching torch.cuda.OutOfMemoryError: drop partial, empty_cache(), emit Failed{error='cuda_oom'}, worker stays Idle. Skip OOM trap if ANVILML_WORKER_MOCK=1. pytest worker/tests/test_pipeline_cache.py exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P9-B1",
+    "description": "worker: ZiT nodes (ZitLoadPipeline, ZitTextEncode, ZitSampler, ZitDecode)",
+    "phase": "9",
+    "project": "anvilml",
+    "prereqs": [
+      "P9-A5"
+    ],
+    "context": "Implement worker/nodes/zit.py: four ZiT nodes per \u00a714.6. Real mode: ZitLoadPipeline uses pipeline_cache; ZitSampler resolves seed=-1->random, cancel via callback_on_step_end raising CancelledError. ANVILML_WORKER_MOCK=1: LoadPipeline returns 'mock_pipeline'; Sampler zero-latents+seed; Decode black PIL; SaveImage black PNG->emit ImageReady. pytest worker/tests/test_nodes_zit.py exits 0: OUTPUT_SLOTS correct; SaveImage emits ImageReady.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P9-B2",
+    "description": "worker: defaults.py, requirements population, and parity test",
+    "phase": "9",
+    "project": "anvilml",
+    "prereqs": [
+      "P9-B1"
+    ],
+    "context": "Implement worker/defaults.py: ZIT_DEFAULTS(steps=8,guidance=0.0,1024x1024,bf16) and SDXL_DEFAULTS(steps=20,guidance=7.5,1024x1024,fp16,neg_prompt=True) per \u00a714.6. Populate requirements/base.txt: diffusers>=0.27,transformers>=4.40,pillow,msgpack,numpy,safetensors,pytest,accelerate. cuda/rocm/cpu.txt: torch wheel index URLs. Add worker/tests/test_parity.py: load KNOWN_NODE_TYPES from backend/tests/known_node_types.json; assert equals set(NODE_REGISTRY). ANVILML_WORKER_MOCK=1 pytest worker/tests/ exits 0.",
+    "tags": []
+  }
+]

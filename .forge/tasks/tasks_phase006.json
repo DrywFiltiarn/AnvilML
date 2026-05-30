@@ -1,0 +1,50 @@
+[
+  {
+    "id": "P6-A1",
+    "description": "anvilml-scheduler: VramLedger",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": [
+      "P5-A3"
+    ],
+    "context": "Implement crates/anvilml-scheduler/src/ledger.rs: VramLedger { devices: HashMap<u32,(u32,u32)> }. Methods: update(device_index,used_mib,total_mib), free_mib(device_index)->u32, would_fit(device_index,required_mib)->bool. Initialised from HardwareInfo at startup; updated on every WorkerEvent::MemoryReport. Advisory only \u2014 never a hard gate. cargo test -p anvilml-scheduler -- ledger exits 0 with: init from hardware, update changes free, would_fit logic.",
+    "tags": []
+  },
+  {
+    "id": "P6-A2",
+    "description": "anvilml-scheduler: DAG validation engine",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": [
+      "P6-A1"
+    ],
+    "context": "Implement dag.rs: fn validate_graph(value: &serde_json::Value) -> Result<ValidatedGraph, Vec<String>>. Non-fail-fast checks: no duplicate node id; every edge node_id exists and output_slot declared; acyclic via Kahn's algorithm (report involved ids on cycle); every node.type in KNOWN_NODE_TYPES. KNOWN_NODE_TYPES = ZitLoadPipeline, ZitTextEncode, ZitSampler, ZitDecode, SdxlLoadPipeline, SdxlTextEncode, SdxlSampler, SdxlDecode, SaveImage with slot tables per \u00a714.6. cargo test -p anvilml-scheduler -- dag exits 0: valid graph, cycle, bad ref, unknown type, duplicate id.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P6-A3",
+    "description": "anvilml-scheduler: JobQueue and select_worker",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": [
+      "P6-A2"
+    ],
+    "context": "Implement queue.rs: JobQueue wrapping Mutex<VecDeque<Job>>. Methods: enqueue(job), cancel_queued(id)->bool (marks Cancelled in-place), pop_next()->Option<Job> (skips Cancelled). Implement fn select_worker(job,workers,ledger)->Option<WorkerRef>: user device_preference->route to that worker if Idle else hold; auto->candidates=Idle workers, rank by vram_free_mib desc then device_index asc, pick first; force-cpu->only CPU worker eligible. cargo test -p anvilml-scheduler -- queue exits 0 with: enqueue+pop, cancel-queued-job-is-skipped, select_worker all three modes.",
+    "tags": []
+  },
+  {
+    "id": "P6-A4",
+    "description": "anvilml-scheduler: dispatch loop and JobScheduler public API",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": [
+      "P6-A3"
+    ],
+    "context": "Implement scheduler.rs: JobScheduler { queue, ledger, workers, db }. submit(req): validate graph, write Job Queued to DB, enqueue, notify dispatch. cancel(id): Queued->mark in queue+DB+broadcast; Running->send CancelJob IPC+DB; terminal->409. start_dispatch_loop()->JoinHandle: wakes on Notify or worker-Idle; select_worker, dispatch Execute IPC, update DB+broadcast. DB writes happen before WS broadcast. cargo test -p anvilml-scheduler --features mock-hardware exits 0 with: submit->dispatch->worker receives Execute.",
+    "tags": [
+      "reasoning"
+    ]
+  }
+]

@@ -1,0 +1,81 @@
+[
+  {
+    "id": "P7-A1",
+    "description": "anvilml-server: AppState, EventBroadcaster, middleware stack",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": [
+      "P6-A4"
+    ],
+    "context": "Implement state.rs: AppState per \u00a710.1 (config, scheduler, workers, registry, hardware, db, broadcaster, artifact_store, env_report). ws/broadcaster.rs: EventBroadcaster wrapping broadcast::Sender<Arc<WsEvent>>, send() ignores SendError. lib.rs: axum Router with TraceLayer, SetRequestIdLayer, CompressionLayer, CorsLayer. Add axum, tower, tower-http (compression, trace, cors, request-id), tracing, tracing-subscriber deps. cargo build -p anvilml-server --features mock-hardware exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P7-A2",
+    "description": "anvilml-server: health, system, and env handlers",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": [
+      "P7-A1"
+    ],
+    "context": "Implement handlers/system.rs: GET /health -> 200 {status,version,uptime_s}; GET /v1/system -> 200 HardwareInfo (read from AppState.hardware); GET /v1/system/env -> 200 EnvReport (AppState.env_report). Add system.stats background task (10.5): interval 5s, read MemoryReport per worker + sysinfo host RAM, build SystemStatsEvent, broadcaster.send. Wire routes into the axum router. cargo test -p anvilml-server --features mock-hardware -- system exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P7-A3",
+    "description": "anvilml-server: job handlers (submit, list, get, cancel, delete, bulk-delete)",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": [
+      "P7-A2"
+    ],
+    "context": "Implement handlers/jobs.rs: POST /v1/jobs (validate via scheduler, 202 SubmitJobResponse or 422 invalid_graph); GET /v1/jobs (?status,?limit,?before cursor); GET /v1/jobs/:id; POST /v1/jobs/:id/cancel (202 or 409 job_not_cancellable); DELETE /v1/jobs/:id (204, terminal only or 409 job_active); DELETE /v1/jobs (?status=completed|failed|cancelled|all, 200 {removed}). All errors use the uniform JSON body per \u00a718. cargo test -p anvilml-server --features mock-hardware -- jobs exits 0 covering all 422/409/404 branches.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P7-A4",
+    "description": "anvilml-server: model and worker handlers",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": [
+      "P7-A3"
+    ],
+    "context": "Implement handlers/models.rs: GET /v1/models (?kind), GET /v1/models/:id (404 on miss), POST /v1/models/rescan (202, triggers registry.rescan async). Implement handlers/workers.rs: GET /v1/workers, POST /v1/workers/:id/restart (202). Wire all routes. cargo test -p anvilml-server --features mock-hardware -- models exits 0 and -- workers exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P7-A5",
+    "description": "anvilml-server: ArtifactStore and artifact handlers",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": [
+      "P7-A4"
+    ],
+    "context": "Implement artifact/store.rs: ArtifactStore { artifact_dir, db }. save(job_id, image_b64, meta): base64-decode, SHA256-hash, write to {artifact_dir}/{hash[0..2]}/{hash}.png, insert ArtifactMeta, increment jobs.artifact_count. get_path(hash)->Result<PathBuf>. list(job_id,limit,before)->Vec<ArtifactMeta>. delete_for_job(job_id)->u32. Implement handlers/artifacts.rs: GET /v1/artifacts (?job_id), GET /v1/artifacts/:hash (serve PNG with Cache-Control: public,immutable,max-age=31536000 and ETag). cargo test -p anvilml-server --features mock-hardware -- artifacts exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P7-B1",
+    "description": "anvilml-server: WebSocket /v1/events handler and client disconnect on buffer overflow",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": [
+      "P7-A5"
+    ],
+    "context": "Implement ws/handler.rs: GET /v1/events upgrades to WS, subscribes to broadcaster, forwards Arc<WsEvent> as JSON text frames, sends WS ping every 30s. If the subscriber's broadcast::Receiver::recv() returns Err(Lagged), close with code 1008 (policy violation). Never replay history. cargo test -p anvilml-server --features mock-hardware -- ws exits 0: connect, receive system.stats within 6s, verify disconnect-on-lag closes with 1008.",
+    "tags": []
+  },
+  {
+    "id": "P7-B2",
+    "description": "anvilml-server: frontend serving (Local, Remote, Headless) and OpenAPI generator",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": [
+      "P7-B1"
+    ],
+    "context": "Implement frontend.rs: match FrontendMode { Local{path}->ServeDir+SPA fallback index.html (if dir missing: inline HTML warning page, API stays up); Remote{url}->hyper reverse-proxy catch-all; Headless->no route }. Register as lowest-priority catch-all after all /v1 and /health routes. Implement anvilml-openapi/src/main.rs using utoipa::OpenApi derive on all handlers+schemas, write to backend/openapi.json. cargo run -p anvilml-openapi generates a non-empty openapi.json; git diff --exit-code passes.",
+    "tags": []
+  }
+]

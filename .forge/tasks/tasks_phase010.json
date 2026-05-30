@@ -1,0 +1,72 @@
+[
+  {
+    "id": "P10-A1",
+    "description": "worker: SDXL nodes (SdxlLoadPipeline, SdxlTextEncode, SdxlSampler, SdxlDecode)",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": [
+      "P9-B2"
+    ],
+    "context": "Implement worker/nodes/sdxl.py: all four SDXL nodes per ANVILML_DESIGN \u00a714.6. SdxlTextEncode handles optional negative_prompt (empty string if absent). SdxlSampler: default steps=20, guidance_scale=7.5; cancel_flag via callback_on_step_end same pattern as ZitSampler; resolves seed=-1. Mock mode: same sentinel/stub pattern as zit.py. pytest worker/tests/test_nodes_sdxl.py exits 0 with ANVILML_WORKER_MOCK=1: output slots correct; SaveImage emits ImageReady.",
+    "tags": []
+  },
+  {
+    "id": "P10-A2",
+    "description": "End-to-end cancel path: CancelJob IPC -> Cancelled event -> DB status Cancelled",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": [
+      "P10-A1"
+    ],
+    "context": "Verify the full cancel path works end-to-end with mock worker. In backend/tests/api_jobs.rs add test: submit job, job enters Running, POST /v1/jobs/:id/cancel->202, assert WS broadcasts job.cancelled, assert GET /v1/jobs/:id returns status=Cancelled. In worker mock mode the cancel_flag is checked between nodes; executor emits Cancelled before completing. Scheduler receives WorkerEvent::Cancelled, sets DB status=Cancelled, broadcasts WsEvent::JobCancelled. cargo test --workspace --features mock-hardware -- cancel exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P10-A3",
+    "description": "Crash recovery: worker dead mid-job -> Failed + respawn + new job succeeds",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": [
+      "P10-A2"
+    ],
+    "context": "Add backend/tests/api_crash.rs integration test: submit mock job so worker is Busy; force-close the worker's stdout pipe (or kill the child process via Child::kill in test helper); assert WS broadcasts worker.status=Dead then job.failed{error=worker_crashed}; assert WS broadcasts worker.status=Respawning then worker.status=Idle within 5s; submit second job and assert it completes successfully. All with ANVILML_WORKER_MOCK=1 --features mock-hardware. cargo test -- crash exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P10-B1",
+    "description": "CI: complete openapi-diff gate and full cross-platform test pass",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": [
+      "P10-A3"
+    ],
+    "context": "Ensure CI is fully green across all jobs: Linux rust job (fmt+clippy+test+openapi-diff); Linux python-worker job (full pytest worker/tests/); Windows rust-windows job (clippy+test --features mock-hardware). cargo run -p anvilml-openapi regenerates backend/openapi.json; git diff --exit-code passes (schema is now complete and stable). Commit final openapi.json. Confirm cargo test --workspace --features mock-hardware exits 0 on both platforms. This task is done when the last CI run on main shows all jobs green.",
+    "tags": []
+  },
+  {
+    "id": "P10-B2",
+    "description": "backend/scripts: implement install_worker_deps.sh and .ps1 fully",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": [
+      "P10-B1"
+    ],
+    "context": "Replace stubs with working provisioning scripts per \u00a721.4. install_worker_deps.sh: detect nvidia-smi->cuda, rocminfo->rocm, else cpu; create venv (prefer uv venv --python 3.12, fallback python3.12 -m venv); pip install base.txt then {backend}.txt; print torch version + device. install_worker_deps.ps1: same logic Windows-only (no rocm); use py -3.12 or uv; Scripts\\ activate. Both exit non-zero with clear message if Python 3.12 not found.",
+    "tags": []
+  },
+  {
+    "id": "P10-B3",
+    "description": "backend/scripts/test_inference.py: implement standalone debug harness",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": [
+      "P10-B2"
+    ],
+    "context": "Replace stub with working backend/scripts/test_inference.py per ANVILML_DESIGN \u00a720.5: CLI --model-type zit|sdxl --model-path PATH --prompt TEXT --output PATH [--steps N] [--seed N] [--device cuda|rocm|cpu]. Loads the chosen pipeline directly (no IPC, no server) using the same node classes from worker/nodes/. Times wall-clock and prints VRAM before/after. Writes output PNG to --output path. Exits 0 on success, 1 on error with traceback. Script must be runnable with 'python backend/scripts/test_inference.py ...' from the repo root given an activated venv.",
+    "tags": []
+  }
+]
