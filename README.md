@@ -1,4 +1,4 @@
-# AnvilML
+# AnvilML [![CI](https://github.com/DrywFiltiarn/AnvilML/actions/workflows/ci.yml/badge.svg)](https://github.com/DrywFiltiarn/AnvilML/actions/workflows/ci.yml)
 
 **The headless Rust + Python inference backend of the SindriStudio project.**
 
