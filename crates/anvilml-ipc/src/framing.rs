@@ -39,9 +39,8 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(
     msg: &WorkerMessage,
 ) -> Result<(), AnvilError> {
     // Serialize the message as msgpack (named-map format, via rmp-serde).
-    let payload = rmp_serde::to_vec_named(msg).map_err(|e| {
-        AnvilError::Io(io::Error::new(io::ErrorKind::InvalidData, e))
-    })?;
+    let payload = rmp_serde::to_vec_named(msg)
+        .map_err(|e| AnvilError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
 
     let len = payload.len() as u32;
 
@@ -98,9 +97,8 @@ pub async fn read_frame<R: AsyncRead + Unpin>(
     reader.read_exact(&mut payload).await?;
 
     // Deserialize from msgpack (named-map format, via rmp-serde).
-    let event: WorkerEvent = rmp_serde::from_slice(&payload).map_err(|e| {
-        AnvilError::Io(io::Error::new(io::ErrorKind::InvalidData, e))
-    })?;
+    let event: WorkerEvent = rmp_serde::from_slice(&payload)
+        .map_err(|e| AnvilError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
 
     Ok(event)
 }
@@ -120,7 +118,9 @@ mod tests {
         T: Serialize,
     {
         let payload = rmp_serde::to_vec_named(value).expect("serialize");
-        writer.write_all(&(payload.len() as u32).to_be_bytes()).await?;
+        writer
+            .write_all(&(payload.len() as u32).to_be_bytes())
+            .await?;
         writer.write_all(&payload).await?;
         Ok(())
     }
@@ -133,7 +133,9 @@ mod tests {
 
         // Write a Ping message.
         let ping_msg = WorkerMessage::Ping { seq: 1 };
-        write_frame(&mut tx, &ping_msg).await.expect("write_frame failed");
+        write_frame(&mut tx, &ping_msg)
+            .await
+            .expect("write_frame failed");
 
         // The worker side simulates replying with Pong.
         let pong_event = WorkerEvent::Pong { seq: 1 };
@@ -144,7 +146,9 @@ mod tests {
         // Read back the Ping frame (echoed).
         let read_back: WorkerMessage = {
             let mut len_buf = [0u8; 4];
-            rx.read_exact(&mut len_buf).await.expect("read length failed");
+            rx.read_exact(&mut len_buf)
+                .await
+                .expect("read length failed");
             let len = u32::from_be_bytes(len_buf) as usize;
             let mut buf = vec![0u8; len];
             rx.read_exact(&mut buf).await.expect("read payload failed");
@@ -174,7 +178,10 @@ mod tests {
         // The read_frame should reject immediately without reading the payload.
         let result = read_frame(&mut rx, DEFAULT_MAX_PAYLOAD_MIB).await;
         match result {
-            Err(AnvilError::PayloadTooLarge { size_mib, limit_mib }) => {
+            Err(AnvilError::PayloadTooLarge {
+                size_mib,
+                limit_mib,
+            }) => {
                 assert_eq!(size_mib, 65);
                 assert_eq!(limit_mib, 10);
             }

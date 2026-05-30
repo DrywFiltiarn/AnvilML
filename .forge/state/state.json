@@ -9,16 +9,17 @@
     "P2-A2",
     "P2-A3",
     "P2-A4",
-    "P2-B1"
+    "P2-B1",
+    "P2-B2"
   ],
-  "in_progress": "P2-B2",
+  "in_progress": "P3-A1",
   "plan_approved": true,
-  "current_plan": "# Plan Report: P2-B2\n\n| Field       | Value                                       |\n|-------------|---------------------------------------------|\n| Task ID     | P2-B2                                       |\n| Phase       | 002 \u2014 Core Types & IPC                      |\n| Description | anvilml-ipc: length-prefixed msgpack framing |\n| Depends on  | P2-B1                                       |\n| Project     | anvilml                                     |\n| Planned at  | 2026-05-30T08:14:52Z                        |\n| Attempt     | 1                                           |\n\n## Objective\n\nImplement the async length-prefixed msgpack framing layer for the `anvilml-ipc` crate. This provides two functions \u2014 `write_frame` and `read_frame` \u2014 that wrap raw async I/O with the protocol defined in `ANVILML_DESIGN.md \u00a77.1`: a 4-byte big-endian u32 length prefix followed by N bytes of msgpack-encoded payload. The framing enforces a configurable maximum payload size (in MiB) before any heap allocation, and uses `read_exact` / `write_all` to guarantee full reads/writes on all platforms including Windows where pipe reads are frequently partial.\n\n## Scope\n\n### In Scope\n- Create `crates/anvilml-ipc/src/framing.rs` with two async functions:\n  - `write_frame<W: AsyncWrite + Unpin>(writer: &mut W, msg: &WorkerMessage) -> Result<(), AnvilError>`\n  - `read_frame<R: AsyncRead + Unpin>(reader: &mut R, max_mib: u32) -> Result<WorkerEvent, AnvilError>`\n- Add `bytes` dependency to `anvilml-ipc/Cargo.toml`\n- Add `tokio` (features: io-util) as a regular dependency of `anvilml-ipc/Cargo.toml` (dev-dependencies already include tokio)\n- Update `crates/anvilml-ipc/src/lib.rs` to re-export `framing::{write_frame, read_frame}`\n- Write two unit tests in `framing.rs` using `tokio::io::duplex`:\n  - Round-trip test: write a `WorkerMessage::Ping { seq: 1 }`, read back as `WorkerEvent::Pong { seq: 1 }`\n  - Oversize-rejection test: frame with length header encoding 65 MiB + 1, assert `AnvilError::PayloadTooLarge` without reading payload\n- Both functions use `read_exact` / `write_all` (not `read` / `write`) to satisfy the cross-platform partial-read invariant\n\n### Out of Scope\n- Any worker spawn/supervise logic (`anvilml-worker` crate)\n- TCP/UDS socket framing \u2014 only stdin/stdout pipe framing\n- Serialization format changes (msgpack named-map already established in P2-B1)\n- Any HTTP or WebSocket framing\n- Changes to `anvilml-core`, `anvilml-hardware`, `anvilml-registry`, `anvilml-scheduler`, `anvilml-server`\n- CI workflow modifications (no new jobs or steps needed)\n\n## Approach\n\n1. **Update `anvilml-ipc/Cargo.toml`**: Add `tokio = { version = \"1\", features = [\"io-util\"] }` as a regular dependency and `bytes = \"1\"`. The `bytes` crate is used for efficient buffer construction (e.g., `BytesMut`) in the framing functions. Tokio's `io-util` feature provides `AsyncReadExt::read_exact`, `AsyncWriteExt::write_all`, and the `AsyncRead` / `AsyncWrite` trait bounds.\n\n2. **Create `crates/anvilml-ipc/s",
+  "current_plan": "## Plan: P3-A1 \u2014 DeviceDetector trait and CPU detector\n\nI'll begin by gathering all necessary context before writing the plan report. Let me read the required files.\n\n\nGood \u2014 task ID matches (P3-A1). Now let me examine the existing crate structure to understand what's already in place.\n\n\nLet me also check the workspace Cargo.toml and any existing modules in anvilml-core/types.\n\n\nLet me verify what files already exist in the hardware crate and check for any pre-existing detector modules.\n\n\nNow I have complete context. Let me write the plan report and update CURRENT_TASK.md.\n\n\nNow I'll write the plan report following the exact section structure from `.clinerules` \u00a73:",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-05-30T08:33:30Z",
-  "plan_approval_message_id": "1510195522588114966",
+  "last_updated": "2026-05-30T09:33:27Z",
+  "plan_approval_message_id": "1510213439144853674",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1510195520843415652",
+  "plan_report_message_id": "1510213437144301620",
   "impl_report_message_id": null
 }

@@ -7,3 +7,9 @@ description = "Hardware detection for AnvilML"
 [features]
 default = []
 mock-hardware = []
+
+[dependencies]
+anvilml-core = { path = "../anvilml-core" }
+thiserror = "2"
+
+[dev-dependencies]
