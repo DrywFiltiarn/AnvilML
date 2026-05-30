@@ -29,6 +29,7 @@ name = "anvilml-hardware"
 version = "0.1.0"
 dependencies = [
  "anvilml-core",
+ "serde_json",
  "serial_test",
  "thiserror",
 ]

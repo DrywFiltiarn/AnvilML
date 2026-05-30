@@ -14,6 +14,7 @@ pub mod cpu;
 pub mod cuda;
 #[cfg(feature = "mock-hardware")]
 pub mod mock;
+pub mod rocm;
 
 pub use anvilml_core::{types::*, AnvilError};
 
@@ -46,7 +47,8 @@ pub trait DeviceDetector {
 ///
 /// When the `mock-hardware` feature is active, uses `MockDetector`
 /// exclusively for a fully hermetic CI run. Otherwise falls back to
-/// the real `CudaDetector` (if NVIDIA GPU hardware is present) and then
+/// the real `CudaDetector` (if NVIDIA GPU hardware is present), then
+/// the `RocmDetector` (if AMD GPU hardware is present), and finally
 /// the `CpuDetector` as a fallback.
 pub fn detect_all_devices() -> HardwareInfo {
     #[cfg(feature = "mock-hardware")]
@@ -80,7 +82,15 @@ pub fn detect_all_devices() -> HardwareInfo {
             .detect()
             .expect("CUDA detector should always succeed");
 
-        // If no CUDA GPUs found, fall back to CPU.
+        // If no CUDA GPUs found, try ROCm detector.
+        if gpus.is_empty() {
+            let rocm_detector = rocm::RocmDetector;
+            gpus = rocm_detector
+                .detect()
+                .expect("ROCm detector should always succeed");
+        }
+
+        // If no ROCm GPUs found, fall back to CPU.
         if gpus.is_empty() {
             let cpu_detector = cpu::CpuDetector;
             gpus = cpu_detector

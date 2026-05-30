@@ -12,6 +12,7 @@
 use std::io;
 
 use anvilml_core::AnvilError;
+#[cfg(test)]
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -20,6 +21,7 @@ use crate::{WorkerEvent, WorkerMessage};
 /// Maximum payload size in MiB. Payloads exceeding this limit cause
 /// `AnvilError::PayloadTooLarge` before any heap allocation beyond the
 /// length-prefix buffer.
+#[expect(dead_code)]
 const DEFAULT_MAX_PAYLOAD_MIB: u32 = 10;
 
 // ---------------------------------------------------------------------------
