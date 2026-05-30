@@ -13,7 +13,7 @@
 | :-- | :------ |
 | 1 | Initial architecture sketch. |
 | 2 | Approved architecture: crate decomposition, domain types, IPC, scheduler, server, worker outline. |
-| 3 | **This document.** Expands Rev 2 into a build-complete functional + technical design: per-crate module APIs, node IO contract, model cache, cancellation, logging, testing, build/toolchain, operations runbook, and implementation roadmap. Two intentional additions to the Rev 2 IPC schema (`CancelJob` message, `Cancelled` event) are introduced in §7 and flagged inline. Revision 2 remains the architectural authority; where this document adds detail it does not contradict it. A cross-platform pass (§1.5, §22.4) makes Linux and Windows co-equal first-class targets. |
+| 3 | **This document.** Expands Rev 2 into a build-complete functional + technical design: per-crate module APIs, node IO contract, model cache, cancellation, logging, testing, build/toolchain, operations runbook, and implementation roadmap. Two intentional additions to the Rev 2 IPC schema (`CancelJob` message, `Cancelled` event) are introduced in §7 and flagged inline. Revision 2 remains the architectural authority; where this document adds detail it does not contradict it. A cross-platform pass (§1.5, §22.4) makes Linux and Windows co-equal first-class targets. The backend binary and database are named `anvilml` / `anvilml.db`, and SindriStudio is clarified throughout as the separate one-click launcher that starts AnvilML and BloomeryUI (Rev 2 conflated the two). |
 
 This document is now the **single source of truth** for the AnvilML backend. Any earlier task lists or contract documents (`tasks.json`, `API_CONTRACT.md`, `IPC_PROTOCOL.md`, `ENVIRONMENT.md`, `TESTING_STRATEGY.md`) are non-authoritative and are superseded by the sections below.
 
@@ -51,7 +51,9 @@ This document is now the **single source of truth** for the AnvilML backend. Any
 
 ## 1. Purpose and Scope
 
-AnvilML is the Rust backend of SindriStudio. It is a standalone binary (`sindristudio`) that:
+AnvilML is the headless backend inference engine of the **SindriStudio** project. SindriStudio itself is a separate one-click launcher executable that starts two components together — this AnvilML backend and the BloomeryUI frontend. **This document specifies AnvilML only.**
+
+AnvilML is a standalone Rust binary (`anvilml`) that:
 
 - Supervises one Python worker process per GPU device (one CPU worker if no GPUs are present).
 - Exposes a versioned REST + WebSocket API as the sole integration surface.
@@ -68,7 +70,7 @@ The Rust backend (all crates), the Python inference worker, the IPC contract bet
 ### 1.2 Out of Scope (referenced, not specified here)
 
 - **BloomeryUI internals** — its own component tree, state stores, and styling live in BloomeryUI's repository and design doc. Only the API/WebSocket contract it must honour (§15) is normative here.
-- **Desktop shell / packaging into an installer** (e.g. a Tauri wrapper, auto-update, system tray). The backend is designed to run headless and to be embeddable, but the shell is a separate deliverable.
+- **SindriStudio — the one-click launcher** that starts and supervises AnvilML and BloomeryUI together, plus any installer, auto-update, or system-tray shell around them (e.g. a Tauri wrapper). AnvilML is designed to run headless and to be launched as a child process of SindriStudio, but SindriStudio is a separate deliverable in its own repository.
 - **The Python ML model weights themselves.** AnvilML loads user-supplied model files; it does not ship or train them.
 
 ### 1.3 MVP Capability Target
@@ -107,7 +109,7 @@ anvilml/
   rust-toolchain.toml           (pinned toolchain channel)
   anvilml.toml                  (default config, checked in for reference)
   backend/
-    src/main.rs                 (sindristudio launcher binary)
+    src/main.rs                 (anvilml launcher binary)
     openapi.json                (generated; committed)
     migrations/                 (sqlx migration SQL files)
     scripts/
@@ -194,7 +196,7 @@ pub struct ServerConfig {
     pub port: u16,                           // default: 8488
     pub model_dirs: Vec<ModelDirConfig>,
     pub artifact_dir: PathBuf,               // default: ./artifacts
-    pub db_path: PathBuf,                    // default: ./sindristudio.db
+    pub db_path: PathBuf,                    // default: ./anvilml.db
     pub venv_path: PathBuf,                  // default: ./venv  (user-managed)
     pub rocm: RocmConfig,
     pub hardware_override: Option<HardwareOverrideConfig>,
@@ -251,7 +253,7 @@ pub struct LimitsConfig {
 host = "127.0.0.1"
 port = 8488
 artifact_dir = "./artifacts"
-db_path = "./sindristudio.db"
+db_path = "./anvilml.db"
 venv_path = "./venv"
 worker_log_dir = "./logs"
 num_threads = 14
@@ -292,7 +294,7 @@ ws_broadcast_capacity = 256
 | :-- | :-- | :-- |
 | `ANVILML_HOST` | `host` | `127.0.0.1` |
 | `ANVILML_PORT` | `port` | `8488` |
-| `ANVILML_DB_PATH` | `db_path` | `./sindristudio.db` |
+| `ANVILML_DB_PATH` | `db_path` | `./anvilml.db` |
 | `ANVILML_ARTIFACT_DIR` | `artifact_dir` | `./artifacts` |
 | `ANVILML_VENV_PATH` | `venv_path` | `./venv` |
 | `ANVILML_WORKER_LOG_DIR` | `worker_log_dir` | `./logs` |
@@ -1018,12 +1020,12 @@ The detailed BloomeryUI component/state design is owned by its own repository an
 
 ## 16. Launcher Binary (`backend/src/main.rs`)
 
-Thin binary `sindristudio` wrapping `anvilml_server::start(config)`.
+Thin binary `anvilml` wrapping `anvilml_server::start(config)`.
 
 ### 16.1 CLI
 
 ```
-sindristudio [--config <path>] [--host <ip>] [--port <u16>] [--no-browser]
+anvilml [--config <path>] [--host <ip>] [--port <u16>] [--no-browser]
 ```
 
 Flags override config (highest precedence). `--help` prints usage.
@@ -1149,7 +1151,7 @@ Owned by BloomeryUI; gate is type-check + lint + unit + build against the commit
 
 ### 20.4 Manual Smoke Tests (pre-release)
 
-- **Phase-1 smoke**: build release, start `sindristudio`, browser opens, frontend connects, `system.stats` ticks, submit an empty/trivial job, Ctrl-C shuts down cleanly.
+- **Phase-1 smoke**: build release, start `anvilml`, browser opens, frontend connects, `system.stats` ticks, submit an empty/trivial job, Ctrl-C shuts down cleanly.
 - **ZiT end-to-end**: place a ZiT model in `models/diffusion/`, submit via the reference form, see progress then image in the gallery; submit again and confirm the second run is faster (pipeline cache hit).
 - **SDXL end-to-end**: same sequence with an SDXL model; confirm both pipelines coexist within VRAM or evict cleanly.
 - **Crash recovery**: kill a worker process manually; confirm the running job fails, the worker respawns within ~2 s, and a new job succeeds.
@@ -1186,7 +1188,7 @@ Representative dependency set (exact versions pinned in `Cargo.toml`):
 ### 21.2 Build Commands
 
 ```
-cargo build --release                 # produces target/release/sindristudio
+cargo build --release                 # produces target/release/anvilml
 cargo run -p anvilml-openapi          # regenerate backend/openapi.json
 ```
 
@@ -1212,13 +1214,13 @@ These are run once by the user; AnvilML never invokes them automatically.
 ### 21.5 Runtime Directory Layout (working directory)
 
 ```
-./sindristudio            (binary)
+./anvilml            (binary)
 ./anvilml.toml            (config)
 ./venv/                   (user-managed Python env)
 ./bloomery/               (frontend dist, if Local mode)
 ./models/                 (diffusion/, vae/, lora/, … per model_dirs)
 ./artifacts/{ab}/{hash}.png
-./sindristudio.db (+ -wal, -shm)
+./anvilml.db (+ -wal, -shm)
 ./logs/worker-{n}.log
 ```
 
@@ -1235,7 +1237,7 @@ A single self-contained Rust binary per OS/arch (`x86_64`/`aarch64` × Linux/Win
 1. Place the binary, `worker/`, and scripts in a working directory; create `anvilml.toml` (or rely on defaults).
 2. Run the provisioning script to build `./venv` with the correct torch backend.
 3. Drop model files into the configured `model_dirs`.
-4. Start `./sindristudio`. Verify `GET /health` and `GET /v1/system/env` (`preflight_ok = true`).
+4. Start `./anvilml`. Verify `GET /health` and `GET /v1/system/env` (`preflight_ok = true`).
 
 ### 22.2 Common Failure Modes
 
@@ -1249,7 +1251,7 @@ A single self-contained Rust binary per OS/arch (`x86_64`/`aarch64` × Linux/Win
 
 ### 22.3 Maintenance
 
-- **Backup**: copy `sindristudio.db` (after WAL checkpoint / clean stop) and the `artifacts/` tree.
+- **Backup**: copy `anvilml.db` (after WAL checkpoint / clean stop) and the `artifacts/` tree.
 - **Disk reclaim**: `DELETE /v1/jobs?status=all` removes job rows + artifacts; orphan-scan of `artifacts/` against the DB can be added later.
 - **Upgrades**: replace the binary and `worker/`; re-run provisioning only if torch requirements changed; migrations apply automatically on next start.
 
