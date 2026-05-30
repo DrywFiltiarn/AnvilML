@@ -28,7 +28,7 @@ At the end of this phase: `cargo test -p anvilml-registry` exits 0 with at least
 
 | Group | Subsystem         | Tasks          | Summary                                              |
 |-------|-------------------|----------------|------------------------------------------------------|
-| A     | anvilml-registry  | P4-A1 … P4-A3  | Migrations, scanner, ModelRegistry CRUD              |
+| A     | anvilml-registry  | P4-A1 … P4-A3  | Migrations, scanner, naming correction, ModelRegistry CRUD |
 
 ---
 
@@ -93,6 +93,40 @@ At the end of this phase: `cargo test -p anvilml-registry` exits 0 with at least
 - Write a test using a `tempdir` with two fixture files (create with `std::fs::write`) of known sizes and names. Assert the returned `ModelMeta` fields match expectations.
 
 **Acceptance criterion:** `cargo test -p anvilml-registry -- scanner` exits 0.
+
+---
+
+
+---
+
+#### P4-A2B: anvilml — naming correction (binary `anvilml`, database `anvilml.db`)
+
+**Goal:** Apply the naming corrections introduced in `ANVILML_DESIGN.md` Rev 3 amendment before any code that hardcodes the binary or database name is written: the launcher binary is `anvilml` (not `sindristudio`) and the default database file is `anvilml.db` (not `sindristudio.db`).
+
+**Why here.** This correction must land before P4-A3 (the first task that opens a real `SqlitePool` with a hardcoded default path) and before phase 008 (which produces the release binary). Inserting it here keeps all later tasks consistent from the start, avoids a rename-refactor mid-stream, and means the phrasing in phase 008 markdown (`./target/release/anvilml`) is already correct by the time it is written.
+
+**Files to create or modify:**
+- `backend/Cargo.toml` — set `[[bin]] name = "anvilml"` (replacing the previous `"sindristudio"` stub name if set)
+- `crates/anvilml-core/src/config.rs` — `ServerConfig.db_path` default changed to `"./anvilml.db"`
+- `anvilml.toml` — update `db_path = "./anvilml.db"`
+- `backend/src/main.rs` — update the startup print to say `"AnvilML vX.Y.Z"` (not `"sindristudio"`)
+- Code comments / doc comments that mention the binary name by its old value
+
+**Key implementation notes:**
+- The `[[bin]]` entry in `backend/Cargo.toml` determines the output filename in `target/release/`. After this task, `cargo build --release` must produce `target/release/anvilml` on Linux and `target/release/anvilml.exe` on Windows.
+- The `db_path` default is set in `ServerConfig`'s `Default` implementation (or `#[serde(default)]` attribute). Change it from `"./sindristudio.db"` to `"./anvilml.db"`. All test helpers that create in-memory SQLite (`sqlite::memory:`) are unaffected — they do not use the default path.
+- The `anvilml.toml` reference config (checked into the repo root) must reflect the new default so users copying it get `anvilml.db` out of the box.
+- The binary name change does **not** affect any crate name, API path, IPC message field, environment variable, or config key — all of those remain `anvilml`-prefixed and are unaffected.
+- `SindriStudio` (capitalised, the launcher product) is out of scope for this task. This task only corrects the lowercase binary and DB filename tokens.
+
+**Acceptance criterion:**
+```
+cargo build --release
+ls target/release/anvilml            # Linux
+# or
+dir target\release\anvilml.exe    # Windows
+```
+`cargo run -- --no-browser` creates `./anvilml.db`, not `./sindristudio.db`.
 
 ---
 

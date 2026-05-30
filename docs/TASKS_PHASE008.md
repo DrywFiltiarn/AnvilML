@@ -71,7 +71,7 @@ The integration tests use an in-process axum test server (not a real bound port)
 - Tracing subscriber: init with `EnvFilter::from_env("ANVILML_LOG")` falling back to `RUST_LOG`, default `info`. Select formatter: `--log-format plain` uses `tracing_subscriber::fmt()` (human-readable); `--log-format json` uses `.json()`.
 - `fn main()` should call `tokio::main` and delegate to an async `run(args)` function so errors can be propagated cleanly.
 
-**Acceptance criterion:** `cargo build --release` exits 0. `./target/release/sindristudio --help` prints usage.
+**Acceptance criterion:** `cargo build --release` exits 0. `./target/release/anvilml --help` prints usage.
 
 ---
 

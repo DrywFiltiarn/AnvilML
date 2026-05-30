@@ -4,8 +4,10 @@
     "description": "anvilml-registry: SQLite migrations (jobs, models, artifacts)",
     "phase": "4",
     "project": "anvilml",
-    "prereqs": ["P3-B1"],
-    "context": "Create backend/migrations/001_jobs.sql, 002_models.sql, 003_artifacts.sql exactly per ANVILML_DESIGN §13. Add sqlx (features: sqlite, runtime-tokio-native-tls, macros, migrate) to anvilml-registry Cargo.toml. Implement db::open(path) -> SqlitePool: pragma journal_mode=WAL, synchronous=NORMAL, foreign_keys=ON, then sqlx::migrate!(). Write a test using sqlx::testing or a tempfile DB that runs all three migrations and asserts the tables exist.",
+    "prereqs": [
+      "P3-B1"
+    ],
+    "context": "Create backend/migrations/001_jobs.sql, 002_models.sql, 003_artifacts.sql exactly per ANVILML_DESIGN \u00a713. Add sqlx (features: sqlite, runtime-tokio-native-tls, macros, migrate) to anvilml-registry Cargo.toml. Implement db::open(path) -> SqlitePool: pragma journal_mode=WAL, synchronous=NORMAL, foreign_keys=ON, then sqlx::migrate!(). Write a test using sqlx::testing or a tempfile DB that runs all three migrations and asserts the tables exist.",
     "tags": []
   },
   {
@@ -13,16 +15,33 @@
     "description": "anvilml-registry: ModelMeta scanner",
     "phase": "4",
     "project": "anvilml",
-    "prereqs": ["P4-A1"],
+    "prereqs": [
+      "P4-A1"
+    ],
     "context": "Implement scanner.rs: async fn scan_dirs(dirs: &[ModelDirConfig]) -> Vec<ModelMeta>. Walk each dir with walkdir, match .safetensors/.ckpt/.pt/.bin extensions. ModelMeta.id = first 16 hex chars of SHA256(canonical_path string). Derive ModelKind from dir name or ModelDirConfig.kind if set; infer DType from filename suffix (fp16/bf16/q8/q4) or Unknown. Estimate vram_estimate_mib = size_bytes/1024/1024 * dtype_factor (f32=2.0, f16=1.0, bf16=1.0, q8=0.5, q4=0.25). cargo test -p anvilml-registry -- scanner exits 0 with tempdir fixture.",
     "tags": []
+  },
+  {
+    "id": "P4-A2B",
+    "description": "anvilml: correct naming \u2014 binary anvilml, database anvilml.db, TOML default, env-var table",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": [
+      "P4-A2"
+    ],
+    "context": "Apply naming corrections per ANVILML_DESIGN Rev 3 amendment: (1) Rename binary: backend/Cargo.toml [[bin]] name = 'anvilml' (was 'sindristudio'). (2) Update db_path default in ServerConfig and anvilml.toml: './anvilml.db' (was './sindristudio.db'). (3) Update ANVILML_DB_PATH env-var table comment in code/docs to show default './anvilml.db'. (4) Confirm backend/src/main.rs stub (P1-A3) prints 'AnvilML' not 'sindristudio'. Verify: cargo build --release produces target/release/anvilml; cargo run -- --no-browser creates anvilml.db not sindristudio.db.",
+    "tags": [
+      "correction"
+    ]
   },
   {
     "id": "P4-A3",
     "description": "anvilml-registry: ModelRegistry store with upsert, list, get",
     "phase": "4",
     "project": "anvilml",
-    "prereqs": ["P4-A2"],
+    "prereqs": [
+      "P4-A2B"
+    ],
     "context": "Implement store.rs: ModelRegistry wrapping SqlitePool. Methods: async fn upsert(&self, meta: &ModelMeta), async fn list(&self, kind: Option<ModelKind>) -> Vec<ModelMeta>, async fn get(&self, id: &str) -> Option<ModelMeta>, async fn rescan(&self, dirs: &[ModelDirConfig]). rescan calls scan_dirs then bulk-upserts results (INSERT OR REPLACE). Expose ModelRegistry::new(pool). cargo test -p anvilml-registry -- store exits 0 with at least: list-empty, upsert+get, rescan-adds-new-removes-nothing (registry never auto-removes stale; that is manual).",
     "tags": []
   }
