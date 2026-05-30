@@ -5,7 +5,6 @@
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
-use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // ModelKind — the kind of ML model
@@ -32,6 +31,20 @@ pub enum ModelKind {
     Upscale,
 }
 
+impl From<crate::config::ModelKind> for ModelKind {
+    fn from(k: crate::config::ModelKind) -> Self {
+        match k {
+            crate::config::ModelKind::Clip => ModelKind::Clip,
+            crate::config::ModelKind::Diffusion => ModelKind::Diffusion,
+            crate::config::ModelKind::Vae => ModelKind::Vae,
+            crate::config::ModelKind::Lora => ModelKind::Lora,
+            crate::config::ModelKind::ControlNet => ModelKind::ControlNet,
+            crate::config::ModelKind::Unet => ModelKind::Unet,
+            crate::config::ModelKind::Upscale => ModelKind::Upscale,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // DType — ML data type
 // ---------------------------------------------------------------------------
@@ -47,6 +60,12 @@ pub enum DType {
     I8,
     /// Brain floating point 16-bit.
     BF16,
+    /// 8-bit quantized (int8-like, often used for LLMs).
+    Q8,
+    /// 4-bit quantized (int4-like, aggressive compression).
+    Q4,
+    /// Unknown / future dtype — non-exhaustive sentinel.
+    Unknown,
 }
 
 // ---------------------------------------------------------------------------
@@ -56,8 +75,9 @@ pub enum DType {
 /// Metadata describing a registered ML model in the system.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, ToSchema)]
 pub struct ModelMeta {
-    /// Unique identifier for this model (UUID v4).
-    pub id: Uuid,
+    /// Unique identifier for this model (first 16 hex chars of SHA256 of the
+    /// canonical path string).
+    pub id: String,
 
     /// Human-readable name of the model.
     pub name: String,
@@ -65,23 +85,48 @@ pub struct ModelMeta {
     /// The kind/category of model.
     pub kind: ModelKind,
 
-    /// Primary data type of the model weights.
+    /// Primary data type of the model weights (if known).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dtype: Option<DType>,
 
+    /// Inferred data type hint from filename/dirname patterns.
+    pub dtype_hint: DType,
+
     /// Filesystem path to the model files.
     pub path: String,
+
+    /// File size in bytes.
+    pub size_bytes: u64,
+
+    /// Estimated VRAM usage in mebibytes (based on size_bytes and dtype factor).
+    pub vram_estimate_mib: u64,
+
+    /// ISO 8601 UTC timestamp when this model was last scanned.
+    pub scanned_at: String,
 }
 
 impl ModelMeta {
-    /// Create a new `ModelMeta` with default `DType::F32`.
-    pub fn new(id: Uuid, name: String, kind: ModelKind, path: String) -> Self {
+    /// Create a new `ModelMeta` with default `DType::F32` dtype_hint and
+    /// `scanned_at` set to the current time.
+    pub fn new(
+        id: String,
+        name: String,
+        kind: ModelKind,
+        path: String,
+        size_bytes: u64,
+        vram_estimate_mib: u64,
+    ) -> Self {
+        use chrono::Utc;
         Self {
             id,
             name,
             kind,
             dtype: Some(DType::F32),
+            dtype_hint: DType::F32,
             path,
+            size_bytes,
+            vram_estimate_mib,
+            scanned_at: Utc::now().to_rfc3339(),
         }
     }
 }
@@ -127,7 +172,15 @@ mod tests {
 
     #[test]
     fn dtype_serialization_round_trip() {
-        for dtype in [DType::F32, DType::F16, DType::I8, DType::BF16] {
+        for dtype in [
+            DType::F32,
+            DType::F16,
+            DType::I8,
+            DType::BF16,
+            DType::Q8,
+            DType::Q4,
+            DType::Unknown,
+        ] {
             let json = serde_json::to_string(&dtype).unwrap();
             let back: DType = serde_json::from_str(&json).unwrap();
             assert_eq!(dtype, back, "failed for {:?}", dtype);
@@ -138,6 +191,9 @@ mod tests {
     fn dtype_eq() {
         assert_eq!(DType::F32, DType::F32);
         assert_ne!(DType::F16, DType::BF16);
+        assert_eq!(DType::Q8, DType::Q8);
+        assert_eq!(DType::Q4, DType::Q4);
+        assert_eq!(DType::Unknown, DType::Unknown);
     }
 
     // ------------------------------------------------------------------
@@ -146,28 +202,37 @@ mod tests {
 
     #[test]
     fn model_meta_new() {
-        let id = Uuid::new_v4();
         let meta = ModelMeta::new(
-            id,
+            "abc123def4567890".into(),
             "my-model".into(),
             ModelKind::Diffusion,
             "/models/my-model".into(),
+            1_000_000_000,
+            500,
         );
-        assert_eq!(meta.id, id);
+        assert_eq!(meta.id, "abc123def4567890");
         assert_eq!(meta.name, "my-model");
         assert_eq!(meta.kind, ModelKind::Diffusion);
         assert_eq!(meta.dtype, Some(DType::F32));
+        assert_eq!(meta.dtype_hint, DType::F32);
         assert_eq!(meta.path, "/models/my-model");
+        assert_eq!(meta.size_bytes, 1_000_000_000);
+        assert_eq!(meta.vram_estimate_mib, 500);
+        assert!(!meta.scanned_at.is_empty());
     }
 
     #[test]
     fn model_meta_serialization_round_trip() {
         let meta = ModelMeta {
-            id: Uuid::new_v4(),
+            id: "sha256hex12345678".into(),
             name: "test-model".into(),
             kind: ModelKind::Clip,
             dtype: Some(DType::F16),
+            dtype_hint: DType::F16,
             path: "/models/clip".into(),
+            size_bytes: 500_000_000,
+            vram_estimate_mib: 250,
+            scanned_at: "2026-01-01T00:00:00+00:00".into(),
         };
         let json = serde_json::to_string(&meta).unwrap();
         let back: ModelMeta = serde_json::from_str(&json).unwrap();
@@ -178,13 +243,17 @@ mod tests {
     fn model_meta_skip_none_dtype() {
         // Manually construct with None dtype to test skip_serializing_if
         let meta = ModelMeta {
-            id: Uuid::new_v4(),
+            id: "sha256hex12345678".into(),
             name: "minimal".into(),
             kind: ModelKind::Vae,
             dtype: None,
+            dtype_hint: DType::F32,
             path: "/models/vae".into(),
+            size_bytes: 100_000_000,
+            vram_estimate_mib: 50,
+            scanned_at: "2026-01-01T00:00:00+00:00".into(),
         };
         let json = serde_json::to_string(&meta).unwrap();
-        assert!(!json.contains("dtype"));
+        assert!(!json.contains(",\"dtype\":"));
     }
 }

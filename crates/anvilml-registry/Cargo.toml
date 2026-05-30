@@ -8,6 +8,10 @@ description = "Model registry for AnvilML"
 anvilml-core = { path = "../anvilml-core" }
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio-rustls", "macros", "migrate"] }
 tokio = { version = "1", features = ["full"] }
+walkdir = "2"
+sha2 = "0.10"
+hex = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 tempfile = "3"

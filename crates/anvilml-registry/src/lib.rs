@@ -1,6 +1,7 @@
 //! Model registry for AnvilML.
 
 pub mod db;
+pub mod scanner;
 
 #[cfg(test)]
 mod tests {
