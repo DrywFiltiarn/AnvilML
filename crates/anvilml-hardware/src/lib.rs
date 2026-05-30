@@ -10,6 +10,8 @@
 //! - `rocm` — AMD ROCm detector (via `rocm-smi`) — added in P3-A4
 //! - `mock` — Deterministic mock detector for CI (feature-gated) — added in P3-A2
 
+#[cfg(feature = "mock-hardware")]
+pub mod mock;
 pub mod cpu;
 
 pub use anvilml_core::{types::*, AnvilError};
@@ -39,31 +41,56 @@ pub trait DeviceDetector {
 // detect_all_devices — stub (host info filled in P3-B1)
 // ---------------------------------------------------------------------------
 
-/// Detect all available devices using the CPU detector.
+/// Detect all available devices.
 ///
-/// At this stage (P3-A1) this is a stub that returns `HardwareInfo`
-/// populated only with CPU device information. Host-level fields
-/// (`os`, `cpu_model`, `ram_total_mib`, `ram_free_mib`) are zeroed
-/// and will be filled in by P3-B1.
+/// When the `mock-hardware` feature is active, uses `MockDetector`
+/// exclusively for a fully hermetic CI run. Otherwise falls back to
+/// the real `CpuDetector`.
 pub fn detect_all_devices() -> HardwareInfo {
-    let detector = cpu::CpuDetector;
-    let gpus = detector
-        .detect()
-        .expect("CPU detector should always succeed");
+    #[cfg(feature = "mock-hardware")]
+    {
+        let detector = mock::MockDetector;
+        let gpus = detector
+            .detect()
+            .expect("mock detector should always succeed");
 
-    HardwareInfo {
-        host: HostInfo {
-            os: String::new(),
-            cpu_model: String::new(),
-            ram_total_mib: 0,
-            ram_free_mib: 0,
-        },
-        gpus,
-        inference_caps: InferenceCaps {
-            fp16: false,
-            bf16: false,
-            flash_attention: false,
-        },
+        return HardwareInfo {
+            host: HostInfo {
+                os: String::new(),
+                cpu_model: String::new(),
+                ram_total_mib: 0,
+                ram_free_mib: 0,
+            },
+            gpus,
+            inference_caps: InferenceCaps {
+                fp16: false,
+                bf16: false,
+                flash_attention: false,
+            },
+        };
+    }
+
+    #[cfg(not(feature = "mock-hardware"))]
+    {
+        let detector = cpu::CpuDetector;
+        let gpus = detector
+            .detect()
+            .expect("CPU detector should always succeed");
+
+        HardwareInfo {
+            host: HostInfo {
+                os: String::new(),
+                cpu_model: String::new(),
+                ram_total_mib: 0,
+                ram_free_mib: 0,
+            },
+            gpus,
+            inference_caps: InferenceCaps {
+                fp16: false,
+                bf16: false,
+                flash_attention: false,
+            },
+        }
     }
 }
 
@@ -75,7 +102,11 @@ mod tests {
     fn detect_all_devices_returns_cpu_device() {
         let info = detect_all_devices();
         assert_eq!(info.gpus.len(), 1);
+        #[cfg(feature = "mock-hardware")]
+        assert_eq!(info.gpus[0].name, "Mock CPU");
+        #[cfg(not(feature = "mock-hardware"))]
         assert_eq!(info.gpus[0].name, "CPU");
+
         assert!(matches!(info.gpus[0].device_type, DeviceType::Cpu));
     }
 

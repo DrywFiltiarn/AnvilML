@@ -10,16 +10,17 @@
     "P2-A3",
     "P2-A4",
     "P2-B1",
-    "P2-B2"
+    "P2-B2",
+    "P3-A1"
   ],
-  "in_progress": "P3-A1",
+  "in_progress": "P3-A2",
   "plan_approved": true,
-  "current_plan": "## Plan: P3-A1 \u2014 DeviceDetector trait and CPU detector\n\nI'll begin by gathering all necessary context before writing the plan report. Let me read the required files.\n\n\nGood \u2014 task ID matches (P3-A1). Now let me examine the existing crate structure to understand what's already in place.\n\n\nLet me also check the workspace Cargo.toml and any existing modules in anvilml-core/types.\n\n\nLet me verify what files already exist in the hardware crate and check for any pre-existing detector modules.\n\n\nNow I have complete context. Let me write the plan report and update CURRENT_TASK.md.\n\n\nNow I'll write the plan report following the exact section structure from `.clinerules` \u00a73:",
+  "current_plan": "# Plan Report: P3-A2\n\n| Field       | Value                                       |\n|-------------|---------------------------------------------|\n| Task ID     | P3-A2                                       |\n| Phase       | 003 \u2014 Hardware Detection                    |\n| Description | anvilml-hardware: mock detector driven by env vars |\n| Depends on  | P3-A1                                       |\n| Project     | anvilml                                     |\n| Planned at  | 2026-05-30T09:53:50Z                        |\n| Attempt     | 1                                           |\n\n## Objective\n\nImplement the deterministic mock detector (`MockDetector`) used in all CI runs, gated behind the `mock-hardware` feature flag. The mock detector reads three environment variables (`ANVILML_MOCK_DEVICE_TYPE`, `ANVILML_MOCK_VRAM_MIB`, `ANVILML_MOCK_GFX_ARCH`) and returns a single deterministic `GpuDevice` with the specified values. When the `mock-hardware` feature is active, `detect_all_devices()` must use `MockDetector` exclusively, ensuring CI is fully hermetic without any real GPU hardware.\n\n## Scope\n\n### In Scope\n- Create `crates/anvilml-hardware/src/mock.rs` with `MockDetector` struct implementing the `DeviceDetector` trait.\n- `MockDetector::detect()` reads `ANVILML_MOCK_DEVICE_TYPE` (default `cpu`), `ANVILML_MOCK_VRAM_MIB` (default `8192`), and `ANVILML_MOCK_GFX_ARCH` (default `gfx1100`) from the environment.\n- When `mock-hardware` feature is active, `detect_all_devices()` in `lib.rs` uses `MockDetector` instead of `CpuDetector`.\n- Add three cfg-gated fixture tests in `mock.rs`: (1) default env \u2192 `DeviceType::Cpu`, (2) `ANVILML_MOCK_DEVICE_TYPE=cuda` \u2192 `DeviceType::Cuda` with correct VRAM, (3) `ANVILML_MOCK_DEVICE_TYPE=rocm` + custom VRAM \u2192 `DeviceType::Rocm`.\n- Add `serial_test` as a dev-dependency to serialize env-var tests and avoid cross-test pollution.\n\n### Out of Scope\n- CUDA detector (P3-A3) \u2014 separate task.\n- ROCm detector (P3-A4) \u2014 separate task.\n- `HardwareOverrideConfig` wiring and host info (P3-B1) \u2014 separate task.\n- Feature forwarding to other crates (`worker`, `scheduler`, `server`) \u2014 out of scope for this phase.\n- Integration tests covering override scenarios \u2014 covered in P3-B1.\n\n## Approach\n\n1. **Create `crates/anvilml-hardware/src/mock.rs`:**\n   - Define `pub struct MockDetector;` (unit struct, no fields).\n   - Implement `DeviceDetector for MockDetector`:\n     - `detect()`: read env vars with defaults, construct a single `GpuDevice`.\n       - `ANVILML_MOCK_DEVICE_TYPE`: parse as `cpu`, `cuda`, or `rocm`; default `\"cpu\"`. Map to `DeviceType::Cpu`, `DeviceType::Cuda`, `DeviceType::Rocm`.\n       - `ANVILML_MOCK_VRAM_MIB`: parse as `u32`; default `8192`.\n       - `ANVILML_MOCK_GFX_ARCH`: read as `String`; default `\"gfx1100\"`.\n       - Device name: derive from device type \u2014 `\"Mock CPU\"`, `\"Mock CUDA GPU\"`, or `\"Mock ROCm GPU\"`.\n       - `driver_version`: set to `\"mock\"` for all types.\n       - `vram_free_mib`: equal to `vram_total_mib` (ful",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-05-30T09:33:27Z",
-  "plan_approval_message_id": "1510213439144853674",
+  "last_updated": "2026-05-30T10:03:17Z",
+  "plan_approval_message_id": "1510221830672351345",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1510213437144301620",
+  "plan_report_message_id": "1510221828524740700",
   "impl_report_message_id": null
 }

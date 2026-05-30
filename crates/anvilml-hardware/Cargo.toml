@@ -13,3 +13,4 @@ anvilml-core = { path = "../anvilml-core" }
 thiserror = "2"
 
 [dev-dependencies]
+serial_test = "3"
