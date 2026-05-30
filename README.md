@@ -158,8 +158,10 @@ anvilml/
 ├── worker/         # Python inference worker (executor, nodes, requirements)
 ├── ANVILML_DESIGN.md
 ├── README.md
+├── LICENSE
 ├── CODE_OF_CONDUCT.md
 ├── CONTRIBUTING.md
+├── SECURITY.md
 └── .github/        # issue + PR templates, CI
 ```
 
@@ -193,9 +195,9 @@ Contributions are welcome. Please read [CONTRIBUTING.md](./CONTRIBUTING.md) and 
 
 ## Security
 
-Do **not** open public issues for security vulnerabilities. Email
-`trinity3dtech@gmail.com`. A full `SECURITY.md` policy is
-recommended before the first public release.
+Please report vulnerabilities **privately** — see [SECURITY.md](./SECURITY.md). Open a
+[private GitHub Security Advisory](https://github.com/DrywFiltiarn/AnvilML/security/advisories/new)
+or email `trinity3dtech@gmail.com`. Do **not** open public issues for security problems.
 
 ## License
 
