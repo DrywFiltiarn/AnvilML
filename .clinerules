@@ -460,6 +460,16 @@
 #      sessions (/think tag). Do NOT emit thinking traces to any output file.
 #      Thinking is internal only. All written output must be the final,
 #      clean plan or implementation report.
+#
+#      SINGLE WRITE RULE: Write the plan or implementation report file
+#      EXACTLY ONCE, in a single write_file call, containing the complete
+#      finished document from the opening # heading to the final section.
+#      Do not write interim notes, progress updates, reasoning, or partial
+#      drafts to the report file at any point. The report file must not
+#      exist until the document is complete and ready.
+#      A report that does not begin with "# Plan Report: <TASK_ID>" or
+#      "# Implementation Report: <TASK_ID>" is malformed and constitutes
+#      a session failure.
 
 
 # ── 10. PROHIBITED BEHAVIOURS ───────────────────────────────────────────────────
