@@ -118,6 +118,8 @@
 # of task complexity.
 #
 # PRE-STOP CHECK — before updating CURRENT_TASK.md and stopping, verify:
+#   ☐ The file's first line is exactly "# Plan Report: <TASK_ID>" — not
+#      narration, not "I'll analyze...", not any conversational text
 #   ☐ Header table present with all seven fields (Task ID through Attempt)
 #   ☐ ## Objective — one paragraph, present
 #   ☐ ## Scope — contains ### In Scope and ### Out of Scope subsections
