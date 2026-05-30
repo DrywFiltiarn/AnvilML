@@ -43,7 +43,7 @@ representing the project in public spaces.
 ## Reporting
 
 If you experience or witness unacceptable behaviour, please report it to the project maintainers at
-**`<CONDUCT_CONTACT_PLACEHOLDER>`** (e.g. `conduct@sindristudio.dev`). Reports are handled
+**`trinity3dtech@gmail.com`**. Reports are handled
 confidentially. Include, where possible: what happened, where and when, who was involved, and any
 supporting context (links, screenshots).
 

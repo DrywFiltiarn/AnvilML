@@ -1,4 +1,6 @@
-# AnvilML [![CI](https://github.com/DrywFiltiarn/AnvilML/actions/workflows/ci.yml/badge.svg)](https://github.com/DrywFiltiarn/AnvilML/actions/workflows/ci.yml)
+# AnvilML
+
+[![CI](https://github.com/DrywFiltiarn/AnvilML/actions/workflows/ci.yml/badge.svg)](https://github.com/DrywFiltiarn/AnvilML/actions/workflows/ci.yml)
 
 **The headless Rust + Python inference backend of the SindriStudio project.**
 
@@ -13,7 +15,7 @@ REST + WebSocket API.
 > | :-- | :-- | :-- |
 > | **SindriStudio** | The root project — a one-click executable that launches the backend and the frontend together. This is what end users run. | separate / root |
 > | **AnvilML** | The headless backend inference engine (Rust + Python). | **this repository** |
-> | **BloomeryUI** | The reference frontend. | separate |
+> | **BloomeryUI** | The reference frontend. | [BloomeryUI repo](https://github.com/DrywFiltiarn/BloomeryUI) |
 >
 > This repository builds **AnvilML only**. SindriStudio bundles and launches AnvilML alongside
 > BloomeryUI; it is packaged separately.
@@ -89,8 +91,8 @@ stays under your control.
 
 ```bash
 # 1. Build the backend
-git clone https://github.com/<ORG_PLACEHOLDER>/anvilml.git
-cd anvilml
+git clone https://github.com/DrywFiltiarn/AnvilML.git
+cd AnvilML
 cargo build --release            # -> target/release/anvilml
 
 # 2. Provision the Python worker venv (detects CUDA / ROCm / CPU)
@@ -142,7 +144,7 @@ Subscribe to `ws://127.0.0.1:8488/v1/events` for live progress; fetch results fr
 
 ## Frontend
 
-[BloomeryUI](https://github.com/<ORG_PLACEHOLDER>/bloomeryui) is the reference frontend and is
+[BloomeryUI](https://github.com/DrywFiltiarn/BloomeryUI) is the reference frontend and is
 distributed separately; SindriStudio bundles it with this backend. AnvilML can serve a built
 frontend from a local directory (`local` mode), reverse-proxy a dev server (`remote` mode), or run
 API-only (`headless` mode). Any client that honours the API contract works.
@@ -192,14 +194,12 @@ Contributions are welcome. Please read [CONTRIBUTING.md](./CONTRIBUTING.md) and 
 ## Security
 
 Do **not** open public issues for security vulnerabilities. Email
-`<SECURITY_CONTACT_PLACEHOLDER>` (e.g. `security@sindristudio.dev`). A full `SECURITY.md` policy is
+`trinity3dtech@gmail.com`. A full `SECURITY.md` policy is
 recommended before the first public release.
 
 ## License
 
-`<LICENSE_PLACEHOLDER>` — a license has not yet been selected for this repository. Add a `LICENSE`
-file and update this section before publishing. (Until a license is chosen, default copyright law
-applies and reuse rights are not granted.)
+Released under the [MIT License](./LICENSE).
 
 ## Acknowledgements
 

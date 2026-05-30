@@ -28,8 +28,8 @@ to abide by our [Code of Conduct](./CODE_OF_CONDUCT.md).
 ### Build
 
 ```bash
-git clone https://github.com/<ORG_PLACEHOLDER>/anvilml.git
-cd anvilml
+git clone https://github.com/DrywFiltiarn/AnvilML.git
+cd AnvilML
 cargo build --workspace
 ```
 
@@ -117,8 +117,8 @@ Branch names: `feat/<short-desc>`, `fix/<short-desc>`, `docs/<short-desc>`.
 ## Reporting security issues
 
 Please do **not** file public issues for vulnerabilities. Email
-`<SECURITY_CONTACT_PLACEHOLDER>` (e.g. `security@sindristudio.dev`) instead.
+`trinity3dtech@gmail.com` instead.
 
 ## Questions
 
-Open a GitHub Discussion (if enabled) or a `question`-labelled issue. Thanks for contributing!
+Open an issue and apply the `question` label. Thanks for contributing!
