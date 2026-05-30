@@ -13,7 +13,7 @@ REST + WebSocket API.
 >
 > | Component | Role | Location |
 > | :-- | :-- | :-- |
-> | **SindriStudio** | The root project — a one-click executable that launches the backend and the frontend together. This is what end users run. | separate / root |
+> | **SindriStudio** | The root project — a one-click executable that launches the backend and the frontend together. This is what end users run. | [SindriStudio repo](https://github.com/DrywFiltiarn/SindriStudio) |
 > | **AnvilML** | The headless backend inference engine (Rust + Python). | **this repository** |
 > | **BloomeryUI** | The reference frontend. | [BloomeryUI repo](https://github.com/DrywFiltiarn/BloomeryUI) |
 >
