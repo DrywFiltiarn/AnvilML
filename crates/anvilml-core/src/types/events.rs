@@ -243,7 +243,10 @@ mod tests {
         });
         let json = serde_json::to_string(&ev).unwrap();
         // Assert the event discriminator is present as a top-level key
-        assert!(json.contains(r#""event":"system_stats""#) || json.contains(r#""event": "system_stats""#));
+        assert!(
+            json.contains(r#""event":"system_stats""#)
+                || json.contains(r#""event": "system_stats""#)
+        );
         assert!(json.contains("timestamp"));
         assert!(json.contains("gpus"));
     }

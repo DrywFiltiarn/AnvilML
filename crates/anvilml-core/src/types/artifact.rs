@@ -40,12 +40,7 @@ pub struct ArtifactMeta {
 
 impl ArtifactMeta {
     /// Create a new `ArtifactMeta` with the current timestamp.
-    pub fn new(
-        job_id: Uuid,
-        model_id: Uuid,
-        path: String,
-        artifact_type: String,
-    ) -> Self {
+    pub fn new(job_id: Uuid, model_id: Uuid, path: String, artifact_type: String) -> Self {
         Self {
             id: Uuid::new_v4(),
             job_id,
@@ -121,9 +116,6 @@ mod tests {
         assert!(json.contains("created_at"));
         // Deserialize and verify timestamp matches
         let back: ArtifactMeta = serde_json::from_str(&json).unwrap();
-        assert_eq!(
-            artifact.created_at.timestamp(),
-            back.created_at.timestamp()
-        );
+        assert_eq!(artifact.created_at.timestamp(), back.created_at.timestamp());
     }
 }

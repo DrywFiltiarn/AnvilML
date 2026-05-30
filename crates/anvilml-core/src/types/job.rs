@@ -16,17 +16,7 @@ use uuid::Uuid;
 ///
 /// Ordered from earliest to latest state. `Pending` is the initial state;
 /// `Completed`, `Failed`, and `Cancelled` are terminal states.
-#[derive(
-    Serialize,
-    Deserialize,
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    ToSchema,
-)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ToSchema)]
 pub enum JobStatus {
     /// The job has been submitted but not yet picked up by a worker.
     Pending,

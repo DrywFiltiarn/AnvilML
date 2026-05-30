@@ -12,15 +12,7 @@ use uuid::Uuid;
 // ---------------------------------------------------------------------------
 
 /// The lifecycle status of a worker process.
-#[derive(
-    Serialize,
-    Deserialize,
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    ToSchema,
-)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, ToSchema)]
 pub enum WorkerStatus {
     /// The worker is starting up and loading the model.
     Initializing,

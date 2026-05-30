@@ -14,15 +14,7 @@ use uuid::Uuid;
 /// The kind (category) of an ML model in the AnvilML system.
 ///
 /// These match the MVP set from `ANVILML_DESIGN.md §4.2`.
-#[derive(
-    Serialize,
-    Deserialize,
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    ToSchema,
-)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, ToSchema)]
 pub enum ModelKind {
     /// Classifier / text encoder model (e.g. CLIP).
     Clip,
@@ -45,15 +37,7 @@ pub enum ModelKind {
 // ---------------------------------------------------------------------------
 
 /// The numeric data type used by a model's weights and activations.
-#[derive(
-    Serialize,
-    Deserialize,
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    ToSchema,
-)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, ToSchema)]
 pub enum DType {
     /// 32-bit IEEE 754 floating point (default).
     F32,

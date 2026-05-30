@@ -14,15 +14,7 @@ use utoipa::ToSchema;
 ///
 /// MVP set: CUDA (NVIDIA), ROCm (AMD), and CPU. Deferred backends
 /// (Intel IPEX, Apple MPS, AMD DirectML) are tracked in §25.
-#[derive(
-    Serialize,
-    Deserialize,
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    ToSchema,
-)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, ToSchema)]
 pub enum DeviceType {
     /// NVIDIA CUDA backend.
     Cuda,

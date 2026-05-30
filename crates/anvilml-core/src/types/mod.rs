@@ -41,7 +41,7 @@ pub use worker::{WorkerInfo, WorkerStatus};
 
 // WebSocket event types
 pub use events::{
-    GpuStatSnapshot, JobCancelledEvent, JobCompletedEvent, JobFailedEvent,
-    JobImageReadyEvent, JobProgressEvent, JobQueuedEvent, JobStartedEvent,
-    SystemStatsEvent, WsEvent, WorkerStatusChangedEvent,
+    GpuStatSnapshot, JobCancelledEvent, JobCompletedEvent, JobFailedEvent, JobImageReadyEvent,
+    JobProgressEvent, JobQueuedEvent, JobStartedEvent, SystemStatsEvent, WorkerStatusChangedEvent,
+    WsEvent,
 };
