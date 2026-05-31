@@ -1,0 +1,47 @@
+[
+  {
+    "id": "P12-A1",
+    "description": "anvilml-scheduler: job DB row helpers (insert, get, list, update status)",
+    "phase": "12",
+    "project": "anvilml",
+    "prereqs": ["P11-A5"],
+    "context": "Add sqlx + uuid + chrono to anvilml-scheduler. Create src/job_store.rs: async fn insert_job(pool,&Job), get_job(pool,id)->Option<Job>, list_jobs(pool, status:Option<JobStatus>, limit:u32, before:Option<DateTime<Utc>>)->Vec<Job>, update_status(pool,id,status,error:Option<&str>). Map graph/settings as TEXT JSON. cargo test -p anvilml-scheduler -- job_store exits 0 (tempfile DB: insert, get, list filter, status update).",
+    "tags": []
+  },
+  {
+    "id": "P12-A2",
+    "description": "anvilml-scheduler: in-memory JobQueue",
+    "phase": "12",
+    "project": "anvilml",
+    "prereqs": ["P12-A1"],
+    "context": "Create src/queue.rs: JobQueue wrapping Mutex<VecDeque<Job>>. enqueue(job). cancel_queued(id)->bool (mark status Cancelled in place). pop_next()->Option<Job> (remove+return first Queued, skipping/removing Cancelled). len(). cargo test -p anvilml-scheduler -- queue exits 0: enqueue+pop order; cancel makes pop skip it.",
+    "tags": []
+  },
+  {
+    "id": "P12-A3",
+    "description": "anvilml-scheduler: JobScheduler::submit (validate, persist, enqueue, notify)",
+    "phase": "12",
+    "project": "anvilml",
+    "prereqs": ["P12-A2"],
+    "context": "Create src/scheduler.rs: JobScheduler{queue,workers,db,broadcaster,notify:Arc<Notify>}. async fn submit(&self,req)->Result<SubmitJobResponse,AnvilError>: validate_graph (Err->InvalidGraph), build Job{id,status:Queued,created_at,...}, insert_job, enqueue, broadcaster.send(JobQueued), notify.notify_one(), return {job_id, queue_position:len}. cargo test -p anvilml-scheduler --features mock-hardware -- submit exits 0: valid job persisted as Queued + JobQueued broadcast.",
+    "tags": ["reasoning"]
+  },
+  {
+    "id": "P12-A4",
+    "description": "anvilml-server: wire POST /v1/jobs to scheduler.submit + GET /v1/jobs/:id",
+    "phase": "12",
+    "project": "anvilml",
+    "prereqs": ["P12-A3"],
+    "context": "Add scheduler: Arc<JobScheduler> to AppState; construct in main.rs. Replace handlers/jobs.rs submit_job to call scheduler.submit (202 SubmitJobResponse, 422 on InvalidGraph). Add get_job(State,Path<Uuid>)->200 Job or 404 not_found. Wire GET /v1/jobs/:id. Verify: POST a valid ZiT graph -> 202 with job_id; curl /v1/jobs/<id> shows status Queued (it will not advance until phase 13 dispatch).",
+    "tags": []
+  },
+  {
+    "id": "P12-A5",
+    "description": "anvilml-server: GET /v1/jobs list with status/limit/before",
+    "phase": "12",
+    "project": "anvilml",
+    "prereqs": ["P12-A4"],
+    "context": "Add list_jobs(State, Query{status:Option<JobStatus>, limit:Option<u32>, before:Option<DateTime<Utc>>})->Json<Vec<Job>> calling job_store::list_jobs (default limit 100, max 1000 clamp). Wire GET /v1/jobs. Verify: submit 2 jobs; curl '/v1/jobs' lists both; curl '/v1/jobs?status=queued' filters; ?limit=1 returns one.",
+    "tags": []
+  }
+]

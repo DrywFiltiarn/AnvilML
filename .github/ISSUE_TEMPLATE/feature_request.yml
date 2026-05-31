@@ -1,0 +1,57 @@
+name: Feature request
+description: Suggest an enhancement or new capability
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. Please check `ANVILML_DESIGN.md` §25 (Open Items & Deferred
+        Scope) first — your idea may already be tracked there.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and the design doc's deferred-scope list.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do, and what makes it hard or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should AnvilML do? Note any API, IPC, schema, or config changes implied.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Primary area
+      multiple: true
+      options:
+        - API / REST + WebSocket
+        - Scheduler / DAG
+        - IPC protocol
+        - Worker supervision
+        - Python worker / nodes / pipelines
+        - Hardware detection / backends
+        - Registry / database
+        - Configuration
+        - Build / CI / packaging
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered (optional)
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context (optional)

@@ -1,0 +1,47 @@
+[
+  {
+    "id": "P14-A1",
+    "description": "worker: mock SaveImage emits ImageReady with black PNG",
+    "phase": "14",
+    "project": "anvilml",
+    "prereqs": ["P13-A6"],
+    "context": "In worker_main.py mock Execute: when a node of type SaveImage is reached, generate a black PNG (PIL Image.new RGB 64x64) -> PNG bytes -> base64, and emit ImageReady{job_id, image_b64, width:64, height:64, format:'png', seed:resolved (seed -1 -> random int), steps, prompt} before Completed. Pull prompt/seed/steps from graph node inputs if present else defaults. Verify via P14-A4.",
+    "tags": []
+  },
+  {
+    "id": "P14-A2",
+    "description": "anvilml-server: ArtifactStore.save (decode, hash, write, db insert)",
+    "phase": "14",
+    "project": "anvilml",
+    "prereqs": ["P14-A1"],
+    "context": "Add sha2, hex, base64, tokio fs to anvilml-server. Create src/artifact/store.rs: ArtifactStore{artifact_dir,db}. async fn save(job_id, image_b64,&meta_input)->Result<ArtifactMeta>: base64 decode, hash=hex(SHA256(bytes)), write {artifact_dir}/{hash[0..2]}/{hash}.png (create_dir_all), INSERT ArtifactMeta, UPDATE jobs.artifact_count+1. cargo test -p anvilml-server --features mock-hardware -- artifact_save exits 0 (tempdir + memory DB).",
+    "tags": ["reasoning"]
+  },
+  {
+    "id": "P14-A3",
+    "description": "anvilml-scheduler: handle ImageReady -> ArtifactStore.save + JobImageReady",
+    "phase": "14",
+    "project": "anvilml",
+    "prereqs": ["P14-A2"],
+    "context": "Add artifact_store: Arc<ArtifactStore> to AppState and pass to JobScheduler. In dispatch loop event handling: on WorkerEvent::ImageReady call artifact_store.save(...), then broadcaster.send(WsEvent::JobImageReady{job_id, artifact_hash, width,height,seed}). No image bytes in the event. cargo test --workspace --features mock-hardware exits 0.",
+    "tags": ["reasoning"]
+  },
+  {
+    "id": "P14-A4",
+    "description": "anvilml-server: GET /v1/artifacts/:hash serves PNG",
+    "phase": "14",
+    "project": "anvilml",
+    "prereqs": ["P14-A3"],
+    "context": "Add to artifact/store.rs get_path(hash)->Result<PathBuf>. Create handlers/artifacts.rs serve_artifact(State,Path<String>): 404 artifact_not_found if missing, else stream file with Content-Type image/png, Cache-Control 'public, immutable, max-age=31536000', ETag '\"{hash}\"'. Wire GET /v1/artifacts/:hash. Verify end-to-end: run server+mock worker, submit ZiT job, get hash from /v1/jobs/<id> artifacts or /v1/events JobImageReady, curl -o out.png /v1/artifacts/<hash>, confirm a valid 64x64 PNG downloads.",
+    "tags": []
+  },
+  {
+    "id": "P14-A5",
+    "description": "anvilml-server: GET /v1/artifacts list (by job_id)",
+    "phase": "14",
+    "project": "anvilml",
+    "prereqs": ["P14-A4"],
+    "context": "Add to store.rs list(job_id:Option<Uuid>,limit,before)->Vec<ArtifactMeta>. Add handlers/artifacts.rs list_artifacts(State,Query{job_id})->Json<Vec<ArtifactMeta>>. Wire GET /v1/artifacts. Verify: after a completed job, curl '/v1/artifacts?job_id=<id>' returns the artifact metadata (hash,width,height,seed,prompt).",
+    "tags": []
+  }
+]

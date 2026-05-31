@@ -1,0 +1,38 @@
+[
+  {
+    "id": "P16-A1",
+    "description": "worker: cooperative cancel — check cancel_flag between nodes",
+    "phase": "16",
+    "project": "anvilml",
+    "prereqs": ["P15-A3"],
+    "context": "In worker_main.py: maintain a per-job cancel flag set on receiving CancelJob{job_id}. In the mock Execute loop, before each node check the flag; if set emit Cancelled{job_id} and stop (no Completed). Add ANVILML_MOCK_NODE_DELAY_MS env to insert a sleep per node so cancellation is observable in tests. Verify via P16-A4.",
+    "tags": ["reasoning"]
+  },
+  {
+    "id": "P16-A2",
+    "description": "anvilml-scheduler: JobScheduler::cancel (queued + running)",
+    "phase": "16",
+    "project": "anvilml",
+    "prereqs": ["P16-A1"],
+    "context": "Add to scheduler.rs: async fn cancel(&self,id)->Result<(),AnvilError>. Read job from DB: terminal -> Err(job_not_cancellable); Queued -> queue.cancel_queued+update_status Cancelled+broadcast JobCancelled; Running -> workers.send(owner, CancelJob{job_id})+update_status Cancelled+broadcast JobCancelled. Handle worker Cancelled event: set_idle (status already Cancelled), notify. Re-read status before applying late Completed. cargo test -p anvilml-scheduler --features mock-hardware -- cancel exits 0: queued cancel + running cancel both reach Cancelled.",
+    "tags": ["reasoning"]
+  },
+  {
+    "id": "P16-A3",
+    "description": "anvilml-server: POST /v1/jobs/:id/cancel",
+    "phase": "16",
+    "project": "anvilml",
+    "prereqs": ["P16-A2"],
+    "context": "Add handlers/jobs.rs cancel_job(State,Path<Uuid>): call scheduler.cancel; map JobNotFound->404 not_found, job_not_cancellable->409, success->202. Wire POST /v1/jobs/:id/cancel. Verify: submit a job with ANVILML_MOCK_NODE_DELAY_MS=300 so it stays Running; curl -X POST /v1/jobs/<id>/cancel -> 202; curl /v1/jobs/<id> -> Cancelled; cancel a Completed job -> 409.",
+    "tags": []
+  },
+  {
+    "id": "P16-A4",
+    "description": "anvilml: integration test for cancel of a running mock job",
+    "phase": "16",
+    "project": "anvilml",
+    "prereqs": ["P16-A3"],
+    "context": "Create backend/tests/api_cancel.rs: with mock worker + ANVILML_MOCK_NODE_DELAY_MS set, submit job, wait until Running, POST cancel, assert 202 + WS job.cancelled + GET job status Cancelled + worker returns to Idle within 3s. Also assert cancelling a terminal job returns 409. cargo test --features mock-hardware --test api_cancel exits 0.",
+    "tags": ["reasoning"]
+  }
+]

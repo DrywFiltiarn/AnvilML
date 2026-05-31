@@ -1,0 +1,56 @@
+[
+  {
+    "id": "P22-A1",
+    "description": "worker: nodes/sdxl.py real SDXL nodes (optional negative_prompt)",
+    "phase": "22",
+    "project": "anvilml",
+    "prereqs": ["P21-A7"],
+    "context": "Create worker/nodes/sdxl.py: SdxlLoadPipeline (dual encoders), SdxlTextEncode (negative_prompt optional, default ''), SdxlSampler (steps 20, guidance 7.5, seed resolve, cancel callback), SdxlDecode. Slots exactly per 14.6. Mock branches mirror zit (sentinels/black image). Update nodes/__init__.py to import sdxl. pytest worker/tests/test_nodes_sdxl.py (mock) exits 0: output slots; missing negative_prompt defaults to ''.",
+    "tags": ["reasoning"]
+  },
+  {
+    "id": "P22-A2",
+    "description": "backend/scripts: install_worker_deps.sh + .ps1 (real provisioning)",
+    "phase": "22",
+    "project": "anvilml",
+    "prereqs": ["P22-A1"],
+    "context": "Create backend/scripts/install_worker_deps.sh: detect nvidia-smi->cuda, rocminfo->rocm, else cpu; create venv (uv venv --python 3.12 else python3.12 -m venv); pip install base.txt then {backend}.txt; print torch version + device. Create .ps1 equivalent (Windows, no rocm; py -3.12 or uv; Scripts\\Activate). Both exit non-zero with clear message if Python 3.12 missing. Verify: bash -n passes; manual run builds a working venv.",
+    "tags": []
+  },
+  {
+    "id": "P22-A3",
+    "description": "backend/scripts/test_inference.py standalone debug harness",
+    "phase": "22",
+    "project": "anvilml",
+    "prereqs": ["P22-A2"],
+    "context": "Create backend/scripts/test_inference.py per 20.5: argparse --model-type zit|sdxl --model-path --prompt --output --steps --seed --device. Adds worker/ to sys.path, builds the node graph directly (no IPC/server), runs via run_graph with a no-op emit that saves the PNG on ImageReady, prints elapsed + VRAM before/after. Exit 0 success / 1 on error with traceback. Verify: runs with a real model + provisioned venv producing an output PNG.",
+    "tags": []
+  },
+  {
+    "id": "P22-A4",
+    "description": "anvilml: crash-recovery integration test (kill worker mid-job)",
+    "phase": "22",
+    "project": "anvilml",
+    "prereqs": ["P22-A3"],
+    "context": "Create backend/tests/api_crash.rs (feature test-helpers): submit a mock job with ANVILML_MOCK_NODE_DELAY_MS so worker is Busy; get PID via pid_for; kill it (unix libc::kill, windows TerminateProcess, cfg-gated); assert WS worker.status Dead then job.failed{error:worker_crashed} then worker Respawning then Idle within timeout; submit a second job and assert it Completes. cargo test --features mock-hardware,test-helpers --test api_crash exits 0.",
+    "tags": ["reasoning"]
+  },
+  {
+    "id": "P22-A5",
+    "description": "anvilml: full REST integration test suite (health/jobs/models/workers/artifacts)",
+    "phase": "22",
+    "project": "anvilml",
+    "prereqs": ["P22-A4"],
+    "context": "Create/consolidate backend/tests/api_health.rs, api_jobs.rs, api_models.rs, api_workers.rs, api_artifacts.rs covering each endpoint's success + error codes (404/409/422) using in-process app + mock worker + in-memory DB. These complement the WS/cancel/delete/crash tests already added. cargo test --workspace --features mock-hardware exits 0 on both Linux and Windows CI.",
+    "tags": ["reasoning"]
+  },
+  {
+    "id": "P22-A6",
+    "description": "anvilml: final CI green + SDXL/ZiT manual smoke documentation",
+    "phase": "22",
+    "project": "anvilml",
+    "prereqs": ["P22-A5"],
+    "context": "Confirm CI fully green: rust-linux (fmt+clippy+test+openapi-diff), rust-windows (clippy+test), python-worker (pytest). Regenerate+commit backend/openapi.json. Write docs/PROOF_phase022.md documenting the four manual smoke tests (phase-1 startup, ZiT e2e, SDXL e2e, crash recovery) per ANVILML_DESIGN 20.4. Complete when the last main-branch CI run shows all jobs green and a human has run both ZiT and SDXL end-to-end producing real images.",
+    "tags": []
+  }
+]

@@ -1,0 +1,103 @@
+name: Bug report
+description: Report a defect in the AnvilML backend or Python worker
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please complete the fields below.
+        For **security vulnerabilities**, do not use this form — email the maintainers privately.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and this has not already been reported.
+          required: true
+        - label: This is a bug, not a feature request or a usage question.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: AnvilML version / commit
+      description: Output of `anvilml --version`, a release tag, or the git commit SHA.
+      placeholder: "e.g. 0.1.0 or git 1a2b3c4"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux (x86_64)
+        - Windows (x86_64)
+        - macOS
+        - Other (describe below)
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Compute backend
+      options:
+        - NVIDIA / CUDA
+        - AMD / ROCm
+        - CPU
+        - Mock (ANVILML_WORKER_MOCK=1)
+        - Unsure
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver
+      description: GPU model and driver/runtime version, if relevant.
+      placeholder: "e.g. RTX 4090, driver 555.xx, CUDA 12.x  /  RX 7900 XTX, ROCm 6.x"
+  - type: input
+    id: pyenv
+    attributes:
+      label: Python and torch versions
+      description: From `GET /v1/system/env`, or `python --version` and `python -c "import torch; print(torch.__version__)"`.
+      placeholder: "e.g. Python 3.12.4, torch 2.x"
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal, exact steps. Include the request/graph JSON if a job is involved.
+      placeholder: |
+        1. Start `anvilml` with config ...
+        2. POST /v1/jobs with this graph ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        Server output (set `ANVILML_LOG=debug`) and/or the worker log at
+        `logs/worker-<index>.log`. Paste the traceback for a failed job.
+      render: text
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration (optional)
+      description: Relevant parts of `anvilml.toml` or `ANVILML_*` env vars. Redact secrets.
+      render: toml
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context (optional)

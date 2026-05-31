@@ -1,0 +1,29 @@
+[
+  {
+    "id": "P17-A1",
+    "description": "anvilml-server: DELETE /v1/jobs/:id (terminal only, with artifacts)",
+    "phase": "17",
+    "project": "anvilml",
+    "prereqs": ["P16-A4"],
+    "context": "Add to artifact/store.rs delete_for_job(job_id)->Result<u32> (delete on-disk files then DB rows for that job_id). Add handlers/jobs.rs delete_job(State,Path<Uuid>): read job; Running/Queued -> 409 job_active; else artifact_store.delete_for_job + DELETE jobs row -> 204. Wire DELETE /v1/jobs/:id. Verify: complete a job, DELETE it -> 204, GET it -> 404, its artifact file removed; deleting a running job -> 409.",
+    "tags": []
+  },
+  {
+    "id": "P17-A2",
+    "description": "anvilml-server: DELETE /v1/jobs bulk clear by status",
+    "phase": "17",
+    "project": "anvilml",
+    "prereqs": ["P17-A1"],
+    "context": "Add job_store helper delete_by_status(pool, status_filter)->Vec<Uuid> for completed|failed|cancelled|all (all = only terminal jobs). Add handlers/jobs.rs clear_jobs(State,Query{status})->Json{removed:u32}: for each matched terminal job, delete artifacts + row. Never delete Running/Queued. Wire DELETE /v1/jobs. Verify: create several terminal jobs; curl -X DELETE '/v1/jobs?status=completed' returns {removed:N}; list confirms they are gone; running jobs untouched.",
+    "tags": ["reasoning"]
+  },
+  {
+    "id": "P17-A3",
+    "description": "anvilml: integration test for job + artifact deletion",
+    "phase": "17",
+    "project": "anvilml",
+    "prereqs": ["P17-A2"],
+    "context": "Create backend/tests/api_delete.rs: run a mock job to Completed (with artifact), assert artifact file exists; DELETE /v1/jobs/:id -> 204; assert DB row gone + artifact file gone; assert DELETE on a Running job -> 409; bulk DELETE ?status=all removes all terminal jobs. cargo test --features mock-hardware --test api_delete exits 0.",
+    "tags": []
+  }
+]

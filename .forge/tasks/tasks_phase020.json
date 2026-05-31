@@ -1,0 +1,38 @@
+[
+  {
+    "id": "P20-A1",
+    "description": "anvilml-server: utoipa annotations on all handlers + schemas",
+    "phase": "20",
+    "project": "anvilml",
+    "prereqs": ["P19-A3"],
+    "context": "Add #[utoipa::path(...)] annotations to every REST handler (health, system, env, jobs CRUD+cancel, models, workers, artifacts) with correct method/path/responses. Ensure all anvilml-core request/response types derive utoipa::ToSchema (already added in phase 3 - verify). No behavior change. cargo build -p anvilml-server --features mock-hardware exits 0; cargo clippy clean.",
+    "tags": []
+  },
+  {
+    "id": "P20-A2",
+    "description": "anvilml-openapi: generate backend/openapi.json",
+    "phase": "20",
+    "project": "anvilml",
+    "prereqs": ["P20-A1"],
+    "context": "Implement anvilml-openapi/src/main.rs: #[derive(OpenApi)] struct referencing all handler paths + component schemas (incl WsEvent variants as schemas). Serialize to pretty JSON, write backend/openapi.json. Verify: cargo run -p anvilml-openapi writes a non-empty backend/openapi.json containing all /v1 paths and the error response shape; commit the file.",
+    "tags": ["reasoning"]
+  },
+  {
+    "id": "P20-A3",
+    "description": "anvilml: browser auto-open at startup (unless --no-browser/Headless)",
+    "phase": "20",
+    "project": "anvilml",
+    "prereqs": ["P20-A2"],
+    "context": "Add `open` crate to backend. In main.rs after the server is bound and /health is confirmed reachable: unless args.no_browser or frontend.mode==Headless, call open::that(format!('http://{}:{}', host, port)); log if it fails (do not abort). Verify: cargo run (Local mode) opens the default browser to the served page; cargo run -- --no-browser does not.",
+    "tags": []
+  },
+  {
+    "id": "P20-A4",
+    "description": "anvilml: CI openapi-diff gate + python-worker pytest job",
+    "phase": "20",
+    "project": "anvilml",
+    "prereqs": ["P20-A3"],
+    "context": "Update .github/workflows/ci.yml: add to rust-linux job a step `cargo run -p anvilml-openapi` then `git diff --exit-code backend/openapi.json` (fails if stale). Add job python-worker (ubuntu): pip install -r worker/requirements/base.txt then ANVILML_WORKER_MOCK=1 pytest worker/tests/. Verify: locally cargo run -p anvilml-openapi && git diff --exit-code backend/openapi.json passes; pytest worker/tests passes.",
+    "tags": []
+  }
+]

@@ -1,0 +1,38 @@
+[
+  {
+    "id": "P5-A1",
+    "description": "anvilml-registry: SQLite migration files (jobs, models, artifacts)",
+    "phase": "5",
+    "project": "anvilml",
+    "prereqs": ["P4-A6"],
+    "context": "Create backend/migrations/001_jobs.sql, 002_models.sql, 003_artifacts.sql exactly per ANVILML_DESIGN 13 (column names/types/indices verbatim). No code yet. These are consumed by P5-A2. Verify they are valid SQL by eye against the design; the migration runner test in P5-A2 will execute them.",
+    "tags": []
+  },
+  {
+    "id": "P5-A2",
+    "description": "anvilml-registry: db::open with PRAGMAs and migration runner",
+    "phase": "5",
+    "project": "anvilml",
+    "prereqs": ["P5-A1"],
+    "context": "Add sqlx (sqlite, runtime-tokio, macros, migrate) + anvilml-core to anvilml-registry. Create src/db.rs: async fn open(path:&Path)->Result<SqlitePool,AnvilError>. Set PRAGMA journal_mode=WAL, synchronous=NORMAL, foreign_keys=ON, then sqlx::migrate!(relative path to backend/migrations). Re-export from lib.rs. cargo test -p anvilml-registry -- db exits 0: tempfile DB, run open, query sqlite_master, assert jobs+models+artifacts tables exist.",
+    "tags": []
+  },
+  {
+    "id": "P5-A3",
+    "description": "anvilml-registry: ghost-job reset query",
+    "phase": "5",
+    "project": "anvilml",
+    "prereqs": ["P5-A2"],
+    "context": "Add to db.rs: async fn reset_ghost_jobs(pool:&SqlitePool)->Result<u64,AnvilError> running UPDATE jobs SET status='Failed', error='server_restart' WHERE status IN ('Running','Queued'); return rows affected. cargo test -p anvilml-registry -- ghost exits 0: insert 2 Running + 1 Completed job rows, call reset, assert 2 updated and Completed untouched.",
+    "tags": []
+  },
+  {
+    "id": "P5-A4",
+    "description": "anvilml: open DB and run migrations + ghost reset at startup",
+    "phase": "5",
+    "project": "anvilml",
+    "prereqs": ["P5-A3"],
+    "context": "Add anvilml-registry + sqlx to backend; add db: SqlitePool to AppState. In main.rs startup BEFORE binding: db = anvilml_registry::db::open(&cfg.db_path), then reset_ghost_jobs(&db) logging count reset. Store pool in AppState. Verify: delete any anvilml.db, cargo run --features mock-hardware, confirm anvilml.db created with WAL files; sqlite3 anvilml.db '.tables' lists jobs/models/artifacts; restart logs '0 ghost jobs reset'.",
+    "tags": []
+  }
+]

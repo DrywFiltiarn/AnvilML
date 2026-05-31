@@ -1,0 +1,50 @@
+[
+  {
+    "id": "P10-A1",
+    "description": "anvilml-worker: keepalive Ping + Pong-timeout force-kill",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": [
+      "P9-A6"
+    ],
+    "context": "In pool.rs / managed.rs add a keepalive task per worker: send Ping{seq} every 30s, expect Pong{seq} within 10s; on timeout call Child::kill() (SIGKILL unix / TerminateProcess windows via tokio Child::kill). For testability allow the interval to be overridden via ANVILML_PING_INTERVAL_MS / ANVILML_PONG_TIMEOUT_MS env (used by tests). cargo test -p anvilml-worker --features mock-hardware -- keepalive exits 0: with short intervals, a mock worker that stops responding is killed. Also pass: cargo check --target x86_64-pc-windows-gnu --features mock-hardware.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P10-A2",
+    "description": "anvilml-worker: respawn after death (2s delay) + WorkerStatusChanged events",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": [
+      "P10-A1"
+    ],
+    "context": "In managed.rs: on detecting Dead (EOF or ping timeout), broadcast WorkerStatusChanged(Dead), wait 2s (override via ANVILML_RESPAWN_DELAY_MS), transition Respawning (broadcast), re-spawn the child, re-send InitializeHardware, on Ready broadcast Idle. Orphan cleanup at spawn: Linux PR_SET_PDEATHSIG via pre_exec; Windows Job Object KILL_ON_JOB_CLOSE. cargo test -p anvilml-worker --features mock-hardware -- respawn exits 0: kill worker, observe Dead->Respawning->Idle within timeout. Also pass: cargo check --target x86_64-pc-windows-gnu --features mock-hardware.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P10-A3",
+    "description": "anvilml-server: broadcast worker status changes to WS",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": [
+      "P10-A2"
+    ],
+    "context": "In main.rs / server wiring: subscribe to WorkerPool.subscribe_events(); for each WorkerStatusChanged forward as WsEvent::WorkerStatusChanged via the EventBroadcaster so /v1/events clients see worker state transitions. Spawn this bridge task at startup. cargo test --workspace --features mock-hardware exits 0. Verified live in P10-A4.",
+    "tags": []
+  },
+  {
+    "id": "P10-A4",
+    "description": "anvilml: test-only worker PID accessor for crash-recovery proof",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": [
+      "P10-A3"
+    ],
+    "context": "Add #[cfg(any(test,feature=\"test-helpers\"))] fn pid_for(&self,worker_id:&str)->Option<u32> on WorkerPool returning the child PID. This enables the runnable crash-recovery proof and the integration test in later phases. cargo test --workspace --features mock-hardware exits 0. Runnable proof: ANVILML_WORKER_MOCK=1 cargo run --features mock-hardware; note worker PID from logs; kill <pid>; watch /v1/workers (or /v1/events) show Dead then Respawning then Idle within ~3s; server stays up. Also pass: cargo check --target x86_64-pc-windows-gnu --features mock-hardware.",
+    "tags": []
+  }
+]

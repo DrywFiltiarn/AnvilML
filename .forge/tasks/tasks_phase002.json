@@ -1,0 +1,61 @@
+[
+  {
+    "id": "P2-A1",
+    "description": "anvilml-core: ServerConfig types with defaults",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": [
+      "P1-A5"
+    ],
+    "context": "In anvilml-core add serde+toml deps. Create src/config.rs: ServerConfig and nested ModelDirConfig, RocmConfig, HardwareOverrideConfig, FrontendConfig(+FrontendMode enum Local/Remote/Headless), GpuSelectionConfig, LimitsConfig per ANVILML_DESIGN 3.1. Every field has a documented default via Default impl or serde(default). db_path default './anvilml.db'. Derive Deserialize, Serialize, Clone, Debug. Re-export from lib.rs. cargo test -p anvilml-core -- config exits 0 with a TOML round-trip test.",
+    "tags": []
+  },
+  {
+    "id": "P2-A2",
+    "description": "anvilml-core: layered config loader (defaults -> toml -> env -> overrides)",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": [
+      "P2-A1"
+    ],
+    "context": "Create src/config_load.rs: fn load_config(toml_path: Option<&Path>, overrides: ConfigOverrides) -> Result<ServerConfig>. Precedence low->high: built-in defaults, anvilml.toml (warn+skip if absent), ANVILML_* env vars (double underscore for nested e.g. ANVILML_FRONTEND__MODE), then explicit overrides (host/port). ConfigOverrides struct holds Option<IpAddr> host, Option<u16> port. cargo test -p anvilml-core -- config_load exits 0: env overrides toml, override beats env.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P2-A3",
+    "description": "anvilml: CLI parsing with clap (--config, --host, --port, --no-browser, --log-format)",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": [
+      "P2-A2"
+    ],
+    "context": "Add clap (derive) to backend. Create backend/src/cli.rs: Args struct with --config <PATH> (default ./anvilml.toml), --host <IP>, --port <u16>, --no-browser (flag), --log-format plain|json (default plain). In main.rs parse Args, call load_config with overrides from --host/--port. Bind to cfg.host:cfg.port (not hardcoded). Verify: cargo run -- --port 9000 binds 9000; curl http://127.0.0.1:9000/health works.",
+    "tags": []
+  },
+  {
+    "id": "P2-A4",
+    "description": "anvilml: tracing subscriber init (plain/json, ANVILML_LOG env filter)",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": [
+      "P2-A3"
+    ],
+    "context": "Add tracing + tracing-subscriber (features env-filter, json) to backend. In main.rs init subscriber before anything else: EnvFilter from ANVILML_LOG then RUST_LOG, default info. --log-format plain uses fmt(), json uses fmt().json(). Replace the println startup logs with tracing::info!. Verify: ANVILML_LOG=debug cargo run shows debug lines; cargo run -- --log-format json emits JSON log lines.",
+    "tags": []
+  },
+  {
+    "id": "P2-A5",
+    "description": "anvilml: cross-platform graceful shutdown signal handler",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": [
+      "P2-A4"
+    ],
+    "context": "Create backend/src/shutdown.rs: async fn shutdown_signal() joining tokio::signal::ctrl_c() with #[cfg(unix)] SIGTERM (tokio::signal::unix) and #[cfg(windows)] ctrl_close+ctrl_shutdown (tokio::signal::windows), using std::future::pending for the inactive-platform arms so it compiles everywhere. Pass it to axum::serve(...).with_graceful_shutdown(shutdown_signal()). On signal log 'Shutting down' and exit 0 after serve returns. Verify: cargo run then Ctrl-C prints shutting down and exits 0 within 1s. Also pass: cargo check --target x86_64-pc-windows-gnu --features mock-hardware.",
+    "tags": [
+      "reasoning"
+    ]
+  }
+]

@@ -1,0 +1,29 @@
+[
+  {
+    "id": "P15-A1",
+    "description": "anvilml-scheduler: emit JobProgress events from worker Progress",
+    "phase": "15",
+    "project": "anvilml",
+    "prereqs": ["P14-A5"],
+    "context": "In dispatch loop event handling: on WorkerEvent::Progress{job_id,node_index,node_total,node_type} broadcaster.send(WsEvent::JobProgress{...}) (step/step_total None in MVP). Ensure JobQueued (submit), JobStarted (dispatch), JobProgress, JobImageReady, JobCompleted are all wired through the broadcaster. cargo test --workspace --features mock-hardware exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P15-A2",
+    "description": "anvilml: integration test asserting full WS lifecycle for a mock job",
+    "phase": "15",
+    "project": "anvilml",
+    "prereqs": ["P15-A1"],
+    "context": "Create backend/tests/api_ws_lifecycle.rs: bind app on 127.0.0.1:0 with ANVILML_WORKER_MOCK=1 + mock-hardware + in-memory or tempfile DB + a venv python on PATH (skip test gracefully if absent). Connect tokio-tungstenite to /v1/events, POST a valid ZiT job, assert frames received in order: job.queued, job.started, job.progress (>=1), job.image_ready, job.completed within 20s. cargo test --features mock-hardware --test api_ws_lifecycle exits 0.",
+    "tags": ["reasoning"]
+  },
+  {
+    "id": "P15-A3",
+    "description": "anvilml: documented websocat/browser proof of live job events",
+    "phase": "15",
+    "project": "anvilml",
+    "prereqs": ["P15-A2"],
+    "context": "No new code. Add a short docs/PROOF_phase015.md (or section) with exact commands: terminal 1 run server (mock); terminal 2 `websocat ws://127.0.0.1:8488/v1/events`; terminal 3 curl POST a ZiT job. Document the expected JSON frame sequence the user will see. This task is complete when a human following the steps observes queued->started->progress->image_ready->completed in the websocat stream.",
+    "tags": []
+  }
+]

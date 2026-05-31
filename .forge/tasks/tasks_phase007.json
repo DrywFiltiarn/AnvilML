@@ -1,0 +1,47 @@
+[
+  {
+    "id": "P7-A1",
+    "description": "anvilml-server: EventBroadcaster",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P6-A7"],
+    "context": "Create src/ws/broadcaster.rs: EventBroadcaster{sender: tokio::sync::broadcast::Sender<Arc<WsEvent>>}. new(capacity:usize). fn send(&self, event:WsEvent) wrapping in Arc and ignoring SendError (no subscribers is fine). fn subscribe(&self)->broadcast::Receiver<Arc<WsEvent>>. cargo test -p anvilml-server -- broadcaster exits 0: subscribe, send, receive equal event; send with no subscribers does not error.",
+    "tags": []
+  },
+  {
+    "id": "P7-A2",
+    "description": "anvilml-server: WebSocket /v1/events handler",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-A1"],
+    "context": "Add broadcaster: Arc<EventBroadcaster> to AppState (capacity from cfg.limits.ws_broadcast_capacity). Create src/ws/handler.rs: ws_events(WebSocketUpgrade, State)->on_upgrade. On connect subscribe; forward each Arc<WsEvent> as Message::Text(json). On RecvError::Lagged close with code 1008. No history replay. Wire GET /v1/events. Add tokio-tungstenite dev-dep. cargo test -p anvilml-server --features mock-hardware -- ws exits 0: connect, broadcast a test event, assert received as JSON text.",
+    "tags": ["reasoning"]
+  },
+  {
+    "id": "P7-A3",
+    "description": "anvilml-server: WS keepalive ping every 30s",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-A2"],
+    "context": "In ws/handler.rs add a ping task: tokio::time::interval(30s) sending Message::Ping(vec![]) to the socket; on send error end the connection. Run alongside the broadcast-forward task via tokio::select! so either ending closes the socket. cargo test -p anvilml-server --features mock-hardware -- ws still exits 0 (no regression).",
+    "tags": []
+  },
+  {
+    "id": "P7-A4",
+    "description": "anvilml-server: system.stats tick task (5s broadcast)",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-A3"],
+    "context": "Create src/ws/stats_tick.rs: spawn_system_stats_tick(state)->JoinHandle. Every 5s build SystemStatsEvent: per-device vram from AppState.hardware (used 0 until worker reports exist), host ram via sysinfo; broadcaster.send(WsEvent::SystemStats). Call it from build_router setup or main startup. Verify via next task.",
+    "tags": []
+  },
+  {
+    "id": "P7-A5",
+    "description": "anvilml: start stats tick at startup; verify live WS stream",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-A4"],
+    "context": "In main.rs after AppState built, call spawn_system_stats_tick(state.clone()). Ensure broadcaster + tick are live for the bound server. Verify: cargo run --features mock-hardware, then in another shell `websocat ws://127.0.0.1:8488/v1/events` (or a browser WS console) shows a system.stats JSON frame arriving every ~5 seconds with event='system.stats' and a timestamp.",
+    "tags": []
+  }
+]

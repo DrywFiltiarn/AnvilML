@@ -1,0 +1,39 @@
+[
+  {
+    "id": "P0-A1",
+    "description": "anvilml: .gitignore covering Rust, Python, runtime, and OS/editor artifacts",
+    "phase": "0",
+    "project": "anvilml",
+    "prereqs": [],
+    "context": "Create .gitignore at repo root. Rust: /target, **/*.rs.bk, Cargo.lock is NOT ignored (binary app commits it). Python: __pycache__/, *.py[cod], .pytest_cache/, /venv, .venv, *.egg-info/. Runtime data: /anvilml.db, /anvilml.db-wal, /anvilml.db-shm, /artifacts/, /logs/, /models/. Env: .env. OS/editor: .DS_Store, Thumbs.db, .idea/, .vscode/, *.swp. Do NOT ignore .forge/ (committed by The Forge) or backend/openapi.json (committed). Verify: git status --porcelain shows no target/ or *.db entries after a build.",
+    "tags": [
+      "scaffold"
+    ]
+  },
+  {
+    "id": "P0-A2",
+    "description": "anvilml: .gitattributes enforcing cross-platform line endings",
+    "phase": "0",
+    "project": "anvilml",
+    "prereqs": [
+      "P0-A1"
+    ],
+    "context": "Create .gitattributes at repo root to prevent CRLF/LF drift between Linux and Windows checkouts (the cause of prior rustfmt + shell-script breakage). Lines: '* text=auto' (normalise on commit); '*.rs text eol=lf'; '*.py text eol=lf'; '*.sh text eol=lf'; '*.toml text eol=lf'; '*.md text eol=lf'; '*.json text eol=lf'; '*.yml text eol=lf'; '*.ps1 text eol=crlf'; binary safety: '*.png binary', '*.safetensors binary', '*.ckpt binary'. Verify: git check-attr eol -- src/x.rs reports eol=lf; install_worker_deps.ps1 reports eol=crlf.",
+    "tags": [
+      "scaffold"
+    ]
+  },
+  {
+    "id": "P0-A3",
+    "description": "anvilml: rust-toolchain.toml pinned to 1.95.0 with windows-gnu target",
+    "phase": "0",
+    "project": "anvilml",
+    "prereqs": [
+      "P0-A2"
+    ],
+    "context": "Create rust-toolchain.toml at repo root pinned EXACTLY: [toolchain] channel = \"1.95.0\", components = [\"rustfmt\", \"clippy\"], targets = [\"x86_64-pc-windows-gnu\"]. The explicit channel pin prevents rustfmt/clippy version drift between local and CI (a previously observed failure). The windows-gnu target enables the local cross-check (cargo check --target x86_64-pc-windows-gnu) that catches cfg-gated API breakage before the native Windows CI job. Verify: rustup show active-toolchain (run in repo root) reports 1.95.0; rustc --version prints 1.95.0.",
+    "tags": [
+      "scaffold"
+    ]
+  }
+]

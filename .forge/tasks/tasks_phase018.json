@@ -1,0 +1,38 @@
+[
+  {
+    "id": "P18-A1",
+    "description": "anvilml-worker: WorkerPool.restart + shutdown_all",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": ["P17-A3"],
+    "context": "Add to pool.rs: async fn restart(&self,worker_id)->Result: send Shutdown, wait up to 5s for Dying, force-kill, re-spawn, re-send InitializeHardware. async fn shutdown_all(&self): Shutdown to each, wait up to 10s for Dying, force-kill stragglers. cargo test -p anvilml-worker --features mock-hardware -- restart exits 0: restart a mock worker -> it returns to Idle; shutdown_all stops all.",
+    "tags": ["reasoning"]
+  },
+  {
+    "id": "P18-A2",
+    "description": "anvilml-server: POST /v1/workers/:id/restart",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": ["P18-A1"],
+    "context": "Add handlers/workers.rs restart_worker(State,Path<String>): 404 if worker_id unknown, else spawn workers.restart(id) and return 202. Wire POST /v1/workers/:id/restart. Verify: curl -X POST /v1/workers/worker-0/restart -> 202; /v1/workers shows it cycle Respawning then Idle; /v1/events shows the status transitions.",
+    "tags": []
+  },
+  {
+    "id": "P18-A3",
+    "description": "anvilml: Python preflight check populating EnvReport",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": ["P18-A2"],
+    "context": "Create backend/src/preflight.rs: fn run_preflight(cfg)->EnvReport. Resolve interpreter (cross-platform); if missing preflight_ok=false reason=python_missing. Else run python --version (warn if not 3.12). If ANVILML_WORKER_MOCK unset run python -c 'import torch;print(torch.__version__)'; on failure preflight_ok=false reason=torch_unavailable. Store into AppState.env_report at startup (replace the stub from P3-A6). If preflight fails, POST /v1/jobs returns 503 workers_unavailable. Verify: curl /v1/system/env shows real python_path/version; with a broken venv, job submit -> 503.",
+    "tags": ["reasoning"]
+  },
+  {
+    "id": "P18-A4",
+    "description": "anvilml: wire graceful shutdown to WorkerPool.shutdown_all",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": ["P18-A3"],
+    "context": "Extend backend/src/shutdown.rs path: on shutdown signal, set a submissions-closed flag (POST /v1/jobs -> 503), call workers.shutdown_all(), close the sqlx pool (WAL flush), then exit 0. Verify: cargo run --features mock-hardware with a live worker; Ctrl-C; logs show workers receiving Shutdown and exiting, pool closed, process exits 0 within ~10s.",
+    "tags": ["reasoning"]
+  }
+]

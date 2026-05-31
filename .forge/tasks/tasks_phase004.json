@@ -1,0 +1,56 @@
+[
+  {
+    "id": "P4-A1",
+    "description": "anvilml-hardware: DeviceDetector trait and CPU detector",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": ["P3-A6"],
+    "context": "Add anvilml-core + sysinfo to anvilml-hardware. Create src/lib.rs DeviceDetector trait: fn detect(&self)->Result<Vec<GpuDevice>,AnvilError>; fn refresh_vram(&self,idx:u32)->Result<(u32,u32),AnvilError>. Create src/cpu.rs CpuDetector returning one GpuDevice {index:0,name:'CPU',device_type:Cpu,vram 0,driver 'n/a'}. cargo test -p anvilml-hardware -- cpu exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P4-A2",
+    "description": "anvilml-hardware: mock detector (feature mock-hardware, env-driven)",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": ["P4-A1"],
+    "context": "Create src/mock.rs behind feature mock-hardware: MockDetector reads ANVILML_MOCK_DEVICE_TYPE (cpu/cuda/rocm default cpu), ANVILML_MOCK_VRAM_MIB (default 8192), ANVILML_MOCK_GFX_ARCH (default gfx1100), returns one deterministic GpuDevice. Use serial_test for env-var tests. cargo test -p anvilml-hardware --features mock-hardware -- mock exits 0 with 3 fixture tests.",
+    "tags": []
+  },
+  {
+    "id": "P4-A3",
+    "description": "anvilml-hardware: CUDA detector via nvidia-smi (fixture-tested)",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": ["P4-A2"],
+    "context": "Create src/cuda.rs: CudaDetector runs nvidia-smi --query-gpu=index,name,memory.total,memory.free,driver_version --format=csv,noheader,nounits, parses CSV to Vec<GpuDevice> type Cuda. Absent/non-zero exit -> Ok(vec![]). Extract parse_nvidia_smi(raw:&str)->Vec<GpuDevice> helper for testing. InferenceCaps: fp16 true, bf16 true if driver major>=525. cargo test -p anvilml-hardware -- cuda exits 0 with single+dual GPU fixtures.",
+    "tags": []
+  },
+  {
+    "id": "P4-A4",
+    "description": "anvilml-hardware: ROCm detector via rocm-smi (fixture-tested)",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": ["P4-A3"],
+    "context": "Create src/rocm.rs: RocmDetector runs rocm-smi --showmeminfo vram --json, parses to Vec<GpuDevice> type Rocm (bytes->MiB). Absent/non-zero -> Ok(vec![]). Tolerate missing keys (default 0 + warn). Extract parse_rocm_smi(raw:&str) helper. bf16 true if gfx arch >= gfx1100 else false. cargo test -p anvilml-hardware -- rocm exits 0 with a fixture.",
+    "tags": []
+  },
+  {
+    "id": "P4-A5",
+    "description": "anvilml-hardware: detect_all_devices with override + host info",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": ["P4-A4"],
+    "context": "Implement detect_all_devices(cfg:&ServerConfig)->HardwareInfo in lib.rs. If feature mock-hardware: use MockDetector only. Else: if cfg.hardware_override set, return one synthetic device of that type/vram; else run Cuda then Rocm, first non-empty wins, fallback Cpu if both empty. Populate HostInfo via sysinfo (os, cpu_model, ram_total_mib, ram_free_mib). cargo test -p anvilml-hardware --features mock-hardware exits 0 with >=8 tests incl override + fallback.",
+    "tags": ["reasoning"]
+  },
+  {
+    "id": "P4-A6",
+    "description": "anvilml: detect hardware at startup and serve GET /v1/system",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": ["P4-A5"],
+    "context": "Add anvilml-hardware dep to backend + anvilml-server (forward mock-hardware feature). Add hardware: Arc<RwLock<HardwareInfo>> to AppState. In main.rs call detect_all_devices(&cfg) at startup, log detected devices, store in AppState. Add handlers/system.rs get_system(State)->Json<HardwareInfo> reading AppState.hardware. Wire GET /v1/system. Verify: ANVILML_MOCK_DEVICE_TYPE=cuda cargo run --features mock-hardware then curl /v1/system shows the mock CUDA device.",
+    "tags": []
+  }
+]
