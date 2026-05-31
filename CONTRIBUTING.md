@@ -22,7 +22,7 @@ to abide by our [Code of Conduct](./CODE_OF_CONDUCT.md).
 - A Rust toolchain matching `rust-toolchain.toml` (installed automatically by `rustup` on first
   build).
 - Python **3.12.x**.
-- Optional: an NVIDIA (CUDA) or AMD (ROCm, Linux) GPU. **Not required** — all tests run in mock
+- Optional: an NVIDIA (CUDA) or AMD (ROCm) GPU. **Not required** — all tests run in mock
   modes on CPU-only machines.
 
 ### Build
