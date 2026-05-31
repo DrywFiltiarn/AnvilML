@@ -1,0 +1,34 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+# Cargo.lock is explicitly tracked (not ignored)
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+/venv
+.venv
+*.egg-info/
+
+# Runtime data files
+/anvilml.db
+/anvilml.db-wal
+/anvilml.db-shm
+/artifacts/
+/logs/
+/models/
+
+# Environment secrets
+.env
+
+# OS/editor artifacts
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Explicitly allow Forge files and backend API spec
+!.forge/
+!backend/openapi.json
