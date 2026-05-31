@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 anvilml-server = { path = "../crates/anvilml-server" }
 tokio = { version = "1", features = ["full"] }
+axum = { version = "0.7", features = ["json"] }
 
 [features]
 mock-hardware = ["anvilml-server/mock-hardware"]
