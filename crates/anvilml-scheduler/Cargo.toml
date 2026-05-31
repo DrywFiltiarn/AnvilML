@@ -1,0 +1,12 @@
+[package]
+name = "anvilml-scheduler"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+anvilml-core = { path = "../anvilml-core" }
+anvilml-registry = { path = "../anvilml-registry" }
+anvilml-worker = { path = "../anvilml-worker" }
+
+[features]
+mock-hardware = ["anvilml-worker/mock-hardware"]

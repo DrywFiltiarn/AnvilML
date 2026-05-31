@@ -1,0 +1,14 @@
+[package]
+name = "backend"
+version.workspace = true
+edition = "2021"
+
+[[bin]]
+name = "anvilml"
+path = "src/main.rs"
+
+[dependencies]
+anvilml-server = { path = "../crates/anvilml-server" }
+
+[features]
+mock-hardware = ["anvilml-server/mock-hardware"]

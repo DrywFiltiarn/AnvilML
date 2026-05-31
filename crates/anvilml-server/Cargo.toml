@@ -1,0 +1,15 @@
+[package]
+name = "anvilml-server"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+anvilml-core = { path = "../anvilml-core" }
+anvilml-hardware = { path = "../anvilml-hardware" }
+anvilml-ipc = { path = "../anvilml-ipc" }
+anvilml-registry = { path = "../anvilml-registry" }
+anvilml-scheduler = { path = "../anvilml-scheduler" }
+anvilml-worker = { path = "../anvilml-worker" }
+
+[features]
+mock-hardware = ["anvilml-hardware/mock-hardware", "anvilml-worker/mock-hardware"]

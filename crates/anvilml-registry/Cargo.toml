@@ -1,0 +1,7 @@
+[package]
+name = "anvilml-registry"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+anvilml-core = { path = "../anvilml-core" }

@@ -1,0 +1,8 @@
+[package]
+name = "anvilml-openapi"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+anvilml-core = { path = "../anvilml-core" }
+anvilml-server = { path = "../anvilml-server" }
