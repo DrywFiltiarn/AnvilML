@@ -1,9 +1,9 @@
 # AnvilML Backend — Functional & Technical Design
 
 **Document:** `ANVILML_DESIGN.md`
-**Revision:** 4 (roadmap reframed around vertical-slice phases; see Revision History)
+**Revision:** 4 (expanded build-complete specification; ROCm-on-Windows added to MVP)
 **Project:** SindriStudio / AnvilML
-**Status:** Draft for review — supersedes Revision 3
+**Status:** Draft for review — supersedes Revision 2
 
 ---
 
@@ -14,7 +14,7 @@
 | 1 | Initial architecture sketch. |
 | 2 | Approved architecture: crate decomposition, domain types, IPC, scheduler, server, worker outline. |
 | 3 | **This document.** Expands Rev 2 into a build-complete functional + technical design: per-crate module APIs, node IO contract, model cache, cancellation, logging, testing, build/toolchain, operations runbook, and implementation roadmap. Two intentional additions to the Rev 2 IPC schema (`CancelJob` message, `Cancelled` event) are introduced in §7 and flagged inline. Revision 2 remains the architectural authority; where this document adds detail it does not contradict it. A cross-platform pass (§1.5, §22.4) makes Linux and Windows co-equal first-class targets. The backend binary and database are named `anvilml` / `anvilml.db`, and SindriStudio is clarified throughout as the separate one-click launcher that starts AnvilML and BloomeryUI (Rev 2 conflated the two). |
-| 4 | Roadmap correction (§23 only). The implementation roadmap is reframed around **vertical-slice phases** (000–022, authoritative in `docs/PHASES.md`) rather than crate-dependency-ordered layers; each phase delivers a runnable, independently verifiable binary. The M0–M6 milestones are retained as a higher-level capability summary mapped to phase ranges, no longer as the unit of execution. No architectural, type, API, or IPC content changed. |
+| 4 | Promotes **ROCm on Windows** from deferred to a **mandatory MVP backend** (Rev 3 had it Linux-only). Updates §1.5, §5, §6, §8.3, §21, §22, §22.4, §25: OS-aware ROCm detection with a HIP torch-probe fallback on Windows, the AMD *PyTorch on Windows* (ROCm ≥ 7.2) install path, and supported AMD Radeon RX 7000/9000-series / select Ryzen AI hardware. CPU fallback now applies only when no supported GPU is present. |
 
 This document is now the **single source of truth** for the AnvilML backend. Any earlier task lists or contract documents (`tasks.json`, `API_CONTRACT.md`, `IPC_PROTOCOL.md`, `ENVIRONMENT.md`, `TESTING_STRATEGY.md`) are non-authoritative and are superseded by the sections below.
 
@@ -93,7 +93,7 @@ The backend is a first-class citizen on **Linux and Windows**; macOS runs CPU-on
 | :-- | :-- | :-- | :-- | :-- |
 | Core server (REST/WS/DB/scheduler) | ✓ | ✓ | ✓ | Pure cross-platform Rust. |
 | NVIDIA / CUDA worker | ✓ | ✓ | ✗ | `nvidia-smi` on PATH on both OSes. |
-| AMD / ROCm worker | ✓ | ✗ (→ CPU) | ✗ | ROCm tooling is Linux-only (§5); DirectML deferred (§25). |
+| AMD / ROCm worker | ✓ | ✓ | ✗ | **MVP-mandatory on both OSes** (§5). Windows uses AMD's *PyTorch on Windows* package (ROCm ≥ 7.2) on supported Radeon RX 7000/9000-series + select Ryzen AI parts. DirectML still deferred (§25). |
 | CPU worker | ✓ | ✓ | ✓ | Always available fallback. |
 | IPC over stdio | ✓ | ✓ | ✓ | Windows requires binary-mode stdio (§7.1). |
 | venv provisioning script | `.sh` | `.ps1` | `.sh` | §21.4; Windows uses `py -3.12`. |
@@ -142,7 +142,8 @@ anvilml/
     requirements/
       base.txt                  (framework deps: diffusers, transformers, pillow, msgpack, etc.)
       cuda.txt                  (torch + CUDA index)
-      rocm.txt                  (torch + ROCm index)
+      rocm.txt                  (torch + ROCm index, Linux: stable or nightly)
+      rocm-windows.txt          (AMD PyTorch-on-Windows package, ROCm >= 7.2)
       cpu.txt                   (torch CPU-only)
     tests/                      (pytest: test_executor.py, test_nodes_*.py)
 ```
@@ -487,7 +488,8 @@ pub async fn detect_all_devices(config: &ServerConfig) -> Result<HardwareInfo>;
 | Device | Detection method |
 | :-- | :-- |
 | NVIDIA / CUDA | `nvidia-smi --query-gpu=index,name,memory.total,memory.free,driver_version --format=csv,noheader,nounits` |
-| AMD / ROCm | `rocm-smi --showid --showproductname --showmeminfo vram --json`; gfx arch via `rocminfo`; ReBAR hint via `lspci` |
+| AMD / ROCm (Linux) | `amd-smi`/`rocm-smi` for index, name, VRAM; gfx arch via `rocminfo`; ReBAR hint via `lspci` |
+| AMD / ROCm (Windows) | `amd-smi` where present; otherwise a HIP device probe run through the worker venv's PyTorch (`torch.cuda.get_device_properties`) to enumerate devices + VRAM — no dependency on Linux-only CLIs |
 | CPU | `sysinfo` crate — always succeeds |
 
 **Rules.**
@@ -500,7 +502,7 @@ pub async fn detect_all_devices(config: &ServerConfig) -> Result<HardwareInfo>;
 
 Intel (IPEX), Apple MPS, and AMD DirectML are **deferred** (§25). The `DeviceType` enum is deliberately limited to the three MVP variants so the rest of the system cannot reference a backend that does not yet exist.
 
-**Platform note.** CUDA detection (`nvidia-smi`) and the CPU detector work identically on Linux and Windows. ROCm is an MVP target on **Linux only**; `rocm-smi`/`rocminfo` are absent on Windows and `lspci` (the ReBAR hint) is Linux-only, so the ROCm detector returns `Ok(vec![])` on Windows by the normal graceful-degradation path. Consequently, an AMD GPU on Windows falls back to a CPU worker in the MVP (AMD-on-Windows via DirectML is deferred, §25).
+**Platform note.** CUDA detection (`nvidia-smi`) and the CPU detector work identically on Linux and Windows. **ROCm is a mandatory MVP backend on both Linux and Windows.** On Linux it uses the standard ROCm tooling and the pip ROCm wheel index (stable or nightly). On Windows it requires AMD's *PyTorch on Windows* distribution — the AMD Adrenalin / PyTorch-on-Windows driver package built on ROCm ≥ 7.2 — on a supported AMD Radeon RX 7000/9000-series GPU or select Ryzen AI APU. Where the Linux CLIs (`rocm-smi`/`rocminfo`/`lspci`) are unavailable on Windows, the detector falls back to a HIP device probe executed through the worker venv's PyTorch, so enumeration never depends on Linux-only utilities. An AMD GPU in a supported Windows configuration is driven by ROCm — **not** CPU fallback; CPU is used only when no supported GPU is present. (Hardware outside AMD's supported-GPU list may still fall back to CPU; DirectML as an alternative AMD path remains deferred, §25.)
 
 ---
 
@@ -513,7 +515,7 @@ The `venv_path` config field (default `./venv`, relative to the config file) poi
 - Linux/macOS: `{venv_path}/bin/python3`
 - Windows: `{venv_path}\Scripts\python.exe`
 
-Provisioning is done once by the user via the checked-in scripts (`backend/scripts/install_worker_deps.sh` / `.ps1`), which detect CUDA/ROCm/CPU and `pip install` the matching `worker/requirements/{cuda,rocm,cpu}.txt` on top of `base.txt`. See §21.4.
+Provisioning is done once by the user via the checked-in scripts (`backend/scripts/install_worker_deps.sh` / `.ps1`), which detect CUDA/ROCm/CPU and OS, then install the matching torch build on top of `base.txt`. On **Windows + ROCm** this installs AMD's *PyTorch on Windows* package (ROCm ≥ 7.2) rather than the Linux pip ROCm index. See §21.4.
 
 ### 6.1 Preflight Check
 
@@ -656,7 +658,7 @@ impl WorkerPool {
 | DeviceType | Variables injected |
 | :-- | :-- |
 | CUDA | `CUDA_VISIBLE_DEVICES={n}` |
-| ROCm | `HIP_VISIBLE_DEVICES={n}`, `ROCBLAS_USE_HIPBLASLT={0\|1}`, `HSA_OVERRIDE_GFX_VERSION` (if configured) |
+| ROCm | `HIP_VISIBLE_DEVICES={n}` (Linux **and** Windows); `ROCBLAS_USE_HIPBLASLT={0\|1}`; `HSA_OVERRIDE_GFX_VERSION` (Linux ROCm runtime only — not applicable on Windows, where supported GPUs are fixed by AMD's package) |
 | CPU | (no device-visibility var) |
 | All | `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, `ANVILML_NUM_THREADS`, `ANVILML_NUM_INTEROP_THREADS`, `ANVILML_WORKER_ID`, `ANVILML_DEVICE_INDEX`, and `ANVILML_WORKER_MOCK` if set on the server |
 
@@ -1196,17 +1198,17 @@ cargo run -p anvilml-openapi          # regenerate backend/openapi.json
 ### 21.3 Python Worker Toolchain
 
 - Python **3.12.x**, managed by the user. `uv` recommended for fast, reproducible installs.
-- Split requirements: `base.txt` (diffusers, transformers, pillow, msgpack, numpy, safetensors), plus exactly one of `cuda.txt` / `rocm.txt` / `cpu.txt` selecting the matching torch wheel index.
+- Split requirements: `base.txt` (diffusers, transformers, pillow, msgpack, numpy, safetensors), plus a torch selector chosen by OS + backend: `cuda.txt`; `rocm.txt` (Linux ROCm pip index, stable or nightly); `rocm-windows.txt` (AMD *PyTorch on Windows*, ROCm ≥ 7.2 / nightly); or `cpu.txt`.
 
 ### 21.4 venv Provisioning Scripts
 
 `backend/scripts/install_worker_deps.sh` (Linux/macOS) and `.ps1` (Windows):
 
 ```
-1. Detect backend: nvidia-smi present → cuda; rocminfo present → rocm; else cpu.
+1. Detect backend and OS: `nvidia-smi` present → cuda; AMD GPU present (`amd-smi`/`rocminfo` on Linux; `amd-smi` or the AMD Adrenalin/PyTorch-on-Windows driver on Windows) → rocm; else cpu.
 2. Create the venv: Linux/macOS `python3.12 -m venv {venv_path}`; Windows `py -3.12 -m venv {venv_path}` (the `python3.12` command name does not exist on Windows). `uv venv --python 3.12` works identically on both.
 3. Activate; pip install -r worker/requirements/base.txt.
-4. pip install -r worker/requirements/{cuda|rocm|cpu}.txt.
+4. Install torch: Linux runs `pip install -r worker/requirements/{cuda|rocm|cpu}.txt`; **Windows + ROCm** installs AMD's *PyTorch on Windows* build per `rocm-windows.txt` (AMD-hosted wheels + driver package, ROCm ≥ 7.2), not the Linux ROCm index.
 5. Print resolved torch version + detected device for verification.
 ```
 
@@ -1247,7 +1249,8 @@ A single self-contained Rust binary per OS/arch (`x86_64`/`aarch64` × Linux/Win
 | Jobs return `503 workers_unavailable` | Preflight failed (`python_missing` / `torch_unavailable`) | Re-run provisioning; check `GET /v1/system/env`; `POST /v1/workers/:id/restart`. |
 | Worker repeatedly `Respawning` | Native crash on load (bad wheel, driver mismatch) | Inspect `logs/worker-{n}.log`; run `test_inference.py` to reproduce in isolation. |
 | Job `Failed: cuda_oom` | Model + working set exceeds VRAM | Lower resolution/steps; rely on pipeline-cache eviction; use a smaller dtype. |
-| No GPU detected | `nvidia-smi`/`rocm-smi` not on PATH | Fix PATH, or set `hardware_override` for forced operation. |
+| No GPU detected | `nvidia-smi`/`amd-smi` not on PATH, or AMD *PyTorch on Windows* package not installed | Fix PATH / install the AMD Windows package, or set `hardware_override` for forced operation. |
+| ROCm worker dead on Windows | AMD *PyTorch on Windows* package missing, or GPU unsupported | Install **AMD Software: PyTorch on Windows** (ROCm ≥ 7.2); confirm the GPU is a supported Radeon RX 7000/9000-series or Ryzen AI part. |
 | Second job not faster | Different `(model_id, dtype)` each run, or eviction churn | Confirm cache key stability; raise VRAM headroom. |
 
 ### 22.3 Maintenance
@@ -1269,6 +1272,8 @@ The single normative reference for every OS-divergent detail. Each item is also 
 | Shutdown signal | `ctrl_c` + `SIGTERM` | `ctrl_c` + `ctrl_close`/`ctrl_shutdown` | §16.3 |
 | Force-kill child | `Child::kill()` (`SIGKILL`) | `Child::kill()` (`TerminateProcess`) | §8.5, §16.3 |
 | Device visibility env | `CUDA_/HIP_VISIBLE_DEVICES` | identical | §8.3 |
+| ROCm detection | `amd-smi`/`rocm-smi`/`rocminfo` | `amd-smi` or HIP torch probe | §5 |
+| ROCm torch install | Linux pip ROCm index | AMD *PyTorch on Windows* package (ROCm ≥ 7.2) | §21.3 |
 | Browser launch | `xdg-open` (via `open` crate) | `cmd /c start` (via `open` crate) | §16.2 |
 | Static file serving | `ServeDir` | `ServeDir` (path separators normalised by `PathBuf`) | §11 |
 
@@ -1287,19 +1292,17 @@ Both are best-effort hardening; the normal `Shutdown` IPC path (§16.3) remains 
 
 ## 23. Implementation Roadmap
 
-Implementation is executed as a sequence of **vertical slices**, not as a build-up of architectural layers. Each phase delivers a runnable binary with one new observable capability and ends with an explicit, command-based "Runnable Proof" — the work begins with a walking skeleton (a server that binds and answers `/health`) and thickens it slice by slice up to real ZiT and SDXL inference. The authoritative execution sequence — phase numbers, names, and per-phase proofs — lives in [`docs/PHASES.md`](./docs/PHASES.md), with the atomic task breakdown in `docs/TASKS_PHASE*.md` and `forge/tasks/tasks_phase*.json`.
+Milestones follow the crate dependency order so each builds on a compiling, tested base. (This supersedes the earlier non-authoritative task list.)
 
-The milestone groupings below are a higher-level capability summary that the phases roll up into; they are deliverable-and-exit-criterion checkpoints, **not** the unit of execution. (Earlier revisions sequenced work by crate dependency order; that horizontal-layer approach was replaced by the vertical-slice phases because it produced no runnable, verifiable artifact until late in the build.)
-
-| Milestone | Phases | Deliverable | Exit criterion |
-| :-- | :-- | :-- | :-- |
-| **M0 — Pre-flight & Scaffold** | 000–001 | Repository hygiene (`.gitignore`, `.gitattributes`, pinned `rust-toolchain.toml`); workspace, 8 crate skeletons, launcher that binds and serves `/health`; CI with `mock-hardware`. | `curl /health` → 200; `cargo build/test --workspace --features mock-hardware` exits 0. |
-| **M1 — Core & Contracts** | 002–004 | Config + graceful shutdown; `anvilml-core` types/config/error; `anvilml-hardware` detectors + mock, surfaced via `/v1/system`. | Configurable start + clean shutdown; `curl /v1/system` shows detected (or mock) hardware; detector fixtures green. |
-| **M2 — Persistence & Workers** | 005–010 | SQLite open/migrate + ghost reset; `anvilml-registry` scanner/store; WS event stream; `anvilml-ipc` framing; `anvilml-worker` pool/bridge/env; crash recovery. | Models scan into DB and list via REST; real mock Python worker does `Ping→Pong`; killed worker respawns to Idle. |
-| **M3 — Scheduling** | 011–013 | `anvilml-scheduler` node-type validation + DAG; job queue + submission/persistence; VRAM ledger + dispatch. | Cycle/unknown-type rejection (422); submitted job persists Queued; dispatch drives a mock job to Completed. |
-| **M4 — End-to-end & Server Surface** | 014–020 | Artifact storage; full job lifecycle over WS; cancellation; job/artifact management; worker restart API + preflight; frontend serving; OpenAPI + launcher polish. | Completed job's PNG downloads via REST; cancel + delete work; `openapi.json` diff gate green; binary opens browser. |
-| **M5 — Python Worker (ZiT)** | 021 | `worker_main`, `executor`, `base`/registry, `pipeline_cache`, ZiT nodes + `SaveImage`, mock mode + parity test. | `Execute→Progress→ImageReady→Completed` in mock; ZiT end-to-end smoke on real hardware. |
-| **M6 — SDXL & Hardening** | 022 | SDXL nodes; cancel cooperative path end-to-end; OOM trap; crash-recovery + full REST integration tests; provisioning scripts; debug harness. | Both pipelines run; cancel + crash-recovery smoke pass; CI fully green on Linux and Windows. |
+| Milestone | Deliverable | Exit criterion |
+| :-- | :-- | :-- |
+| **M0 — Scaffold** | Workspace, 8 crate skeletons, launcher stub, CI skeleton with `mock-hardware`. | `cargo build/test --workspace --features mock-hardware` exits 0. |
+| **M1 — Core & Contracts** | `anvilml-core` types/config/error; `anvilml-ipc` messages + framing; `anvilml-hardware` detectors + mock. | Round-trip + detector fixture tests green; `openapi.json` generates. |
+| **M2 — Persistence & Workers** | `anvilml-registry` scanner + store + migrations; `anvilml-worker` pool/bridge/env. | Real mock Python worker does `Ping→Pong`; models scan into DB. |
+| **M3 — Scheduling** | `anvilml-scheduler` queue/ledger/DAG/dispatch incl. cancel + node-type validation. | Cycle/unknown-type rejection; dispatch assigns to idle worker; cancel of queued job works. |
+| **M4 — Server & API** | `anvilml-server` AppState, all REST handlers, `/v1/events`, `system.stats`, artifact store, frontend serving; launcher full startup/shutdown. | All `api_*.rs` integration tests green; release binary starts, browser opens, graceful shutdown. |
+| **M5 — Python Worker (ZiT)** | `worker_main`, `executor`, `base`/registry, `pipeline_cache`, ZiT nodes + `SaveImage`, mock mode. | `Execute→Progress→ImageReady→Completed` in mock; ZiT end-to-end smoke on real hardware. |
+| **M6 — SDXL & Hardening** | SDXL nodes; cancel cooperative path end-to-end; OOM trap; crash-recovery validation; OpenAPI diff gate in CI. | Both pipelines run; cancel + crash-recovery smoke pass; CI fully green. |
 
 Frontend (BloomeryUI) work proceeds in parallel against the committed `openapi.json` and is gated by its own repo.
 
@@ -1336,7 +1339,7 @@ Frontend (BloomeryUI) work proceeds in parallel against the committed `openapi.j
 Tracked, intentionally out of MVP:
 
 1. **Per-step progress & latent preview.** `Progress.step/step_total` fields and `ImageReady`-style preview frames are reserved but unused; wiring the diffusers step callback to emit them is a fast-follow.
-2. **Additional backends.** Intel IPEX, Apple MPS, AMD DirectML — each adds a `DeviceType` variant, a detector, and worker env/device-string handling. Deferred to keep the MVP matrix at CUDA/ROCm/CPU.
+2. **Additional backends.** Intel IPEX, Apple MPS, and AMD DirectML — each adds a `DeviceType` variant, a detector, and worker env/device-string handling. Deferred; the MVP matrix is CUDA + ROCm (Linux **and** Windows) + CPU. DirectML remains deferred as a future fallback for AMD GPUs not covered by ROCm-on-Windows.
 3. **Authentication.** Pluggable API-key / JWT for non-localhost deployment. MVP relies on `127.0.0.1` binding.
 4. **Sub-graph chunking.** Batching contiguous fast nodes into one `Execute` to cut IPC overhead. The executor already produces an ordered step list, so this is additive.
 5. **JobSettings / graph parameter redundancy.** MVP keeps both; a later revision can make the graph the sole carrier and reduce `JobSettings` to `device_preference` + a `seed` policy.
