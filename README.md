@@ -66,7 +66,7 @@ design.
 ## Features (target capability)
 
 - Text-to-image generation via the **ZiT** (distilled/turbo) and **SDXL** pipelines.
-- Hardware backends: **NVIDIA CUDA**, **AMD ROCm** (Linux), and **CPU** fallback.
+- Hardware backends: **NVIDIA CUDA**, **AMD ROCm*, and **CPU** fallback.
 - Multi-GPU: one worker per device; jobs run concurrently across devices.
 - In-worker LRU pipeline cache so repeat jobs skip model reloads.
 - Content-addressed PNG artifacts served over REST; live progress over WebSocket.
@@ -79,7 +79,7 @@ design.
 | OS | Linux (x86_64) or Windows (x86_64); macOS = CPU-only |
 | Rust | Toolchain pinned by `rust-toolchain.toml` (build from source) |
 | Python | 3.12.x, in a **user-managed** virtual environment |
-| GPU (optional) | NVIDIA + CUDA, or AMD + ROCm (Linux). No GPU → CPU worker |
+| GPU (optional) | NVIDIA + CUDA, or AMD + ROCm. No GPU → CPU worker |
 
 ## Installation
 
@@ -156,6 +156,12 @@ anvilml/
 ├── backend/        # launcher binary (anvilml), migrations, scripts, integration tests
 ├── crates/         # the eight workspace crates
 ├── worker/         # Python inference worker (executor, nodes, requirements)
+├── docs/           # ARCHITECTURE.md, ENVIRONMENT.md, PHASES.md, TASKS_PHASE*.md
+├── Cargo.toml      # workspace root
+├── rust-toolchain.toml   # pinned toolchain (1.95.0) + windows-gnu cross-check target
+├── anvilml.toml    # default configuration (checked-in reference)
+├── .gitignore
+├── .gitattributes  # line-ending discipline (LF for .rs/.py/.sh, CRLF for .ps1)
 ├── ANVILML_DESIGN.md
 ├── README.md
 ├── LICENSE
@@ -183,8 +189,14 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a pull request.
 
 ## Roadmap
 
-Milestones follow the crate dependency order (M0 scaffold → M6 SDXL + hardening). The full table
-is in [`ANVILML_DESIGN.md` §23](./ANVILML_DESIGN.md#23-implementation-roadmap). Deferred scope
+Implementation is sequenced as a series of **vertical slices**: each phase delivers a runnable
+binary with one new observable capability, rather than building an architectural layer in
+isolation. The phase begins with a walking skeleton (a server that binds and answers `/health`)
+and thickens it slice by slice — hardware, persistence, model registry, live events, worker
+lifecycle, end-to-end generation, and finally real ZiT and SDXL inference. Every phase ends with a
+verifiable "Runnable Proof". The full phase registry is in
+[`docs/PHASES.md`](./docs/PHASES.md), and the per-milestone capability table is in
+[`ANVILML_DESIGN.md` §23](./ANVILML_DESIGN.md#23-implementation-roadmap). Deferred scope
 (per-step progress, additional backends, auth, sub-graph chunking) is tracked in §25.
 
 ## Contributing

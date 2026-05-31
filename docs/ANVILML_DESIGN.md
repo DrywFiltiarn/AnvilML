@@ -1,9 +1,9 @@
 # AnvilML Backend — Functional & Technical Design
 
 **Document:** `ANVILML_DESIGN.md`
-**Revision:** 3 (expanded build-complete specification)
+**Revision:** 4 (roadmap reframed around vertical-slice phases; see Revision History)
 **Project:** SindriStudio / AnvilML
-**Status:** Draft for review — supersedes Revision 2
+**Status:** Draft for review — supersedes Revision 3
 
 ---
 
@@ -14,6 +14,7 @@
 | 1 | Initial architecture sketch. |
 | 2 | Approved architecture: crate decomposition, domain types, IPC, scheduler, server, worker outline. |
 | 3 | **This document.** Expands Rev 2 into a build-complete functional + technical design: per-crate module APIs, node IO contract, model cache, cancellation, logging, testing, build/toolchain, operations runbook, and implementation roadmap. Two intentional additions to the Rev 2 IPC schema (`CancelJob` message, `Cancelled` event) are introduced in §7 and flagged inline. Revision 2 remains the architectural authority; where this document adds detail it does not contradict it. A cross-platform pass (§1.5, §22.4) makes Linux and Windows co-equal first-class targets. The backend binary and database are named `anvilml` / `anvilml.db`, and SindriStudio is clarified throughout as the separate one-click launcher that starts AnvilML and BloomeryUI (Rev 2 conflated the two). |
+| 4 | Roadmap correction (§23 only). The implementation roadmap is reframed around **vertical-slice phases** (000–022, authoritative in `docs/PHASES.md`) rather than crate-dependency-ordered layers; each phase delivers a runnable, independently verifiable binary. The M0–M6 milestones are retained as a higher-level capability summary mapped to phase ranges, no longer as the unit of execution. No architectural, type, API, or IPC content changed. |
 
 This document is now the **single source of truth** for the AnvilML backend. Any earlier task lists or contract documents (`tasks.json`, `API_CONTRACT.md`, `IPC_PROTOCOL.md`, `ENVIRONMENT.md`, `TESTING_STRATEGY.md`) are non-authoritative and are superseded by the sections below.
 
@@ -1286,17 +1287,19 @@ Both are best-effort hardening; the normal `Shutdown` IPC path (§16.3) remains 
 
 ## 23. Implementation Roadmap
 
-Milestones follow the crate dependency order so each builds on a compiling, tested base. (This supersedes the earlier non-authoritative task list.)
+Implementation is executed as a sequence of **vertical slices**, not as a build-up of architectural layers. Each phase delivers a runnable binary with one new observable capability and ends with an explicit, command-based "Runnable Proof" — the work begins with a walking skeleton (a server that binds and answers `/health`) and thickens it slice by slice up to real ZiT and SDXL inference. The authoritative execution sequence — phase numbers, names, and per-phase proofs — lives in [`docs/PHASES.md`](./docs/PHASES.md), with the atomic task breakdown in `docs/TASKS_PHASE*.md` and `forge/tasks/tasks_phase*.json`.
 
-| Milestone | Deliverable | Exit criterion |
-| :-- | :-- | :-- |
-| **M0 — Scaffold** | Workspace, 8 crate skeletons, launcher stub, CI skeleton with `mock-hardware`. | `cargo build/test --workspace --features mock-hardware` exits 0. |
-| **M1 — Core & Contracts** | `anvilml-core` types/config/error; `anvilml-ipc` messages + framing; `anvilml-hardware` detectors + mock. | Round-trip + detector fixture tests green; `openapi.json` generates. |
-| **M2 — Persistence & Workers** | `anvilml-registry` scanner + store + migrations; `anvilml-worker` pool/bridge/env. | Real mock Python worker does `Ping→Pong`; models scan into DB. |
-| **M3 — Scheduling** | `anvilml-scheduler` queue/ledger/DAG/dispatch incl. cancel + node-type validation. | Cycle/unknown-type rejection; dispatch assigns to idle worker; cancel of queued job works. |
-| **M4 — Server & API** | `anvilml-server` AppState, all REST handlers, `/v1/events`, `system.stats`, artifact store, frontend serving; launcher full startup/shutdown. | All `api_*.rs` integration tests green; release binary starts, browser opens, graceful shutdown. |
-| **M5 — Python Worker (ZiT)** | `worker_main`, `executor`, `base`/registry, `pipeline_cache`, ZiT nodes + `SaveImage`, mock mode. | `Execute→Progress→ImageReady→Completed` in mock; ZiT end-to-end smoke on real hardware. |
-| **M6 — SDXL & Hardening** | SDXL nodes; cancel cooperative path end-to-end; OOM trap; crash-recovery validation; OpenAPI diff gate in CI. | Both pipelines run; cancel + crash-recovery smoke pass; CI fully green. |
+The milestone groupings below are a higher-level capability summary that the phases roll up into; they are deliverable-and-exit-criterion checkpoints, **not** the unit of execution. (Earlier revisions sequenced work by crate dependency order; that horizontal-layer approach was replaced by the vertical-slice phases because it produced no runnable, verifiable artifact until late in the build.)
+
+| Milestone | Phases | Deliverable | Exit criterion |
+| :-- | :-- | :-- | :-- |
+| **M0 — Pre-flight & Scaffold** | 000–001 | Repository hygiene (`.gitignore`, `.gitattributes`, pinned `rust-toolchain.toml`); workspace, 8 crate skeletons, launcher that binds and serves `/health`; CI with `mock-hardware`. | `curl /health` → 200; `cargo build/test --workspace --features mock-hardware` exits 0. |
+| **M1 — Core & Contracts** | 002–004 | Config + graceful shutdown; `anvilml-core` types/config/error; `anvilml-hardware` detectors + mock, surfaced via `/v1/system`. | Configurable start + clean shutdown; `curl /v1/system` shows detected (or mock) hardware; detector fixtures green. |
+| **M2 — Persistence & Workers** | 005–010 | SQLite open/migrate + ghost reset; `anvilml-registry` scanner/store; WS event stream; `anvilml-ipc` framing; `anvilml-worker` pool/bridge/env; crash recovery. | Models scan into DB and list via REST; real mock Python worker does `Ping→Pong`; killed worker respawns to Idle. |
+| **M3 — Scheduling** | 011–013 | `anvilml-scheduler` node-type validation + DAG; job queue + submission/persistence; VRAM ledger + dispatch. | Cycle/unknown-type rejection (422); submitted job persists Queued; dispatch drives a mock job to Completed. |
+| **M4 — End-to-end & Server Surface** | 014–020 | Artifact storage; full job lifecycle over WS; cancellation; job/artifact management; worker restart API + preflight; frontend serving; OpenAPI + launcher polish. | Completed job's PNG downloads via REST; cancel + delete work; `openapi.json` diff gate green; binary opens browser. |
+| **M5 — Python Worker (ZiT)** | 021 | `worker_main`, `executor`, `base`/registry, `pipeline_cache`, ZiT nodes + `SaveImage`, mock mode + parity test. | `Execute→Progress→ImageReady→Completed` in mock; ZiT end-to-end smoke on real hardware. |
+| **M6 — SDXL & Hardening** | 022 | SDXL nodes; cancel cooperative path end-to-end; OOM trap; crash-recovery + full REST integration tests; provisioning scripts; debug harness. | Both pipelines run; cancel + crash-recovery smoke pass; CI fully green on Linux and Windows. |
 
 Frontend (BloomeryUI) work proceeds in parallel against the committed `openapi.json` and is gated by its own repo.
 
