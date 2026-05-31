@@ -1,0 +1,24 @@
+# .gitattributes — enforce consistent line endings across platforms
+# Git stores LF on commit; converts on checkout per-platform.
+* text=auto
+
+# ── Source code: always LF ───────────────────────────────────────────
+*.rs text eol=lf
+*.py text eol=lf
+*.sh text eol=lf
+
+# ── Configuration & data files: always LF ────────────────────────────
+*.toml text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+
+# ── Documentation: always LF ─────────────────────────────────────────
+*.md text eol=lf
+
+# ── Windows-native scripts: CRLF ─────────────────────────────────────
+*.ps1 text eol=crlf
+
+# ── Binary assets: no normalization ──────────────────────────────────
+*.png binary
+*.safetensors binary
+*.ckpt binary
