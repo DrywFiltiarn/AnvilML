@@ -10,6 +10,13 @@ anvilml-ipc = { path = "../anvilml-ipc" }
 anvilml-registry = { path = "../anvilml-registry" }
 anvilml-scheduler = { path = "../anvilml-scheduler" }
 anvilml-worker = { path = "../anvilml-worker" }
+axum = { version = "0.7", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tower = { version = "0.4", features = ["util"] }
+
+[dev-dependencies]
+serde_json = "1"
 
 [features]
 mock-hardware = ["anvilml-hardware/mock-hardware", "anvilml-worker/mock-hardware"]
