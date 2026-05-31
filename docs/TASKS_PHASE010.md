@@ -18,11 +18,11 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
-| P10-A1 | anvilml-worker | anvilml-worker: keepalive Ping + Pong-timeout force-kill |
-| P10-A2 | anvilml-worker | anvilml-worker: respawn after death (2s delay) + WorkerStatusChanged events |
-| P10-A3 | anvilml-server | anvilml-server: broadcast worker status changes to WS |
-| P10-A4 | anvilml | anvilml: test-only worker PID accessor for crash-recovery proof |
+|------|-------------|---------|
+| P10-A1 | `crates/anvilml-worker/src/pool.rs` | anvilml-worker: keepalive Ping + Pong-timeout force-kill |
+| P10-A2 | `crates/anvilml-worker/src/managed.rs` | anvilml-worker: respawn after death (2s delay) + WorkerStatusChanged events |
+| P10-A3 | `backend/src/main.rs` | anvilml-server: broadcast worker status changes to WS |
+| P10-A4 | `crates/anvilml-worker/src/pool.rs` | anvilml: test-only worker PID accessor for crash-recovery proof |
 
 ## Task details
 

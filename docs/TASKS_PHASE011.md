@@ -18,12 +18,12 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
-| P11-A1 | `src/nodes.rs` | anvilml-scheduler: KNOWN_NODE_TYPES + node slot table |
-| P11-A2 | `src/dag.rs` | anvilml-scheduler: dag.rs duplicate-id + unknown-type checks |
-| P11-A3 | anvilml-scheduler | anvilml-scheduler: dag.rs edge-reference validation |
-| P11-A4 | anvilml-scheduler | anvilml-scheduler: dag.rs cycle detection (Kahn) |
-| P11-A5 | `POST /v1/jobs` | anvilml-server: POST /v1/jobs validating graph (422 on invalid) |
+|------|-------------|---------|
+| P11-A1 | `crates/anvilml-scheduler/src/nodes.rs` | anvilml-scheduler: KNOWN_NODE_TYPES + node slot table |
+| P11-A2 | `crates/anvilml-scheduler/src/dag.rs` | anvilml-scheduler: dag.rs duplicate-id + unknown-type checks |
+| P11-A3 | `crates/anvilml-scheduler/src/dag.rs` | anvilml-scheduler: dag.rs edge-reference validation |
+| P11-A4 | `crates/anvilml-scheduler/src/dag.rs` | anvilml-scheduler: dag.rs cycle detection (Kahn) |
+| P11-A5 | `crates/anvilml-server/src/handlers/jobs.rs` | anvilml-server: POST /v1/jobs validating graph (422 on invalid) |
 
 ## Task details
 

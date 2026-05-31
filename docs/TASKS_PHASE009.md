@@ -18,13 +18,13 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
-| P9-A1 | `worker/ipc.py` | worker: Python package skeleton + ipc.py binary-stdio guard + framing |
+|------|-------------|---------|
+| P9-A1 | `worker/requirements/base.txt` | worker: Python package skeleton + ipc.py binary-stdio guard + framing |
 | P9-A2 | `worker/worker_main.py` | worker: worker_main.py mock-mode message loop (Ping/Pong/Init/Shutdown) |
-| P9-A3 | `src/env.rs` | anvilml-worker: env.rs build_worker_env |
-| P9-A4 | `src/managed.rs` | anvilml-worker: ManagedWorker spawn + IPC bridge (writer/reader tasks) |
-| P9-A5 | `src/pool.rs` | anvilml-worker: WorkerPool spawn_all + list + acquire/set status |
-| P9-A6 | `GET /v1/workers` | anvilml: spawn WorkerPool at startup + GET /v1/workers |
+| P9-A3 | `crates/anvilml-worker/src/env.rs` | anvilml-worker: env.rs build_worker_env |
+| P9-A4 | `crates/anvilml-worker/src/managed.rs` | anvilml-worker: ManagedWorker spawn + IPC bridge (writer/reader tasks) |
+| P9-A5 | `crates/anvilml-worker/src/pool.rs` | anvilml-worker: WorkerPool spawn_all + list + acquire/set status |
+| P9-A6 | `backend/src/main.rs` | anvilml: spawn WorkerPool at startup + GET /v1/workers |
 
 ## Task details
 
@@ -47,7 +47,7 @@ Create worker/worker_main.py: argparse --worker-id --device-index. Set OMP/MKL/O
 - **Prereqs:** P9-A2
 - **Tags:** —
 
-Add anvilml-core + anvilml-hardware to anvilml-worker. Create src/env.rs: fn build_worker_env(device:&GpuDevice,cfg:&ServerConfig)->HashMap<String,String>. Cuda: CUDA_VISIBLE_DEVICES={idx}. Rocm: HIP_VISIBLE_DEVICES, ROCBLAS_USE_HIPBLASLT 0/1, HSA_OVERRIDE_GFX_VERSION if set. All: OMP/MKL/OPENBLAS/VECLIB_NUM_THREADS, ANVILML_NUM_THREADS, ANVILML_NUM_INTEROP_THREADS, ANVILML_WORKER_ID, ANVILML_DEVICE_INDEX, ANVILML_WORKER_MOCK if set on server. cargo test -p anvilml-worker -- env exits 0 (3 device types).
+Add anvilml-core + anvilml-hardware. Create src/env.rs: fn build_worker_env(device:&GpuDevice,cfg:&ServerConfig)->HashMap<String,String>. Cuda: CUDA_VISIBLE_DEVICES={idx}. Rocm: HIP_VISIBLE_DEVICES={idx} on BOTH Linux+Windows; ROCBLAS_USE_HIPBLASLT 0/1; HSA_OVERRIDE_GFX_VERSION only #[cfg(unix)] when set (Linux only, never Windows - design 8.3). All: OMP/MKL/OPENBLAS/VECLIB_NUM_THREADS, ANVILML_NUM_THREADS, ANVILML_NUM_INTEROP_THREADS, ANVILML_WORKER_ID, ANVILML_DEVICE_INDEX, ANVILML_WORKER_MOCK if set. cargo test -- env exits 0: cuda, rocm-linux (HSA), rocm-windows (no HSA), cpu.
 
 #### P9-A4: anvilml-worker: ManagedWorker spawn + IPC bridge (writer/reader tasks)
 
@@ -68,7 +68,7 @@ Create src/pool.rs: WorkerPool holding Vec<Arc<ManagedWorker>>. spawn_all(hw,cfg
 - **Prereqs:** P9-A5
 - **Tags:** —
 
-Add anvilml-worker to backend + AppState workers: Arc<WorkerPool>. In main.rs after hardware detect: WorkerPool::spawn_all(&hw,&cfg), send InitializeHardware to each, store in AppState. Create handlers/workers.rs list_workers(State)->Json<Vec<WorkerInfo>>. Wire GET /v1/workers. Verify: ANVILML_WORKER_MOCK=1 ANVILML_VENV_PATH=<venv with python> cargo run --features mock-hardware; curl /v1/workers shows one worker reaching status Idle.
+Add anvilml-worker to backend + AppState workers: Arc<WorkerPool>. In main.rs after hardware detect: WorkerPool::spawn_all(&hw,&cfg), send InitializeHardware to each, store in AppState. device_str maps Cuda AND Rocm -> 'cuda:{index}' (HIP exposes via torch.cuda on both Linux+Windows, design 6), Cpu -> 'cpu'. Create handlers/workers.rs list_workers(State)->Json<Vec<WorkerInfo>>. Wire GET /v1/workers. Verify: ANVILML_WORKER_MOCK=1 ANVILML_VENV_PATH=<venv> cargo run --features mock-hardware; curl /v1/workers shows one worker reaching status Idle.
 
 
 ## Runnable Proof

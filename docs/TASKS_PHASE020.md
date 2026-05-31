@@ -18,11 +18,11 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
-| P20-A1 | anvilml-server | anvilml-server: utoipa annotations on all handlers + schemas |
-| P20-A2 | `src/main.rs` | anvilml-openapi: generate backend/openapi.json |
-| P20-A3 | anvilml | anvilml: browser auto-open at startup (unless --no-browser/Headless) |
-| P20-A4 | `worker/requirements/base.txt` | anvilml: CI openapi-diff gate + python-worker pytest job |
+|------|-------------|---------|
+| P20-A1 | `crates/anvilml-server/src/handlers/*.rs` | anvilml-server: utoipa annotations on all handlers + schemas |
+| P20-A2 | `crates/anvilml-openapi/src/main.rs` | anvilml-openapi: generate backend/openapi.json |
+| P20-A3 | `backend/src/main.rs` | anvilml: browser auto-open at startup (unless --no-browser/Headless) |
+| P20-A4 | `.github/workflows/ci.yml` | anvilml: CI openapi-diff gate + python-worker pytest job |
 
 ## Task details
 

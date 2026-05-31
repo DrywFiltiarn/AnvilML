@@ -18,10 +18,10 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
-| P1-A1 | `src/lib.rs` | anvilml: Cargo workspace root, crate skeletons, .gitattributes |
+|------|-------------|---------|
+| P1-A1 | `Cargo.toml (+ crates/*/ skeletons)` | anvilml: Cargo workspace root, crate skeletons, .gitattributes |
 | P1-A2 | `backend/src/main.rs` | anvilml: backend binary crate with anvilml bin name and tokio main stub |
-| P1-A3 | `src/state.rs` | anvilml-server: build_router with /health handler and AppState skeleton |
+| P1-A3 | `crates/anvilml-server/src/state.rs` | anvilml-server: build_router with /health handler and AppState skeleton |
 | P1-A4 | `backend/src/main.rs` | anvilml: wire main.rs to bind axum server on 127.0.0.1:8488 |
 | P1-A5 | `.github/workflows/ci.yml` | anvilml: CI workflow (Linux fmt+clippy+test, Windows clippy+test) |
 
@@ -29,7 +29,7 @@ Every task in this phase implements **one module or one endpoint** plus its test
 
 #### P1-A1: anvilml: Cargo workspace root, crate skeletons, .gitattributes
 
-- **Prereqs:** P0-A4
+- **Prereqs:** P0-A3
 - **Tags:** scaffold
 
 Create workspace Cargo.toml (members backend + crates/*). 8 crate dirs (anvilml-core,-hardware,-registry,-ipc,-worker,-scheduler,-server,-openapi) each with a minimal Cargo.toml + src/lib.rs stub (anvilml-openapi gets src/main.rs instead). Declare [features] mock-hardware=[] in anvilml-hardware. Cargo.lock is committed (binary app). The rust-toolchain.toml pin and .gitattributes already exist from phase 000; do not recreate them. Verify: cargo build --workspace --features mock-hardware exits 0; rustc --version reports 1.95.0.

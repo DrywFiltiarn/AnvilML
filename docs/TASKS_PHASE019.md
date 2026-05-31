@@ -18,10 +18,10 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
-| P19-A1 | `src/frontend.rs` | anvilml-server: frontend Local mode (ServeDir + SPA fallback) |
-| P19-A2 | anvilml-server | anvilml-server: frontend Headless mode (no catch-all) |
-| P19-A3 | anvilml-server | anvilml-server: frontend Remote mode (reverse proxy) |
+|------|-------------|---------|
+| P19-A1 | `crates/anvilml-server/src/frontend.rs` | anvilml-server: frontend Local mode (ServeDir + SPA fallback) |
+| P19-A2 | `crates/anvilml-server/src/frontend.rs` | anvilml-server: frontend Headless mode (no catch-all) |
+| P19-A3 | `crates/anvilml-server/src/frontend.rs` | anvilml-server: frontend Remote mode (reverse proxy) |
 
 ## Task details
 

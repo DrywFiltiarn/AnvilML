@@ -18,10 +18,10 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
-| P16-A1 | worker | worker: cooperative cancel — check cancel_flag between nodes |
-| P16-A2 | anvilml-scheduler | anvilml-scheduler: JobScheduler::cancel (queued + running) |
-| P16-A3 | `POST /v1/jobs/:id/cancel` | anvilml-server: POST /v1/jobs/:id/cancel |
+|------|-------------|---------|
+| P16-A1 | `worker/worker_main.py` | worker: cooperative cancel — check cancel_flag between nodes |
+| P16-A2 | `crates/anvilml-scheduler/src/scheduler.rs` | anvilml-scheduler: JobScheduler::cancel (queued + running) |
+| P16-A3 | `crates/anvilml-server/src/handlers/jobs.rs` | anvilml-server: POST /v1/jobs/:id/cancel |
 | P16-A4 | `backend/tests/api_cancel.rs` | anvilml: integration test for cancel of a running mock job |
 
 ## Task details

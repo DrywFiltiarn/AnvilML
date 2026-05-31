@@ -23,8 +23,8 @@ Each task implements exactly one root-level file. There is no compiled output an
 
 ## Tasks
 
-| Task | File | Summary |
-|------|------|---------|
+| Task | Module / File | Summary |
+|------|-------------|---------|
 | P0-A1 | `.gitignore` | anvilml: .gitignore covering Rust, Python, runtime, and OS/editor artifacts |
 | P0-A2 | `.gitattributes` | anvilml: .gitattributes enforcing cross-platform line endings |
 | P0-A3 | `rust-toolchain.toml` | anvilml: rust-toolchain.toml pinned to 1.95.0 with windows-gnu target |

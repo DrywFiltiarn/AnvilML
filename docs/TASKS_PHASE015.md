@@ -18,8 +18,8 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
-| P15-A1 | anvilml-scheduler | anvilml-scheduler: emit JobProgress events from worker Progress |
+|------|-------------|---------|
+| P15-A1 | `crates/anvilml-scheduler/src/scheduler.rs` | anvilml-scheduler: emit JobProgress events from worker Progress |
 | P15-A2 | `backend/tests/api_ws_lifecycle.rs` | anvilml: integration test asserting full WS lifecycle for a mock job |
 | P15-A3 | `docs/PROOF_phase015.md` | anvilml: documented websocat/browser proof of live job events |
 

@@ -18,11 +18,11 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
-| P2-A1 | `src/config.rs` | anvilml-core: ServerConfig types with defaults |
-| P2-A2 | `src/config_load.rs` | anvilml-core: layered config loader (defaults -> toml -> env -> overrides) |
+|------|-------------|---------|
+| P2-A1 | `crates/anvilml-core/src/config.rs` | anvilml-core: ServerConfig types with defaults |
+| P2-A2 | `crates/anvilml-core/src/config_load.rs` | anvilml-core: layered config loader (defaults -> toml -> env -> overrides) |
 | P2-A3 | `backend/src/cli.rs` | anvilml: CLI parsing with clap (--config, --host, --port, --no-browser, --log-format) |
-| P2-A4 | anvilml | anvilml: tracing subscriber init (plain/json, ANVILML_LOG env filter) |
+| P2-A4 | `backend/src/main.rs` | anvilml: tracing subscriber init (plain/json, ANVILML_LOG env filter) |
 | P2-A5 | `backend/src/shutdown.rs` | anvilml: cross-platform graceful shutdown signal handler |
 
 ## Task details

@@ -18,14 +18,14 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
-| P6-A1 | `src/scanner.rs` | anvilml-registry: model directory scanner |
-| P6-A2 | `src/store.rs` | anvilml-registry: ModelRegistry store (upsert, get) |
-| P6-A3 | anvilml-registry | anvilml-registry: ModelRegistry list (with kind filter) |
-| P6-A4 | anvilml-registry | anvilml-registry: ModelRegistry rescan (scan + bulk upsert) |
-| P6-A5 | anvilml | anvilml: initial model scan at startup + registry in AppState |
-| P6-A6 | `GET /v1/models` | anvilml-server: GET /v1/models handler (list with kind filter) |
-| P6-A7 | `GET /v1/models/:id` | anvilml-server: GET /v1/models/:id and POST /v1/models/rescan |
+|------|-------------|---------|
+| P6-A1 | `crates/anvilml-registry/src/scanner.rs` | anvilml-registry: model directory scanner |
+| P6-A2 | `crates/anvilml-registry/src/store.rs` | anvilml-registry: ModelRegistry store (upsert, get) |
+| P6-A3 | `crates/anvilml-registry/src/store.rs` | anvilml-registry: ModelRegistry list (with kind filter) |
+| P6-A4 | `crates/anvilml-registry/src/store.rs` | anvilml-registry: ModelRegistry rescan (scan + bulk upsert) |
+| P6-A5 | `backend/src/main.rs` | anvilml: initial model scan at startup + registry in AppState |
+| P6-A6 | `crates/anvilml-server/src/handlers/models.rs` | anvilml-server: GET /v1/models handler (list with kind filter) |
+| P6-A7 | `crates/anvilml-server/src/handlers/models.rs` | anvilml-server: GET /v1/models/:id and POST /v1/models/rescan |
 
 ## Task details
 

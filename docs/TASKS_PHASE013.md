@@ -18,13 +18,13 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
-| P13-A1 | `src/ledger.rs` | anvilml-scheduler: VramLedger |
-| P13-A2 | anvilml-scheduler | anvilml-scheduler: select_worker (preference/auto/cpu) |
-| P13-A3 | anvilml-scheduler | anvilml-scheduler: dispatch loop (Queued -> Execute on idle worker) |
-| P13-A4 | worker | worker: mock executor returning Completed (no image yet) |
-| P13-A5 | anvilml-scheduler | anvilml-scheduler: handle worker Completed/Failed -> terminal status + idle |
-| P13-A6 | anvilml | anvilml: start dispatch loop at startup; verify job reaches Completed |
+|------|-------------|---------|
+| P13-A1 | `crates/anvilml-scheduler/src/ledger.rs` | anvilml-scheduler: VramLedger |
+| P13-A2 | `crates/anvilml-scheduler/src/scheduler.rs` | anvilml-scheduler: select_worker (preference/auto/cpu) |
+| P13-A3 | `crates/anvilml-scheduler/src/scheduler.rs` | anvilml-scheduler: dispatch loop (Queued -> Execute on idle worker) |
+| P13-A4 | `worker/worker_main.py` | worker: mock executor returning Completed (no image yet) |
+| P13-A5 | `crates/anvilml-scheduler/src/scheduler.rs` | anvilml-scheduler: handle worker Completed/Failed -> terminal status + idle |
+| P13-A6 | `backend/src/main.rs` | anvilml: start dispatch loop at startup; verify job reaches Completed |
 
 ## Task details
 

@@ -18,9 +18,9 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
+|------|-------------|---------|
 | P22-A1 | `worker/nodes/sdxl.py` | worker: nodes/sdxl.py real SDXL nodes (optional negative_prompt) |
-| P22-A2 | `backend/scripts/install_worker_deps.sh` | backend/scripts: install_worker_deps.sh + .ps1 (real provisioning) |
+| P22-A2 | `backend/scripts/install_worker_deps.sh + .ps1` | backend/scripts: install_worker_deps.sh + .ps1 (real provisioning) |
 | P22-A3 | `backend/scripts/test_inference.py` | backend/scripts/test_inference.py standalone debug harness |
 | P22-A4 | `backend/tests/api_crash.rs` | anvilml: crash-recovery integration test (kill worker mid-job) |
 | P22-A5 | `backend/tests/api_health.rs` | anvilml: full REST integration test suite (health/jobs/models/workers/artifacts) |
@@ -40,7 +40,7 @@ Create worker/nodes/sdxl.py: SdxlLoadPipeline (dual encoders), SdxlTextEncode (n
 - **Prereqs:** P22-A1
 - **Tags:** —
 
-Create backend/scripts/install_worker_deps.sh: detect nvidia-smi->cuda, rocminfo->rocm, else cpu; create venv (uv venv --python 3.12 else python3.12 -m venv); pip install base.txt then {backend}.txt; print torch version + device. Create .ps1 equivalent (Windows, no rocm; py -3.12 or uv; Scripts\Activate). Both exit non-zero with clear message if Python 3.12 missing. Verify: bash -n passes; manual run builds a working venv.
+Create install_worker_deps.sh (Linux/macOS): detect nvidia-smi->cuda, amd-smi/rocminfo->rocm, else cpu; venv via uv venv --python 3.12 else python3.12 -m venv; pip install base.txt then {cuda|rocm|cpu}.txt; print torch version+device. Create install_worker_deps.ps1 (Windows): py -3.12 or uv; detect nvidia-smi->cuda, amd-smi or AMD PyTorch-on-Windows driver->rocm (ROCm IS supported on Windows, design 21.4), else cpu; Windows+rocm installs rocm-windows.txt (AMD PyTorch-on-Windows, ROCm>=7.2), NOT the Linux index. Both exit non-zero if Python 3.12 missing. Verify: bash -n / PSScriptAnalyzer pass.
 
 #### P22-A3: backend/scripts/test_inference.py standalone debug harness
 

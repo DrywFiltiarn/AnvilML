@@ -18,12 +18,12 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
-| P12-A1 | `src/job_store.rs` | anvilml-scheduler: job DB row helpers (insert, get, list, update status) |
-| P12-A2 | `src/queue.rs` | anvilml-scheduler: in-memory JobQueue |
-| P12-A3 | `src/scheduler.rs` | anvilml-scheduler: JobScheduler::submit (validate, persist, enqueue, notify) |
-| P12-A4 | `POST /v1/jobs` | anvilml-server: wire POST /v1/jobs to scheduler.submit + GET /v1/jobs/:id |
-| P12-A5 | `GET /v1/jobs` | anvilml-server: GET /v1/jobs list with status/limit/before |
+|------|-------------|---------|
+| P12-A1 | `crates/anvilml-scheduler/src/job_store.rs` | anvilml-scheduler: job DB row helpers (insert, get, list, update status) |
+| P12-A2 | `crates/anvilml-scheduler/src/queue.rs` | anvilml-scheduler: in-memory JobQueue |
+| P12-A3 | `crates/anvilml-scheduler/src/scheduler.rs` | anvilml-scheduler: JobScheduler::submit (validate, persist, enqueue, notify) |
+| P12-A4 | `crates/anvilml-server/src/handlers/jobs.rs` | anvilml-server: wire POST /v1/jobs to scheduler.submit + GET /v1/jobs/:id |
+| P12-A5 | `crates/anvilml-server/src/handlers/jobs.rs` | anvilml-server: GET /v1/jobs list with status/limit/before |
 
 ## Task details
 

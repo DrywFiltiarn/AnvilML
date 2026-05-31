@@ -18,11 +18,11 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
-| P8-A1 | `src/messages.rs` | anvilml-ipc: WorkerMessage and WorkerEvent enums |
-| P8-A2 | `src/framing.rs` | anvilml-ipc: write_frame (length-prefixed msgpack) |
-| P8-A3 | anvilml-ipc | anvilml-ipc: read_frame with size cap and read-fully loop |
-| P8-A4 | ipc-probe | ipc-probe: standalone CLI binary proving frame round-trip |
+|------|-------------|---------|
+| P8-A1 | `crates/anvilml-ipc/src/messages.rs` | anvilml-ipc: WorkerMessage and WorkerEvent enums |
+| P8-A2 | `crates/anvilml-ipc/src/framing.rs` | anvilml-ipc: write_frame (length-prefixed msgpack) |
+| P8-A3 | `crates/anvilml-ipc/src/framing.rs` | anvilml-ipc: read_frame with size cap and read-fully loop |
+| P8-A4 | `crates/anvilml-ipc/src/bin/ipc-probe.rs` | ipc-probe: standalone CLI binary proving frame round-trip |
 
 ## Task details
 

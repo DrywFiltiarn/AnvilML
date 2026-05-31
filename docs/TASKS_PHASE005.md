@@ -18,11 +18,11 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
+|------|-------------|---------|
 | P5-A1 | `backend/migrations/001_jobs.sql` | anvilml-registry: SQLite migration files (jobs, models, artifacts) |
-| P5-A2 | `src/db.rs` | anvilml-registry: db::open with PRAGMAs and migration runner |
-| P5-A3 | anvilml-registry | anvilml-registry: ghost-job reset query |
-| P5-A4 | anvilml | anvilml: open DB and run migrations + ghost reset at startup |
+| P5-A2 | `crates/anvilml-registry/src/db.rs` | anvilml-registry: db::open with PRAGMAs and migration runner |
+| P5-A3 | `crates/anvilml-registry/src/db.rs` | anvilml-registry: ghost-job reset query |
+| P5-A4 | `backend/src/main.rs` | anvilml: open DB and run migrations + ghost reset at startup |
 
 ## Task details
 

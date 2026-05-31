@@ -18,13 +18,13 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
-| P3-A1 | `src/error.rs` | anvilml-core: AnvilError enum and error model |
-| P3-A2 | `src/types/job.rs` | anvilml-core: Job domain types |
-| P3-A3 | `src/types/model.rs` | anvilml-core: Model and Artifact domain types |
-| P3-A4 | `src/types/hardware.rs` | anvilml-core: Hardware and Worker domain types |
-| P3-A5 | `src/types/events.rs` | anvilml-core: WebSocket event types |
-| P3-A6 | `GET /v1/system/env` | anvilml-server: /v1/system/env handler returning stub EnvReport |
+|------|-------------|---------|
+| P3-A1 | `crates/anvilml-core/src/error.rs` | anvilml-core: AnvilError enum and error model |
+| P3-A2 | `crates/anvilml-core/src/types/job.rs` | anvilml-core: Job domain types |
+| P3-A3 | `crates/anvilml-core/src/types/model.rs` | anvilml-core: Model and Artifact domain types |
+| P3-A4 | `crates/anvilml-core/src/types/hardware.rs` | anvilml-core: Hardware and Worker domain types |
+| P3-A5 | `crates/anvilml-core/src/types/events.rs` | anvilml-core: WebSocket event types |
+| P3-A6 | `crates/anvilml-server/src/handlers/system.rs` | anvilml-server: /v1/system/env handler returning stub EnvReport |
 
 ## Task details
 

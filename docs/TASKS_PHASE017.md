@@ -18,9 +18,9 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
-| P17-A1 | `DELETE /v1/jobs/:id` | anvilml-server: DELETE /v1/jobs/:id (terminal only, with artifacts) |
-| P17-A2 | `DELETE /v1/jobs` | anvilml-server: DELETE /v1/jobs bulk clear by status |
+|------|-------------|---------|
+| P17-A1 | `crates/anvilml-server/src/artifact/store.rs` | anvilml-server: DELETE /v1/jobs/:id (terminal only, with artifacts) |
+| P17-A2 | `crates/anvilml-server/src/handlers/jobs.rs` | anvilml-server: DELETE /v1/jobs bulk clear by status |
 | P17-A3 | `backend/tests/api_delete.rs` | anvilml: integration test for job + artifact deletion |
 
 ## Task details

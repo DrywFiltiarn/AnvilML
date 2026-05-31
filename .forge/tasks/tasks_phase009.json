@@ -33,7 +33,7 @@
     "prereqs": [
       "P9-A2"
     ],
-    "context": "Add anvilml-core + anvilml-hardware to anvilml-worker. Create src/env.rs: fn build_worker_env(device:&GpuDevice,cfg:&ServerConfig)->HashMap<String,String>. Cuda: CUDA_VISIBLE_DEVICES={idx}. Rocm: HIP_VISIBLE_DEVICES, ROCBLAS_USE_HIPBLASLT 0/1, HSA_OVERRIDE_GFX_VERSION if set. All: OMP/MKL/OPENBLAS/VECLIB_NUM_THREADS, ANVILML_NUM_THREADS, ANVILML_NUM_INTEROP_THREADS, ANVILML_WORKER_ID, ANVILML_DEVICE_INDEX, ANVILML_WORKER_MOCK if set on server. cargo test -p anvilml-worker -- env exits 0 (3 device types).",
+    "context": "Add anvilml-core + anvilml-hardware. Create src/env.rs: fn build_worker_env(device:&GpuDevice,cfg:&ServerConfig)->HashMap<String,String>. Cuda: CUDA_VISIBLE_DEVICES={idx}. Rocm: HIP_VISIBLE_DEVICES={idx} on BOTH Linux+Windows; ROCBLAS_USE_HIPBLASLT 0/1; HSA_OVERRIDE_GFX_VERSION only #[cfg(unix)] when set (Linux only, never Windows - design 8.3). All: OMP/MKL/OPENBLAS/VECLIB_NUM_THREADS, ANVILML_NUM_THREADS, ANVILML_NUM_INTEROP_THREADS, ANVILML_WORKER_ID, ANVILML_DEVICE_INDEX, ANVILML_WORKER_MOCK if set. cargo test -- env exits 0: cuda, rocm-linux (HSA), rocm-windows (no HSA), cpu.",
     "tags": []
   },
   {
@@ -70,7 +70,7 @@
     "prereqs": [
       "P9-A5"
     ],
-    "context": "Add anvilml-worker to backend + AppState workers: Arc<WorkerPool>. In main.rs after hardware detect: WorkerPool::spawn_all(&hw,&cfg), send InitializeHardware to each, store in AppState. Create handlers/workers.rs list_workers(State)->Json<Vec<WorkerInfo>>. Wire GET /v1/workers. Verify: ANVILML_WORKER_MOCK=1 ANVILML_VENV_PATH=<venv with python> cargo run --features mock-hardware; curl /v1/workers shows one worker reaching status Idle.",
+    "context": "Add anvilml-worker to backend + AppState workers: Arc<WorkerPool>. In main.rs after hardware detect: WorkerPool::spawn_all(&hw,&cfg), send InitializeHardware to each, store in AppState. device_str maps Cuda AND Rocm -> 'cuda:{index}' (HIP exposes via torch.cuda on both Linux+Windows, design 6), Cpu -> 'cpu'. Create handlers/workers.rs list_workers(State)->Json<Vec<WorkerInfo>>. Wire GET /v1/workers. Verify: ANVILML_WORKER_MOCK=1 ANVILML_VENV_PATH=<venv> cargo run --features mock-hardware; curl /v1/workers shows one worker reaching status Idle.",
     "tags": []
   }
 ]

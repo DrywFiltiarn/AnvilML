@@ -18,12 +18,12 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
-| P7-A1 | `src/ws/broadcaster.rs` | anvilml-server: EventBroadcaster |
-| P7-A2 | `src/ws/handler.rs` | anvilml-server: WebSocket /v1/events handler |
-| P7-A3 | anvilml-server | anvilml-server: WS keepalive ping every 30s |
-| P7-A4 | `src/ws/stats_tick.rs` | anvilml-server: system.stats tick task (5s broadcast) |
-| P7-A5 | anvilml | anvilml: start stats tick at startup; verify live WS stream |
+|------|-------------|---------|
+| P7-A1 | `crates/anvilml-server/src/ws/broadcaster.rs` | anvilml-server: EventBroadcaster |
+| P7-A2 | `crates/anvilml-server/src/ws/handler.rs` | anvilml-server: WebSocket /v1/events handler |
+| P7-A3 | `crates/anvilml-server/src/ws/handler.rs` | anvilml-server: WS keepalive ping every 30s |
+| P7-A4 | `crates/anvilml-server/src/ws/stats_tick.rs` | anvilml-server: system.stats tick task (5s broadcast) |
+| P7-A5 | `backend/src/main.rs` | anvilml: start stats tick at startup; verify live WS stream |
 
 ## Task details
 

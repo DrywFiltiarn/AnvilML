@@ -18,13 +18,13 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
-| P4-A1 | `src/lib.rs` | anvilml-hardware: DeviceDetector trait and CPU detector |
-| P4-A2 | `src/mock.rs` | anvilml-hardware: mock detector (feature mock-hardware, env-driven) |
-| P4-A3 | `src/cuda.rs` | anvilml-hardware: CUDA detector via nvidia-smi (fixture-tested) |
-| P4-A4 | `src/rocm.rs` | anvilml-hardware: ROCm detector via rocm-smi (fixture-tested) |
-| P4-A5 | anvilml-hardware | anvilml-hardware: detect_all_devices with override + host info |
-| P4-A6 | `GET /v1/system` | anvilml: detect hardware at startup and serve GET /v1/system |
+|------|-------------|---------|
+| P4-A1 | `crates/anvilml-hardware/src/lib.rs` | anvilml-hardware: DeviceDetector trait and CPU detector |
+| P4-A2 | `crates/anvilml-hardware/src/mock.rs` | anvilml-hardware: mock detector (feature mock-hardware, env-driven) |
+| P4-A3 | `crates/anvilml-hardware/src/cuda.rs` | anvilml-hardware: CUDA detector via nvidia-smi (fixture-tested) |
+| P4-A4 | `crates/anvilml-hardware/src/rocm.rs` | anvilml-hardware: ROCm detector (Linux rocm-smi + Windows amd-smi/HIP probe) |
+| P4-A5 | `crates/anvilml-hardware/src/lib.rs` | anvilml-hardware: detect_all_devices with override + host info |
+| P4-A6 | `backend/src/main.rs` | anvilml: detect hardware at startup and serve GET /v1/system |
 
 ## Task details
 
@@ -49,19 +49,19 @@ Create src/mock.rs behind feature mock-hardware: MockDetector reads ANVILML_MOCK
 
 Create src/cuda.rs: CudaDetector runs nvidia-smi --query-gpu=index,name,memory.total,memory.free,driver_version --format=csv,noheader,nounits, parses CSV to Vec<GpuDevice> type Cuda. Absent/non-zero exit -> Ok(vec![]). Extract parse_nvidia_smi(raw:&str)->Vec<GpuDevice> helper for testing. InferenceCaps: fp16 true, bf16 true if driver major>=525. cargo test -p anvilml-hardware -- cuda exits 0 with single+dual GPU fixtures.
 
-#### P4-A4: anvilml-hardware: ROCm detector via rocm-smi (fixture-tested)
+#### P4-A4: anvilml-hardware: ROCm detector (Linux rocm-smi + Windows amd-smi/HIP probe)
 
 - **Prereqs:** P4-A3
 - **Tags:** —
 
-Create src/rocm.rs: RocmDetector runs rocm-smi --showmeminfo vram --json, parses to Vec<GpuDevice> type Rocm (bytes->MiB). Absent/non-zero -> Ok(vec![]). Tolerate missing keys (default 0 + warn). Extract parse_rocm_smi(raw:&str) helper. bf16 true if gfx arch >= gfx1100 else false. cargo test -p anvilml-hardware -- rocm exits 0 with a fixture.
+Create src/rocm.rs: RocmDetector — ROCm on BOTH Linux and Windows (mandatory MVP backend, design 5). Linux: parse rocm-smi --showmeminfo vram --json + gfx from rocminfo. Windows: try amd-smi; else HIP probe via worker venv python (torch.cuda.get_device_properties -> index/name/total_vram), no Linux-only CLIs. bytes->MiB; absent/error/no-torch -> Ok(vec![]); missing keys 0+warn. Helpers parse_rocm_smi(raw) + parse_hip_probe(raw). InferenceCaps: fp16+bf16 true, flash_attention gated on gfx arch (gfx>=gfx1100). cargo test -p anvilml-hardware -- rocm exits 0 with rocm-smi AND HIP-probe fixtures.
 
 #### P4-A5: anvilml-hardware: detect_all_devices with override + host info
 
 - **Prereqs:** P4-A4
 - **Tags:** reasoning
 
-Implement detect_all_devices(cfg:&ServerConfig)->HardwareInfo in lib.rs. If feature mock-hardware: use MockDetector only. Else: if cfg.hardware_override set, return one synthetic device of that type/vram; else run Cuda then Rocm, first non-empty wins, fallback Cpu if both empty. Populate HostInfo via sysinfo (os, cpu_model, ram_total_mib, ram_free_mib). cargo test -p anvilml-hardware --features mock-hardware exits 0 with >=8 tests incl override + fallback.
+Implement detect_all_devices(cfg:&ServerConfig)->HardwareInfo in lib.rs. feature mock-hardware: MockDetector only. Else: if cfg.hardware_override set, return one synthetic device of that type/vram; else run Cuda then Rocm (Rocm runs on BOTH Linux and Windows per design 5), first non-empty wins; fall back to exactly one Cpu device ONLY when no supported GPU is detected. Populate HostInfo via sysinfo (os, cpu_model, ram_total_mib, ram_free_mib). cargo test -p anvilml-hardware --features mock-hardware exits 0 with >=8 tests incl override, cuda-wins, rocm-wins, and cpu-only-when-no-gpu.
 
 #### P4-A6: anvilml: detect hardware at startup and serve GET /v1/system
 

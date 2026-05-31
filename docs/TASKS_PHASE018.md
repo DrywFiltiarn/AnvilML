@@ -18,9 +18,9 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
-| P18-A1 | anvilml-worker | anvilml-worker: WorkerPool.restart + shutdown_all |
-| P18-A2 | `POST /v1/workers/:id/restart` | anvilml-server: POST /v1/workers/:id/restart |
+|------|-------------|---------|
+| P18-A1 | `crates/anvilml-worker/src/pool.rs` | anvilml-worker: WorkerPool.restart + shutdown_all |
+| P18-A2 | `crates/anvilml-server/src/handlers/workers.rs` | anvilml-server: POST /v1/workers/:id/restart |
 | P18-A3 | `backend/src/preflight.rs` | anvilml: Python preflight check populating EnvReport |
 | P18-A4 | `backend/src/shutdown.rs` | anvilml: wire graceful shutdown to WorkerPool.shutdown_all |
 

@@ -18,7 +18,7 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
+|------|-------------|---------|
 | P21-A1 | `worker/nodes/base.py` | worker: nodes/base.py BaseNode + NodeContext + NODE_REGISTRY + @register |
 | P21-A2 | `worker/executor.py` | worker: executor.py run_graph (topo-sort, cancel, exceptions) |
 | P21-A3 | `worker/pipeline_cache.py` | worker: pipeline_cache.py LRU + OOM trap |
@@ -55,7 +55,7 @@ Create worker/pipeline_cache.py: PipelineCache(max_entries=4) OrderedDict keyed 
 - **Prereqs:** P21-A3
 - **Tags:** —
 
-Create worker/defaults.py: ModelDefaults; ZIT_DEFAULTS(steps=8,guidance=0.0,1024,1024,bf16); SDXL_DEFAULTS(steps=20,guidance=7.5,1024,1024,fp16,neg_prompt True). Populate base.txt (diffusers>=0.27,transformers>=4.40,accelerate,pillow,msgpack,numpy,safetensors,pytest); cuda.txt/rocm.txt/cpu.txt with torch wheel index URLs + torch>=2.2. No test beyond import. pytest worker/tests passes (import defaults).
+Create worker/defaults.py: ModelDefaults; ZIT_DEFAULTS(steps=8,guidance=0.0,1024,1024,bf16); SDXL_DEFAULTS(steps=20,guidance=7.5,1024,1024,fp16,neg_prompt True). Populate base.txt (diffusers>=0.27,transformers>=4.40,accelerate,pillow,msgpack,numpy,safetensors,pytest). Torch selectors by OS+backend (design 21.3): cuda.txt; rocm.txt (Linux ROCm pip index, stable/nightly); rocm-windows.txt (AMD PyTorch-on-Windows, ROCm>=7.2 AMD-hosted wheels); cpu.txt. No test beyond import. pytest worker/tests passes (import defaults).
 
 #### P21-A5: worker: nodes/zit.py real ZiT nodes + nodes/common.py SaveImage
 

@@ -18,12 +18,12 @@ Every task in this phase implements **one module or one endpoint** plus its test
 ## Tasks
 
 | Task | Module / File | Summary |
-|------|---------------|---------|
-| P14-A1 | worker | worker: mock SaveImage emits ImageReady with black PNG |
-| P14-A2 | `src/artifact/store.rs` | anvilml-server: ArtifactStore.save (decode, hash, write, db insert) |
-| P14-A3 | anvilml-scheduler | anvilml-scheduler: handle ImageReady -> ArtifactStore.save + JobImageReady |
-| P14-A4 | `GET /v1/artifacts/:hash` | anvilml-server: GET /v1/artifacts/:hash serves PNG |
-| P14-A5 | `GET /v1/artifacts` | anvilml-server: GET /v1/artifacts list (by job_id) |
+|------|-------------|---------|
+| P14-A1 | `worker/worker_main.py` | worker: mock SaveImage emits ImageReady with black PNG |
+| P14-A2 | `crates/anvilml-server/src/artifact/store.rs` | anvilml-server: ArtifactStore.save (decode, hash, write, db insert) |
+| P14-A3 | `crates/anvilml-scheduler/src/scheduler.rs` | anvilml-scheduler: handle ImageReady -> ArtifactStore.save + JobImageReady |
+| P14-A4 | `crates/anvilml-server/src/artifact/store.rs` | anvilml-server: GET /v1/artifacts/:hash serves PNG |
+| P14-A5 | `crates/anvilml-server/src/artifact/store.rs` | anvilml-server: GET /v1/artifacts list (by job_id) |
 
 ## Task details
 
