@@ -13,6 +13,8 @@ anvilml-server = { path = "../crates/anvilml-server" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["json"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [features]
 mock-hardware = ["anvilml-server/mock-hardware"]
