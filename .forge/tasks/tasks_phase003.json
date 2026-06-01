@@ -4,7 +4,9 @@
     "description": "anvilml-core: AnvilError enum and error model",
     "phase": "3",
     "project": "anvilml",
-    "prereqs": ["P2-A5"],
+    "prereqs": [
+      "P2-A5"
+    ],
     "context": "In anvilml-core add thiserror. Create src/error.rs: AnvilError enum variants ConfigLoad(String), Io(#[from] std::io::Error), Json(String), InvalidGraph(String), WorkerDead(String), JobNotFound(Uuid), ArtifactNotFound(String), DbError(String), PayloadTooLarge{size_mib:u32,limit_mib:u32}. thiserror #[error] messages each. Must be Send+Sync. Re-export from lib.rs. cargo test -p anvilml-core -- error exits 0.",
     "tags": []
   },
@@ -13,7 +15,9 @@
     "description": "anvilml-core: Job domain types",
     "phase": "3",
     "project": "anvilml",
-    "prereqs": ["P3-A1"],
+    "prereqs": [
+      "P3-A1"
+    ],
     "context": "Add uuid (v4,serde), chrono (serde), utoipa to anvilml-core. Create src/types/job.rs: Job, JobStatus enum (Queued/Running/Completed/Failed/Cancelled, derive PartialEq Eq), JobSettings, SubmitJobRequest, SubmitJobResponse per ANVILML_DESIGN 4.1. Job.graph is serde_json::Value. All derive Serialize, Deserialize, Clone, Debug, utoipa::ToSchema. cargo test -p anvilml-core -- job exits 0.",
     "tags": []
   },
@@ -22,7 +26,9 @@
     "description": "anvilml-core: Model and Artifact domain types",
     "phase": "3",
     "project": "anvilml",
-    "prereqs": ["P3-A2"],
+    "prereqs": [
+      "P3-A2"
+    ],
     "context": "Create src/types/model.rs: ModelMeta, ModelKind enum (Clip/Diffusion/Vae/Lora/ControlNet/Unet/Upscale), DType enum (F32/F16/BF16/Q8/Q4/Unknown). Create src/types/artifact.rs: ArtifactMeta per ANVILML_DESIGN 4.2. All derive the standard set incl utoipa::ToSchema. cargo test -p anvilml-core -- model exits 0.",
     "tags": []
   },
@@ -31,7 +37,9 @@
     "description": "anvilml-core: Hardware and Worker domain types",
     "phase": "3",
     "project": "anvilml",
-    "prereqs": ["P3-A3"],
+    "prereqs": [
+      "P3-A3"
+    ],
     "context": "Create src/types/hardware.rs: HardwareInfo, GpuDevice, DeviceType enum (Cuda/Rocm/Cpu), HostInfo, InferenceCaps per 4.3. Create src/types/worker.rs: WorkerInfo, WorkerStatus enum (Initializing/Idle/Busy/Dead/Respawning). Create EnvReport struct {python_path, python_version, torch_version, preflight_ok:bool, reason:Option<String>} (used by 6.1). All derive standard set + ToSchema. cargo test -p anvilml-core -- hardware exits 0.",
     "tags": []
   },
@@ -40,17 +48,47 @@
     "description": "anvilml-core: WebSocket event types",
     "phase": "3",
     "project": "anvilml",
-    "prereqs": ["P3-A4"],
+    "prereqs": [
+      "P3-A4"
+    ],
     "context": "Create src/types/events.rs: WsEvent enum + variant structs per 4.5 (SystemStats, JobQueued, JobStarted, JobProgress, JobImageReady, JobCompleted, JobFailed, JobCancelled, WorkerStatusChanged). Each serializes as {event:'...', timestamp, ...fields}. Include GpuStatSnapshot{index,vram_used_mib,vram_total_mib}. JobProgress step/step_total are Option (None in MVP). cargo test -p anvilml-core -- events exits 0: assert SystemStats JSON has event='system.stats'.",
-    "tags": ["reasoning"]
+    "tags": [
+      "reasoning"
+    ]
   },
   {
     "id": "P3-A6",
     "description": "anvilml-server: /v1/system/env handler returning stub EnvReport",
     "phase": "3",
     "project": "anvilml",
-    "prereqs": ["P3-A5"],
+    "prereqs": [
+      "P3-A5"
+    ],
     "context": "Add anvilml-core dep to anvilml-server. Add env_report: Arc<RwLock<EnvReport>> to AppState (init with stub: python_path='', preflight_ok=false, reason='not_checked'). Create handlers/system.rs with async fn get_env(State) -> Json<EnvReport>. Wire GET /v1/system/env into build_router. Update main.rs AppState construction. Verify: curl http://127.0.0.1:8488/v1/system/env returns 200 with the stub EnvReport JSON.",
     "tags": []
+  },
+  {
+    "id": "P3-B1",
+    "description": "anvilml: generate anvilml.toml reference config with every configurable field",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": [
+      "P2-A1"
+    ],
+    "context": "Create anvilml.toml at repo root: committed reference config enumerating EVERY ServerConfig field + nested sections per ANVILML_DESIGN 3.1 + ENVIRONMENT.md sec 2, each at its documented default with a preceding comment. Top-level: host, port, db_path='./anvilml.db', artifact_dir, num_threads, num_interop_threads, venv_path, max_ipc_payload_mib. Sections: [[model_dirs]] (path,kind); [rocm]; [frontend] mode/path/url; [gpu_selection]; [limits]; [hardware_override] (commented). Keys MUST match serde names in config.rs. Verify: cargo run loads it, zero warnings; toml round-trips into ServerConfig.",
+    "tags": []
+  },
+  {
+    "id": "P3-B2",
+    "description": "anvilml-core: anvilml.toml drift guard test (committed toml key-set == ServerConfig)",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": [
+      "P3-B1"
+    ],
+    "context": "Add backend/tests/config_reference.rs: read committed ./anvilml.toml -> toml::Value; serialize ServerConfig::default() -> toml::Value; assert the two key-sets match RECURSIVELY (every struct field incl nested [rocm]/[frontend]/[gpu_selection]/[limits] appears in the toml and vice versa; ignore [[model_dirs]] array contents and commented [hardware_override]). Test FAILS if a ServerConfig field is missing from anvilml.toml or the toml has an unknown key - mechanically catches config drift in CI. cargo test -p backend --features mock-hardware -- config_reference exits 0.",
+    "tags": [
+      "reasoning"
+    ]
   }
 ]
