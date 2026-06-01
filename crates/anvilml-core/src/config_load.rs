@@ -329,6 +329,13 @@ mod tests {
     use super::*;
     use std::fs;
     use std::io::Write;
+    use std::sync::Mutex;
+
+    // Serializes all tests that read or mutate environment variables.
+    // Rust runs tests in parallel by default; without this lock, concurrent
+    // env::set_var / env::remove_var calls across tests produce flaky failures
+    // on multi-core CI runners even though they pass locally on fewer cores.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     /// Test that environment variables override TOML file values.
     ///
@@ -336,6 +343,7 @@ mod tests {
     /// and verifies the loaded config has port 9999.
     #[test]
     fn env_overrides_toml() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         // Ensure the test env var is set.
         env::set_var("ANVILML_PORT", "9999");
 
@@ -374,6 +382,7 @@ host = "127.0.0.1"
     /// then verifies the loaded config has port 7777.
     #[test]
     fn override_beats_env() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         env::set_var("ANVILML_PORT", "9999");
 
         let toml_content = r#"port = 8488
@@ -410,6 +419,7 @@ host = "127.0.0.1"
     /// Test that a missing TOML file produces a warning and falls back to defaults + env.
     #[test]
     fn missing_toml_fallback() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         // Ensure no ANVILML_ env vars interfere.
         env::remove_var("ANVILML_PORT");
         env::remove_var("ANVILML_HOST");
@@ -431,6 +441,7 @@ host = "127.0.0.1"
     /// Test that double-underscore env var nesting works for nested config fields.
     #[test]
     fn env_nested_field() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         env::set_var("ANVILML_FRONTEND__MODE", "headless");
 
         let result =
