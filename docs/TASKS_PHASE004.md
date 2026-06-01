@@ -22,8 +22,8 @@ Every task in this phase implements **one module or one endpoint** plus its test
 |------|-------------|---------|
 | P4-A1 | `crates/anvilml-hardware/src/lib.rs` | anvilml-hardware: DeviceDetector trait and CPU detector |
 | P4-A2 | `crates/anvilml-hardware/src/mock.rs` | anvilml-hardware: mock detector (feature mock-hardware, env-driven) |
-| P4-A3 | `crates/anvilml-hardware/src/vulkan.rs` | anvilml-hardware: CUDA detector via nvidia-smi (fixture-tested) |
-| P4-A4 | `crates/anvilml-hardware/src/{dxgi,sysfs,nvml}.rs` | anvilml-hardware: ROCm detector (Linux rocm-smi + Windows amd-smi/HIP probe) |
+| P4-A3 | `crates/anvilml-hardware/src/vulkan.rs` | anvilml-hardware: Vulkan GPU enumerator (primary, SDK-free, fixture-tested) |
+| P4-A4 | `crates/anvilml-hardware/src/{dxgi,sysfs,nvml}.rs` | anvilml-hardware: DXGI (Windows) + sysfs/NVML (Linux) fallback enumerators |
 | P4-A4B | `crates/anvilml-hardware/src/device_db.rs` | anvilml-hardware: device_db PCI-ID capability table + resolution |
 | P4-A5 | `crates/anvilml-hardware/src/lib.rs` | anvilml-hardware: detect_all_devices with override + host info |
 | P4-A6 | `crates/anvilml-server/src/handlers/system.rs + backend/src/main.rs` | anvilml: detect hardware at startup and serve GET /v1/system |
@@ -46,14 +46,14 @@ Add anvilml-core + sysinfo to anvilml-hardware. Create src/lib.rs DeviceDetector
 
 Create src/mock.rs behind feature mock-hardware: MockDetector reads ANVILML_MOCK_DEVICE_TYPE (cpu/cuda/rocm default cpu), ANVILML_MOCK_VRAM_MIB (default 8192), ANVILML_MOCK_GFX_ARCH (default gfx1100), returns one deterministic GpuDevice. Use serial_test for env-var tests. cargo test -p anvilml-hardware --features mock-hardware -- mock exits 0 with 3 fixture tests.
 
-#### P4-A3: anvilml-hardware: CUDA detector via nvidia-smi (fixture-tested)
+#### P4-A3: anvilml-hardware: Vulkan GPU enumerator (primary, SDK-free, fixture-tested)
 
 - **Prereqs:** P4-A2
 - **Tags:** —
 
 Replace old SDK approach. Create src/vulkan.rs: VulkanDetector (primary, Linux+Windows) via ash. Headless VkInstance -> enumerate devices -> properties2 (+KHR_driver_properties name/driver) -> memory_properties2 (+EXT_memory_budget). total_vram=largest DEVICE_LOCAL heapSize; available=heapBudget-heapUsage if budget ext else heapSize. Fill pci ids, device_type via vendor map, driver_version, source=Vulkan. Loader absent->Ok(vec![]). Implement P4-A1 DeviceDetector trait. cargo test -p anvilml-hardware -- vulkan exits 0. Also: cargo check --target x86_64-pc-windows-gnu --features mock-hardware.
 
-#### P4-A4: anvilml-hardware: ROCm detector (Linux rocm-smi + Windows amd-smi/HIP probe)
+#### P4-A4: anvilml-hardware: DXGI (Windows) + sysfs/NVML (Linux) fallback enumerators
 
 - **Prereqs:** P4-A3
 - **Tags:** —

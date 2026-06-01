@@ -23,7 +23,7 @@
   },
   {
     "id": "P4-A3",
-    "description": "anvilml-hardware: CUDA detector via nvidia-smi (fixture-tested)",
+    "description": "anvilml-hardware: Vulkan GPU enumerator (primary, SDK-free, fixture-tested)",
     "phase": "4",
     "project": "anvilml",
     "prereqs": [
@@ -34,7 +34,7 @@
   },
   {
     "id": "P4-A4",
-    "description": "anvilml-hardware: ROCm detector (Linux rocm-smi + Windows amd-smi/HIP probe)",
+    "description": "anvilml-hardware: DXGI (Windows) + sysfs/NVML (Linux) fallback enumerators",
     "phase": "4",
     "project": "anvilml",
     "prereqs": [

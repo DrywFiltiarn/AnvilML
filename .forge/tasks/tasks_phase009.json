@@ -1,7 +1,7 @@
 [
   {
     "id": "P9-A1",
-    "description": "worker: Python package skeleton + ipc.py binary-stdio guard + framing",
+    "description": "worker: Python package skeleton + requirements (base + torch selectors) + ipc.py framing",
     "phase": "9",
     "project": "anvilml",
     "prereqs": [
