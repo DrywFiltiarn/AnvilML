@@ -17,4 +17,11 @@ pub use types::hardware::{DeviceType, GpuDevice, HardwareInfo, HostInfo, Inferen
 // Re-export worker domain types (§4.4, §6.1).
 pub use types::worker::{EnvReport, WorkerInfo, WorkerStatus};
 
+// Re-export WebSocket event types (§4.5).
+pub use types::events::{
+    GpuStatSnapshot, JobCancelledEvent, JobCompletedEvent, JobFailedEvent, JobImageReadyEvent,
+    JobProgressEvent, JobQueuedEvent, JobStartedEvent, SystemStatsEvent, WorkerStatusChangedEvent,
+    WsEvent,
+};
+
 pub fn stub() {}
