@@ -1,0 +1,120 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# anvilml.toml — Reference Configuration
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# This file enumerates every configurable field of ServerConfig (crates/anvilml-core/src/config.rs)
+# along with all nested sections. Each key is set to its documented default value.
+# Preceding comments describe the purpose and valid range for each field.
+#
+# Configuration resolution order (lowest → highest priority):
+#   built-in defaults → anvilml.toml → ANVILML_* environment variables → CLI flags
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+# ── Server Bind Address ────────────────────────────────────────────────────────
+
+# Bind address for the HTTP server.
+# Valid values: any IPv4 or IPv6 address.
+host = "127.0.0.1"
+
+# TCP port for the HTTP server.
+# Valid range: 1–65535; 8488 is recommended.
+port = 8488
+
+# ── Storage Paths ──────────────────────────────────────────────────────────────
+
+# Where generated images and artifacts are stored.
+artifact_dir = "./artifacts"
+
+# Path to the SQLite database file for the model registry and job store.
+db_path = "./anvilml.db"
+
+# Path to the Python virtual environment used by workers.
+# This directory is user-managed; AnvilML does not create or modify it.
+venv_path = "./venv"
+
+# ── Model Directories ─────────────────────────────────────────────────────────
+
+# Array of model directories. Each entry has a `path` and optional `kind`.
+# `kind` hints the scanner to treat all files in this directory as a specific type
+# (clip, diffusion, vae, lora, controlnet, unet, upscale). If omitted, the kind
+# is inferred from subdirectory name or filename.
+
+[[model_dirs]]
+path = "./models/diffusion"
+kind = "diffusion"
+
+[[model_dirs]]
+path = "./models/vae"
+kind = "vae"
+
+# ── Threading ──────────────────────────────────────────────────────────────────
+
+# Number of intra-op threads for PyTorch (e.g. BLAS parallelism).
+# Set to the number of physical CPU cores for best throughput.
+num_threads = 14
+
+# Number of inter-op threads for PyTorch (graph execution parallelism).
+num_interop_threads = 4
+
+# ── Worker Logging ─────────────────────────────────────────────────────────────
+
+# Directory where worker stderr/stdout logs are captured.
+# Set to empty string or omit to disable logging.
+worker_log_dir = "./logs"
+
+# ── ROCm Configuration (AMD GPUs) ─────────────────────────────────────────────
+
+[rocm]
+
+# Use hipBLASLT for ROCm operations. Maps to environment variable
+# ROCBLAS_USE_HIPBLASLT=1. Recommended for RDNA2+ GPUs.
+use_hipblaslt = true
+
+# Override the HSA gfx version string (e.g. "10.3.0") for unsupported GPUs.
+# Leave unset to use auto-detection.
+# hsa_override_gfx_version = "10.3.0"
+
+# ── Hardware Override (bypasses auto-detection) ───────────────────────────────
+#
+# Uncomment and fill in these fields to force a specific device type and VRAM
+# budget, skipping hardware detection entirely.
+#[hardware_override]
+#device_type = "cpu"      # cuda | rocm | cpu
+#vram_total_mib = 8192    # total VRAM in mebibytes
+
+# ── Frontend Configuration ────────────────────────────────────────────────────
+
+[frontend]
+
+# Serving mode for the web frontend.
+#   local  — serve static files from a local directory (default: ./bloomery)
+#   remote — reverse-proxy non-API requests to a URL
+#   headless — serve no frontend; API-only mode
+mode = { path = "./bloomery" }
+
+# ── GPU Selection ─────────────────────────────────────────────────────────────
+
+[gpu_selection]
+
+# Default GPU device selection.
+#   auto  — use the scheduler fitness algorithm to pick the best GPU
+#   cpu   — force CPU-only worker (no GPU)
+#   <int> — specific device index (e.g. 0, 1, 2)
+default_device = "auto"
+
+# ── Resource Limits ───────────────────────────────────────────────────────────
+
+[limits]
+
+# Maximum IPC payload size in MiB for job submission.
+max_ipc_payload_mib = 64
+
+# Default page size for list endpoints (e.g. GET /v1/jobs).
+list_default_limit = 100
+
+# Hard maximum page size for list endpoints.
+list_max_limit = 1000
+
+# Maximum concurrent WebSocket broadcast queue capacity per client.
+ws_broadcast_capacity = 256
