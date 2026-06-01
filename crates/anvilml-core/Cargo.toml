@@ -6,4 +6,6 @@ edition = "2021"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+thiserror = "1"
+uuid = { version = "1", features = ["serde", "v4"] }
 url = { version = "2", features = ["serde"] }
