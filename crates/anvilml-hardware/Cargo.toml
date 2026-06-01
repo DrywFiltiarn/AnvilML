@@ -7,5 +7,8 @@ edition = "2021"
 anvilml-core = { path = "../anvilml-core" }
 sysinfo = "0.32"
 
+[dev-dependencies]
+serial_test = "3.5"
+
 [features]
 mock-hardware = []

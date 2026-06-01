@@ -5,6 +5,9 @@
 
 pub mod cpu;
 
+#[cfg(feature = "mock-hardware")]
+pub mod mock;
+
 // Re-export hardware types from anvilml-core for ergonomic downstream use.
 pub use anvilml_core::{AnvilError, DeviceType, GpuDevice};
 
