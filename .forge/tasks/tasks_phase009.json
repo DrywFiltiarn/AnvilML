@@ -7,7 +7,7 @@
     "prereqs": [
       "P8-A4"
     ],
-    "context": "Create worker/ package: __init__.py, nodes/__init__.py, tests/__init__.py. Create worker/requirements/base.txt (msgpack>=1.0, pillow>=10.0, pytest>=8.0). Create worker/ipc.py: at module top, if sys.platform=='win32': msvcrt.setmode O_BINARY on stdin+stdout. read_frame(): read-fully 4 bytes big-endian len then N bytes, msgpack.unpackb(raw=False). write_frame(msg): msgpack.packb(use_bin_type=True), 4-byte big-endian prefix, write to sys.stdout.buffer, flush. pytest worker/tests/test_ipc.py exits 0 (BytesIO round-trip).",
+    "context": "Create worker/ package: __init__.py, nodes/__init__.py, tests/__init__.py. worker/requirements/: base.txt (msgpack>=1.0, pillow>=10.0, numpy, safetensors, diffusers, transformers, pytest) plus torch-selectors per design 2.2/21: cuda.txt, rocm-linux.txt, rocm-windows.txt (AMD PyTorch-on-Windows, ROCm>=7.2), cpu.txt. Create worker/ipc.py: at top if win32 msvcrt.setmode O_BINARY on stdin+stdout. read_frame(): 4-byte big-endian len then N bytes, unpackb(raw=False). write_frame(): packb(use_bin_type=True), 4-byte prefix, write stdout.buffer, flush. pytest worker/tests/test_ipc.py exits 0.",
     "tags": [
       "reasoning"
     ]
@@ -20,7 +20,7 @@
     "prereqs": [
       "P9-A1"
     ],
-    "context": "Create worker/worker_main.py: argparse --worker-id --device-index. Set OMP/MKL/OPENBLAS/VECLIB thread env before imports. If ANVILML_WORKER_MOCK=1 skip torch import. Message loop reading frames: InitializeHardware->send Ready{worker_id,device_index,vram_total_mib(8192 mock)}; Ping{seq}->Pong{seq}; MemoryQuery->MemoryReport(0,0); Shutdown->send Dying{reason:shutdown}, flush, exit 0. Background thread sending MemoryReport every 10s. Verify: ANVILML_WORKER_MOCK=1 echo-style manual run; full proof via P9-A5 REST.",
+    "context": "Create worker/worker_main.py: argparse --worker-id --device-index. Set OMP/MKL/OPENBLAS/VECLIB thread env before imports. If ANVILML_WORKER_MOCK=1 skip torch import. Loop reading frames: InitializeHardware->Ready{worker_id,device_index,vram_total_mib,vram_free_mib,arch,fp16,bf16,flash_attention} (mock: 8192/8192/gfx1100/true/true/false; real: from torch cuda/hip props + mem_get_info). Ping->Pong{seq}; MemoryQuery->MemoryReport(0,0); Shutdown->Dying{reason:shutdown}, flush, exit 0. Background thread MemoryReport every 10s. Verify: ANVILML_WORKER_MOCK=1 manual run; full proof via P9-A5 REST.",
     "tags": [
       "reasoning"
     ]
@@ -57,7 +57,7 @@
     "prereqs": [
       "P9-A4"
     ],
-    "context": "Create src/pool.rs: WorkerPool holding Vec<Arc<ManagedWorker>>. spawn_all(hw,cfg): one ManagedWorker per GpuDevice or one CPU worker if none. list()->Vec<WorkerInfo>. acquire_idle(Option<u32>)->Option<WorkerRef>. set_busy/set_idle. subscribe_events(). send(worker_id,msg). On Ready event set status Idle. Re-export from lib.rs. cargo test -p anvilml-worker --features mock-hardware -- pool exits 0: spawn_all 1 CPU worker reaches Idle after Ready.",
+    "context": "Create src/pool.rs: WorkerPool holding Vec<Arc<ManagedWorker>>. spawn_all(hw,cfg): one ManagedWorker per GpuDevice or one CPU worker if none. list()->Vec<WorkerInfo>. acquire_idle(Option<u32>)->Option<WorkerRef>. set_busy/set_idle. subscribe_events(). send(worker_id,msg). On Ready event set status Idle AND merge caps (arch/fp16/bf16/flash_attention/vram) into the matching GpuDevice, capabilities_source=Worker (design 5.4). Re-export from lib.rs. cargo test -p anvilml-worker --features mock-hardware -- pool exits 0: spawn_all 1 CPU worker reaches Idle after Ready.",
     "tags": [
       "reasoning"
     ]

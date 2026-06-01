@@ -31,7 +31,7 @@ Every task in this phase implements **one module or one endpoint** plus its test
 - **Prereqs:** P7-A5
 - **Tags:** —
 
-Add serde, rmp-serde, uuid(serde), anvilml-core to anvilml-ipc. Create src/messages.rs (see 7.2/7.3). WorkerMessage: Ping{seq}, Shutdown, InitializeHardware{device_str}, Execute{job_id,graph,settings,device_index}, CancelJob{job_id}, MemoryQuery. WorkerEvent: Ready{worker_id,device_index,vram_total_mib}, Pong{seq}, Dying{reason}, MemoryReport{vram_used_mib,ram_used_mib}, Progress, ImageReady{job_id,image_b64,width,height,seed,steps,prompt}, Completed{job_id,elapsed_ms}, Failed{job_id,error,traceback}, Cancelled{job_id}. rename_all snake_case. cargo test -p anvilml-ipc -- messages exits 0.
+Add serde, rmp-serde, uuid(serde), anvilml-core to anvilml-ipc. Create src/messages.rs per 7.2/7.3. WorkerMessage: Ping{seq}, Shutdown, InitializeHardware{device_str}, Execute{job_id,graph,settings,device_index}, CancelJob{job_id}, MemoryQuery. WorkerEvent: Ready{worker_id,device_index,vram_total_mib,vram_free_mib,arch,fp16,bf16,flash_attention}, Pong{seq}, Dying{reason}, MemoryReport{vram_used_mib,ram_used_mib}, Progress, ImageReady{job_id,image_b64,width,height,seed,steps,prompt}, Completed{job_id,elapsed_ms}, Failed{job_id,error,traceback}, Cancelled{job_id}. test messages exits 0.
 
 #### P8-A2: anvilml-ipc: write_frame (length-prefixed msgpack)
 

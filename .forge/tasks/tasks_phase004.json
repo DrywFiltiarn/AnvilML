@@ -29,7 +29,7 @@
     "prereqs": [
       "P4-A2"
     ],
-    "context": "Create src/cuda.rs: CudaDetector runs nvidia-smi --query-gpu=index,name,memory.total,memory.free,driver_version --format=csv,noheader,nounits, parses CSV to Vec<GpuDevice> type Cuda. Absent/non-zero exit -> Ok(vec![]). Extract parse_nvidia_smi(raw:&str)->Vec<GpuDevice> helper for testing. InferenceCaps: fp16 true, bf16 true if driver major>=525. cargo test -p anvilml-hardware -- cuda exits 0 with single+dual GPU fixtures.",
+    "context": "Replace old SDK approach. Create src/vulkan.rs: VulkanDetector (primary, Linux+Windows) via ash. Headless VkInstance -> enumerate devices -> properties2 (+KHR_driver_properties name/driver) -> memory_properties2 (+EXT_memory_budget). total_vram=largest DEVICE_LOCAL heapSize; available=heapBudget-heapUsage if budget ext else heapSize. Fill pci ids, device_type via vendor map, driver_version, source=Vulkan. Loader absent->Ok(vec![]). Implement P4-A1 DeviceDetector trait. cargo test -p anvilml-hardware -- vulkan exits 0. Also: cargo check --target x86_64-pc-windows-gnu --features mock-hardware.",
     "tags": []
   },
   {
@@ -40,7 +40,18 @@
     "prereqs": [
       "P4-A3"
     ],
-    "context": "Create src/rocm.rs: RocmDetector \u2014 ROCm on BOTH Linux and Windows (mandatory MVP backend, design 5). Linux: parse rocm-smi --showmeminfo vram --json + gfx from rocminfo. Windows: try amd-smi; else HIP probe via worker venv python (torch.cuda.get_device_properties -> index/name/total_vram), no Linux-only CLIs. bytes->MiB; absent/error/no-torch -> Ok(vec![]); missing keys 0+warn. Helpers parse_rocm_smi(raw) + parse_hip_probe(raw). InferenceCaps: fp16+bf16 true, flash_attention gated on gfx arch (gfx>=gfx1100). cargo test -p anvilml-hardware -- rocm exits 0 with rocm-smi AND HIP-probe fixtures.",
+    "context": "Fallback enumerators implementing DeviceDetector. src/dxgi.rs (#[cfg(windows)]): DxgiDetector via IDXGIFactory EnumAdapters1 -> name, vendor/device id, DedicatedVideoMemory, enumeration_source=Dxgi. src/sysfs.rs + src/nvml.rs (#[cfg(unix)]): read /sys/bus/pci/devices/* for ids (source=Sysfs); VRAM via amdgpu sysfs or NVML libnvidia-ml (source=Nvml). All: absent/error->Ok(vec![]); per-device failure warn+skip. Parse helpers for tests. cargo test -p anvilml-hardware -- dxgi/sysfs/nvml exit 0 with fixtures. Also pass: cargo check --target x86_64-pc-windows-gnu --features mock-hardware.",
+    "tags": []
+  },
+  {
+    "id": "P4-A4B",
+    "description": "anvilml-hardware: device_db PCI-ID capability table + resolution",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": [
+      "P4-A4"
+    ],
+    "context": "Create src/device_db.rs: hardcoded compile-time table (const slice or embedded RON validated by a unit test) mapping (vendor_id,device_id)->DeviceCapabilityEntry{model_name,arch,fp16,bf16,flash_attention} per 5.5. NO VRAM in table. lookup(vendor,device)->Option<&Entry>. resolve_caps(dev:&mut GpuDevice): hit->fill name/arch/caps, capabilities_source=DeviceTable; miss->conservative defaults (fp16 from shaderFloat16 if known else false, bf16/flash false), capabilities_source=Fallback, warn! the unknown PCI id. Seed a few NVIDIA+AMD ids. cargo test -p anvilml-hardware -- device_db exits 0.",
     "tags": []
   },
   {
@@ -49,9 +60,9 @@
     "phase": "4",
     "project": "anvilml",
     "prereqs": [
-      "P4-A4"
+      "P4-A4B"
     ],
-    "context": "Implement detect_all_devices(cfg:&ServerConfig)->HardwareInfo in lib.rs. feature mock-hardware: MockDetector only. Else: if cfg.hardware_override set, return one synthetic device of that type/vram; else run Cuda then Rocm (Rocm runs on BOTH Linux and Windows per design 5), first non-empty wins; fall back to exactly one Cpu device ONLY when no supported GPU is detected. Populate HostInfo via sysinfo (os, cpu_model, ram_total_mib, ram_free_mib). cargo test -p anvilml-hardware --features mock-hardware exits 0 with >=8 tests incl override, cuda-wins, rocm-wins, and cpu-only-when-no-gpu.",
+    "context": "Implement detect_all_devices(cfg)->HardwareInfo per 5.1/5.6. mock-hardware: MockDetector only. Else: hardware_override->one synthetic device (source=Override). Else enumerate VulkanDetector; if empty, fall back DXGI (windows)/sysfs+NVML (unix); run device_db::resolve_caps per device. Vendor->DeviceType (0x10DE Cuda, 0x1002 Rocm both OSes, 0x8086 Cpu). No GPU->one Cpu device. HostInfo via sysinfo. Caps/VRAM refined later by worker at Ready. cargo test -p anvilml-hardware --features mock-hardware exits 0 (>=8: override, vulkan, fallback, vendor map, cpu-only-when-no-gpu).",
     "tags": [
       "reasoning"
     ]
@@ -64,7 +75,7 @@
     "prereqs": [
       "P4-A5"
     ],
-    "context": "Add anvilml-hardware dep to backend + anvilml-server (forward mock-hardware feature). Add hardware: Arc<RwLock<HardwareInfo>> to AppState. In main.rs call detect_all_devices(&cfg) at startup, log detected devices, store in AppState. Add handlers/system.rs get_system(State)->Json<HardwareInfo> reading AppState.hardware. Wire GET /v1/system. Verify: ANVILML_MOCK_DEVICE_TYPE=cuda cargo run --features mock-hardware then curl /v1/system shows the mock CUDA device.",
+    "context": "Add anvilml-hardware to backend + anvilml-server (forward mock-hardware). AppState gets hardware: Arc<RwLock<HardwareInfo>>. main.rs calls detect_all_devices(&cfg) at startup, logs each device (name, ids, vram, enumeration_source, capabilities_source), stores it. handlers/system.rs get_system->Json<HardwareInfo>; wire GET /v1/system. Add --print-hardware CLI subcommand (Rev5) that detects, prints the table, exits 0 without binding. Verify: ANVILML_MOCK_DEVICE_TYPE=cuda cargo run --features mock-hardware; curl /v1/system shows mock CUDA; anvilml --print-hardware prints+exits.",
     "tags": []
   },
   {
@@ -76,6 +87,19 @@
       "P3-A6"
     ],
     "context": "RETROFIT existing committed files (config.rs + anvilml.toml exist with the OLD frontend default). In ONE atomic change: default FrontendMode/FrontendConfig to Headless in config.rs AND edit ./anvilml.toml [frontend] mode='headless' (any './bloomery' -> commented './frontend') together so P3-B2's drift guard never sees a mismatch. AnvilML is headless; BloomeryUI runs separately under SindriStudio, never served by AnvilML. Update ENVIRONMENT.md frontend section + env table. Verify: ServerConfig::default().frontend.mode==Headless; cargo test config + P3-B2 config_reference both pass.",
+    "tags": [
+      "correction"
+    ]
+  },
+  {
+    "id": "P4-B2",
+    "description": "anvilml-core: extend GpuDevice + InferenceCaps for SDK-free detection (retrofit)",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": [
+      "P3-A6"
+    ],
+    "context": "RETROFIT committed src/types/hardware.rs (OLD 4.3). Extend GpuDevice per UPDATED 4.3: add pci_vendor_id:u16, pci_device_id:u16, vram_free_mib:u32, arch:Option<String>, enumeration_source, capabilities_source (keep name/device_type/vram_total_mib/driver_version). Add enums EnumerationSource{Vulkan,Dxgi,Sysfs,Nvml,Override,Mock} + CapabilitySource{Worker,DeviceTable,Fallback}. Add flash_attention:bool to InferenceCaps. Derive standard set+ToSchema. Update P4-A1/A2 GpuDevice constructions for new fields (Cpu: zeros/None/Mock). cargo test -p anvilml-core -- hardware exits 0.",
     "tags": [
       "correction"
     ]
