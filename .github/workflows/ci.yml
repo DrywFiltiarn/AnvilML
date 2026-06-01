@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt, clippy
+          cache: true
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy check
+        run: cargo clippy --workspace --features mock-hardware -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --features mock-hardware
+
+      - name: Cross-check Windows target
+        run: |
+          sudo apt-get update && sudo apt-get install -y mingw-w64
+          rustup target add x86_64-pc-windows-gnu
+          cargo check --target x86_64-pc-windows-gnu --workspace --features mock-hardware
+
+  rust-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy
+          cache: true
+
+      - name: Clippy check
+        run: cargo clippy --workspace --features mock-hardware -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --features mock-hardware
