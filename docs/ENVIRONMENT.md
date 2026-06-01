@@ -2,7 +2,7 @@
 
 **Document:** `docs/ENVIRONMENT.md`
 **Location in repo:** `AnvilML/docs/ENVIRONMENT.md`
-**Authoritative source:** `ANVILML_DESIGN.md` §3 (Configuration), §6 (Python Environment), §8.3 (Worker Env)
+**Authoritative source:** `ANVILML_DESIGN.md` §3 (Configuration), §5 (Hardware Detection), §6 (Python Environment), §8.3 (Worker Env), §21 (Build/Provisioning)
 **Read by:** Cline at the start of every PLAN and ACT session.
 
 ---
@@ -42,7 +42,7 @@ kind = "vae"
 
 [rocm]
 use_hipblaslt = true
-# hsa_override_gfx_version = "10.3.0"   # uncomment for unsupported gfx arch
+# hsa_override_gfx_version = "10.3.0"   # Linux ROCm only; for unsupported gfx arch (ignored on Windows)
 
 [frontend]
 # AnvilML is headless by default. BloomeryUI is run as a SEPARATE server by SindriStudio,
@@ -136,9 +136,9 @@ worker child process. Do not set these manually.
 | `ANVILML_NUM_INTEROP_THREADS` | Inter-op thread count (from `num_interop_threads`) |
 | `ANVILML_WORKER_MOCK`      | Propagated to the child when set on the server (mock mode) |
 | `CUDA_VISIBLE_DEVICES`     | CUDA isolation (CUDA workers only)                |
-| `HIP_VISIBLE_DEVICES`      | ROCm isolation (ROCm workers only)                |
+| `HIP_VISIBLE_DEVICES`      | ROCm device isolation — ROCm workers, Linux **and** Windows |
 | `ROCBLAS_USE_HIPBLASLT`    | ROCm performance flag (from `rocm.use_hipblaslt`) |
-| `HSA_OVERRIDE_GFX_VERSION` | ROCm gfx override (from `rocm.hsa_override_gfx_version`) |
+| `HSA_OVERRIDE_GFX_VERSION` | ROCm gfx override (from `rocm.hsa_override_gfx_version`) — **Linux ROCm runtime only**, not applicable on Windows |
 | `OMP_NUM_THREADS`          | OpenMP threading (from `num_threads`)             |
 | `MKL_NUM_THREADS`          | MKL threading (from `num_threads`)                |
 | `OPENBLAS_NUM_THREADS`     | OpenBLAS threading (from `num_threads`)           |
@@ -164,8 +164,21 @@ bash backend/scripts/install_worker_deps.sh
 powershell -ExecutionPolicy Bypass -File backend\scripts\install_worker_deps.ps1
 ```
 
-These scripts detect the available hardware backend (CUDA / ROCm / CPU) and install
-the matching `worker/requirements/{cuda,rocm,cpu}.txt` on top of `base.txt`.
+These scripts detect the available hardware backend (CUDA / ROCm / CPU) **and the OS** — SDK-free,
+via `anvilml --print-hardware` (Vulkan/DXGI enumeration; falls back to PCI sysfs on Linux or
+`Get-CimInstance Win32_VideoController` on Windows) — then install the matching torch build on top
+of `base.txt`:
+
+- **CUDA** → `worker/requirements/cuda.txt`
+- **ROCm on Linux** → `worker/requirements/rocm-linux.txt` (pip ROCm index, stable or nightly)
+- **ROCm on Windows** → `worker/requirements/rocm-windows.txt` — AMD's *PyTorch on Windows* package
+  (ROCm ≥ 7.2), **not** the Linux pip ROCm index
+- **CPU** → `worker/requirements/cpu.txt`
+
+**ROCm on Windows is a mandatory MVP backend.** It requires AMD's *PyTorch on Windows* distribution
+(AMD Adrenalin / PyTorch-on-Windows driver package, **ROCm ≥ 7.2**) on a supported AMD Radeon
+RX 7000/9000-series GPU or select Ryzen AI APU; hardware outside AMD's supported list falls back to
+CPU. (Authoritative: `ANVILML_DESIGN.md` §5, §6, §21.)
 
 **Preflight checks at startup (§6.1):**
 1. Interpreter exists and is executable.

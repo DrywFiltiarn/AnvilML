@@ -2,7 +2,7 @@
 
 **Document:** `docs/ARCHITECTURE.md`
 **Location in repo:** `AnvilML/docs/ARCHITECTURE.md`
-**Authoritative source:** `ANVILML_DESIGN.md` Rev 3 (single source of truth for all detail)
+**Authoritative source:** `ANVILML_DESIGN.md` Rev 5 (single source of truth for all detail)
 **Read by:** Cline at the start of every PLAN and ACT session.
 
 This document is a navigational summary. For full specifications (types, API shapes,
@@ -73,7 +73,8 @@ AnvilML/
 │   ├── requirements/
 │   │   ├── base.txt              # Core deps: diffusers, transformers, pillow, msgpack, pytest
 │   │   ├── cuda.txt              # torch + CUDA index
-│   │   ├── rocm.txt              # torch + ROCm index
+│   │   ├── rocm-linux.txt        # torch + ROCm index (Linux: stable or nightly)
+│   │   ├── rocm-windows.txt      # AMD PyTorch-on-Windows package (ROCm >= 7.2)
 │   │   └── cpu.txt               # torch CPU-only
 │   └── tests/                    # pytest: test_executor.py, test_nodes_*.py
 │
@@ -113,7 +114,7 @@ new dependency must follow this order.
 | Crate | Responsibility | Key modules |
 |-------|----------------|-------------|
 | `anvilml-core` | Pure data: domain types, config, errors. Zero I/O, zero async. | `config.rs`, `error.rs`, `types/{job,model,artifact,hardware,worker,events}.rs` |
-| `anvilml-hardware` | Detect GPUs/CPU; refreshable VRAM snapshot. | `lib.rs` (`DeviceDetector` trait, `detect_all_devices`), `cuda.rs`, `rocm.rs`, `cpu.rs`, `mock.rs` |
+| `anvilml-hardware` | Detect GPUs/CPU **SDK-free**; refreshable VRAM snapshot. | `lib.rs` (`detect_all_devices`), `vulkan.rs` (primary enumeration), `dxgi.rs` (Windows fallback), `sysfs.rs` + `nvml.rs` (Linux fallback), `device_db.rs` (PCI-ID capability table), `cpu.rs`, `mock.rs` |
 | `anvilml-registry` | Scan model dirs, persist `ModelMeta` to SQLite, serve queries. | `scanner.rs`, `store.rs`, `lib.rs` |
 | `anvilml-ipc` | IPC message enums + length-prefixed msgpack framing. | `messages.rs`, `framing.rs` |
 | `anvilml-worker` | Spawn/supervise/respawn workers; IPC bridge; env injection. | `pool.rs`, `managed.rs` (spawn + stdin/stdout IPC bridge), `env.rs` |
@@ -229,7 +230,8 @@ Linux and Windows are co-equal first-class targets (`ANVILML_DESIGN.md §1.5`).
 - **Binary-stdio guard** in `worker/ipc.py` must be present from the first commit.
 - **`.gitattributes`** locks line endings: `*.sh eol=lf`, `*.ps1 eol=crlf`, `*.py eol=lf`, `*.rs eol=lf`.
 - **`PR_SET_PDEATHSIG`** (Linux) / **Job Object** (Windows) used to clean up orphaned workers on hard kill.
-- **ROCm on Windows** is not supported in the MVP (deferred, `ANVILML_DESIGN.md §25`).
+- **GPU detection is SDK-free** (`ANVILML_DESIGN.md §5`): Vulkan enumeration (driver-bundled loader) is primary on both OSes, with DXGI (Windows) and PCI-sysfs + NVML (Linux) fallbacks. VRAM is read dynamically; ML capabilities come from the worker's PyTorch at `Ready`, with a hardcoded PCI-ID table (`device_db.rs`) as the pre-spawn hint/fallback. No `nvidia-smi`/`rocm-smi`/`rocminfo` required.
+- **ROCm on Windows is a mandatory MVP backend** (`ANVILML_DESIGN.md §5`): enumerated via Vulkan/DXGI like any other GPU; *execution* uses AMD's *PyTorch on Windows* package (ROCm ≥ 7.2) on supported Radeon RX 7000/9000-series + select Ryzen AI hardware. DirectML is the only deferred AMD path (§25).
 
 ---
 
@@ -237,6 +239,8 @@ Linux and Windows are co-equal first-class targets (`ANVILML_DESIGN.md §1.5`).
 
 - **No embedded frontend assets.** BloomeryUI is a separate server run by SindriStudio, not served by AnvilML. AnvilML can optionally serve a *custom* frontend, but defaults to headless.
 - **One Python worker per device.** Avoids GPU memory fragmentation from multi-process inference.
+- **GPU detection requires no vendor SDK/CLI.** Vulkan (driver-bundled) enumerates devices and reads dynamic VRAM; the already-required PyTorch worker reports authoritative capabilities at `Ready`; a hardcoded PCI-ID table is the pre-spawn hint/fallback. This avoids dragging the CUDA/ROCm toolkits onto end-user machines just to list a card.
+- **ROCm is a first-class MVP backend on both Linux and Windows** — Linux via the pip ROCm wheels, Windows via AMD's *PyTorch on Windows* package (ROCm ≥ 7.2). DirectML deferred (only for AMD GPUs outside ROCm-on-Windows support).
 - **stdin/stdout IPC, not TCP.** Avoids port allocation and per-platform socket handling.
 - **`anvilml-core` has zero I/O and zero async.** Keeps domain types testable without a runtime.
 - **`mock-hardware` feature flag**, not runtime env, controls the detection path in Rust. This ensures the real detectors are always compiled and linted, even in CI.

@@ -1,7 +1,7 @@
 # AnvilML Backend — Functional & Technical Design
 
 **Document:** `ANVILML_DESIGN.md`
-**Revision:** 4 (roadmap reframed around vertical-slice phases; see Revision History)
+**Revision:** 5 (SDK-free Vulkan GPU detection + ROCm-on-Windows mandatory; see Revision History)
 **Project:** SindriStudio / AnvilML
 **Status:** Draft for review — supersedes Revision 3
 
@@ -15,6 +15,7 @@
 | 2 | Approved architecture: crate decomposition, domain types, IPC, scheduler, server, worker outline. |
 | 3 | **This document.** Expands Rev 2 into a build-complete functional + technical design: per-crate module APIs, node IO contract, model cache, cancellation, logging, testing, build/toolchain, operations runbook, and implementation roadmap. Two intentional additions to the Rev 2 IPC schema (`CancelJob` message, `Cancelled` event) are introduced in §7 and flagged inline. Revision 2 remains the architectural authority; where this document adds detail it does not contradict it. A cross-platform pass (§1.5, §22.4) makes Linux and Windows co-equal first-class targets. The backend binary and database are named `anvilml` / `anvilml.db`, and SindriStudio is clarified throughout as the separate one-click launcher that starts AnvilML and BloomeryUI (Rev 2 conflated the two). |
 | 4 | Roadmap correction (§23 only). The implementation roadmap is reframed around **vertical-slice phases** (000–022, authoritative in `docs/PHASES.md`) rather than crate-dependency-ordered layers; each phase delivers a runnable, independently verifiable binary. The M0–M6 milestones are retained as a higher-level capability summary mapped to phase ranges, no longer as the unit of execution. No architectural, type, API, or IPC content changed. |
+| 5 | Re-applies two decisions made after this document branched from Rev 3 (absent from the Rev 4 base): **(a) ROCm on Windows promoted to a mandatory MVP backend** (Linux + Windows, via AMD's *PyTorch on Windows* package, ROCm ≥ 7.2, on supported Radeon RX 7000/9000-series / Ryzen AI hardware); and **(b) SDK-free GPU detection** — Vulkan primary (driver-bundled), DXGI (Windows) / PCI-sysfs + NVML (Linux) fallback, a hardcoded PCI-ID capability table (`device_db.rs`), and authoritative capabilities reported by the worker's PyTorch at `Ready`. VRAM is read dynamically in every path. Updates §1.5, §2.2, §4.3, §5, §7.3, §8.3, §16, §21, §22; adds a `--print-hardware` CLI subcommand. The headless-by-default frontend model and the vertical-slice roadmap (Rev 4) are unchanged. |
 
 This document is now the **single source of truth** for the AnvilML backend. Any earlier task lists or contract documents (`tasks.json`, `API_CONTRACT.md`, `IPC_PROTOCOL.md`, `ENVIRONMENT.md`, `TESTING_STRATEGY.md`) are non-authoritative and are superseded by the sections below.
 
@@ -92,8 +93,8 @@ The backend is a first-class citizen on **Linux and Windows**; macOS runs CPU-on
 | Capability | Linux (x86_64) | Windows (x86_64) | macOS | Notes |
 | :-- | :-- | :-- | :-- | :-- |
 | Core server (REST/WS/DB/scheduler) | ✓ | ✓ | ✓ | Pure cross-platform Rust. |
-| NVIDIA / CUDA worker | ✓ | ✓ | ✗ | `nvidia-smi` on PATH on both OSes. |
-| AMD / ROCm worker | ✓ | ✗ (→ CPU) | ✗ | ROCm tooling is Linux-only (§5); DirectML deferred (§25). |
+| NVIDIA / CUDA worker | ✓ | ✓ | ✗ | Enumerated via Vulkan (driver-bundled); no CUDA SDK / `nvidia-smi` needed (§5). |
+| AMD / ROCm worker | ✓ | ✓ | ✗ | **MVP-mandatory on both OSes** (§5). Windows uses AMD's *PyTorch on Windows* package (ROCm ≥ 7.2) on supported Radeon RX 7000/9000-series + select Ryzen AI parts. DirectML still deferred (§25). |
 | CPU worker | ✓ | ✓ | ✓ | Always available fallback. |
 | IPC over stdio | ✓ | ✓ | ✓ | Windows requires binary-mode stdio (§7.1). |
 | venv provisioning script | `.sh` | `.ps1` | `.sh` | §21.4; Windows uses `py -3.12`. |
@@ -142,7 +143,8 @@ anvilml/
     requirements/
       base.txt                  (framework deps: diffusers, transformers, pillow, msgpack, etc.)
       cuda.txt                  (torch + CUDA index)
-      rocm.txt                  (torch + ROCm index)
+      rocm-linux.txt            (torch + ROCm index, Linux: stable or nightly)
+      rocm-windows.txt          (AMD PyTorch-on-Windows package, ROCm >= 7.2)
       cpu.txt                   (torch CPU-only)
     tests/                      (pytest: test_executor.py, test_nodes_*.py)
 ```
@@ -167,7 +169,7 @@ anvilml-core
 | Crate | Responsibility | Key modules |
 | :-- | :-- | :-- |
 | `anvilml-core` | Pure data: domain types, config, errors. No I/O, no async runtime. | `config.rs`, `error.rs`, `types/{job,model,hardware,worker,events}.rs` |
-| `anvilml-hardware` | Detect GPUs and host; refreshable VRAM snapshot. | `lib.rs` (`DeviceDetector` trait, `detect_all_devices`), `cuda.rs`, `rocm.rs`, `cpu.rs`, `mock.rs` |
+| `anvilml-hardware` | Detect GPUs and host **SDK-free**; refreshable VRAM snapshot. | `lib.rs` (`detect_all_devices`), `vulkan.rs`, `dxgi.rs` (Windows), `sysfs.rs` + `nvml.rs` (Linux fallback), `device_db.rs` (capability table), `cpu.rs`, `mock.rs` |
 | `anvilml-registry` | Scan model dirs, persist `ModelMeta` to SQLite, serve queries. | `scanner.rs`, `store.rs`, `lib.rs` |
 | `anvilml-ipc` | IPC message enums + length-prefixed msgpack framing. | `messages.rs`, `framing.rs` |
 | `anvilml-worker` | Spawn/supervise/respawn workers, IPC bridge, env injection. | `pool.rs`, `managed.rs`, `ipc_bridge.rs`, `env.rs` |
@@ -389,18 +391,26 @@ pub struct ArtifactMeta {
 ### 4.3 Hardware Types
 
 ```rust
-pub struct HardwareInfo { pub host: HostInfo, pub gpus: Vec<GpuDevice>, pub inference_caps: InferenceCaps }
+pub struct HardwareInfo { pub host: HostInfo, pub gpus: Vec<GpuDevice> }
 
 pub struct GpuDevice {
     pub index: u32,
-    pub name: String,
-    pub device_type: DeviceType,
-    pub vram_total_mib: u32,
-    pub vram_free_mib: u32,
-    pub driver_version: String,
+    pub name: String,                 // canonical (device_db) or driver-reported
+    pub device_type: DeviceType,      // vendor-mapped; confirmed by the worker's torch build
+    pub pci_vendor_id: u16,           // 0x10DE NVIDIA, 0x1002 AMD, 0x8086 Intel
+    pub pci_device_id: u16,
+    pub vram_total_mib: u32,          // DYNAMIC: Vulkan heap / DXGI / NVML / torch — never the table
+    pub vram_free_mib: u32,           // DYNAMIC: refreshed from worker MemoryReport
+    pub driver_version: String,       // Vulkan driverInfo / DXGI / NVML
+    pub arch: Option<String>,         // CUDA SM ("8.9") or ROCm gfx ("gfx1100"); None until known
+    pub caps: InferenceCaps,
+    pub enumeration_source: EnumerationSource,
+    pub capabilities_source: CapabilitySource,
 }
 
 pub enum DeviceType { Cuda, Rocm, Cpu }   // MVP set; see §25 for deferred backends
+pub enum EnumerationSource { Vulkan, Dxgi, Sysfs, Nvml, Override, Mock }
+pub enum CapabilitySource { Worker, DeviceTable, Fallback }
 
 pub struct HostInfo { pub os: String, pub cpu_model: String, pub ram_total_mib: u64, pub ram_free_mib: u64 }
 pub struct InferenceCaps { pub fp16: bool, pub bf16: bool, pub flash_attention: bool }
@@ -474,34 +484,63 @@ pub struct JobImageReadyEvent {
 
 ## 5. Hardware Detection (`anvilml-hardware`)
 
-Probed once at startup; `vram_free_mib` is refreshed every 5 s from worker `MemoryReport` events (§7) rather than re-probed.
+Detection works **without any vendor SDK or CLI tool** (no `nvidia-smi`, `rocm-smi`, `rocminfo`, `lspci`, or CUDA/ROCm toolkits). The only runtime dependency is the **Vulkan loader**, which ships with every modern GPU driver on Linux and Windows — not with an SDK. Enumeration runs once at startup (pre-spawn); ML capabilities and live VRAM are then refined by the worker's PyTorch, which is already installed and therefore adds no new dependency.
+
+### 5.1 Three-layer model
+
+1. **Enumeration + VRAM — Rust, pre-spawn, vendor-neutral, dynamic.** List physical GPUs and read total/available VRAM straight from the driver. No SDK.
+2. **Capabilities — PyTorch worker, at `Ready`, authoritative.** Once a worker is live on a device, torch reports the ground-truth ML capabilities and re-confirms VRAM; Rust merges these over the pre-spawn record.
+3. **Device capability table (`device_db.rs`) — hint + fallback.** A curated, hardcoded map of PCI `(vendor_id, device_id)` → canonical model name, architecture, and capability hints; used before/without a worker and when torch cannot report. **VRAM is never taken from this table — it is always read dynamically.**
 
 ```rust
-#[async_trait]
-pub trait DeviceDetector {
-    async fn detect(&self) -> anyhow::Result<Vec<GpuDevice>>;
-}
-
 pub async fn detect_all_devices(config: &ServerConfig) -> Result<HardwareInfo>;
 ```
 
-| Device | Detection method |
-| :-- | :-- |
-| NVIDIA / CUDA | `nvidia-smi --query-gpu=index,name,memory.total,memory.free,driver_version --format=csv,noheader,nounits` |
-| AMD / ROCm | `rocm-smi --showid --showproductname --showmeminfo vram --json`; gfx arch via `rocminfo`; ReBAR hint via `lspci` |
-| CPU | `sysinfo` crate — always succeeds |
+### 5.2 Enumeration backends (priority order)
 
-**Rules.**
+| Backend | Platforms | Yields | Dependency |
+| :-- | :-- | :-- | :-- |
+| **Vulkan** (primary) | Linux + Windows | name, PCI vendor/device IDs, device type, driver id/version, **total + available VRAM** | Vulkan loader (driver-bundled) |
+| DXGI (fallback) | Windows | name, vendor/device IDs, dedicated VRAM | built into Windows |
+| PCI sysfs + NVML (fallback) | Linux | vendor/device IDs (`/sys/bus/pci/devices/*`); VRAM via amdgpu sysfs or NVML (`libnvidia-ml`, driver-bundled) | none / driver-bundled |
+| CPU | all | host info | `sysinfo` (always succeeds) |
 
-- Per-device detection failures are logged at `warn` and skipped; they never abort startup.
-- If `hardware_override` is set, detection is bypassed entirely and a single synthetic device of the given type/VRAM is returned (used on machines where detection is unreliable).
-- If no GPU is detected, exactly one CPU worker is provisioned.
-- `inference_caps` is derived from device type and driver: CUDA → fp16/bf16/flash-attention probed; ROCm → fp16/bf16, flash-attention gated on gfx arch; CPU → all false.
-- The `mock-hardware` feature swaps in `MockHardwareDetector`, which reads `ANVILML_MOCK_DEVICE_TYPE`, `ANVILML_MOCK_VRAM_MIB`, `ANVILML_MOCK_GFX_ARCH`. This is the only detector compiled in CI.
+Vulkan path: create a headless `VkInstance` (no surface/window) → `vkEnumeratePhysicalDevices` → `vkGetPhysicalDeviceProperties2` (+ `VK_KHR_driver_properties`) → `vkGetPhysicalDeviceMemoryProperties2` (+ `VK_EXT_memory_budget`). **Total VRAM** = the largest `DEVICE_LOCAL` heap's `heapSize` (an extra small device-local + host-visible Resizable-BAR heap is ignored). **Available VRAM** = `heapBudget − heapUsage` for that heap when `VK_EXT_memory_budget` is present, else `heapSize`. Rust bindings via `ash`, which loads the loader at runtime — its absence triggers the fallback path, not a crash.
 
-Intel (IPEX), Apple MPS, and AMD DirectML are **deferred** (§25). The `DeviceType` enum is deliberately limited to the three MVP variants so the rest of the system cannot reference a backend that does not yet exist.
+### 5.3 Vendor → backend mapping
 
-**Platform note.** CUDA detection (`nvidia-smi`) and the CPU detector work identically on Linux and Windows. ROCm is an MVP target on **Linux only**; `rocm-smi`/`rocminfo` are absent on Windows and `lspci` (the ReBAR hint) is Linux-only, so the ROCm detector returns `Ok(vec![])` on Windows by the normal graceful-degradation path. Consequently, an AMD GPU on Windows falls back to a CPU worker in the MVP (AMD-on-Windows via DirectML is deferred, §25).
+The PCI vendor ID maps to a candidate ML backend; the worker's torch build confirms it at `Ready` (`torch.version.cuda` vs `torch.version.hip`).
+
+| Vendor ID | Vendor | MVP backend |
+| :-- | :-- | :-- |
+| `0x10DE` | NVIDIA | CUDA |
+| `0x1002` | AMD | ROCm (Linux **and** Windows) |
+| `0x8086` | Intel | — (IPEX deferred §25; enumerated but not used for inference → CPU) |
+
+**ROCm is a mandatory MVP backend on both Linux and Windows.** Enumeration is identical on both OSes (Vulkan/DXGI), so it does not depend on Linux-only ROCm CLIs. The Windows ROCm *execution* path requires AMD's *PyTorch on Windows* package (ROCm ≥ 7.2) on a supported Radeon RX 7000/9000-series or Ryzen AI part (§6, §21); an AMD GPU outside that support list is enumerated but falls back to CPU for inference.
+
+### 5.4 Capability resolution
+
+For each enumerated GPU:
+
+- **Pre-spawn:** look up `(vendor_id, device_id)` in `device_db`. Hit → fill `arch`, `caps` (fp16/bf16/flash-attention), canonical `name`; `capabilities_source = DeviceTable`. Miss → conservative defaults (fp16 from the Vulkan `shaderFloat16` feature when present, bf16 = false, flash-attention = false); `capabilities_source = Fallback`; emit a `warn!` naming the unknown PCI ID so the table can be extended.
+- **At worker `Ready` (authoritative):** torch reports `fp16`/`bf16`/flash-attention, `arch` (CUDA SM or ROCm gfx), and `mem_get_info()`. Rust overwrites the device record and sets `capabilities_source = Worker`. This is what the scheduler and API serve once a worker is live.
+
+Querying ML-relevant capabilities *directly from the driver* is intentionally **not** attempted: Vulkan/driver feature bits do not reliably express "PyTorch supports bf16 / flash-attention on this architecture." The already-required PyTorch runtime is the correct authority; the table is only the pre-spawn hint and the no-worker fallback.
+
+### 5.5 Device capability table (`device_db.rs`)
+
+A compile-time table (a `const` slice, or an embedded RON file validated by a unit test) mapping `(u16 vendor_id, u16 device_id)` → `DeviceCapabilityEntry { model_name, arch, fp16, bf16, flash_attention }`. It is deliberately hardcoded and must be updated as new GPUs ship; the update procedure is documented alongside it. Because torch is authoritative at runtime (§5.4), a missing or stale entry degrades only pre-spawn *display* for that card — never the correctness of a running job. **No VRAM values are stored in the table.**
+
+### 5.6 Rules
+
+- Per-device enumeration/probe failures are logged at `warn` and skipped; they never abort startup.
+- `hardware_override` (config) bypasses enumeration entirely and returns one synthetic device of the given type/VRAM (`enumeration_source = Override`).
+- No GPU enumerated → exactly one CPU worker.
+- `vram_free_mib` is refreshed during operation from worker `MemoryReport` (torch `mem_get_info`), the runtime authority; the Vulkan/DXGI budget read is used at startup and whenever no worker is attached to a device.
+- The `mock-hardware` feature swaps in `MockHardwareDetector` (driven by `ANVILML_MOCK_DEVICE_TYPE`/`_VRAM_MIB`/`_GFX_ARCH`), bypassing Vulkan/DXGI. It is the only detector compiled in CI.
+
+Intel (IPEX), Apple MPS, and AMD DirectML are **deferred** (§25); `DeviceType` stays limited to the three MVP variants so nothing can reference a backend that does not yet exist.
 
 ---
 
@@ -514,7 +553,7 @@ The `venv_path` config field (default `./venv`, relative to the config file) poi
 - Linux/macOS: `{venv_path}/bin/python3`
 - Windows: `{venv_path}\Scripts\python.exe`
 
-Provisioning is done once by the user via the checked-in scripts (`backend/scripts/install_worker_deps.sh` / `.ps1`), which detect CUDA/ROCm/CPU and `pip install` the matching `worker/requirements/{cuda,rocm,cpu}.txt` on top of `base.txt`. See §21.4.
+Provisioning is done once by the user via the checked-in scripts (`backend/scripts/install_worker_deps.sh` / `.ps1`), which detect CUDA/ROCm/CPU and OS, then install the matching torch build on top of `base.txt`. On **Windows + ROCm** this installs AMD's *PyTorch on Windows* package (ROCm ≥ 7.2) rather than the Linux pip ROCm index. See §21.4.
 
 ### 6.1 Preflight Check
 
@@ -573,7 +612,7 @@ MemoryQuery { }
 ### 7.3 Events (Python → Rust)
 
 ```
-Ready        { worker_id: String, device_index: u32, vram_total_mib: u32 }
+Ready        { worker_id: String, device_index: u32, vram_total_mib: u32, vram_free_mib: u32, arch: String, fp16: bool, bf16: bool, flash_attention: bool }  // caps authoritative; Rust merges into GpuDevice (§5.4)
 Pong         { seq: u64 }
 Dying        { reason: String }
 MemoryReport { vram_used_mib: u32, ram_used_mib: u64 }
@@ -594,7 +633,7 @@ Cancelled    { job_id: Uuid }                  // NEW in Rev 3 — clean ack of 
 
 ```
 1. Rust → InitializeHardware { device_str }          (once, at worker start)
-2. Python → Ready { vram_total_mib }                 → worker becomes Idle
+2. Python → Ready { vram_total_mib, vram_free_mib, arch, caps } → worker Idle; Rust merges authoritative caps (§5.4)
 3. Rust → Execute { job_id, graph, settings, dev }   → worker Busy, job Running
 4. Python → Progress (per node) … → ImageReady → Completed
 5. Rust persists artifact on ImageReady, sets job Completed on Completed, worker → Idle
@@ -657,7 +696,7 @@ impl WorkerPool {
 | DeviceType | Variables injected |
 | :-- | :-- |
 | CUDA | `CUDA_VISIBLE_DEVICES={n}` |
-| ROCm | `HIP_VISIBLE_DEVICES={n}`, `ROCBLAS_USE_HIPBLASLT={0\|1}`, `HSA_OVERRIDE_GFX_VERSION` (if configured) |
+| ROCm | `HIP_VISIBLE_DEVICES={n}` (Linux **and** Windows); `ROCBLAS_USE_HIPBLASLT={0\|1}`; `HSA_OVERRIDE_GFX_VERSION` (Linux ROCm runtime only — not applicable on Windows, where supported GPUs are fixed by AMD's package) |
 | CPU | (no device-visibility var) |
 | All | `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, `ANVILML_NUM_THREADS`, `ANVILML_NUM_INTEROP_THREADS`, `ANVILML_WORKER_ID`, `ANVILML_DEVICE_INDEX`, and `ANVILML_WORKER_MOCK` if set on the server |
 
@@ -927,7 +966,7 @@ A long-lived child process; one per device. Single-threaded message loop on stdi
     torch.set_num_threads(N); torch.set_num_interop_threads(M)
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
-6.  Wait for InitializeHardware → resolve device string → send Ready { vram_total_mib }.
+6.  Wait for InitializeHardware → resolve device string → probe torch caps → send Ready { vram_total_mib, vram_free_mib, arch, fp16, bf16, flash_attention }.
 7.  Start a background MemoryReport thread (every 10 s).
 8.  Enter the message loop (blocking read of framed msgpack on stdin).
 ```
@@ -1027,10 +1066,10 @@ Thin binary `anvilml` wrapping `anvilml_server::start(config)`.
 ### 16.1 CLI
 
 ```
-anvilml [--config <path>] [--host <ip>] [--port <u16>] [--no-browser]
+anvilml [--config <path>] [--host <ip>] [--port <u16>] [--no-browser] [--print-hardware]
 ```
 
-Flags override config (highest precedence). `--help` prints usage.
+Flags override config (highest precedence). `--help` prints usage. `--print-hardware` runs SDK-free GPU enumeration (§5), prints the detected devices as JSON, and exits — used by the provisioning script to pick the torch wheel without vendor CLIs.
 
 ### 16.2 Startup Sequence
 
@@ -1181,7 +1220,8 @@ Representative dependency set (exact versions pinned in `Cargo.toml`):
 | DB | `sqlx` (sqlite, runtime-tokio, macros, migrate) |
 | OpenAPI | `utoipa`, `utoipa-swagger` (dev) |
 | IDs / time | `uuid` (v4, serde), `chrono` (serde) |
-| Hardware/host | `sysinfo` |
+| GPU enumeration | `ash` (Vulkan), `windows` (DXGI; Windows target), `nvml-wrapper` (Linux NVML fallback) |
+| Host info | `sysinfo` |
 | Config / CLI | `config`, `clap` (derive), `figment`-style env layering |
 | Logging | `tracing`, `tracing-subscriber` (env-filter, json) |
 | Errors | `thiserror`, `anyhow` |
@@ -1197,17 +1237,17 @@ cargo run -p anvilml-openapi          # regenerate backend/openapi.json
 ### 21.3 Python Worker Toolchain
 
 - Python **3.12.x**, managed by the user. `uv` recommended for fast, reproducible installs.
-- Split requirements: `base.txt` (diffusers, transformers, pillow, msgpack, numpy, safetensors), plus exactly one of `cuda.txt` / `rocm.txt` / `cpu.txt` selecting the matching torch wheel index.
+- Split requirements: `base.txt` (diffusers, transformers, pillow, msgpack, numpy, safetensors), plus a torch selector chosen by OS + backend: `cuda.txt`; `rocm-linux.txt` (Linux ROCm pip index, stable or nightly); `rocm-windows.txt` (AMD *PyTorch on Windows*, ROCm ≥ 7.2 / nightly); or `cpu.txt`.
 
 ### 21.4 venv Provisioning Scripts
 
 `backend/scripts/install_worker_deps.sh` (Linux/macOS) and `.ps1` (Windows):
 
 ```
-1. Detect backend: nvidia-smi present → cuda; rocminfo present → rocm; else cpu.
+1. Detect backend and OS **without vendor SDKs**: run `anvilml --print-hardware` (Vulkan/DXGI enumeration, §5) and read each GPU's PCI vendor ID — `0x10DE` → cuda, `0x1002` → rocm, else cpu. (Equivalent SDK-free fallbacks if the binary isn't built yet: PCI sysfs on Linux, `Get-CimInstance Win32_VideoController` on Windows.)
 2. Create the venv: Linux/macOS `python3.12 -m venv {venv_path}`; Windows `py -3.12 -m venv {venv_path}` (the `python3.12` command name does not exist on Windows). `uv venv --python 3.12` works identically on both.
 3. Activate; pip install -r worker/requirements/base.txt.
-4. pip install -r worker/requirements/{cuda|rocm|cpu}.txt.
+4. Install torch: Linux runs `pip install -r worker/requirements/{cuda|rocm|cpu}.txt`; **Windows + ROCm** installs AMD's *PyTorch on Windows* build per `rocm-windows.txt` (AMD-hosted wheels + driver package, ROCm ≥ 7.2), not the Linux ROCm index.
 5. Print resolved torch version + detected device for verification.
 ```
 
@@ -1248,7 +1288,8 @@ A single self-contained Rust binary per OS/arch (`x86_64`/`aarch64` × Linux/Win
 | Jobs return `503 workers_unavailable` | Preflight failed (`python_missing` / `torch_unavailable`) | Re-run provisioning; check `GET /v1/system/env`; `POST /v1/workers/:id/restart`. |
 | Worker repeatedly `Respawning` | Native crash on load (bad wheel, driver mismatch) | Inspect `logs/worker-{n}.log`; run `test_inference.py` to reproduce in isolation. |
 | Job `Failed: cuda_oom` | Model + working set exceeds VRAM | Lower resolution/steps; rely on pipeline-cache eviction; use a smaller dtype. |
-| No GPU detected | `nvidia-smi`/`rocm-smi` not on PATH | Fix PATH, or set `hardware_override` for forced operation. |
+| No GPU detected | GPU driver / Vulkan runtime not installed (Vulkan loader missing), or enumeration failed | Install the GPU driver (it bundles the Vulkan runtime); confirm with `anvilml --print-hardware`; or set `hardware_override` in `anvilml.toml`. |
+| ROCm worker dead on Windows | AMD *PyTorch on Windows* package missing, or GPU unsupported | Install **AMD Software: PyTorch on Windows** (ROCm ≥ 7.2); confirm the GPU is a supported Radeon RX 7000/9000-series or Ryzen AI part. |
 | Second job not faster | Different `(model_id, dtype)` each run, or eviction churn | Confirm cache key stability; raise VRAM headroom. |
 
 ### 22.3 Maintenance
@@ -1270,6 +1311,8 @@ The single normative reference for every OS-divergent detail. Each item is also 
 | Shutdown signal | `ctrl_c` + `SIGTERM` | `ctrl_c` + `ctrl_close`/`ctrl_shutdown` | §16.3 |
 | Force-kill child | `Child::kill()` (`SIGKILL`) | `Child::kill()` (`TerminateProcess`) | §8.5, §16.3 |
 | Device visibility env | `CUDA_/HIP_VISIBLE_DEVICES` | identical | §8.3 |
+| GPU enumeration | Vulkan → PCI sysfs/NVML fallback | Vulkan → DXGI fallback | §5 |
+| ROCm torch install | Linux pip ROCm index | AMD *PyTorch on Windows* package (ROCm ≥ 7.2) | §21.3 |
 | Browser launch | `xdg-open` (via `open` crate) | `cmd /c start` (via `open` crate) | §16.2 |
 | Static file serving | `ServeDir` | `ServeDir` (path separators normalised by `PathBuf`) | §11 |
 
@@ -1337,7 +1380,7 @@ Frontend (BloomeryUI) work proceeds in parallel against the committed `openapi.j
 Tracked, intentionally out of MVP:
 
 1. **Per-step progress & latent preview.** `Progress.step/step_total` fields and `ImageReady`-style preview frames are reserved but unused; wiring the diffusers step callback to emit them is a fast-follow.
-2. **Additional backends.** Intel IPEX, Apple MPS, AMD DirectML — each adds a `DeviceType` variant, a detector, and worker env/device-string handling. Deferred to keep the MVP matrix at CUDA/ROCm/CPU.
+2. **Additional backends.** Intel IPEX, Apple MPS, and AMD DirectML — each adds a `DeviceType` variant, a detector, and worker env/device-string handling. Deferred; the MVP matrix is CUDA + ROCm (Linux **and** Windows) + CPU. DirectML remains deferred as a future fallback for AMD GPUs not covered by ROCm-on-Windows.
 3. **Authentication.** Pluggable API-key / JWT for non-localhost deployment. MVP relies on `127.0.0.1` binding.
 4. **Sub-graph chunking.** Batching contiguous fast nodes into one `Execute` to cut IPC overhead. The executor already produces an ordered step list, so this is additive.
 5. **JobSettings / graph parameter redundancy.** MVP keeps both; a later revision can make the graph the sole carrier and reduce `JobSettings` to `device_preference` + a `seed` policy.
