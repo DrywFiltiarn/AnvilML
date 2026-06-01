@@ -8,7 +8,9 @@ name = "anvilml"
 path = "src/main.rs"
 
 [dependencies]
+anvilml-core = { path = "../crates/anvilml-core" }
 anvilml-server = { path = "../crates/anvilml-server" }
+clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["json"] }
 
