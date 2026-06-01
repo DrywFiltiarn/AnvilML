@@ -48,6 +48,9 @@ This rebuild is organised by **vertical slice**. Phase 1 produces a binary you c
 | 020 | OpenAPI & Launcher Polish | `openapi.json` generation; browser auto-open; CI diff gate | `cargo run -p anvilml-openapi`; binary opens browser |
 | 021 | Real Python Worker — ZiT | Replace mock: real ZiT pipeline nodes | ZiT model → real generated image end-to-end |
 | 022 | Real Python Worker — SDXL & Hardening | SDXL nodes; OOM trap; cross-platform CI green | SDXL model → image; full CI green both OSes |
+| 023 | Auto-Provisioning & Workspace Release Version | Background worker-dep install with live state; workspace release version | Clean run: API up immediately, `provisioning.progress` → Ready |
+| 024 | Release Packaging & Automation | Version-bump → auto-tag → signed cross-platform GitHub Release zips | Bump workspace version → published Linux+Windows zips + SHA256SUMS + GPG |
+| 025 | Documentation Site | Full mdBook user/operator manual, auto-deployed to GitHub Pages | `mdbook build docs-site`; site publishes to Pages |
 
 ## Milestone groupings (for reporting)
 
@@ -60,6 +63,7 @@ This rebuild is organised by **vertical slice**. Phase 1 produces a binary you c
 | End-to-end generation (mock) | 011–017 | Full job flow with mock worker: submit → image → manage |
 | Production surface | 018–020 | Worker admin, frontend, OpenAPI, launcher polish |
 | Real inference | 021–022 | Real ZiT + SDXL pipelines; hardening; CI green |
+| Distribution readiness | 023–025 | Self-provisioning on first run; signed cross-platform releases |
 
 ## Dependency principle
 

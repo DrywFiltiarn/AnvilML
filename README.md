@@ -40,9 +40,12 @@ REST + WebSocket API.
 ## Where AnvilML fits
 
 ```
-SindriStudio  (one-click launcher — separate component)
-   ├─ starts ─► AnvilML backend        ◄── this repository
-   └─ starts ─► BloomeryUI frontend
+SindriStudio  (one-click launcher — separate component, what end users run)
+   ├─ starts ─► AnvilML backend (headless)   ◄── this repository
+   └─ starts ─► BloomeryUI server (separate process)
+
+AnvilML and BloomeryUI are independent sibling processes. AnvilML never starts or
+serves BloomeryUI; BloomeryUI reaches AnvilML over the network like any API client.
 
 Runtime data flow:
 
@@ -66,7 +69,7 @@ design.
 ## Features (target capability)
 
 - Text-to-image generation via the **ZiT** (distilled/turbo) and **SDXL** pipelines.
-- Hardware backends: **NVIDIA CUDA**, **AMD ROCm*, and **CPU** fallback.
+- Hardware backends: **NVIDIA CUDA**, **AMD ROCm** (Linux), and **CPU** fallback.
 - Multi-GPU: one worker per device; jobs run concurrently across devices.
 - In-worker LRU pipeline cache so repeat jobs skip model reloads.
 - Content-addressed PNG artifacts served over REST; live progress over WebSocket.
@@ -79,7 +82,7 @@ design.
 | OS | Linux (x86_64) or Windows (x86_64); macOS = CPU-only |
 | Rust | Toolchain pinned by `rust-toolchain.toml` (build from source) |
 | Python | 3.12.x, in a **user-managed** virtual environment |
-| GPU (optional) | NVIDIA + CUDA, or AMD + ROCm. No GPU → CPU worker |
+| GPU (optional) | NVIDIA + CUDA, or AMD + ROCm (Linux). No GPU → CPU worker |
 
 ## Installation
 
@@ -144,10 +147,14 @@ Subscribe to `ws://127.0.0.1:8488/v1/events` for live progress; fetch results fr
 
 ## Frontend
 
-[BloomeryUI](https://github.com/DrywFiltiarn/BloomeryUI) is the reference frontend and is
-distributed separately; SindriStudio bundles it with this backend. AnvilML can serve a built
-frontend from a local directory (`local` mode), reverse-proxy a dev server (`remote` mode), or run
-API-only (`headless` mode). Any client that honours the API contract works.
+AnvilML runs **headless by default** — it exposes only the REST/WebSocket API. The reference
+frontend, [BloomeryUI](https://github.com/DrywFiltiarn/BloomeryUI), is a **separate server**:
+SindriStudio launches AnvilML and the BloomeryUI server as two sibling processes. **AnvilML never
+serves or launches BloomeryUI itself.**
+
+For convenience when running AnvilML standalone with a *custom* frontend, the optional `local` mode
+serves static files from a directory and `remote` mode reverse-proxies a dev server — but these are
+not used for BloomeryUI. Any client that honours the API contract works.
 
 ## Repository layout
 

@@ -45,7 +45,7 @@ Implement anvilml-openapi/src/main.rs: #[derive(OpenApi)] struct referencing all
 - **Prereqs:** P20-A2
 - **Tags:** —
 
-Add `open` crate to backend. In main.rs after the server is bound and /health is confirmed reachable: unless args.no_browser or frontend.mode==Headless, call open::that(format!('http://{}:{}', host, port)); log if it fails (do not abort). Verify: cargo run (Local mode) opens the default browser to the served page; cargo run -- --no-browser does not.
+Add `open` crate to backend. In main.rs after the server is bound and /health is confirmed reachable: unless args.no_browser or frontend.mode==Headless, call open::that(format!('http://{}:{}', host, port)); log if it fails (do not abort). Note: default mode is Headless so no browser opens by default; only opens when a custom frontend is configured (Local/Remote). Verify: with frontend.mode=local, cargo run opens the browser; default (headless) and --no-browser do not.
 
 #### P20-A4: anvilml: CI openapi-diff gate + python-worker pytest job
 

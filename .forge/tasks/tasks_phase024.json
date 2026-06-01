@@ -1,0 +1,98 @@
+[
+  {
+    "id": "P24-A1",
+    "description": "release: packaging manifest and staging layout script",
+    "phase": "24",
+    "project": "anvilml",
+    "prereqs": [
+      "P23-A7"
+    ],
+    "context": "Create scripts/package_release.sh (+ .ps1 mirror) assembling a platform staging dir: copy the built binary (anvilml/anvilml.exe), anvilml.toml (frontend.mode forced 'headless'), worker/ (full Python source incl requirements/*.txt baseline), scripts/install_worker_deps.{sh,ps1}, backend/openapi.json, QUICKSTART.md, LICENSE. Pre-create logs/ and artifacts/ (each .gitkeep) and models/ subdirs diffusion,lora,vae,controlnet,clip,unet,upscale (mirror ModelKind) each with a README.txt. Args: --target --binary-path --release-version --out-dir. bash -n passes; run produces full tree.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P24-A2",
+    "description": "release: QUICKSTART and first-run docs included in package",
+    "phase": "24",
+    "project": "anvilml",
+    "prereqs": [
+      "P24-A1"
+    ],
+    "context": "Create dist/QUICKSTART.md (bundled by P24-A1). Content: extract zip; Linux chmod +x anvilml then ./anvilml (Windows anvilml.exe); on first run AnvilML auto-provisions the worker venv in the background (needs Python 3.12 + internet); API is reachable immediately at http://127.0.0.1:8488; provisioning progress at GET /v1/system/env and over /v1/events; where models go (models/<kind>/); how to edit anvilml.toml; how to verify SHA256SUMS and the GPG signature. Verify: file exists, valid markdown, referenced by package_release.sh.",
+    "tags": []
+  },
+  {
+    "id": "P24-A3",
+    "description": "release: version-watch job auto-creates the git tag on workspace bump",
+    "phase": "24",
+    "project": "anvilml",
+    "prereqs": [
+      "P24-A2"
+    ],
+    "context": "Create .github/workflows/release-tag.yml triggered on push to main. Step: read [workspace.package] version from Cargo.toml at HEAD and at HEAD~1 (git show HEAD~1:Cargo.toml). If unchanged, exit 0 (no-op). If changed to vNEW: verify tag vNEW does not already exist; create and push annotated tag vNEW using the default GITHUB_TOKEN. Guard against first-commit (no HEAD~1). This is the ONLY trigger for releases. Verify (documented): bumping workspace.package.version and pushing to main creates tag v<new>; an unchanged push creates no tag.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P24-A4",
+    "description": "release: Linux x86_64 build job",
+    "phase": "24",
+    "project": "anvilml",
+    "prereqs": [
+      "P24-A3"
+    ],
+    "context": "Create .github/workflows/release.yml triggered on tag push matching 'v*'. Job build-linux (ubuntu-latest, toolchain 1.95.0 from rust-toolchain.toml): cargo build --release --target x86_64-unknown-linux-gnu -p anvilml (binary only, NO mock-hardware feature). Run scripts/package_release.sh to stage, then zip to anvilml-<version>-linux-x64.zip. Upload as a workflow artifact for the publish job. Verify (documented): tag push produces the linux zip artifact containing the binary + worker/ + models structure + config.",
+    "tags": []
+  },
+  {
+    "id": "P24-A5",
+    "description": "release: Windows x86_64 MSVC build job",
+    "phase": "24",
+    "project": "anvilml",
+    "prereqs": [
+      "P24-A4"
+    ],
+    "context": "Add job build-windows (windows-latest, toolchain 1.95.0) to release.yml: cargo build --release --target x86_64-pc-windows-msvc -p anvilml (NO mock-hardware). Run scripts/package_release.ps1 to stage (anvilml.exe, install_worker_deps.ps1 as the active script), zip to anvilml-<version>-windows-x64.zip. Upload as workflow artifact. Note: release uses MSVC (native, conventional Windows artifact) even though the dev cross-check uses windows-gnu. Verify (documented): tag push produces the windows zip artifact with anvilml.exe + worker/ + structure.",
+    "tags": []
+  },
+  {
+    "id": "P24-A6",
+    "description": "release: checksums and GPG signatures for both artifacts",
+    "phase": "24",
+    "project": "anvilml",
+    "prereqs": [
+      "P24-A5"
+    ],
+    "context": "Add job sign (ubuntu, needs build-linux+build-windows) to release.yml: download both zip artifacts, generate SHA256SUMS (one file covering both zips), and a detached GPG signature per zip (.asc) plus SHA256SUMS.asc, using a GPG private key + passphrase from repo secrets (ANVILML_GPG_KEY, ANVILML_GPG_PASSPHRASE) imported via gnupg. If the secret is absent, still produce SHA256SUMS and warn that signing was skipped (do not fail the release). Verify (documented): SHA256SUMS verifies both zips; gpg --verify checks each .asc against the published public key.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P24-A7",
+    "description": "release: publish GitHub Release with notes, assets, and pre-release flag",
+    "phase": "24",
+    "project": "anvilml",
+    "prereqs": [
+      "P24-A6"
+    ],
+    "context": "Add job publish (needs sign) to release.yml: create a GitHub Release for the pushed tag. Release notes = commit summary since the previous tag (git log <prevtag>..<tag> --pretty); use softprops/action-gh-release or gh CLI. Attach both platform zips, SHA256SUMS, and all .asc signatures. Mark as pre-release IF the version contains a hyphen suffix (e.g. 0.2.0-rc1). Title 'AnvilML <version>'. Verify (documented): pushing tag v<x> publishes a Release with both zips + sums + sigs, auto-generated notes, correctly flagged stable vs pre-release.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P24-A8",
+    "description": "release: end-to-end packaging proof and deferred-signing note",
+    "phase": "24",
+    "project": "anvilml",
+    "prereqs": [
+      "P24-A7"
+    ],
+    "context": "No build code. Write docs/RELEASE.md documenting the full flow: bump [workspace.package] version -> push main -> release-tag.yml tags v<x> -> release.yml builds both platforms, signs, publishes. Include: how to download+verify (SHA256SUMS + gpg --verify), the published GPG public key location, and the standalone-headless note. Record DEFERRED items in ANVILML_DESIGN.md \u00a725: (1) Authenticode/cosign 'genuine' signing for SmartScreen trust; (2) a worker-dependency UPDATE facility for when requirements baselines change post-release. Verify: docs/RELEASE.md exists; \u00a725 lists both deferred items.",
+    "tags": []
+  }
+]

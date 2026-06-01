@@ -1,0 +1,107 @@
+[
+  {
+    "id": "P23-A1",
+    "description": "anvilml: workspace release-version field (independent of crate versions)",
+    "phase": "23",
+    "project": "anvilml",
+    "prereqs": [
+      "P22-A6"
+    ],
+    "context": "In workspace root Cargo.toml add [workspace.package] version=\"0.1.0\" as the PRODUCT RELEASE VERSION. Crates KEEP their own independent [package] version (do NOT set version.workspace=true) - per-crate versions may diverge from the release version. Expose the workspace release version to the backend (e.g. a tiny anvilml-version crate, or a build script) so GET /health and the launcher banner report the RELEASE version, not the backend crate version. Verify: cargo metadata shows workspace.package.version; curl /health version equals it.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P23-A2",
+    "description": "anvilml-core: ProvisioningState type and EnvReport extension",
+    "phase": "23",
+    "project": "anvilml",
+    "prereqs": [
+      "P23-A1"
+    ],
+    "context": "Extend src/types/worker.rs (or types/env.rs): add ProvisioningState enum (NotStarted, InProgress{percent:Option<u8>, message:String}, Ready, Failed{reason:String}). Add provisioning: ProvisioningState field to EnvReport (default NotStarted). Update anvilml.toml + ENVIRONMENT.md if any new config key is introduced (none expected). Derive Serialize/Deserialize/Clone/Debug + utoipa::ToSchema. cargo test -p anvilml-core -- provisioning exits 0; config_reference drift test still passes.",
+    "tags": []
+  },
+  {
+    "id": "P23-A3",
+    "description": "anvilml-core: ProvisioningProgress WS event variant",
+    "phase": "23",
+    "project": "anvilml",
+    "prereqs": [
+      "P23-A2"
+    ],
+    "context": "Add a WsEvent variant ProvisioningProgress in src/types/events.rs serializing as event='provisioning.progress' with fields {state, percent:Option<u8>, message, timestamp}. Mirrors ProvisioningState. Update the known event list in ARCHITECTURE.md \u00a77. cargo test -p anvilml-core -- events exits 0: assert provisioning.progress serializes with the correct event tag.",
+    "tags": []
+  },
+  {
+    "id": "P23-A4",
+    "description": "anvilml-worker: provisioner module runs install_worker_deps as a child process",
+    "phase": "23",
+    "project": "anvilml",
+    "prereqs": [
+      "P23-A3"
+    ],
+    "context": "Create crates/anvilml-worker/src/provisioner.rs: async fn provision(cfg, progress_tx: mpsc::Sender<ProvisioningState>) -> Result<(),AnvilError>. Resolve platform script (install_worker_deps.sh unix / .ps1 windows), spawn as child, stream stdout/stderr lines, map recognizable lines to InProgress{message} (percent may be None), set Ready on exit 0 else Failed{reason}. Cancel-safe; no panic on missing script. cargo test -p anvilml-worker --features mock-hardware -- provisioner exits 0 (fake script fixture). Also pass: cargo check --target x86_64-pc-windows-gnu --features mock-hardware.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P23-A5",
+    "description": "anvilml: first-run detection triggers background provisioning",
+    "phase": "23",
+    "project": "anvilml",
+    "prereqs": [
+      "P23-A4"
+    ],
+    "context": "In backend startup: after preflight, if venv missing OR torch import fails AND ANVILML_WORKER_MOCK unset, set EnvReport.provisioning=InProgress and tokio::spawn provisioner::provision in the background - the server MUST bind immediately and stay responsive. Forward each ProvisioningState to AppState.env_report and broadcast ProvisioningProgress. On Ready (re)spawn the WorkerPool; on Failed leave provisioning=Failed. Verify: with no venv, cargo run binds immediately; /v1/system/env shows InProgress then Ready; workers come up after Ready.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P23-A6",
+    "description": "anvilml-server: job submission 503 while provisioning",
+    "phase": "23",
+    "project": "anvilml",
+    "prereqs": [
+      "P23-A5"
+    ],
+    "context": "In handlers/jobs.rs submit_job: if EnvReport.provisioning is InProgress or NotStarted, return 503 with body {error:'provisioning', message, request_id}; if Failed return 503 {error:'workers_unavailable'}. Only accept jobs when Ready (or when ANVILML_WORKER_MOCK=1, which bypasses provisioning entirely). Wire the check ahead of validation. Verify: during provisioning curl POST /v1/jobs -> 503 provisioning; after Ready -> 202.",
+    "tags": []
+  },
+  {
+    "id": "P23-A7",
+    "description": "anvilml: document provisioning lifecycle proof",
+    "phase": "23",
+    "project": "anvilml",
+    "prereqs": [
+      "P23-A6"
+    ],
+    "context": "No code. Write docs/PROOF_phase023.md: exact steps to observe background provisioning on a clean machine - delete venv; run binary (no mock); show server answering /health immediately; websocat /v1/events streaming provisioning.progress; /v1/system/env transitioning NotStarted->InProgress->Ready; POST /v1/jobs returning 503 then 202 once Ready. Complete when a human observes the full lifecycle with the API responsive throughout.",
+    "tags": []
+  },
+  {
+    "id": "P23-B1",
+    "description": "anvilml: per-crate VERSION constants and ComponentVersions aggregate type",
+    "phase": "23",
+    "project": "anvilml",
+    "prereqs": [
+      "P23-A1"
+    ],
+    "context": "In EACH workspace crate (anvilml-core,-hardware,-registry,-ipc,-worker,-scheduler,-server,-openapi) add to lib.rs (main.rs for openapi): pub const VERSION: &str = env!(\"CARGO_PKG_VERSION\");. In anvilml-core create src/types/version.rs: ComponentVersions struct { anvilml (workspace release version), backend, core, hardware, registry, ipc, worker, scheduler, server, openapi: String } + python_worker: Option<String>. Derive Serialize/Deserialize/Clone/Debug + utoipa::ToSchema. cargo test -p anvilml-core -- version exits 0; config_reference drift test still passes.",
+    "tags": []
+  },
+  {
+    "id": "P23-B2",
+    "description": "anvilml-server: GET /v1/system/versions handler",
+    "phase": "23",
+    "project": "anvilml",
+    "prereqs": [
+      "P23-B1"
+    ],
+    "context": "Create handlers/system.rs get_versions(State)->Json<ComponentVersions>: populate anvilml = workspace release version (from P23-A1), backend = its own CARGO_PKG_VERSION, and each crate field from that crate's pub VERSION const (anvilml_core::VERSION etc). python_worker: read worker/__init__.py __version__ at startup into AppState (Option, None if absent). Wire GET /v1/system/versions. Add #[utoipa::path] so it lands in openapi.json. Verify: curl /v1/system/versions returns 200 with anvilml + every crate version and python_worker.",
+    "tags": []
+  }
+]

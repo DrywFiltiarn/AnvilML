@@ -1,0 +1,144 @@
+[
+  {
+    "id": "P25-A1",
+    "description": "docs-site: mdBook scaffold (book.toml, SUMMARY.md, src tree)",
+    "phase": "25",
+    "project": "anvilml",
+    "prereqs": [
+      "P24-A8"
+    ],
+    "context": "Create docs-site/ mdBook project: book.toml (title 'AnvilML Documentation', authors, git-repo-url, default theme, search enabled, build dir = book/). src/SUMMARY.md listing every chapter file created in this phase (Overview, Installation, Configuration, Models, Using the API, How-tos, Troubleshooting, Operations, Release & Versioning, Glossary/FAQ). Create empty src/*.md stubs referenced by SUMMARY so the book builds. Verify: mdbook build docs-site produces docs-site/book/index.html with working nav + search; mdbook test passes (no broken internal links).",
+    "tags": []
+  },
+  {
+    "id": "P25-A2",
+    "description": "docs-site: Overview & Concepts chapter",
+    "phase": "25",
+    "project": "anvilml",
+    "prereqs": [
+      "P25-A1"
+    ],
+    "context": "Write docs-site/src/overview.md: what AnvilML is (Rust backend engine that supervises Python inference workers, exposes REST+WebSocket, manages jobs/models/artifacts); the SindriStudio relationship (AnvilML is headless backend; SindriStudio is the separate launcher; BloomeryUI is the separate frontend); architecture at a glance (the 8 crates + Python worker), linking to ARCHITECTURE.md. Plain factual prose, no marketing. Verify: chapter renders in the book, links resolve, mdbook build clean.",
+    "tags": []
+  },
+  {
+    "id": "P25-A3",
+    "description": "docs-site: Installation & First Run chapter",
+    "phase": "25",
+    "project": "anvilml",
+    "prereqs": [
+      "P25-A2"
+    ],
+    "context": "Write docs-site/src/installation.md (the authoritative EXPANDED quickstart; the in-zip dist/QUICKSTART.md stays a lean pointer to this). Cover: download a release zip per platform; verify SHA256SUMS + GPG signature; extract; Linux chmod +x; run anvilml/anvilml.exe; first-run BACKGROUND auto-provisioning of the worker venv (needs Python 3.12 + internet, downloads torch/diffusers, API responsive immediately at :8488, progress via /v1/system/env + /v1/events provisioning.progress); how to confirm readiness; system requirements (CUDA/ROCm/CPU). Verify: renders, mdbook build clean, links resolve.",
+    "tags": []
+  },
+  {
+    "id": "P25-A4",
+    "description": "docs-site: Configuration Reference chapter",
+    "phase": "25",
+    "project": "anvilml",
+    "prereqs": [
+      "P25-A3"
+    ],
+    "context": "Write docs-site/src/configuration.md from the committed anvilml.toml + docs/ENVIRONMENT.md (single source; do not invent fields). Document every ServerConfig field + nested section (host, port, db_path, artifact_dir, num_threads, num_interop_threads, venv_path, max_ipc_payload_mib, [[model_dirs]], [rocm], [frontend] modes local/remote/headless, [gpu_selection], [limits], [hardware_override]) with type, default, meaning, and the matching ANVILML_* env override + precedence (defaults < toml < env < CLI). Verify: every key present in anvilml.toml appears in this chapter; mdbook build clean.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P25-A5",
+    "description": "docs-site: Models chapter",
+    "phase": "25",
+    "project": "anvilml",
+    "prereqs": [
+      "P25-A4"
+    ],
+    "context": "Write docs-site/src/models.md: the models/ directory layout with one subdir per ModelKind (diffusion, lora, vae, controlnet, clip, unet, upscale); supported file formats (.safetensors/.ckpt/.pt/.bin); how scanning + id derivation works at a high level; dtype inference from filename; how to trigger a rescan (POST /v1/models/rescan) and list models (GET /v1/models). Verify: renders, links to the API chapter resolve, mdbook build clean.",
+    "tags": []
+  },
+  {
+    "id": "P25-A6",
+    "description": "docs-site: Using the API chapter (REST + WebSocket)",
+    "phase": "25",
+    "project": "anvilml",
+    "prereqs": [
+      "P25-A5"
+    ],
+    "context": "Write docs-site/src/api.md: overview of the REST surface (health, system, system/env, system/versions, jobs CRUD+cancel, models, workers, artifacts) and the /v1/events WebSocket (event names: job.queued/started/progress/image_ready/completed/failed/cancelled, worker.status, system.stats, provisioning.progress); a full worked example submitting a ZiT job via curl and watching events via websocat; pointer to the machine-readable openapi.json shipped in the release. Verify: renders, example commands accurate to the implemented endpoints, mdbook build clean.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P25-A7",
+    "description": "docs-site: How-tos chapter",
+    "phase": "25",
+    "project": "anvilml",
+    "prereqs": [
+      "P25-A6"
+    ],
+    "context": "Write docs-site/src/howto.md with task-oriented recipes: repair a corrupted/incomplete worker venv (delete venv dir -> restart -> background re-provision); change worker dependency versions (edit worker/requirements/<backend>.txt, recreate venv); switch GPU backend CUDA/ROCm/CPU (hardware_override or env); run headless (default) vs serving a CUSTOM frontend via frontend.mode (not BloomeryUI - SindriStudio runs that separately); cancel and delete jobs; find and read logs; check running versions (GET /v1/system/versions). Each: goal, steps, expected result. Verify: renders, mdbook build clean.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P25-A8",
+    "description": "docs-site: Troubleshooting chapter",
+    "phase": "25",
+    "project": "anvilml",
+    "prereqs": [
+      "P25-A7"
+    ],
+    "context": "Write docs-site/src/troubleshooting.md: symptom -> cause -> fix entries for preflight failures (python_missing, torch_unavailable), provisioning stuck/Failed (network, wrong Python, disk space), cuda_oom on a job (pipeline cache eviction, smaller model/res), worker crash + auto-respawn behavior (what's normal), port already in use (change --port), 503 responses (provisioning vs workers_unavailable), Windows-specific notes (line endings, venv path, SmartScreen on unsigned binary). Verify: renders, mdbook build clean.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P25-A9",
+    "description": "docs-site: Operations chapter",
+    "phase": "25",
+    "project": "anvilml",
+    "prereqs": [
+      "P25-A8"
+    ],
+    "context": "Write docs-site/src/operations.md: graceful shutdown (Ctrl-C / SIGTERM drains workers + flushes WAL); backing up the SQLite DB (anvilml.db + -wal/-shm) and the artifacts/ dir; ghost-job reset behavior on restart; upgrading to a new release (replace binary + worker source, keep db/models/artifacts, re-run provisioning if requirements changed); log locations and rotation. Verify: renders, accurate to implemented behavior, mdbook build clean.",
+    "tags": []
+  },
+  {
+    "id": "P25-A10",
+    "description": "docs-site: Release & Versioning + Glossary/FAQ chapters",
+    "phase": "25",
+    "project": "anvilml",
+    "prereqs": [
+      "P25-A9"
+    ],
+    "context": "Write docs-site/src/release-versioning.md: how the workspace release version relates to per-crate versions; reading GET /v1/system/versions; the bump->auto-tag->signed-release flow (link docs/RELEASE.md); pre-release semantics (-suffix). Write docs-site/src/glossary.md: terms (job, graph, node, worker, artifact, pipeline, DAG, mock-hardware, provisioning) + a short FAQ. Verify: both render, links resolve, mdbook build clean.",
+    "tags": []
+  },
+  {
+    "id": "P25-A11",
+    "description": "docs-site: GitHub Pages auto-deploy workflow",
+    "phase": "25",
+    "project": "anvilml",
+    "prereqs": [
+      "P25-A10"
+    ],
+    "context": "Create .github/workflows/docs.yml: on push to main affecting docs-site/** (and manual workflow_dispatch), install mdbook, run mdbook build docs-site, and deploy docs-site/book/ to GitHub Pages using the official actions/upload-pages-artifact + actions/deploy-pages with the pages permission/environment. Build must fail the job on broken links (mdbook test). Verify (documented): pushing a docs-site change publishes the updated site to the repo's GitHub Pages URL; a broken internal link fails CI.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P25-A12",
+    "description": "docs-site: full-build proof and cross-links from README",
+    "phase": "25",
+    "project": "anvilml",
+    "prereqs": [
+      "P25-A11"
+    ],
+    "context": "Final assembly: ensure SUMMARY.md lists all chapters in reading order; add a top-level docs link in README.md (and dist/QUICKSTART.md pointer) to the published GitHub Pages URL; write docs/PROOF_phase025.md with the steps: mdbook build docs-site, open book/index.html, confirm every chapter renders with working nav + search, confirm no broken links (mdbook test). Complete when the full manual builds locally and a human can browse all chapters end to end.",
+    "tags": []
+  }
+]

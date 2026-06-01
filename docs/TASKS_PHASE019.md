@@ -30,7 +30,7 @@ Every task in this phase implements **one module or one endpoint** plus its test
 - **Prereqs:** P18-A4
 - **Tags:** reasoning
 
-Add tower-http ServeDir feature. Create src/frontend.rs: add_frontend_route(router,mode)->Router. Local{path}: ServeDir at / with SPA fallback to {path}/index.html; if path missing log warn + serve inline HTML page '<h1>AnvilML</h1><p>Frontend not found. API at /v1/.</p>'. Register as lowest-priority catch-all AFTER all /v1 and /health routes. Wire in main.rs from cfg.frontend.mode. Verify: create ./bloomery/index.html with 'hello'; cargo run; browser http://127.0.0.1:8488/ shows it; /health and /v1/system still work.
+Add tower-http ServeDir feature. Create src/frontend.rs: add_frontend_route(router,mode)->Router. Local{path}: ServeDir at / with SPA fallback to {path}/index.html; if path missing log warn + serve inline HTML '<h1>AnvilML</h1><p>Frontend not found. API at /v1/.</p>'. Register lowest-priority catch-all AFTER /v1 and /health. Serves a CUSTOM frontend only; BloomeryUI is NOT served by AnvilML (SindriStudio runs it separately). Wire from cfg.frontend.mode. Verify: create ./frontend/index.html; frontend.mode=local path=./frontend; cargo run; browser / shows it; /health and /v1/system still work.
 
 #### P19-A2: anvilml-server: frontend Headless mode (no catch-all)
 
@@ -44,7 +44,7 @@ In frontend.rs handle FrontendMode::Headless: register no catch-all; non-API pat
 - **Prereqs:** P19-A2
 - **Tags:** reasoning
 
-Add hyper client. In frontend.rs handle FrontendMode::Remote{url}: catch-all handler proxies non-API requests to {url}{path}, forwarding headers (strip hop-by-hop), rewriting Host, streaming response back. Dev-use tolerance is fine. Verify: run any static server on :5173 (e.g. python -m http.server 5173); set frontend.mode=remote url=http://localhost:5173; cargo run; browser http://127.0.0.1:8488/ shows the proxied page; /v1/system still served locally.
+Add hyper client. In frontend.rs handle FrontendMode::Remote{url}: catch-all handler proxies non-API requests to {url}{path}, forwarding headers (strip hop-by-hop), rewriting Host, streaming response back. For proxying a custom frontend dev server; not for BloomeryUI (SindriStudio's job). Dev-use tolerance is fine. Verify: run any static server on :5173 (e.g. python -m http.server 5173); set frontend.mode=remote url=http://localhost:5173; cargo run; browser http://127.0.0.1:8488/ shows the proxied page; /v1/system still served locally.
 
 
 ## Runnable Proof

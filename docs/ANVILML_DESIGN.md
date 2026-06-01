@@ -227,7 +227,8 @@ pub struct HardwareOverrideConfig {
 pub struct FrontendConfig { pub mode: FrontendMode }
 
 pub enum FrontendMode {
-    /// Serve static files from a local directory (default: ./bloomery adjacent to the binary).
+    /// Serve static files from a local directory (for a custom/third-party frontend).
+    /// Not used for BloomeryUI, which SindriStudio runs as a separate server.
     Local { path: PathBuf },
     /// Reverse-proxy non-API requests to a remote frontend dev server / host.
     Remote { url: Url },
@@ -273,8 +274,8 @@ use_hipblaslt = true
 # hsa_override_gfx_version = "10.3.0"
 
 [frontend]
-mode = "local"          # local | remote | headless
-# path = "./bloomery"   # for local
+mode = "headless"       # headless (default) | local | remote
+# path = "./frontend"   # custom frontend dir, for mode = "local" (NOT BloomeryUI)
 # url  = "http://localhost:5173"  # for remote
 
 [gpu_selection]
@@ -301,7 +302,7 @@ ws_broadcast_capacity = 256
 | `ANVILML_WORKER_LOG_DIR` | `worker_log_dir` | `./logs` |
 | `ANVILML_NUM_THREADS` | `num_threads`; passed to worker | `14` |
 | `ANVILML_NUM_INTEROP_THREADS` | `num_interop_threads`; passed to worker | `4` |
-| `ANVILML_FRONTEND__MODE` | `frontend.mode` | `local` |
+| `ANVILML_FRONTEND__MODE` | `frontend.mode` | `headless` |
 | `ANVILML_GPU_SELECTION__DEFAULT_DEVICE` | `gpu_selection.default_device` | `auto` |
 | `ANVILML_LOG` / `RUST_LOG` | tracing filter (§19) | `info` |
 | `ANVILML_WORKER_MOCK` | Python worker stub mode (§14.5) | unset |
@@ -820,10 +821,10 @@ Background `tokio` task, interval 5 s: reads the latest `MemoryReport` per worke
 
 ## 11. Frontend Serving (`anvilml-server`)
 
-Determined at startup from `frontend.mode`. A single catch-all axum route is registered last (lowest priority, after all `/v1/*` and `/health`).
+Determined at startup from `frontend.mode`. **The default is `Headless`** — AnvilML serves only the API; BloomeryUI is run as a separate server by SindriStudio. `Local` and `Remote` exist purely for users running a custom frontend through AnvilML standalone. A single catch-all axum route is registered last (lowest priority, after all `/v1/*` and `/health`).
 
-- **`Local { path }`** — `ServeDir` mounted at `/`; SPA fallback serves `{path}/index.html` (200) for unmatched paths. Default `path` is `./bloomery` adjacent to the binary. If the directory is missing, log a warning and serve a minimal inline HTML page explaining the situation; the API stays fully functional.
-- **`Remote { url }`** — reverse-proxy all non-API, non-`/health` requests to `url` via a `hyper` client in a catch-all handler. Forward request headers; rewrite `Host`; stream the response back. For running BloomeryUI under a dev server (e.g. Vite) while AnvilML is the backend.
+- **`Local { path }`** — `ServeDir` mounted at `/`; SPA fallback serves `{path}/index.html` (200) for unmatched paths. For serving a **custom/third-party** frontend from disk (e.g. `./frontend`); it is **not** used for BloomeryUI. If the directory is missing, log a warning and serve a minimal inline HTML page explaining the situation; the API stays fully functional.
+- **`Remote { url }`** — reverse-proxy all non-API, non-`/health` requests to `url` via a `hyper` client in a catch-all handler. Forward request headers; rewrite `Host`; stream the response back. For proxying a **custom** frontend dev server (e.g. Vite) while AnvilML is the backend; BloomeryUI is run separately by SindriStudio, not proxied here.
 - **`Headless`** — no frontend route; pure API server; the launcher's browser-open step is skipped.
 
 ---
@@ -1152,7 +1153,7 @@ Owned by BloomeryUI; gate is type-check + lint + unit + build against the commit
 
 ### 20.4 Manual Smoke Tests (pre-release)
 
-- **Phase-1 smoke**: build release, start `anvilml`, browser opens, frontend connects, `system.stats` ticks, submit an empty/trivial job, Ctrl-C shuts down cleanly.
+- **Phase-1 smoke**: build release, start `anvilml` (headless by default — no browser), confirm `/health` and `system.stats` tick, submit an empty/trivial job, Ctrl-C shuts down cleanly. (With a custom frontend configured via `frontend.mode=local`, the browser-open step also fires.)
 - **ZiT end-to-end**: place a ZiT model in `models/diffusion/`, submit via the reference form, see progress then image in the gallery; submit again and confirm the second run is faster (pipeline cache hit).
 - **SDXL end-to-end**: same sequence with an SDXL model; confirm both pipelines coexist within VRAM or evict cleanly.
 - **Crash recovery**: kill a worker process manually; confirm the running job fails, the worker respawns within ~2 s, and a new job succeeds.
@@ -1218,7 +1219,7 @@ These are run once by the user; AnvilML never invokes them automatically.
 ./anvilml            (binary)
 ./anvilml.toml            (config)
 ./venv/                   (user-managed Python env)
-./bloomery/               (frontend dist, if Local mode)
+./frontend/               (custom frontend dist, only if Local mode; not BloomeryUI)
 ./models/                 (diffusion/, vae/, lora/, … per model_dirs)
 ./artifacts/{ab}/{hash}.png
 ./anvilml.db (+ -wal, -shm)
@@ -1297,7 +1298,7 @@ The milestone groupings below are a higher-level capability summary that the pha
 | **M1 — Core & Contracts** | 002–004 | Config + graceful shutdown; `anvilml-core` types/config/error; `anvilml-hardware` detectors + mock, surfaced via `/v1/system`. | Configurable start + clean shutdown; `curl /v1/system` shows detected (or mock) hardware; detector fixtures green. |
 | **M2 — Persistence & Workers** | 005–010 | SQLite open/migrate + ghost reset; `anvilml-registry` scanner/store; WS event stream; `anvilml-ipc` framing; `anvilml-worker` pool/bridge/env; crash recovery. | Models scan into DB and list via REST; real mock Python worker does `Ping→Pong`; killed worker respawns to Idle. |
 | **M3 — Scheduling** | 011–013 | `anvilml-scheduler` node-type validation + DAG; job queue + submission/persistence; VRAM ledger + dispatch. | Cycle/unknown-type rejection (422); submitted job persists Queued; dispatch drives a mock job to Completed. |
-| **M4 — End-to-end & Server Surface** | 014–020 | Artifact storage; full job lifecycle over WS; cancellation; job/artifact management; worker restart API + preflight; frontend serving; OpenAPI + launcher polish. | Completed job's PNG downloads via REST; cancel + delete work; `openapi.json` diff gate green; binary opens browser. |
+| **M4 — End-to-end & Server Surface** | 014–020 | Artifact storage; full job lifecycle over WS; cancellation; job/artifact management; worker restart API + preflight; frontend serving; OpenAPI + launcher polish. | Completed job's PNG downloads via REST; cancel + delete work; `openapi.json` diff gate green; binary opens browser when a custom frontend is configured (headless default opens none). |
 | **M5 — Python Worker (ZiT)** | 021 | `worker_main`, `executor`, `base`/registry, `pipeline_cache`, ZiT nodes + `SaveImage`, mock mode + parity test. | `Execute→Progress→ImageReady→Completed` in mock; ZiT end-to-end smoke on real hardware. |
 | **M6 — SDXL & Hardening** | 022 | SDXL nodes; cancel cooperative path end-to-end; OOM trap; crash-recovery + full REST integration tests; provisioning scripts; debug harness. | Both pipelines run; cancel + crash-recovery smoke pass; CI fully green on Linux and Windows. |
 

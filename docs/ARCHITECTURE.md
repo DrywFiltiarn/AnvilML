@@ -18,10 +18,10 @@ platform. It:
 - Spawns and supervises one Python worker process per GPU (or one CPU worker as fallback).
 - Exposes a versioned REST + WebSocket API as the sole integration surface for any frontend.
 - Manages job scheduling, the model registry, artifact storage, and all persistent state.
-- Optionally serves a frontend (local files, reverse-proxy, or headless API-only mode).
+- Runs **headless by default** (API only). Optionally serves a *custom* frontend (local files or reverse-proxy) for standalone use — but never BloomeryUI.
 
-BloomeryUI is the reference frontend. The frontend is architecturally interchangeable;
-AnvilML never embeds frontend assets.
+BloomeryUI is the reference frontend, run as a separate server by SindriStudio (never by
+AnvilML). The frontend is architecturally interchangeable; AnvilML never embeds frontend assets.
 
 ---
 
@@ -235,7 +235,7 @@ Linux and Windows are co-equal first-class targets (`ANVILML_DESIGN.md §1.5`).
 
 ## 11. Key Design Decisions (for context, not re-litigated)
 
-- **No embedded frontend assets.** BloomeryUI is distributed and served separately.
+- **No embedded frontend assets.** BloomeryUI is a separate server run by SindriStudio, not served by AnvilML. AnvilML can optionally serve a *custom* frontend, but defaults to headless.
 - **One Python worker per device.** Avoids GPU memory fragmentation from multi-process inference.
 - **stdin/stdout IPC, not TCP.** Avoids port allocation and per-platform socket handling.
 - **`anvilml-core` has zero I/O and zero async.** Keeps domain types testable without a runtime.

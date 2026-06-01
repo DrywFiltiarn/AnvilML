@@ -66,5 +66,18 @@
     ],
     "context": "Add anvilml-hardware dep to backend + anvilml-server (forward mock-hardware feature). Add hardware: Arc<RwLock<HardwareInfo>> to AppState. In main.rs call detect_all_devices(&cfg) at startup, log detected devices, store in AppState. Add handlers/system.rs get_system(State)->Json<HardwareInfo> reading AppState.hardware. Wire GET /v1/system. Verify: ANVILML_MOCK_DEVICE_TYPE=cuda cargo run --features mock-hardware then curl /v1/system shows the mock CUDA device.",
     "tags": []
+  },
+  {
+    "id": "P4-B1",
+    "description": "anvilml: reconcile frontend.mode default to Headless (retrofit; corrects earlier phases)",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": [
+      "P3-A6"
+    ],
+    "context": "RETROFIT existing committed files (config.rs + anvilml.toml exist with the OLD frontend default). In ONE atomic change: default FrontendMode/FrontendConfig to Headless in config.rs AND edit ./anvilml.toml [frontend] mode='headless' (any './bloomery' -> commented './frontend') together so P3-B2's drift guard never sees a mismatch. AnvilML is headless; BloomeryUI runs separately under SindriStudio, never served by AnvilML. Update ENVIRONMENT.md frontend section + env table. Verify: ServerConfig::default().frontend.mode==Headless; cargo test config + P3-B2 config_reference both pass.",
+    "tags": [
+      "correction"
+    ]
   }
 ]

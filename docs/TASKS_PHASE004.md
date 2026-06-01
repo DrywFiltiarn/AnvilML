@@ -7,13 +7,14 @@
 | Milestone group | Observable system state |
 | Depends on phases | 1-3 |
 | Task file | `forge/tasks/tasks_phase004.json` |
-| Tasks | 6 |
+| Tasks | 7 |
 
 ## Overview
 
 Phase 4 implements `anvilml-hardware` (CPU/CUDA/ROCm detectors + an env-driven mock) and surfaces it through `GET /v1/system`. After this phase the running binary reports the real (or mock) hardware it sees. The mock detector, gated behind the `mock-hardware` feature, is what CI and local testing use so no GPU is required.
 
 Every task in this phase implements **one module or one endpoint** plus its test. No task touches more than its named file(s). `cargo test` and `cargo clippy` are per-task gates; the phase as a whole is only complete when the **Runnable Proof** below passes.
+ Group B (P4-B1) is a retrofit/leaf: it reconciles the `frontend.mode` default to `Headless` after the topology correction (AnvilML never serves BloomeryUI; SindriStudio runs it separately). The config types and `anvilml.toml` were already authored and committed in earlier phases, so this edits those existing files rather than reopening a finished phase. It depends only on the completed P3-A6, runs at the earliest opportunity, and blocks nothing in the P4-A hardware chain. The struct default and the committed toml must change together so the P3-B2 drift guard stays green.
 
 ## Tasks
 
@@ -25,6 +26,7 @@ Every task in this phase implements **one module or one endpoint** plus its test
 | P4-A4 | `crates/anvilml-hardware/src/rocm.rs` | anvilml-hardware: ROCm detector (Linux rocm-smi + Windows amd-smi/HIP probe) |
 | P4-A5 | `crates/anvilml-hardware/src/lib.rs` | anvilml-hardware: detect_all_devices with override + host info |
 | P4-A6 | `backend/src/main.rs` | anvilml: detect hardware at startup and serve GET /v1/system |
+| P4-B1 | `crates/anvilml-core/src/config.rs + anvilml.toml` | anvilml: reconcile frontend.mode default to Headless (retrofit; corrects earlier phases) |
 
 ## Task details
 
@@ -69,6 +71,13 @@ Implement detect_all_devices(cfg:&ServerConfig)->HardwareInfo in lib.rs. feature
 - **Tags:** —
 
 Add anvilml-hardware dep to backend + anvilml-server (forward mock-hardware feature). Add hardware: Arc<RwLock<HardwareInfo>> to AppState. In main.rs call detect_all_devices(&cfg) at startup, log detected devices, store in AppState. Add handlers/system.rs get_system(State)->Json<HardwareInfo> reading AppState.hardware. Wire GET /v1/system. Verify: ANVILML_MOCK_DEVICE_TYPE=cuda cargo run --features mock-hardware then curl /v1/system shows the mock CUDA device.
+
+#### P4-B1: anvilml: reconcile frontend.mode default to Headless (retrofit; corrects earlier phases)
+
+- **Prereqs:** P3-A6
+- **Tags:** correction
+
+RETROFIT existing committed files (config.rs + anvilml.toml exist with the OLD frontend default). In ONE atomic change: default FrontendMode/FrontendConfig to Headless in config.rs AND edit ./anvilml.toml [frontend] mode='headless' (any './bloomery' -> commented './frontend') together so P3-B2's drift guard never sees a mismatch. AnvilML is headless; BloomeryUI runs separately under SindriStudio, never served by AnvilML. Update ENVIRONMENT.md frontend section + env table. Verify: ServerConfig::default().frontend.mode==Headless; cargo test config + P3-B2 config_reference both pass.
 
 
 ## Runnable Proof

@@ -45,9 +45,11 @@ use_hipblaslt = true
 # hsa_override_gfx_version = "10.3.0"   # uncomment for unsupported gfx arch
 
 [frontend]
-mode = "local"              # local | remote | headless
-# path = "./bloomery"       # for mode = "local"  (default: ./bloomery)
-# url  = "http://localhost:5173"  # for mode = "remote"
+# AnvilML is headless by default. BloomeryUI is run as a SEPARATE server by SindriStudio,
+# NOT served by AnvilML. local/remote exist only for serving a CUSTOM frontend standalone.
+mode = "headless"           # headless (default) | local | remote
+# path = "./frontend"       # custom frontend dir, for mode = "local"  (not BloomeryUI)
+# url  = "http://localhost:5173"  # custom frontend dev server, for mode = "remote"
 
 [gpu_selection]
 default_device = "auto"     # auto | cpu | <integer device index>
@@ -88,7 +90,7 @@ underscores (`__`). All variables are optional; built-in defaults apply when uns
 
 | Variable                  | Config field      | Default  | Notes                                  |
 |---------------------------|-------------------|----------|----------------------------------------|
-| `ANVILML_FRONTEND__MODE`  | `frontend.mode`   | `local`  | `local` \| `remote` \| `headless`     |
+| `ANVILML_FRONTEND__MODE`  | `frontend.mode`   | `headless`  | `headless` \| `local` \| `remote`     |
 
 ### 3.4 GPU Selection
 
