@@ -7,12 +7,13 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Kind of a model file in the model directory.
 pub type Url = url::Url;
 
 /// Kind of a model file in the model directory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, ToSchema)]
 pub enum ModelKind {
     Clip,
     Diffusion,
@@ -25,7 +26,7 @@ pub enum ModelKind {
 }
 
 /// Hardware device type for inference.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, ToSchema)]
 pub enum DeviceType {
     Cuda,
     Rocm,
