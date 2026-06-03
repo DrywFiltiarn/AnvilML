@@ -5,7 +5,9 @@ edition = "2021"
 
 [dependencies]
 anvilml-core = { path = "../anvilml-core" }
+chrono = { version = "0.4", features = ["serde"] }
 hex = "0.4"
+serde_json = "1"
 sha2 = "0.10"
 sqlx = { version = "0.9", features = ["sqlite", "runtime-tokio", "macros", "migrate"] }
 walkdir = "2"
