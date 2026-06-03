@@ -85,8 +85,9 @@ use_hipblaslt = true
 
 # ── Frontend Configuration ────────────────────────────────────────────────────
 
-[frontend.mode.Local]
-path = "./bloomery"
+# AnvilML is headless by default. BloomeryUI runs as a SEPARATE server.
+[frontend]
+mode = "headless"  # headless (default) | local | remote
 
 # ── GPU Selection ─────────────────────────────────────────────────────────────
 

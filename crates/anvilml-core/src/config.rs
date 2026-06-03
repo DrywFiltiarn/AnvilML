@@ -77,22 +77,16 @@ pub struct HardwareOverrideConfig {
 }
 
 /// Frontend serving mode.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub enum FrontendMode {
-    /// Serve static files from a local directory (default: ./bloomery adjacent to the binary).
+    /// Serve static files from a local directory (for a custom/third-party frontend).
+    /// Not used for BloomeryUI, which SindriStudio runs as a separate server.
     Local { path: PathBuf },
     /// Reverse-proxy non-API requests to a remote frontend dev server / host.
     Remote { url: Url },
     /// Serve no frontend; API-only.
+    #[default]
     Headless,
-}
-
-impl Default for FrontendMode {
-    fn default() -> Self {
-        Self::Local {
-            path: PathBuf::from("./bloomery"),
-        }
-    }
 }
 
 /// Frontend configuration.
@@ -363,7 +357,7 @@ mod tests {
         assert_eq!(config.worker_log_dir, Some(PathBuf::from("./logs")));
         assert_eq!(config.num_threads, 14);
         assert_eq!(config.num_interop_threads, 4);
-        assert!(matches!(config.frontend.mode, FrontendMode::Local { .. }));
+        assert!(matches!(config.frontend.mode, FrontendMode::Headless));
         assert_eq!(config.gpu_selection.default_device, "auto");
         assert_eq!(config.limits.max_ipc_payload_mib, 64);
         assert_eq!(config.limits.list_default_limit, 100);
