@@ -68,6 +68,11 @@ pub struct Args {
     /// Log output format: "plain" or "json".
     #[arg(long, value_enum, default_value = "plain")]
     pub log_format: LogFormat,
+
+    /// Detect hardware and print a formatted table to stdout, then exit.
+    /// Does not start the server or bind any network socket.
+    #[arg(long)]
+    pub print_hardware: bool,
 }
 
 impl Args {
@@ -135,6 +140,7 @@ mod tests {
             port: None,
             no_browser: false,
             log_format: LogFormat::Plain,
+            print_hardware: false,
         };
         let overrides = args.to_overrides();
         assert!(overrides.host.is_none());
@@ -150,6 +156,7 @@ mod tests {
             port: Some(9090),
             no_browser: true,
             log_format: LogFormat::Json,
+            print_hardware: false,
         };
         let overrides = args.to_overrides();
         assert_eq!(overrides.host, Some(IpAddr::from_str("0.0.0.0").unwrap()));
@@ -164,6 +171,7 @@ mod tests {
             port: None,
             no_browser: false,
             log_format: LogFormat::Plain,
+            print_hardware: false,
         };
         let overrides = args.to_overrides();
         assert_eq!(overrides.host, Some("::1".parse().unwrap()));
@@ -177,6 +185,7 @@ mod tests {
             port: Some(1),
             no_browser: false,
             log_format: LogFormat::Plain,
+            print_hardware: false,
         };
         let overrides = args.to_overrides();
         assert_eq!(overrides.port, Some(1));

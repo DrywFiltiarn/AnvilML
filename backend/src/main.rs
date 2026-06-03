@@ -1,10 +1,79 @@
 mod cli;
 mod shutdown;
 
-use anvilml_core::load_config;
+use anvilml_core::{load_config, DeviceType, EnumerationSource, HardwareInfo};
 use anvilml_server::{build_router, AppState};
 use tracing_subscriber::fmt::layer as fmt_layer;
 use tracing_subscriber::Layer;
+
+/// Format a hardware info table to stdout.
+fn print_hardware_table(hw: &HardwareInfo) {
+    println!("╔══════════════════════════════════════════════════════════╗");
+    println!("║                     Host Information                     ║");
+    println!("╠══════════════════════════════════════════════════════════╣");
+    println!("║ OS:          {}:", " ".repeat(50 - 8));
+    println!("║ CPU:         {}", hw.host.cpu_model);
+    println!("║ Total RAM:   {} MiB", hw.host.ram_total_mib);
+    println!("╠══════════════════════════════════════════════════════════╣");
+    println!("║                    GPU Devices                           ║");
+    println!("╠══════╦════════════════════╦═════════╦═══════════╦══════════╦═════════════════╦════════════════════╣");
+    println!(
+        "║ #    ║ Name               ║ Type    ║ VRAM (MiB)║ Enum Src ║ Capabilities   ║ Arch                ║"
+    );
+    println!("╠══════╬════════════════════╬═════════╬═══════════╬══════════╬═════════════════╬════════════════════╣");
+
+    for dev in &hw.gpus {
+        let device_type_str = match dev.device_type {
+            DeviceType::Cuda => "CUDA",
+            DeviceType::Rocm => "ROCm",
+            DeviceType::Cpu => "CPU",
+        };
+        let enum_src_str = match dev.enumeration_source {
+            EnumerationSource::Vulkan => "Vulkan",
+            EnumerationSource::Dxgi => "DXGI",
+            EnumerationSource::Sysfs => "sysfs",
+            EnumerationSource::Nvml => "NVML",
+            EnumerationSource::Override => "Override",
+            EnumerationSource::Mock => "Mock",
+            EnumerationSource::DeviceTable => "DB",
+            EnumerationSource::Fallback => "Fallback",
+        };
+        let caps_str = if dev.caps.fp16 && dev.caps.bf16 && dev.caps.flash_attention {
+            "FP16+BF16+FA"
+        } else if dev.caps.fp16 && dev.caps.bf16 {
+            "FP16+BF16"
+        } else if dev.caps.fp16 {
+            "FP16"
+        } else if dev.caps.bf16 {
+            "BF16"
+        } else {
+            "-"
+        };
+        let arch_str = dev.arch.as_deref().unwrap_or("-");
+
+        let name_trunc: String = dev.name.chars().take(20).collect();
+        let arch_trunc: String = arch_str.chars().take(16).collect();
+
+        println!(
+            "║ {:<4} ║ {:<20} ║ {:<7} ║ {:<9} ║ {:<8} ║ {:<15} ║ {:<16} ║",
+            dev.index,
+            name_trunc,
+            device_type_str,
+            dev.vram_total_mib,
+            enum_src_str,
+            caps_str,
+            arch_trunc
+        );
+    }
+
+    println!("╚══════╩════════════════════╩═════════╩═══════════╩══════════╩═════════════════╩════════════════════╝");
+
+    println!("\nInference capabilities:");
+    println!(
+        "  FP16: {}  BF16: {}  Flash Attention: {}",
+        hw.inference_caps.fp16, hw.inference_caps.bf16, hw.inference_caps.flash_attention
+    );
+}
 
 #[tokio::main]
 async fn main() {
@@ -42,7 +111,29 @@ async fn main() {
 
     let cfg = load_config(toml_path, overrides).expect("Failed to load config");
 
-    let state = AppState::new(env!("CARGO_PKG_VERSION"));
+    // --print-hardware: detect hardware, print table, exit 0.
+    if args.print_hardware {
+        let hw_info =
+            anvilml_hardware::detect_all_devices(&cfg).expect("hardware detection failed");
+        print_hardware_table(&hw_info);
+        std::process::exit(0);
+    }
+
+    // Normal server path: detect hardware, log devices, store in AppState.
+    let hw_info = anvilml_hardware::detect_all_devices(&cfg).expect("hardware detection failed");
+
+    for dev in &hw_info.gpus {
+        tracing::info!(
+            device.name = %dev.name,
+            index = dev.index,
+            device_type = ?dev.device_type,
+            vram_total_mib = dev.vram_total_mib,
+            enumeration_source = ?dev.enumeration_source,
+            capabilities_source = ?dev.capabilities_source,
+        );
+    }
+
+    let state = AppState::new_with_hardware(env!("CARGO_PKG_VERSION"), hw_info);
     let router = build_router(state);
 
     let bind_addr = format!("{}:{}", cfg.host, cfg.port);

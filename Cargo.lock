@@ -252,6 +252,7 @@ name = "backend"
 version = "0.1.0"
 dependencies = [
  "anvilml-core",
+ "anvilml-hardware",
  "anvilml-server",
  "axum",
  "clap",

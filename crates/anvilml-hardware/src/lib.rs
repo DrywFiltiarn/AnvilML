@@ -126,10 +126,10 @@ fn enumerate_gpus() -> Vec<GpuDevice> {
             // Additional: NVML on Unix (NVIDIA only, deduplicate by PCI ID).
             let nvml_devices = nvml::NvmlDetector.detect().unwrap_or_default();
             for nvml_dev in nvml_devices {
-                if !devices
-                    .iter()
-                    .any(|d| d.pci_vendor_id == nvml_dev.pci_vendor_id && d.pci_device_id == nvml_dev.pci_device_id)
-                {
+                if !devices.iter().any(|d| {
+                    d.pci_vendor_id == nvml_dev.pci_vendor_id
+                        && d.pci_device_id == nvml_dev.pci_device_id
+                }) {
                     devices.push(nvml_dev);
                 }
             }
@@ -337,7 +337,10 @@ mod tests {
         let dev = &info.gpus[0];
         assert!(matches!(dev.device_type, DeviceType::Cuda));
         assert_eq!(dev.vram_total_mib, 16384);
-        assert!(matches!(dev.enumeration_source, EnumerationSource::Override));
+        assert!(matches!(
+            dev.enumeration_source,
+            EnumerationSource::Override
+        ));
         assert!(!info.gpus[0].name.is_empty());
     }
 
@@ -502,7 +505,10 @@ mod tests {
         assert_eq!(dev.pci_vendor_id, 0);
         assert_eq!(dev.pci_device_id, 0);
         assert!(dev.arch.is_none());
-        assert!(matches!(dev.enumeration_source, EnumerationSource::Override));
+        assert!(matches!(
+            dev.enumeration_source,
+            EnumerationSource::Override
+        ));
         assert!(matches!(
             dev.capabilities_source,
             CapabilitySource::Fallback
