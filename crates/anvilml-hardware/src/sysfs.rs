@@ -19,7 +19,7 @@
 
 #![cfg(unix)]
 
-use anvilml_core::{AnvilError, DeviceType, GpuDevice};
+use anvilml_core::{AnvilError, CapabilitySource, DeviceType, EnumerationSource, GpuDevice};
 
 use crate::DeviceDetector;
 
@@ -264,6 +264,12 @@ impl DeviceDetector for SysfsDetector {
                 vram_total_mib,
                 vram_free_mib,
                 driver_version: String::new(),
+                pci_vendor_id: vendor_id as u16,
+                pci_device_id: device_id as u16,
+                arch: None, // resolved later by device_db::resolve_caps
+                caps: anvilml_core::InferenceCaps::default(),
+                enumeration_source: EnumerationSource::Sysfs,
+                capabilities_source: CapabilitySource::Fallback,
             });
 
             index += 1;
@@ -474,6 +480,12 @@ mod tests {
                     vram_total_mib: 0,
                     vram_free_mib: u32::MAX,
                     driver_version: String::new(),
+                    pci_vendor_id: vendor_id as u16,
+                    pci_device_id: device_id as u16,
+                    arch: None, // resolved later by device_db::resolve_caps
+                    caps: anvilml_core::InferenceCaps::default(),
+                    enumeration_source: EnumerationSource::Sysfs,
+                    capabilities_source: CapabilitySource::Fallback,
                 });
 
                 index += 1;

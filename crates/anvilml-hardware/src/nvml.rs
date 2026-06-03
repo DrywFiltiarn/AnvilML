@@ -17,7 +17,7 @@
 
 #![cfg(unix)]
 
-use anvilml_core::{AnvilError, DeviceType, GpuDevice};
+use anvilml_core::{AnvilError, CapabilitySource, DeviceType, EnumerationSource, GpuDevice};
 
 use crate::DeviceDetector;
 
@@ -260,6 +260,9 @@ impl DeviceDetector for NvmlDetector {
             };
 
             // All NVML devices are NVIDIA → Cuda.
+            let pci_vendor_id = pci_info._pcie_vendor_id;
+            let pci_device_id = (pci_info.pci_device_id & 0xFFFF) as u16;
+
             devices.push(GpuDevice {
                 index: idx,
                 name: device_name,
@@ -267,6 +270,12 @@ impl DeviceDetector for NvmlDetector {
                 vram_total_mib,
                 vram_free_mib,
                 driver_version: String::new(),
+                pci_vendor_id,
+                pci_device_id,
+                arch: None, // resolved later by device_db::resolve_caps
+                caps: anvilml_core::InferenceCaps::default(),
+                enumeration_source: EnumerationSource::Nvml,
+                capabilities_source: CapabilitySource::Fallback,
             });
         }
 

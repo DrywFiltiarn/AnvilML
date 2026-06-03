@@ -2,7 +2,7 @@
 //!
 //! Returns a single synthetic CPU device for fallback / host-info population.
 
-use anvilml_core::{AnvilError, DeviceType, GpuDevice};
+use anvilml_core::{AnvilError, DeviceType, EnumerationSource, GpuDevice};
 
 use crate::DeviceDetector;
 
@@ -19,6 +19,12 @@ impl DeviceDetector for CpuDetector {
             vram_total_mib: 0,
             vram_free_mib: 0,
             driver_version: "n/a".to_string(),
+            pci_vendor_id: 0,
+            pci_device_id: 0,
+            arch: None,
+            caps: anvilml_core::InferenceCaps::default(),
+            enumeration_source: EnumerationSource::Mock,
+            capabilities_source: anvilml_core::CapabilitySource::Fallback,
         }])
     }
 
@@ -63,5 +69,25 @@ mod tests {
             .expect("refresh_vram should succeed");
         assert_eq!(total, 0);
         assert_eq!(free, 0);
+    }
+
+    /// CPU device new fields must have sensible defaults.
+    #[test]
+    fn cpu_device_new_fields() {
+        let detector = CpuDetector::default();
+        let devices = detector.detect().expect("detect should succeed");
+        let dev = &devices[0];
+
+        assert_eq!(dev.pci_vendor_id, 0);
+        assert_eq!(dev.pci_device_id, 0);
+        assert!(dev.arch.is_none());
+        assert!(!dev.caps.fp16);
+        assert!(!dev.caps.bf16);
+        assert!(!dev.caps.flash_attention);
+        assert!(matches!(dev.enumeration_source, EnumerationSource::Mock));
+        assert!(matches!(
+            dev.capabilities_source,
+            anvilml_core::CapabilitySource::Fallback
+        ));
     }
 }

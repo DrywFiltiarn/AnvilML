@@ -12,7 +12,10 @@ pub use types::artifact::ArtifactMeta;
 pub use types::model::{DType, ModelKind, ModelMeta};
 
 // Re-export hardware domain types (§4.3).
-pub use types::hardware::{DeviceType, GpuDevice, HardwareInfo, HostInfo, InferenceCaps};
+pub use types::hardware::{
+    CapabilitySource, DeviceType, EnumerationSource, GpuDevice, HardwareInfo, HostInfo,
+    InferenceCaps,
+};
 
 // Re-export worker domain types (§4.4, §6.1).
 pub use types::worker::{EnvReport, WorkerInfo, WorkerStatus};

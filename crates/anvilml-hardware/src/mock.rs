@@ -3,7 +3,7 @@
 //! Reads three environment variables with built-in defaults to return a
 //! single deterministic [`GpuDevice`] per detection call.
 
-use anvilml_core::{AnvilError, DeviceType, GpuDevice};
+use anvilml_core::{AnvilError, DeviceType, EnumerationSource, GpuDevice};
 
 use crate::DeviceDetector;
 
@@ -42,6 +42,12 @@ impl DeviceDetector for MockDetector {
             vram_total_mib: vram_mib,
             vram_free_mib: vram_mib,
             driver_version: "mock".to_string(),
+            pci_vendor_id: 0,
+            pci_device_id: 0,
+            arch: Some("gfx1100".to_string()),
+            caps: anvilml_core::InferenceCaps::default(),
+            enumeration_source: EnumerationSource::Mock,
+            capabilities_source: anvilml_core::CapabilitySource::Fallback,
         }])
     }
 
@@ -92,5 +98,24 @@ mod tests {
         let devices = detector.detect().expect("detect should succeed");
         assert_eq!(devices.len(), 1);
         assert!(matches!(devices[0].device_type, DeviceType::Rocm));
+    }
+
+    /// Mock device new fields must have sensible defaults.
+    #[test]
+    #[serial]
+    fn mock_device_new_fields() {
+        std::env::set_var("ANVILML_MOCK_DEVICE_TYPE", "cuda");
+        let detector = MockDetector::default();
+        let devices = detector.detect().expect("detect should succeed");
+        let dev = &devices[0];
+
+        assert_eq!(dev.pci_vendor_id, 0);
+        assert_eq!(dev.pci_device_id, 0);
+        assert!(dev.arch.is_some());
+        assert!(matches!(dev.enumeration_source, EnumerationSource::Mock));
+        assert!(matches!(
+            dev.capabilities_source,
+            anvilml_core::CapabilitySource::Fallback
+        ));
     }
 }

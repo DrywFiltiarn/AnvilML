@@ -6,7 +6,9 @@
 //! Provides [`lookup`] for static-reference lookup and [`resolve_caps`] for
 //! populating a [`GpuDevice`] from the table.
 
-use anvilml_core::GpuDevice;
+use anvilml_core::{CapabilitySource, GpuDevice};
+
+use crate::EnumerationSource;
 
 /// A single GPU capability entry keyed by PCI vendor + device ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,27 +115,31 @@ pub fn lookup(vendor_id: u16, device_id: u16) -> Option<&'static DeviceCapabilit
 
 /// Resolve GPU capabilities from the PCI capability table.
 ///
-/// On a lookup hit, sets `dev.name` to the canonical model name from the table.
-/// On a miss, logs a warning with the vendor + device IDs for table extension tracking.
-///
-/// Currently only populates `dev.name` because that is the only field available on
-/// [`GpuDevice`] today (P3-B2 retrofits `arch`, `caps`, `enumeration_source`,
-/// and `capabilities_source` later).
+/// On a lookup hit, sets `dev.name`, `dev.arch`, `dev.caps`,
+/// `dev.enumeration_source`, and `dev.capabilities_source` from the table.
+/// On a miss, logs a warning with the vendor + device IDs for table extension tracking,
+/// then sets conservative defaults (`caps = InferenceCaps::default()`,
+/// `capabilities_source = CapabilitySource::Fallback`).
 pub fn resolve_caps(dev: &mut GpuDevice, vendor_id: u16, device_id: u16) {
-    // TODO: After P3-B2 retrofits hardware.rs, fill in:
-    //   dev.arch = Some(entry.arch.to_string());
-    //   dev.caps = InferenceCaps { fp16: entry.fp16, bf16: entry.bf16, flash_attention: entry.flash_attention };
-    //   dev.enumeration_source = EnumerationSource::DeviceTable;
-    //   dev.capabilities_source = CapabilitySource::DeviceTable;
-
     if let Some(entry) = lookup(vendor_id, device_id) {
         dev.name = entry.model_name.to_string();
+        dev.arch = Some(entry.arch.to_string());
+        dev.caps = anvilml_core::InferenceCaps {
+            fp16: entry.fp16,
+            bf16: entry.bf16,
+            flash_attention: entry.flash_attention,
+        };
+        dev.enumeration_source = EnumerationSource::DeviceTable;
+        dev.capabilities_source = CapabilitySource::DeviceTable;
     } else {
         log::warn!(
             "unknown PCI ID: vendor=0x{:04X} device=0x{:04X} — add to PCI_CAPABILITY_TABLE",
             vendor_id,
             device_id
         );
+        // Set conservative fallback values.
+        dev.caps = anvilml_core::InferenceCaps::default();
+        dev.capabilities_source = CapabilitySource::Fallback;
     }
 }
 

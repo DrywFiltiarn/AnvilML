@@ -23,7 +23,7 @@
 
 #![cfg(windows)]
 
-use anvilml_core::{AnvilError, DeviceType, GpuDevice};
+use anvilml_core::{AnvilError, CapabilitySource, DeviceType, EnumerationSource, GpuDevice};
 
 use crate::DeviceDetector;
 
@@ -187,6 +187,9 @@ impl DeviceDetector for DxgiDetector {
             // VRAM from DedicatedVideoMemory (bytes → MiB).
             let vram_total_mib = (desc.DedicatedVideoMemory as u64 / BYTES_PER_MIB) as u32;
 
+            let pci_vendor_id = (desc.VendorId & 0xFFFF) as u16;
+            let pci_device_id = (desc.DeviceId & 0xFFFF) as u16;
+
             devices.push(GpuDevice {
                 index: idx,
                 name: device_name,
@@ -194,6 +197,12 @@ impl DeviceDetector for DxgiDetector {
                 vram_total_mib,
                 vram_free_mib: u32::MAX, // DXGI doesn't expose per-app VRAM usage.
                 driver_version: String::new(),
+                pci_vendor_id,
+                pci_device_id,
+                arch: None, // resolved later by device_db::resolve_caps
+                caps: anvilml_core::InferenceCaps::default(),
+                enumeration_source: EnumerationSource::Dxgi,
+                capabilities_source: CapabilitySource::Fallback,
             });
 
             idx += 1;

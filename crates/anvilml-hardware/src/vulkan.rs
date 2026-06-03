@@ -27,7 +27,7 @@
 //! - `vram_free_mib`: `budget - usage` for that heap index if EXT_memory_budget is
 //!   available; otherwise falls back to `heapSize` (conservative estimate).
 
-use anvilml_core::{AnvilError, DeviceType, GpuDevice};
+use anvilml_core::{AnvilError, CapabilitySource, DeviceType, EnumerationSource, GpuDevice};
 
 use crate::DeviceDetector;
 
@@ -337,6 +337,10 @@ impl DeviceDetector for VulkanDetector {
             // Map vendor ID to device type.
             let device_type = vendor_id_to_device_type(props.vendor_id);
 
+            // Extract vendor_id and device_id for the new fields.
+            let pci_vendor_id = (props.vendor_id & 0xFFFF) as u16;
+            let pci_device_id = (props.device_id & 0xFFFF) as u16;
+
             devices.push(GpuDevice {
                 index: index as u32,
                 name: device_name,
@@ -344,6 +348,12 @@ impl DeviceDetector for VulkanDetector {
                 vram_total_mib: total_vram_mib,
                 vram_free_mib,
                 driver_version: driver_version_str,
+                pci_vendor_id,
+                pci_device_id,
+                arch: None, // resolved later by device_db::resolve_caps
+                caps: anvilml_core::InferenceCaps::default(),
+                enumeration_source: EnumerationSource::Vulkan,
+                capabilities_source: CapabilitySource::Fallback,
             });
         }
 
