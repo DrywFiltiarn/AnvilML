@@ -308,10 +308,7 @@ mod tests {
     fn read_vram_helper_converts_bytes_to_mib() {
         // 8 GB = 8 * 1024 * 1024 * 1024 = 8589934592 bytes = 8192 MiB.
         let expected_bytes = 8u64 * 1024 * 1024 * 1024;
-        assert_eq!(
-            super::read_vram_from_amdgpu_sysfs("/nonexistent"),
-            None
-        );
+        assert_eq!(super::read_vram_from_amdgpu_sysfs("/nonexistent"), None);
 
         // Create a temp file with the expected value.
         let tmp_dir = std::env::temp_dir().join("anvilml_test_sysfs");
@@ -412,10 +409,7 @@ mod tests {
             names.contains(&"PCI 10de:2230"),
             "must contain NVIDIA device"
         );
-        assert!(
-            names.contains(&"PCI 1002:740c"),
-            "must contain AMD device"
-        );
+        assert!(names.contains(&"PCI 1002:740c"), "must contain AMD device");
         assert!(
             names.contains(&"PCI 8086:5916"),
             "must contain Intel device"
