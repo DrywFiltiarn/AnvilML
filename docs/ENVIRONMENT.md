@@ -3,7 +3,7 @@
 **Document:** `docs/ENVIRONMENT.md`
 **Location in repo:** `AnvilML/docs/ENVIRONMENT.md`
 **Authoritative source:** `ANVILML_DESIGN.md` §3 (Configuration), §5 (Hardware Detection), §6 (Python Environment), §8.3 (Worker Env), §21 (Build/Provisioning)
-**Read by:** Cline at the start of every PLAN and ACT session.
+**Read by:** OpenCode forge-plan and forge-act agents at the start of every session.
 
 ---
 
@@ -88,9 +88,9 @@ underscores (`__`). All variables are optional; built-in defaults apply when uns
 
 ### 3.3 Frontend
 
-| Variable                  | Config field      | Default  | Notes                                  |
-|---------------------------|-------------------|----------|----------------------------------------|
-| `ANVILML_FRONTEND__MODE`  | `frontend.mode`   | `headless`  | `headless` \| `local` \| `remote`     |
+| Variable                  | Config field      | Default    | Notes                                  |
+|---------------------------|-------------------|------------|----------------------------------------|
+| `ANVILML_FRONTEND__MODE`  | `frontend.mode`   | `headless` | `headless` \| `local` \| `remote`     |
 
 ### 3.4 GPU Selection
 
@@ -187,19 +187,84 @@ CPU. (Authoritative: `ANVILML_DESIGN.md` §5, §6, §21.)
 
 ---
 
-## 5. Forge-Specific Variables (CI / local orchestration only)
+## 5. The Forge — Specific Variables (CI / local orchestration only)
 
 These control `forge.py` and are never read by AnvilML itself.
 
-| Variable                | Purpose                                              | Default              |
-|-------------------------|------------------------------------------------------|----------------------|
-| `FORGE_DISCORD_TOKEN`   | Discord bot token for approval notifications         | (required for Discord) |
-| `FORGE_DISCORD_GUILD_ID`| Discord server ID                                    | (required for Discord) |
-| `FORGE_CLINE_BIN`       | Path to Cline CLI binary                             | `cline`              |
-| `FORGE_CLINE_TIMEOUT`   | Max seconds per Cline session                        | `5400` (90 min)      |
-| `FORGE_CLINE_RETRIES`   | Retry count on Cline failure (llama.cpp crash)       | `3`                  |
-| `FORGE_CLINE_RETRY_DELAY` | Base seconds between retries                       | `60`                 |
-| `FORGE_MODEL_PLANNING`  | llama-swap model ID for PLAN sessions                | `Qwen3.6-35B-A3B:planning` |
-| `FORGE_MODEL_CODING`    | llama-swap model ID for ACT sessions                 | `Qwen3.6-35B-A3B:coding`   |
-| `FORGE_POLL_INTERVAL`   | Discord approval poll interval (seconds)             | `10`                 |
-| `FORGE_APPROVAL_TIMEOUT`| Discord approval timeout (seconds)                   | `86400` (24 h)       |
+| Variable                   | Purpose                                               | Default                             |
+|----------------------------|-------------------------------------------------------|-------------------------------------|
+| `FORGE_DISCORD_TOKEN`      | Discord bot token for approval notifications          | (required for Discord)              |
+| `FORGE_DISCORD_GUILD_ID`   | Discord server ID                                     | (required for Discord)              |
+| `FORGE_OPENCODE_BIN`       | Path to OpenCode CLI binary                           | `opencode`                          |
+| `FORGE_OPENCODE_TIMEOUT`   | Max seconds per OpenCode session                      | `7200` (120 min)                    |
+| `FORGE_OPENCODE_RETRIES`   | Retry count on OpenCode failure (llama.cpp crash)     | `3`                                 |
+| `FORGE_OPENCODE_RETRY_DELAY` | Base seconds between retries                        | `60`                                |
+| `FORGE_MODEL_PLANNING`     | OpenCode model for PLAN sessions                      | `llama.cpp/Qwen3.6-35B-A3B:planning` |
+| `FORGE_MODEL_CODING`       | OpenCode model for ACT sessions                       | `llama.cpp/Qwen3.6-35B-A3B:coding`  |
+| `FORGE_CONTEXT_WINDOW`     | Model context window size (tokens)                    | `262144` (256k)                     |
+| `FORGE_POLL_INTERVAL`      | Discord approval poll interval (seconds)              | `10`                                |
+| `FORGE_APPROVAL_TIMEOUT`   | Discord approval timeout (seconds)                    | `86400` (24 h)                      |
+
+---
+
+## 6. The Forge — Build Gates (AnvilML-specific)
+
+This section is read by the OpenCode forge-act agent per `docs/FORGE_AGENT_RULES.md §5.7`
+and `§5.8`. It defines the commands that must pass before the agent may stage changes or
+write the implementation report.
+
+### Platform Cross-Check (`FORGE_AGENT_RULES.md §5.7`)
+
+AnvilML targets Linux and Windows as co-equal MVP platforms. Before writing the
+implementation report, run:
+
+```bash
+cargo check --target x86_64-pc-windows-gnu --workspace --features mock-hardware
+```
+
+The `x86_64-pc-windows-gnu` target and `gcc-mingw-w64` linker are installed in the local
+build environment. This check runs on Linux and catches `#[cfg(windows)]`/`#[cfg(unix)]`
+mistakes and Windows-only API usage that passes on Linux but breaks the Windows CI job.
+**Zero errors required.** A clean Linux build alone is NOT sufficient.
+
+Record the verbatim output in `## Platform Cross-Check` in the implementation report.
+
+### Project Gates (`FORGE_AGENT_RULES.md §5.8`)
+
+#### Gate 1 — Config Surface Sync
+
+Any task that adds, renames, or removes a field on `ServerConfig` or any nested config
+struct **must** in the same task:
+
+- Update `./anvilml.toml` with the matching key at its documented default value
+- Update `docs/ENVIRONMENT.md §2` with the new/changed field description
+
+Enforce with:
+
+```bash
+cargo test -p backend --features mock-hardware -- config_reference
+```
+
+This test asserts that the committed `./anvilml.toml` key-set matches
+`ServerConfig::default()` recursively. Fix `anvilml.toml` to make it pass — do NOT
+weaken or skip the test. **Skip only** if task P3-B2 has not yet been implemented
+(i.e. `backend/tests/config_reference.rs` does not yet exist).
+
+Record the verbatim output in `## Project Gates` in the implementation report.
+
+### Build and Lint Commands (AnvilML)
+
+These are the canonical commands for all ACT sessions working on AnvilML:
+
+| Step | Command |
+|------|---------|
+| Format | `cargo fmt --all` |
+| Lint | `cargo clippy --workspace --features mock-hardware -- -D warnings` |
+| Test (Rust) | `cargo test --workspace --features mock-hardware` |
+| Test (Python worker) | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` |
+| Platform cross-check | `cargo check --target x86_64-pc-windows-gnu --workspace --features mock-hardware` |
+| Config drift gate | `cargo test -p backend --features mock-hardware -- config_reference` |
+| OpenAPI drift gate | `cargo run -p anvilml-openapi && git diff --exit-code backend/openapi.json` |
+
+The OpenAPI drift gate applies only when `anvilml-server` handler signatures or
+`utoipa` annotations are modified. It is not required for every task.

@@ -31,7 +31,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_returns_200() {
-        let state = AppState::new("0.1.0");
+        let state = AppState::new("0.1.0", None);
         let app = build_router(state);
 
         let response = app
@@ -59,7 +59,7 @@ mod tests {
 
     #[tokio::test]
     async fn env_returns_200_with_stub_report() {
-        let state = AppState::new("0.1.0");
+        let state = AppState::new("0.1.0", None);
         let app = build_router(state);
 
         let response = app
@@ -97,7 +97,8 @@ mod tests {
         let hw_info = anvilml_hardware::detect_all_devices(&anvilml_core::ServerConfig::default())
             .expect("detect_all_devices should succeed");
 
-        let state = AppState::new_with_hardware("0.1.0", hw_info);
+        let state =
+            AppState::new_with_hardware("0.1.0", hw_info, /* db */ None::<sqlx::SqlitePool>);
         let app = build_router(state);
 
         let response = app

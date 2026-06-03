@@ -12,6 +12,7 @@ anvilml-scheduler = { path = "../anvilml-scheduler" }
 anvilml-worker = { path = "../anvilml-worker" }
 axum = { version = "0.7", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
+sqlx = { version = "0.9", features = ["sqlite", "runtime-tokio"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tower = { version = "0.4", features = ["util"] }
 

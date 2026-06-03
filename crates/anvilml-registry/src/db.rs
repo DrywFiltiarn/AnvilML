@@ -157,25 +157,27 @@ mod tests {
 
         // Verify Running jobs are now Failed with error='server_restart'.
         for id in [running_id_1.to_string(), running_id_2.to_string()] {
-            let (status, error): (String, Option<String>) = sqlx::query_as(
-                "SELECT status, error FROM jobs WHERE id = ?",
-            )
-            .bind(&id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+            let (status, error): (String, Option<String>) =
+                sqlx::query_as("SELECT status, error FROM jobs WHERE id = ?")
+                    .bind(&id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
             assert_eq!(status, "Failed", "ghost job should be Failed");
-            assert_eq!(error.as_deref(), Some("server_restart"), "error must be server_restart");
+            assert_eq!(
+                error.as_deref(),
+                Some("server_restart"),
+                "error must be server_restart"
+            );
         }
 
         // Verify Completed job is untouched.
-        let (status, error): (String, Option<String>) = sqlx::query_as(
-            "SELECT status, error FROM jobs WHERE id = ?",
-        )
-        .bind(&completed_id.to_string())
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let (status, error): (String, Option<String>) =
+            sqlx::query_as("SELECT status, error FROM jobs WHERE id = ?")
+                .bind(&completed_id.to_string())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(status, "Completed", "completed job must not be touched");
         assert!(error.is_none(), "completed job must have no error");
     }

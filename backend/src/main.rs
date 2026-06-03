@@ -133,7 +133,18 @@ async fn main() {
         );
     }
 
-    let state = AppState::new_with_hardware(env!("CARGO_PKG_VERSION"), hw_info);
+    // Open the SQLite database and run migrations.
+    let db = anvilml_registry::db::open(&cfg.db_path)
+        .await
+        .expect("failed to open database");
+
+    // Reset any ghost jobs left from a previous unclean exit.
+    let ghost_count = anvilml_registry::db::reset_ghost_jobs(&db)
+        .await
+        .expect("failed to reset ghost jobs");
+    tracing::info!(ghost_jobs_reset = ghost_count, "ghost jobs reset");
+
+    let state = AppState::new_with_hardware(env!("CARGO_PKG_VERSION"), hw_info, Some(db));
     let router = build_router(state);
 
     let bind_addr = format!("{}:{}", cfg.host, cfg.port);
