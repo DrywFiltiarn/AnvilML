@@ -3,7 +3,7 @@
 **Document:** `docs/ARCHITECTURE.md`
 **Location in repo:** `AnvilML/docs/ARCHITECTURE.md`
 **Authoritative source:** `ANVILML_DESIGN.md` Rev 5 (single source of truth for all detail)
-**Read by:** Cline at the start of every PLAN and ACT session.
+**Read by:** OpenCode forge-plan and forge-act agents at the start of every session.
 
 This document is a navigational summary. For full specifications (types, API shapes,
 IPC protocol, test strategy), always read `ANVILML_DESIGN.md` directly.
@@ -244,4 +244,4 @@ Linux and Windows are co-equal first-class targets (`ANVILML_DESIGN.md §1.5`).
 - **stdin/stdout IPC, not TCP.** Avoids port allocation and per-platform socket handling.
 - **`anvilml-core` has zero I/O and zero async.** Keeps domain types testable without a runtime.
 - **`mock-hardware` feature flag**, not runtime env, controls the detection path in Rust. This ensures the real detectors are always compiled and linted, even in CI.
-- **The Forge commits.** Cline never calls `git commit` or `git push`. See `.clinerules §5`.
+- **The Forge commits.** The agent never calls `git commit` or `git push`. See `docs/FORGE_AGENT_RULES.md §3`.

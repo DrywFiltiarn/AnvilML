@@ -74,7 +74,7 @@ Total: 78 passed; 0 failed across all crates and doc-tests.
 ```
 
 ### Config drift gate — SKIPPED
-The `config_reference` test does not yet exist (it is implemented in task P3-B2). Per .clinerules §7.8, the local enforcement of this test is skipped when it does not yet exist.
+The `config_reference` test does not yet exist (it is implemented in task P3-B2). Per docs/FORGE_AGENT_RULES.md.8, the local enforcement of this test is skipped when it does not yet exist.
 
 ## CI Changes
 

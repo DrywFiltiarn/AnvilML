@@ -101,7 +101,7 @@ Create a cross-platform async shutdown signal handler (`backend/src/shutdown.rs`
    - Run `cargo check --features mock-hardware` to confirm zero errors.
 
 4. **Verify cross-platform compilation**:
-   - Run `cargo check --target x86_64-pc-windows-gnu --features mock-hardware` per `.clinerules` §7.7 (Windows cross-check).
+   - Run `cargo check --target x86_64-pc-windows-gnu --features mock-hardware` per `docs/FORGE_AGENT_RULES.md` §7.7 (Windows cross-check).
 
 5. **Runtime verification**:
    - Run `cargo run -- --port 9000`, then press Ctrl-C in the terminal.

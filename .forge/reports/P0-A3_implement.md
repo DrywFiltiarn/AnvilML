@@ -11,7 +11,7 @@
 
 ## Summary
 
-Created `rust-toolchain.toml` at the repository root to pin the Rust toolchain to version 1.95.0 with the `rustfmt` and `clippy` components and the `x86_64-pc-windows-gnu` target. The explicit channel pin prevents rustfmt/clippy version drift between local development and CI. The windows-gnu target enables the local cross-check described in `.clinerules` §7.7.
+Created `rust-toolchain.toml` at the repository root to pin the Rust toolchain to version 1.95.0 with the `rustfmt` and `clippy` components and the `x86_64-pc-windows-gnu` target. The explicit channel pin prevents rustfmt/clippy version drift between local development and CI. The windows-gnu target enables the local cross-check described in `docs/FORGE_AGENT_RULES.md` §7.7.
 
 ## Files Changed
 

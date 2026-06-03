@@ -73,7 +73,7 @@ Introduce structured logging to the AnvilML backend by adding `tracing` + `traci
 
 4. **Verify compilation:**
    - Run `cargo check -p backend` to ensure everything compiles.
-   - Run `cargo check --target x86_64-pc-windows-gnu --features mock-hardware` (per .clinerules §7.7 Windows cross-check).
+   - Run `cargo check --target x86_64-pc-windows-gnu --features mock-hardware` (per docs/FORGE_AGENT_RULES.md.7 Windows cross-check).
 
 ## Files Affected
 
@@ -104,7 +104,7 @@ No CI changes required.
 ## Acceptance Criteria
 
 - [ ] `cargo check -p backend` exits 0 with no warnings
-- [ ] `cargo check --target x86_64-pc-windows-gnu --features mock-hardware` exits 0 (Windows cross-check per .clinerules §7.7)
+- [ ] `cargo check --target x86_64-pc-windows-gnu --features mock-hardware` exits 0 (Windows cross-check per docs/FORGE_AGENT_RULES.md.7)
 - [ ] `ANVILML_LOG=debug cargo run -- --port 9000` shows debug-level log lines in plain-text format
 - [ ] `cargo run -- --port 9000 --log-format json` emits structured JSON log lines (each line is valid JSON with a `msg` field containing "Listening on...")
 - [ ] Default `cargo run -- --port 9000` (no env vars set) shows only info-level and above (no debug lines)

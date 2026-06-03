@@ -95,7 +95,7 @@ No CI changes made.
 ## Commit Log
 
 ```
-M  .clinerules
+M  docs/FORGE_AGENT_RULES.md
 A  .forge/reports/P3-A3_plan.md
 M  .forge/state/CURRENT_TASK.md
 M  .forge/state/state.json

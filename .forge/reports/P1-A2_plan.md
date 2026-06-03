@@ -14,7 +14,7 @@
 I'll analyze the context and plan this task. Let me start by gathering all necessary information.
 
 
-Task verified as P1-A2. Now let me read the `.clinerules` for the required report structure, and check the existing workspace Cargo.toml and backend directory state.
+Task verified as P1-A2. Now let me read the `docs/FORGE_AGENT_RULES.md` for the required report structure, and check the existing workspace Cargo.toml and backend directory state.
 
 
 Let me check the current state of the existing stub files and verify tokio availability in the server crate.
@@ -23,7 +23,7 @@ Let me check the current state of the existing stub files and verify tokio avail
 I now have all the context needed. Let me also quickly verify the phase name from PHASES.md, then write the plan report.
 
 
-All context gathered. Now I'll write the complete plan report and update the state file. Per .clinerules §3, this must be a single write with the exact required structure.
+All context gathered. Now I'll write the complete plan report and update the state file. Per docs/FORGE_AGENT_RULES.md, this must be a single write with the exact required structure.
 
 
 Now I'll write the plan report file:
