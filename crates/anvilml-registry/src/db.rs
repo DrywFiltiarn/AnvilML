@@ -60,6 +60,21 @@ pub async fn open(path: &Path) -> Result<SqlitePool, AnvilError> {
     Ok(pool)
 }
 
+/// Reset any jobs left in Running or Queued state from a previous unclean exit.
+///
+/// Returns the number of rows updated (ghost jobs that were reset).
+pub async fn reset_ghost_jobs(pool: &SqlitePool) -> Result<u64, AnvilError> {
+    let rows = sqlx::query(
+        "UPDATE jobs SET status = 'Failed', error = 'server_restart' \
+         WHERE status IN ('Running', 'Queued')",
+    )
+    .execute(pool)
+    .await
+    .map_err(sqlx_error)?;
+
+    Ok(rows.rows_affected())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,5 +109,74 @@ mod tests {
             .unwrap();
             assert_eq!(exists, 1, "{table} table should exist");
         }
+    }
+
+    /// Ghost-job reset marks Running/Queued as Failed, leaves Completed untouched.
+    #[tokio::test]
+    async fn test_reset_ghost_jobs() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path();
+
+        let pool = open(path).await.unwrap();
+
+        // Insert 2 Running jobs and 1 Completed job.
+        let running_id_1 = uuid::Uuid::new_v4();
+        let running_id_2 = uuid::Uuid::new_v4();
+        let completed_id = uuid::Uuid::new_v4();
+
+        sqlx::query(
+            "INSERT INTO jobs (id, status, graph, settings, created_at) \
+             VALUES (?, 'Running', '{}', '{}', '2026-01-01T00:00:00Z')",
+        )
+        .bind(running_id_1.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO jobs (id, status, graph, settings, created_at) \
+             VALUES (?, 'Running', '{}', '{}', '2026-01-01T00:00:00Z')",
+        )
+        .bind(running_id_2.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO jobs (id, status, graph, settings, created_at) \
+             VALUES (?, 'Completed', '{}', '{}', '2026-01-01T00:00:00Z')",
+        )
+        .bind(completed_id.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Call reset.
+        let count = reset_ghost_jobs(&pool).await.unwrap();
+        assert_eq!(count, 2, "exactly 2 ghost jobs should be reset");
+
+        // Verify Running jobs are now Failed with error='server_restart'.
+        for id in [running_id_1.to_string(), running_id_2.to_string()] {
+            let (status, error): (String, Option<String>) = sqlx::query_as(
+                "SELECT status, error FROM jobs WHERE id = ?",
+            )
+            .bind(&id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(status, "Failed", "ghost job should be Failed");
+            assert_eq!(error.as_deref(), Some("server_restart"), "error must be server_restart");
+        }
+
+        // Verify Completed job is untouched.
+        let (status, error): (String, Option<String>) = sqlx::query_as(
+            "SELECT status, error FROM jobs WHERE id = ?",
+        )
+        .bind(&completed_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(status, "Completed", "completed job must not be touched");
+        assert!(error.is_none(), "completed job must have no error");
     }
 }
