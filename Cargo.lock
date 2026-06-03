@@ -90,8 +90,11 @@ version = "0.1.0"
 dependencies = [
  "anvilml-core",
  "ash",
+ "libloading",
+ "log",
  "serial_test",
  "sysinfo",
+ "winapi",
 ]
 
 [[package]]

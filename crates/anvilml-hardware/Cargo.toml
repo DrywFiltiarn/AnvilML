@@ -11,6 +11,20 @@ anvilml-core = { path = "../anvilml-core" }
 # not available in this environment but would be in CI (ubuntu-latest).
 ash = { version = "0.38", default-features = false, features = ["loaded"] }
 sysinfo = "0.32"
+log = "0.4"
+
+# Windows-only: DXGI GPU enumeration via COM/IDXGIFactory1.
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = [
+    "combaseapi",
+    "objbase",
+    "winerror",
+    "dxgi",
+] }
+
+# Unix-only: dynamic loading of libnvidia-ml.so for NVML GPU enumeration.
+[target.'cfg(unix)'.dependencies]
+libloading = "0.8"
 
 [dev-dependencies]
 serial_test = "3.5"
