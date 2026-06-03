@@ -9,8 +9,6 @@ platform targets, config sync requirements, and technology stack details are def
 in the project's own `docs/ARCHITECTURE.md`, `docs/ENVIRONMENT.md`, and
 `docs/<PROJECT>_DESIGN.md`. Read those documents before writing any code or plan.
 
-There is no `.clinerules` file in any project repository managed by The Forge.
-Do not search for it.
 
 ---
 
@@ -38,7 +36,7 @@ The Forge owns git, Discord, and all approval gates.
 Every session begins with a structured header injected by The Forge:
 
 ```
-SindriStudio Task: <TASK_ID>
+Task: <TASK_ID>
 Description: <description>
 Phase: <NNN>
 Project: <name>
