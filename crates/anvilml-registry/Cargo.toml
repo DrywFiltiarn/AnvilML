@@ -5,3 +5,9 @@ edition = "2021"
 
 [dependencies]
 anvilml-core = { path = "../anvilml-core" }
+sqlx = { version = "0.9", features = ["sqlite", "runtime-tokio", "macros", "migrate"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+sqlx = { version = "0.9", features = ["sqlite", "runtime-tokio", "macros"] }
