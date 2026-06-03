@@ -5,6 +5,11 @@ edition = "2021"
 
 [dependencies]
 anvilml-core = { path = "../anvilml-core" }
+# Use the "loaded" feature for runtime Vulkan loader discovery via dlopen,
+# so absence of libvulkan.so returns a clean error rather than linker failure.
+# The "linked" feature would require libvulkan-dev at compile time, which is
+# not available in this environment but would be in CI (ubuntu-latest).
+ash = { version = "0.38", default-features = false, features = ["loaded"] }
 sysinfo = "0.32"
 
 [dev-dependencies]

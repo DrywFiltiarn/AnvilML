@@ -4,6 +4,7 @@
 //! and provides a concrete [`CpuDetector`] implementation for CPU fallback.
 
 pub mod cpu;
+pub mod vulkan;
 
 #[cfg(feature = "mock-hardware")]
 pub mod mock;
@@ -35,5 +36,14 @@ mod tests {
         let detector: &dyn DeviceDetector = &cpu::CpuDetector::default();
         let devices = detector.detect().expect("detect must succeed");
         assert!(!devices.is_empty());
+    }
+
+    /// Compile-check: `VulkanDetector` must implement `DeviceDetector`.
+    #[test]
+    fn vulkan_detector_implements_trait() {
+        let detector: &dyn DeviceDetector = &vulkan::VulkanDetector::default();
+        let devices = detector.detect().expect("detect must not return Err");
+        // Result is always Ok — may be empty if no Vulkan loader present.
+        let _ = devices;
     }
 }
