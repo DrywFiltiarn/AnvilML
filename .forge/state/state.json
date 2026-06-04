@@ -42,16 +42,17 @@
     "P6-A6",
     "P6-A7",
     "P6-B1",
-    "P6-B2"
+    "P6-B2",
+    "P6-C1"
   ],
-  "in_progress": "P6-C1",
+  "in_progress": "P6-D1",
   "plan_approved": true,
-  "current_plan": "1. **Edit `crates/anvilml-core/src/config.rs`** \u2014 Add the attribute line `#[serde(rename_all = \"snake_case\")]` directly above the `DeviceType` enum definition (line 30) and above the `FrontendMode` enum definition (line 81). These are the only two lines changed in this file.\n\n2. **Edit `crates/anvilml-core/src/types/hardware.rs`** \u2014 In the `device_type_json_strings` test (lines 389\u2013398), update the three assertions:\n   - Line 391: `\"\\\"Cuda\\\"\" \u2192 \"\\\"cuda\\\"\"`\n   - Line 394: `\"\\\"Rocm\\\"\" \u2192 \"\\\"rocm\\\"\"`\n   - Line 397: `\"\\\"Cpu\\\"\" \u2192 \"\\\"cpu\\\"\"`\n\n3. **Edit `crates/anvilml-core/src/types/hardware.rs`** \u2014 In the `gpu_device_backward_compat` test (lines 240\u2013274), update the JSON literal on line 245:\n   - `\"device_type\": \"Cuda\"` \u2192 `\"device_type\": \"cuda\"`\n\n4. **Verify** \u2014 Run `cargo test --workspace --features mock-hardware` to confirm all tests pass. Run `cargo run --bin anvilml -- --print-hardware` to confirm no config-load panic.",
+  "current_plan": "1. **Verify dependency already present.** Confirm `tempfile = \"3\"` exists in `[dev-dependencies]` of `crates/anvilml-server/Cargo.toml`. (Already confirmed on line 22.)\n\n2. **Update `setup_test_env()` signature and body** in `crates/anvilml-server/tests/api_models.rs`:\n   - Add `use tempfile::TempDir;` at the top.\n   - Change return type from `(PathBuf, PathBuf)` to `(TempDir, PathBuf, PathBuf)`.\n   - Create a `TempDir` via `tempfile::TempDir::new()` (returns an OS-managed unique path under `/tmp`).\n   - Inside that temp dir, create the `diffusion/` subdirectory and write the model file.\n   - Pre-create the `.db` file inside the temp dir (as before).\n   - Return `(tmp, model_dir_path, db_path)`.\n\n3. **Update all three test functions** (`list_models_returns_scanned_models`, `list_models_kind_filter_diffusion`, `list_models_kind_filter_no_match`):\n   - Change destructuring from `let (model_dir, db_path) = setup_test_env();` to `let (_tmp, model_dir, db_path) = setup_test_env();`.\n   - The `_tmp` binding keeps the `TempDir` alive for the test duration; it is dropped after the test completes, cleaning up the directory automatically.\n\n4. **Run tests** with both sequential and parallel execution:\n   - `cargo test -p anvilml-server --test api_models` (parallel, default)\n   - `cargo test -p anvilml-server --test api_models -- --test-threads=1` (sequential)\n   - Both must exit 0 with all 3 tests passing.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-04T12:03:18+0200",
-  "plan_approval_message_id": "1512033138853941319",
+  "last_updated": "2026-06-04T12:27:28+0200",
+  "plan_approval_message_id": "1512039192333652079",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512033137150922793",
+  "plan_report_message_id": "1512039190286569473",
   "impl_report_message_id": null
 }

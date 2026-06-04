@@ -2,6 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use tempfile::TempDir;
+
 use anvilml_core::config::ModelDirConfig;
 use anvilml_core::ModelKind;
 use anvilml_registry::ModelRegistry;
@@ -16,20 +18,20 @@ use anvilml_server::{build_router, AppState};
 
 /// Create a unique temporary directory structure for testing model scanning.
 ///
-/// Creates a unique subdirectory under the system temp dir to avoid races
-/// between concurrent tests. Returns `(diffusion_dir_path, db_file_path)`.
-fn setup_test_env() -> (PathBuf, PathBuf) {
-    let id = std::process::id();
-    let temp_base = std::env::temp_dir().join(format!("anvilml_test_models_{id}"));
-    let _ = fs::remove_dir_all(&temp_base); // clean up from previous runs
-    fs::create_dir_all(temp_base.join("diffusion")).expect("create test dir");
-    fs::File::create(temp_base.join("diffusion/model-fp16.safetensors"))
+/// Each call creates its own `TempDir` (OS-managed, under `/tmp`) so that
+/// parallel tests never share files. Returns `(temp_dir_guard, diffusion_dir_path, db_file_path)`.
+fn setup_test_env() -> (TempDir, PathBuf, PathBuf) {
+    let tmp = tempfile::TempDir::new().expect("create temp dir");
+    let diffusion_dir = tmp.path().join("diffusion");
+    let db_path = tmp.path().join("test.db");
+
+    fs::create_dir_all(&diffusion_dir).expect("create test dir");
+    fs::File::create(diffusion_dir.join("model-fp16.safetensors"))
         .expect("create model file");
 
-    let db_path = temp_base.join("test.db");
     // Pre-create the database file — `anvilml_registry::open` requires it.
     fs::File::create(&db_path).expect("pre-create db file");
-    (temp_base.join("diffusion"), db_path)
+    (tmp, diffusion_dir, db_path)
 }
 
 /// Build an `AppState` with a fresh registry backed by a file-based SQLite
@@ -52,7 +54,7 @@ async fn build_test_app_state(model_dir: PathBuf, db_path: PathBuf) -> AppState 
 
 #[tokio::test]
 async fn list_models_returns_scanned_models() {
-    let (model_dir, db_path) = setup_test_env();
+    let (_tmp, model_dir, db_path) = setup_test_env();
     let state = build_test_app_state(model_dir, db_path).await;
     let app = build_router(state);
 
@@ -86,7 +88,7 @@ async fn list_models_returns_scanned_models() {
 
 #[tokio::test]
 async fn list_models_kind_filter_diffusion() {
-    let (model_dir, db_path) = setup_test_env();
+    let (_tmp, model_dir, db_path) = setup_test_env();
     let state = build_test_app_state(model_dir, db_path).await;
     let app = build_router(state);
 
@@ -123,7 +125,7 @@ async fn list_models_kind_filter_diffusion() {
 
 #[tokio::test]
 async fn list_models_kind_filter_no_match() {
-    let (model_dir, db_path) = setup_test_env();
+    let (_tmp, model_dir, db_path) = setup_test_env();
     let state = build_test_app_state(model_dir, db_path).await;
     let app = build_router(state);
 
