@@ -6,6 +6,7 @@ use axum::{
     response::IntoResponse,
 };
 use futures_util::{SinkExt, StreamExt};
+use std::time::Duration;
 use tracing::error;
 
 use crate::AppState;
@@ -27,19 +28,38 @@ async fn handle_connection(stream: WebSocket, state: AppState) {
 
     let (mut ws_tx, mut ws_rx) = stream.split();
 
-    // Forward task: broadcast receiver → WS client.
-    let forward = async move {
-        while let Ok(event) = rx.recv().await {
-            let json = match serde_json::to_string(&event) {
-                Ok(j) => j,
-                Err(e) => {
-                    error!("Failed to serialize WsEvent: {e}");
-                    break;
-                }
-            };
+    // Forward + ping task: broadcast receiver → WS client, with keepalive pings.
+    let mut interval = tokio::time::interval(Duration::from_secs(30));
+    // Skip the first immediate tick so we don't ping before any events arrive.
+    let _ = interval.tick().await;
 
-            if ws_tx.send(Message::Text(json)).await.is_err() {
-                break;
+    let forward = async move {
+        loop {
+            tokio::select! {
+                biased;
+                event = rx.recv() => {
+                    match event {
+                        Ok(event) => {
+                            let json = match serde_json::to_string(&event) {
+                                Ok(j) => j,
+                                Err(e) => {
+                                    error!("Failed to serialize WsEvent: {e}");
+                                    break;
+                                }
+                            };
+
+                            if ws_tx.send(Message::Text(json)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                _ = interval.tick() => {
+                    if ws_tx.send(Message::Ping(vec![])).await.is_err() {
+                        break;
+                    }
+                }
             }
         }
     };

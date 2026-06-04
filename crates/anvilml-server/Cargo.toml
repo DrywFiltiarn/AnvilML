@@ -15,7 +15,7 @@ axum = { version = "0.7", features = ["json", "ws"] }
  serde_json = "1"
  tracing = "0.1"
 sqlx = { version = "0.9", features = ["sqlite", "runtime-tokio"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 tower = { version = "0.4", features = ["util"] }
 futures-util = "0.3"
 
