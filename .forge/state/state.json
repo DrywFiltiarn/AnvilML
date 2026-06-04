@@ -39,16 +39,17 @@
     "P6-A3",
     "P6-A4",
     "P6-A5",
-    "P6-A6"
+    "P6-A6",
+    "P6-A7"
   ],
-  "in_progress": "P6-A7",
+  "in_progress": "P6-B1",
   "plan_approved": true,
-  "current_plan": "1. **Add `model_dirs` field to `AppState`** (`state.rs`): Add `pub model_dirs: Vec<ModelDirConfig>` alongside existing fields. Update both `new()` and `new_with_hardware()` constructors to accept an optional `Vec<ModelDirConfig>` parameter (defaulting to empty when None). Update the `Clone` impl to clone the new field.\n\n2. **Add `get_model` handler** (`handlers/models.rs`):\n   - Import `axum::extract::Path` and `anvilml_core::config::ModelDirConfig`.\n   - Define a small local struct or tuple for the 404 JSON body: `{ \"error\": \"not_found\", \"message\": \"model not found\" }`.\n   - Implement `get_model` that extracts the ID from `Path(id)`, calls `state.registry.get(&id).await`, and returns either `(StatusCode::OK, Json(meta))` or `(StatusCode::NOT_FOUND, Json(error_body))`.\n\n3. **Add `rescan_models` handler** (`handlers/models.rs`):\n   - Implement `rescan_models` that clones `state.model_dirs` and `state.registry`, then spawns a `tokio::spawn` task calling `registry.rescan(&dirs).await`.\n   - The handler returns immediately with `(StatusCode::ACCEPTED, Json(rescan_response))` where the response is `{ \"status\": \"rescan_started\" }`.\n   - The spawned task logs success/failure via `tracing::info!`/`tracing::warn!`.\n\n4. **Wire routes** (`lib.rs`): Add two `.route()` calls:\n   - `.route(\"/v1/models/:id\", get(handlers::models::get_model))`\n   - `.route(\"/v1/models/rescan\", post(handlers::models::rescan_models))`\n   - Place these after the existing `/v1/models` route.\n\n5. **Pass model_dirs from main.rs** (`backend/src/main.rs`): When constructing `AppState`, pass `cfg.model_dirs.clone()` to the registry/state builder (either as a new parameter or via an updated constructor).",
+  "current_plan": "1. **Read the error output** \u2014 already done. The Windows-gnu cross-check reports exactly one error:\n   ```\n   error[E0423]: expected value, found struct `dxgi::DxgiDetector`\n      --> crates/anvilml-hardware/src/lib.rs:112:32\n       |\n   112|             let dxgi_devices = dxgi::DxgiDetector.detect().unwrap_or_default();\n   ```\n\n2. **Apply the fix** \u2014 In `crates/anvilml-hardware/src/lib.rs`, line 112, replace:\n   ```rust\n   let dxgi_devices = dxgi::DxgiDetector.detect().unwrap_or_default();\n   ```\n   with:\n   ```rust\n   let dxgi_devices = dxgi::DxgiDetector::default().detect().unwrap_or_default();\n   ```\n\n   This is the only change needed. Rationale:\n   - `DxgiDetector` derives `Default` (see `dxgi.rs` line 111).\n   - The `DeviceDetector::detect()` method takes `&self`, so an instance is required.\n   - Line 106 (`vulkan::VulkanDetector.detect()`) compiles fine on both targets because the Windows cross-check only exercises lines 109\u2013116 (the `#[cfg(windows)]` block); the Linux native check passes through line 106 with no error. The task description confirms this pattern applies to all three platform detectors, but in practice only the `DxgiDetector` call is exercised by the failing cross-target compile.\n\n3. **Verify both compile checks** \u2014 Run:\n   ```bash\n   cargo check --bin anvilml\n   cargo check --bin anvilml --target x86_64-pc-windows-gnu\n   ```\n   Both must exit 0.\n\n4. **Verify existing tests pass** \u2014 Run:\n   ```bash\n   cargo test --workspace --features mock-hardware\n   ```\n   Must exit 0 with no regressions.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-04T10:38:47+0200",
-  "plan_approval_message_id": "1512002995993317507",
+  "last_updated": "2026-06-04T11:11:45+0200",
+  "plan_approval_message_id": "1512020337112383509",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512002994294620261",
+  "plan_report_message_id": "1512020335543717918",
   "impl_report_message_id": null
 }

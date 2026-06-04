@@ -109,7 +109,7 @@ fn enumerate_gpus() -> Vec<GpuDevice> {
         #[cfg(windows)]
         {
             // Fallback: DXGI on Windows.
-            let dxgi_devices = dxgi::DxgiDetector.detect().unwrap_or_default();
+            let dxgi_devices = dxgi::DxgiDetector::default().detect().unwrap_or_default();
             if !dxgi_devices.is_empty() {
                 return dxgi_devices;
             }
