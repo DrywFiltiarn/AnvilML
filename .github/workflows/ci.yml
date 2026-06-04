@@ -30,11 +30,11 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --features mock-hardware
 
-      - name: Real-hardware compile check
-        run: cargo check --bin anvilml
-
       - name: Real-hardware lint
         run: cargo clippy --bin anvilml -- -D warnings
+
+      - name: Real-hardware compile check
+        run: cargo check --bin anvilml
 
   rust-windows:
     runs-on: windows-latest
@@ -53,8 +53,9 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --features mock-hardware
 
+      - name: Real-hardware lint
+        run: cargo clippy --bin anvilml -- -D warnings
+
       - name: Real-hardware compile check
         run: cargo check --bin anvilml
 
-      - name: Real-hardware lint
-        run: cargo clippy --bin anvilml -- -D warnings
