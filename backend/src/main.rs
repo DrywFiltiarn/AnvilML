@@ -14,7 +14,7 @@ fn print_hardware_table(hw: &HardwareInfo) {
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║                     Host Information                     ║");
     println!("╠══════════════════════════════════════════════════════════╣");
-    println!("║ OS:          {}:", " ".repeat(50 - 8));
+    println!("║ OS:          {}", hw.host.os);
     println!("║ CPU:         {}", hw.host.cpu_model);
     println!("║ Total RAM:   {} MiB", hw.host.ram_total_mib);
     println!("╠══════════════════════════════════════════════════════════╣");

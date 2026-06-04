@@ -81,7 +81,10 @@ fn populate_host_info() -> HostInfo {
     system.refresh_cpu_specifics(sysinfo::CpuRefreshKind::everything());
     system.refresh_memory();
 
-    let os = sysinfo::System::name().unwrap_or_else(|| "Unknown".to_string());
+    let os = sysinfo::System::long_os_version()
+        .or_else(sysinfo::System::name)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Unknown".to_string());
     let cpu_model = system
         .cpus()
         .first()
