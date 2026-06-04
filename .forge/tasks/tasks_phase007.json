@@ -85,5 +85,16 @@
     "tags": [
       "reasoning"
     ]
+  },
+  {
+    "id": "P7-D3",
+    "description": "anvilml-registry + anvilml-server: silent error discard fixes",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": [
+      "P7-D2"
+    ],
+    "context": "Audit silent discards outside anvilml-hardware. In crates/anvilml-registry/src/scanner.rs scan_dirs: replace Err(_)=>continue on walkdir entry errors and metadata() errors with tracing::warn!(path, error); replace canonicalize().unwrap_or_else(|_|...) with a warn+fallback. In crates/anvilml-server/src/handlers/models.rs: in list_models Err(_e) arm add tracing::error!(error=%e) and return proper JSON error body {error,message} at 500; in get_model Err(_e) arm add tracing::error!(error=%e). cargo clippy --workspace -- -D warnings exits 0. cargo test --workspace --features mock-hardware exits 0.",
+    "tags": []
   }  
 ]

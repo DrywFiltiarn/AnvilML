@@ -7,7 +7,7 @@
 | Milestone group | Observable system state |
 | Depends on phases | 1-6 |
 | Task file | `.forge/tasks/tasks_phase007.json` |
-| Tasks | 9 |
+| Tasks | 10 |
 
 ## Overview
 
@@ -15,7 +15,7 @@ Phase 7 adds the `EventBroadcaster`, the `GET /v1/events` WebSocket endpoint wit
 
 Group B locks in real-hardware lint coverage in CI, mirroring the real-hardware compile check added in P6-B2. Group C eliminates the version-authority gap by introducing `[workspace.dependencies]` and upgrading all external dependencies to their current stable releases via MCP lookup.
 
-Every task in this phase implements one module, one endpoint, or one infrastructure change plus its verification. No task touches more than its named file(s). `cargo test` and `cargo clippy` are per-task gates; the phase as a whole is only complete when the Runnable Proof below passes. Group D addresses two production bugs discovered during manual testing: a first-run database creation failure in `anvilml-registry` and silent hardware detector fallbacks in `anvilml-hardware` that mask the Vulkan extension misclassification responsible for DXGI being used instead of Vulkan on Windows AMD hardware.
+Every task in this phase implements one module, one endpoint, or one infrastructure change plus its verification. No task touches more than its named file(s). `cargo test` and `cargo clippy` are per-task gates; the phase as a whole is only complete when the Runnable Proof below passes. Group D addresses production bugs discovered during manual testing: a first-run database creation failure in `anvilml-registry` (D1), silent hardware detector fallbacks in `anvilml-hardware` that mask the Vulkan extension misclassification responsible for DXGI being used instead of Vulkan on Windows AMD hardware (D2), and silent error discards in `anvilml-registry`'s scanner and the model HTTP handlers that make scan failures and database errors invisible at the server log level (D3).
 
 ## Tasks
 
@@ -30,6 +30,7 @@ Every task in this phase implements one module, one endpoint, or one infrastruct
 | P7-C1 | `Cargo.toml`, all per-crate `Cargo.toml` files | anvilml: introduce [workspace.dependencies] and upgrade all external deps to current stable |
 | P7-D1 | `crates/anvilml-registry/src/db.rs`, `crates/anvilml-server/tests/api_models.rs` | anvilml-registry: fix db::open to create missing database file |
 | P7-D2 | `crates/anvilml-hardware/src/vulkan.rs`, `dxgi.rs`, `sysfs.rs`, `nvml.rs`, `lib.rs` | anvilml-hardware: explicit detector warnings + Vulkan extension fix |
+| P7-D3 | `crates/anvilml-registry/src/scanner.rs`, `crates/anvilml-server/src/handlers/models.rs` | anvilml-registry + anvilml-server: silent error discard fixes |
 
 ## Task details
 
@@ -204,6 +205,26 @@ Every silent `Ok(vec![])` early-return in the hardware detection crates discards
 
 ---
 
+#### P7-D3: anvilml-registry + anvilml-server: silent error discard fixes
+
+- **Prereqs:** P7-D2
+- **Tags:** —
+
+Two crates outside `anvilml-hardware` contain silent discards that make failures invisible at runtime. In `scanner.rs`, walkdir entry errors and metadata read failures are silently skipped with bare `continue`, and `canonicalize` failures silently fall back to the raw path — causing the affected model to receive an incorrect ID derived from the wrong path string, corrupting deduplication with no log entry. In `handlers/models.rs`, both the `list_models` and `get_model` handlers catch database errors into `Err(_e)` arms that discard `_e` and produce no log output.
+
+**Files to create or modify:**
+- `crates/anvilml-registry/src/scanner.rs` — in `scan_dirs`: replace `Err(_) => continue` on the walkdir iterator with `Err(e) => { tracing::warn!(path = %dir_config.path.display(), error = %e, "scanner: skipping unreadable entry"); continue; }`; replace `Err(_) => continue` on `entry.metadata()` with the same pattern naming the file path; replace `canonicalize().unwrap_or_else(|_| ...)` with an explicit `match` that warns on error before using the fallback path
+- `crates/anvilml-server/src/handlers/models.rs` — in `list_models` `Err(_e)` arm: add `tracing::error!(error = %_e, "list_models: registry query failed")` and change the response body from `Json(vec![])` to `Json(serde_json::json!({"error":"internal_error","message":_e.to_string()}))`; in `get_model` `Err(_e)` arm: add `tracing::error!(error = %_e, "get_model: registry query failed")`
+
+**Key implementation notes:**
+- The `list_models` response type is `(StatusCode, Json<Vec<ModelMeta>>)`. Changing the error arm body requires changing the return type to `(StatusCode, Json<serde_json::Value>)` so both arms can return different JSON shapes. Update the function signature accordingly.
+- The warn messages in `scanner.rs` must include the affected path so operators can identify which directory or file triggered the problem.
+- All existing tests must continue to pass without modification — the changes only add log output and fix the error response body shape.
+
+**Acceptance criterion:** `cargo clippy --workspace -- -D warnings` exits 0 AND `cargo test --workspace --features mock-hardware` exits 0.
+
+---
+
 ## Runnable Proof
 
 Subscribe to the WebSocket and watch `system.stats` frames arrive.
@@ -227,3 +248,4 @@ Expected: roughly every 5 seconds a JSON text frame arrives with `"event":"syste
 - If P7-C1 encounters a semver-incompatible major bump, it pins the last compatible major and stops. A manually authored follow-on retrofit leaf task (e.g. a new Group D task — not pre-authored; created only if needed) handles the migration. The retrofit task's `context` field must open with an explicit origin reference: `"P7-C1 pinned <crate> at <old version> due to semver incompatibility. Migrate to <new version>: ..."`.
 - P7-D1 must run after P7-C1. The `SqliteConnectOptions` API surface depends on the sqlx version established by P7-C1; writing the fix against the pre-C1 version risks a second churn pass when C1 upgrades sqlx.
 - P7-D2 changes the observable startup log on Windows with a Vulkan-capable AMD GPU: after the fix, the server logs `enumeration_source=Vulkan` instead of `enumeration_source=Dxgi`. The DXGI fallback path remains correct and is still reached when Vulkan genuinely produces an empty device list — it is no longer silently reached when Vulkan fails a rejectable `vkCreateInstance` call.
+- P7-D3 changes the return type of `list_models` from `(StatusCode, Json<Vec<ModelMeta>>)` to `(StatusCode, Json<serde_json::Value>)`. The existing integration test in `api_models.rs` asserts the success-path response body as a JSON array — it must continue to pass because the success arm is unchanged and `serde_json::Value` can represent an array. No test changes are required, but The Forge must verify this explicitly after implementation.
