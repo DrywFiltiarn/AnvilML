@@ -48,16 +48,17 @@
     "P7-A1",
     "P7-A2",
     "P7-A3",
-    "P7-A4"
+    "P7-A4",
+    "P7-A5"
   ],
-  "in_progress": "P7-A5",
+  "in_progress": "P7-B1",
   "plan_approved": true,
-  "current_plan": "1. **Read** `backend/src/main.rs` to confirm the current structure: AppState is built at line ~161\u2013168, router built at line ~169, then server binds at line ~172.\n2. **Add import**: Insert `use anvilml_server::ws::stats_tick::spawn_system_stats_tick;` alongside the existing `anvilml_server` imports near the top of the file.\n3. **Spawn the tick task**: After the `state` variable is constructed (line ~168) and before `build_router(state)` (line ~169), insert:\n   ```rust\n   spawn_system_stats_tick(state.clone());\n   ```\n   This clones the owned `AppState` for the spawned task while retaining the original for `build_router`. The tick task runs independently on the same Tokio runtime.\n4. **Build check**: Run `cargo build -p backend --features mock-hardware` to confirm compilation succeeds.\n5. **Manual verification**: Run `cargo run --features mock-hardware`, open a second shell, connect via `websocat ws://127.0.0.1:8488/v1/events`, and observe recurring `system.stats` JSON frames within 10 seconds.",
+  "current_plan": "1. Open `.github/workflows/ci.yml`.\n2. In the `rust-linux` job, locate the existing step:\n   ```yaml\n   - name: Real-hardware compile check\n     run: cargo check --bin anvilml\n   ```\n3. Insert immediately after it a new step block:\n   ```yaml\n\n       - name: Real-hardware lint\n         run: cargo clippy --bin anvilml -- -D warnings\n   ```\n4. In the `rust-windows` job, locate the existing step:\n   ```yaml\n   - name: Real-hardware compile check\n     run: cargo check --bin anvilml\n   ```\n5. Insert immediately after it a new step block (same as Linux):\n   ```yaml\n\n       - name: Real-hardware lint\n         run: cargo clippy --bin anvilml -- -D warnings\n   ```\n6. Verify the file still has valid YAML structure and that both jobs are unchanged except for the added steps.\n7. Acceptance check: `grep -c 'Real-hardware lint' .github/workflows/ci.yml` must print `2`.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-04T21:12:27+0200",
-  "plan_approval_message_id": "1512161885208711208",
+  "last_updated": "2026-06-04T21:33:05+0200",
+  "plan_approval_message_id": "1512176282421690599",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512161882918883563",
+  "plan_report_message_id": "1512176280915939479",
   "impl_report_message_id": null
 }

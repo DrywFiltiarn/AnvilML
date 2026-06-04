@@ -33,6 +33,9 @@ jobs:
       - name: Real-hardware compile check
         run: cargo check --bin anvilml
 
+      - name: Real-hardware lint
+        run: cargo clippy --bin anvilml -- -D warnings
+
   rust-windows:
     runs-on: windows-latest
     steps:
@@ -52,3 +55,6 @@ jobs:
 
       - name: Real-hardware compile check
         run: cargo check --bin anvilml
+
+      - name: Real-hardware lint
+        run: cargo clippy --bin anvilml -- -D warnings
