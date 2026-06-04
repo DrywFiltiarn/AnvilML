@@ -108,5 +108,16 @@
     ],
     "context": "Add #[serde(rename_all = \"snake_case\")] to FrontendMode and DeviceType enums in crates/anvilml-core/src/config.rs. Update affected tests in crates/anvilml-core/src/types/hardware.rs: device_type_json_strings (assert \"cuda\"/\"rocm\"/\"cpu\"), gpu_device_backward_compat (change hardcoded JSON \"device_type\": \"Cuda\" to \"cuda\"). Verify anvilml.toml already uses lowercase (mode = \"headless\", device_type = \"cpu\"). cargo test --workspace --features mock-hardware exits 0. cargo run --bin anvilml -- --print-hardware succeeds without config panic.",
     "tags": []
+  },
+  {
+    "id": "P6-D1",
+    "description": "anvilml-server: fix api_models test isolation (shared temp db causes parallel test failures)",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": [
+      "P6-C1"
+    ],
+    "context": "Fix crates/anvilml-server/tests/api_models.rs: setup_test_env() uses std::process::id() as the temp dir discriminator, making it identical across all parallel tests in the same process. Tests race on the same test.db file causing database locked and UNIQUE constraint failures. Replace the process-id path strategy with tempfile::TempDir::new() (return the TempDir handle alongside the paths to keep it alive for the test duration). Add tempfile to dev-deps in crates/anvilml-server/Cargo.toml if absent. cargo test -p anvilml-server --test api_models exits 0 with all 3 tests passing.",
+    "tags": []
   }
 ]

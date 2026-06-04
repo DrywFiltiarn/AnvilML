@@ -7,7 +7,7 @@
 | Milestone group | Observable system state |
 | Depends on phases | 1-5 |
 | Task file | `forge/tasks/tasks_phase006.json` |
-| Tasks | 10 |
+| Tasks | 11 |
 
 ## Overview
 
@@ -29,6 +29,7 @@ Every task in this phase implements **one module or one endpoint** plus its test
 | P6-B1 | `crates/anvilml-hardware/src/lib.rs` | anvilml-hardware: fix real-hardware build errors (no-feature compile check) |
 | P6-B2 | `.github/workflows/ci.yml` | anvilml: add real-hardware compile check to rust-linux and rust-windows CI jobs |
 | P6-C1 | `crates/anvilml-core/src/config.rs`, `crates/anvilml-core/src/types/hardware.rs` | anvilml-core: add serde snake_case to FrontendMode and DeviceType config enums |
+| P6-D1 | `crates/anvilml-server/tests/api_models.rs`, `crates/anvilml-server/Cargo.toml` | anvilml-server: fix api_models test isolation (shared temp db causes parallel test failures) |
 
 ## Task details
 
@@ -171,6 +172,32 @@ No other test changes are expected — all other `DeviceType` and `FrontendMode`
 
 
 
+
+---
+
+### Group D — Test Correctness
+
+#### P6-D1: anvilml-server: fix api_models test isolation (shared temp db causes parallel test failures)
+
+- **Prereqs:** P6-C1
+- **Tags:** —
+
+The three tests in `crates/anvilml-server/tests/api_models.rs` fail on CI with `database is locked` and `UNIQUE constraint failed: _sqlx_migrations.version` when run in parallel. The root cause is `setup_test_env()` using `std::process::id()` as the unique discriminator for the temp directory path. All tests in a cargo test binary share the same process, so all three tests resolve to the same directory and the same `test.db` file. When cargo runs them concurrently (the default), they race to open and migrate the same database file.
+
+The fix follows the pattern already used in every other test file in this codebase (`store_get.rs`, `store_list.rs`, `rescan.rs`, `anvilml_registry_db.rs`): use `tempfile::TempDir::new()` to get a unique, OS-managed temporary directory per test invocation. The `TempDir` handle must be returned alongside the derived paths and kept alive for the duration of the test, or the directory will be deleted before the test completes.
+
+**Files to create or modify:**
+- `crates/anvilml-server/tests/api_models.rs` — replace `setup_test_env()` process-id path strategy with `tempfile::TempDir`; update the three test functions to hold the `TempDir` handle
+- `crates/anvilml-server/Cargo.toml` — add `tempfile = "3"` to `[dev-dependencies]`
+
+**Key implementation notes:**
+- `setup_test_env()` should return `(TempDir, PathBuf, PathBuf)` — the `TempDir` guard, the diffusion model dir path, and the db file path. Each test must bind the `TempDir` to a local variable (e.g. `let _tmp = ...`) to prevent premature drop.
+- The pre-create of the db file (`fs::File::create(&db_path)`) must still happen after the `TempDir` is created, since `anvilml_registry::open` requires the file to exist.
+- No changes to the test assertions — only the setup scaffolding changes.
+
+**Acceptance criterion:** `cargo test -p anvilml-server --test api_models` exits 0 with all 3 tests passing.
+
+
 ## Runnable Proof
 
 Create a model directory with a fake model file and confirm it appears via the API.
@@ -203,3 +230,4 @@ Expected: `GET /v1/models` returns a JSON array containing the model with `kind:
 - P6-B1 and P6-B2 must run after P6-A7 to avoid disrupting the in-progress model registry implementation chain.
 - P6-C1 changes `DeviceType` JSON serialisation from PascalCase (`"Cuda"`) to snake_case (`"cuda"`). This is a breaking change to the `GET /v1/hardware` response shape. It is acceptable pre-release but must be noted in the implementation report.
 - P6-C1 must not change any `#[serde]` attributes on `EnumerationSource` or `CapabilitySource` — those are internal runtime types used only in JSON API responses and must retain their current PascalCase serialisation.
+- P6-D1 is a test-only fix. No production source files change. The `#[tokio::test]` runner is multi-threaded by default in cargo, which is why tests sharing state race; the fix is proper isolation, not `#[serial]` serialisation of tests (which would mask the real problem and slow CI).
