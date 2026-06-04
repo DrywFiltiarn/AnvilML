@@ -24,14 +24,17 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
-      - name: Clippy check
+      - name: Mock-hardware lint
         run: cargo clippy --workspace --features mock-hardware -- -D warnings
+
+      - name: Real-hardware lint
+        run: cargo clippy --bin anvilml -- -D warnings
 
       - name: Run tests
         run: cargo test --workspace --features mock-hardware
 
-      - name: Real-hardware lint
-        run: cargo clippy --bin anvilml -- -D warnings
+      - name: Mock-hardware compile check
+        run: cargo check --bin anvilml --features mock-hardware
 
       - name: Real-hardware compile check
         run: cargo check --bin anvilml
@@ -47,15 +50,18 @@ jobs:
           components: clippy
           cache: true
 
-      - name: Clippy check
+      - name: Mock-hardware lint
         run: cargo clippy --workspace --features mock-hardware -- -D warnings
 
-      - name: Run tests
-        run: cargo test --workspace --features mock-hardware
 
       - name: Real-hardware lint
         run: cargo clippy --bin anvilml -- -D warnings
 
+      - name: Run tests
+        run: cargo test --workspace --features mock-hardware
+
+      - name: Mock-hardware compile check
+        run: cargo check --bin anvilml --features mock-hardware
+
       - name: Real-hardware compile check
         run: cargo check --bin anvilml
-
