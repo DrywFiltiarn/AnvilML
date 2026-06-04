@@ -1,6 +1,7 @@
 use std::sync::{Arc, RwLock};
 
 use anvilml_core::{EnvReport, HardwareInfo};
+use anvilml_registry::ModelRegistry;
 use sqlx::SqlitePool;
 use std::time::Instant;
 
@@ -16,6 +17,8 @@ pub struct AppState {
     hardware: Arc<RwLock<HardwareInfo>>,
     /// SQLite connection pool for the job/model/artifact registry.
     pub db: Option<SqlitePool>,
+    /// Model metadata registry (initialised at startup, scanned in background).
+    pub registry: Arc<ModelRegistry>,
 }
 
 impl AppState {
@@ -25,7 +28,19 @@ impl AppState {
     /// The hardware field is initialised with an empty `HardwareInfo`.
     /// Use [`Self::new_with_hardware`] for production use where hardware
     /// has been detected at startup.
-    pub fn new(version: impl Into<String>, db: Option<SqlitePool>) -> Self {
+    pub fn new(
+        version: impl Into<String>,
+        db: Option<SqlitePool>,
+        registry: Option<Arc<ModelRegistry>>,
+    ) -> Self {
+        let registry = match (registry, &db) {
+            (Some(r), _) => r,
+            (None, Some(pool)) => Arc::new(ModelRegistry::new(pool.clone())),
+            (None, None) => Arc::new(ModelRegistry::new(
+                SqlitePool::connect_lazy("sqlite::memory:")
+                    .expect("in-memory SQLite pool must be creatable"),
+            )),
+        };
         Self {
             start_time: Instant::now(),
             version: version.into(),
@@ -47,6 +62,7 @@ impl AppState {
                 inference_caps: anvilml_core::InferenceCaps::default(),
             })),
             db,
+            registry,
         }
     }
 
@@ -56,7 +72,16 @@ impl AppState {
         version: impl Into<String>,
         hardware: HardwareInfo,
         db: Option<SqlitePool>,
+        registry: Option<Arc<ModelRegistry>>,
     ) -> Self {
+        let registry = match (registry, &db) {
+            (Some(r), _) => r,
+            (None, Some(pool)) => Arc::new(ModelRegistry::new(pool.clone())),
+            (None, None) => Arc::new(ModelRegistry::new(
+                SqlitePool::connect_lazy("sqlite::memory:")
+                    .expect("in-memory SQLite pool must be creatable"),
+            )),
+        };
         Self {
             start_time: Instant::now(),
             version: version.into(),
@@ -69,6 +94,7 @@ impl AppState {
             })),
             hardware: Arc::new(RwLock::new(hardware)),
             db,
+            registry,
         }
     }
 
@@ -101,6 +127,7 @@ impl Clone for AppState {
             env_report: Arc::clone(&self.env_report),
             hardware: Arc::clone(&self.hardware),
             db: self.db.clone(),
+            registry: Arc::clone(&self.registry),
         }
     }
 }

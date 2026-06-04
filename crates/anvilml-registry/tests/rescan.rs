@@ -39,8 +39,12 @@ async fn test_rescan_adds_models() {
 
     // Verify both model IDs are present.
     let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
-    assert!(ids.iter().any(|id| id.contains("model_a") || id.len() == 16));
-    assert!(ids.iter().any(|id| id.contains("model_b") || id.len() == 16));
+    assert!(ids
+        .iter()
+        .any(|id| id.contains("model_a") || id.len() == 16));
+    assert!(ids
+        .iter()
+        .any(|id| id.contains("model_b") || id.len() == 16));
 }
 
 /// Second rescan over the same tempdir keeps exactly N rows (idempotent).

@@ -1,6 +1,8 @@
 mod cli;
 mod shutdown;
 
+use std::sync::Arc;
+
 use anvilml_core::{load_config, DeviceType, EnumerationSource, HardwareInfo};
 use anvilml_server::{build_router, AppState};
 use tracing_subscriber::fmt::layer as fmt_layer;
@@ -144,7 +146,19 @@ async fn main() {
         .expect("failed to reset ghost jobs");
     tracing::info!(ghost_jobs_reset = ghost_count, "ghost jobs reset");
 
-    let state = AppState::new_with_hardware(env!("CARGO_PKG_VERSION"), hw_info, Some(db));
+    // Build the model registry and perform an initial background rescan.
+    let registry = Arc::new(anvilml_registry::ModelRegistry::new(db.clone()));
+    let scan_reg = Arc::clone(&registry);
+    let scan_dirs = cfg.model_dirs.clone();
+    tokio::spawn(async move {
+        match scan_reg.rescan(&scan_dirs).await {
+            Ok(count) => tracing::info!(models_scanned = count, "initial model scan complete"),
+            Err(e) => tracing::warn!("initial model scan failed: {e}"),
+        }
+    });
+
+    let state =
+        AppState::new_with_hardware(env!("CARGO_PKG_VERSION"), hw_info, Some(db), Some(registry));
     let router = build_router(state);
 
     let bind_addr = format!("{}:{}", cfg.host, cfg.port);
