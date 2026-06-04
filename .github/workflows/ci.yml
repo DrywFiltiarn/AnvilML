@@ -30,6 +30,9 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --features mock-hardware
 
+      - name: Real-hardware compile check
+        run: cargo check --bin anvilml
+
   rust-windows:
     runs-on: windows-latest
     steps:
@@ -46,3 +49,6 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace --features mock-hardware
+
+      - name: Real-hardware compile check
+        run: cargo check --bin anvilml
