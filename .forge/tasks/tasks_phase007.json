@@ -98,6 +98,17 @@
     "tags": []
   },
   {
+    "id": "P7-D4",
+    "description": "anvilml: fix OS field blank and stray colon in --print-hardware output",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": [
+      "P7-D3"
+    ],
+    "context": "Two bugs in backend/src/main.rs print_hardware_table. (1) OS line: format string passes \" \".repeat(50-8) instead of hw.host.os — the field is never rendered; also has a literal trailing colon after the placeholder. Fix: println!(\"|| OS:          {}\", hw.host.os). (2) populate_host_info in crates/anvilml-hardware/src/lib.rs: sysinfo 0.32 System::name() returns Some(\"\") on Windows; replace with System::long_os_version().or_else(|| System::name()).unwrap_or_else(|| \"Unknown\".to_string()). cargo run -- --print-hardware shows a non-empty OS string without a stray colon.",
+    "tags": []
+  },  
+  {
     "id": "P7-E1",
     "description": "anvilml: upgrade thiserror to 2.x and sha2 to 0.11.x",
     "phase": "7",

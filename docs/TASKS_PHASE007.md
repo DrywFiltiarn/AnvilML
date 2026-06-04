@@ -7,7 +7,7 @@
 | Milestone group | Observable system state |
 | Depends on phases | 1-6 |
 | Task file | `.forge/tasks/tasks_phase007.json` |
-| Tasks | 10 |
+| Tasks | 14 |
 
 ## Overview
 
@@ -37,6 +37,7 @@ Group E completes the major-version upgrade work deferred by P7-C1: E1 bumps thi
 | P7-D1 | `crates/anvilml-registry/src/db.rs`, `crates/anvilml-server/tests/api_models.rs` | anvilml-registry: fix db::open to create missing database file |
 | P7-D2 | `crates/anvilml-hardware/src/vulkan.rs`, `dxgi.rs`, `sysfs.rs`, `nvml.rs`, `lib.rs` | anvilml-hardware: explicit detector warnings + Vulkan extension fix |
 | P7-D3 | `crates/anvilml-registry/src/scanner.rs`, `crates/anvilml-server/src/handlers/models.rs` | anvilml-registry + anvilml-server: silent error discard fixes |
+| P7-D4 | `backend/src/main.rs`, `crates/anvilml-hardware/src/lib.rs` | anvilml: fix OS field blank and stray colon in --print-hardware output |
 | P7-E1 | `Cargo.toml` ([workspace.dependencies]) | anvilml: upgrade thiserror to 2.x and sha2 to 0.11.x |
 | P7-E2 | `crates/anvilml-core/src/config_load.rs`, `config.rs`, `backend/tests/config_reference.rs` | anvilml-core: migrate toml dependency from 0.8.x to 1.x |
 | P7-E3 | `crates/anvilml-server/src/handlers/*`, `ws/*`, `lib.rs`, `Cargo.toml` | anvilml-server: migrate axum from 0.7.x to 0.8.x (+ tower 0.4→0.5) |
@@ -234,6 +235,40 @@ Two crates outside `anvilml-hardware` contain silent discards that make failures
 
 ---
 
+#### P7-D4: anvilml: fix OS field blank and stray colon in --print-hardware output
+
+- **Prereqs:** P7-D3
+- **Tags:** —
+
+Two independent bugs conspire to produce the blank OS line with a stray colon. The first is in the table printer: the `println!` for the OS row passes `" ".repeat(50 - 8)` as the format argument instead of `hw.host.os`, so the field value is never interpolated. Additionally the format string contains a literal trailing `:` after the `{}` placeholder, producing the stray colon visible in the output. The second bug is in `populate_host_info`: `sysinfo 0.32` `System::name()` returns `Some("")` rather than `None` on this Windows configuration, so the `.unwrap_or_else(|| "Unknown".to_string())` fallback is never reached and the `HostInfo.os` field is stored as an empty string.
+
+**Files to create or modify:**
+- `backend/src/main.rs` — in `print_hardware_table`, replace the OS `println!` line:
+```rust
+  // Before (broken):
+  println!("║ OS:          {}:", " ".repeat(50 - 8));
+  // After (fixed):
+  println!("║ OS:          {}", hw.host.os);
+```
+- `crates/anvilml-hardware/src/lib.rs` — in `populate_host_info`, replace the `os` assignment:
+```rust
+  // Before (broken on Windows):
+  let os = sysinfo::System::name().unwrap_or_else(|| "Unknown".to_string());
+  // After (fixed):
+  let os = sysinfo::System::long_os_version()
+      .or_else(|| sysinfo::System::name())
+      .filter(|s| !s.is_empty())
+      .unwrap_or_else(|| "Unknown".to_string());
+```
+
+**Key implementation notes:**
+- `System::long_os_version()` in `sysinfo 0.32` returns the full product name on Windows (e.g. `"Windows 10 Pro"`, `"Windows Server 2019"`), making it the preferred source. `System::name()` is the fallback for Linux/macOS where `long_os_version` may return `None`. The `.filter(|s| !s.is_empty())` guard ensures that an `Some("")` result from either call is treated as absent rather than stored as an empty string.
+- Note that `sysinfo` will be upgraded to 0.39.3 in P7-E1 or a subsequent task. In `sysinfo 0.39` the `System::long_os_version()` and `System::name()` API is unchanged in signature; this fix is forward-compatible and does not need revisiting after the upgrade.
+
+**Acceptance criterion:** `cargo run -- --print-hardware` prints a non-empty OS string on the `OS:` line with no trailing stray colon.
+
+---
+
 ### Group E — Major Version Upgrades (Deferred from P7-C1)
 
 #### P7-E1: anvilml: upgrade thiserror to 2.x and sha2 to 0.11.x
@@ -323,6 +358,7 @@ Expected: roughly every 5 seconds a JSON text frame arrives with `"event":"syste
 - P7-D1 must run after P7-C1. The `SqliteConnectOptions` API surface depends on the sqlx version established by P7-C1; writing the fix against the pre-C1 version risks a second churn pass when C1 upgrades sqlx.
 - P7-D2 changes the observable startup log on Windows with a Vulkan-capable AMD GPU: after the fix, the server logs `enumeration_source=Vulkan` instead of `enumeration_source=Dxgi`. The DXGI fallback path remains correct and is still reached when Vulkan genuinely produces an empty device list — it is no longer silently reached when Vulkan fails a rejectable `vkCreateInstance` call.
 - P7-D3 changes the return type of `list_models` from `(StatusCode, Json<Vec<ModelMeta>>)` to `(StatusCode, Json<serde_json::Value>)`. The existing integration test in `api_models.rs` asserts the success-path response body as a JSON array — it must continue to pass because the success arm is unchanged and `serde_json::Value` can represent an array. No test changes are required, but The Forge must verify this explicitly after implementation.
+- P7-D4 touches `populate_host_info` in `anvilml-hardware`. This function has no unit test covering the OS string value (it calls live sysinfo APIs). The acceptance criterion is verified manually via `--print-hardware`; no automated test addition is required for this task.
 - P7-E1 through P7-E3 are sequenced E1→E2→E3 to keep each upgrade atomic and independently revertable. They prereq P7-C1 (not each other's predecessors in the original chain) with the exception that E2 prereqs E1 and E3 prereqs E2, forming a linear sub-chain. Do not reorder.
 - P7-E3 (axum 0.8) must not be attempted until P7-E2 is complete and the workspace builds clean. A partial upgrade of axum without tower 0.5 will fail to compile immediately.
 - After P7-E3, `tokio-tungstenite` remains pinned at 0.24.x. The axum 0.8 + tower 0.5 environment may support a newer `tokio-tungstenite`; this should be evaluated as a separate follow-on leaf task in a later phase, not folded into P7-E3.
