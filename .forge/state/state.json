@@ -47,16 +47,17 @@
     "P6-D1",
     "P7-A1",
     "P7-A2",
-    "P7-A3"
+    "P7-A3",
+    "P7-A4"
   ],
-  "in_progress": "P7-A4",
+  "in_progress": "P7-A5",
   "plan_approved": true,
-  "current_plan": "1. **Read existing types.** Confirm `GpuStatSnapshot` fields (`index: u32`, `vram_used_mib: u32`, `vram_total_mib: u32`), `SystemStatsEvent` fields, and `WsEvent::SystemStats(SystemStatsEvent)` variant from `anvilml-core/src/types/events.rs`. Confirm `HardwareInfo` has `gpus: Vec<GpuDevice>` with each device exposing `index`, `vram_used_mib`, `vram_total_mib`.\n\n2. **Create `stats_tick.rs`.** In `crates/anvilml-server/src/ws/`:\n   - Import `tokio::time::{interval, Duration}`, `anvilml_core::types::{HardwareInfo, SystemStatsEvent, WsEvent, GpuStatSnapshot}`, `crate::state::AppState`, `crate::ws::broadcaster::EventBroadcaster` (or re-exported path), `sysinfo::System`.\n   - Define `pub fn spawn_system_stats_tick(state: AppState) -> JoinHandle<()>`:\n     - Clone broadcaster reference from state (`state.broadcaster.clone()`).\n     - Clone hardware reference (`Arc<RwLock<HardwareInfo>>`).\n     - Spawn a tokio task with the interval loop.\n     - Inside the loop: `interval.tick().await`, then:\n       - Read lock `hardware.read()`.\n       - Build `gpus: hardware.gpus.iter().map(|d| GpuStatSnapshot { index: d.index, vram_used_mib: d.vram_used_mib, vram_total_mib: d.vram_total_mib }).collect()`\n       - Release lock.\n       - Create a new `sysinfo::System`, call `system.refresh_memory()`, extract `total_mib` and `used_mib`.\n       - Build `SystemStatsEvent { timestamp: Utc::now(), gpus, ram_used_mib, ram_total_mib }`.\n       - Call `broadcaster.send(WsEvent::SystemStats(event))` \u2014 ignore return value.\n   - Add a unit test: construct an AppState with mock hardware, spawn the tick, await one interval, assert broadcaster can receive an event (similar pattern to existing broadcaster tests).\n\n3. **Update `ws/mod.rs`.** Add `pub mod stats_tick;` alongside the existing `broadcaster` and `handler` declarations.\n\n4. **Verify build.** Run `cargo build --features mock-hardware -p anvilml-server` \u2014 acceptance criterion is exit 0. No runtime verification (deferred to P7-A5).",
+  "current_plan": "1. **Read** `backend/src/main.rs` to confirm the current structure: AppState is built at line ~161\u2013168, router built at line ~169, then server binds at line ~172.\n2. **Add import**: Insert `use anvilml_server::ws::stats_tick::spawn_system_stats_tick;` alongside the existing `anvilml_server` imports near the top of the file.\n3. **Spawn the tick task**: After the `state` variable is constructed (line ~168) and before `build_router(state)` (line ~169), insert:\n   ```rust\n   spawn_system_stats_tick(state.clone());\n   ```\n   This clones the owned `AppState` for the spawned task while retaining the original for `build_router`. The tick task runs independently on the same Tokio runtime.\n4. **Build check**: Run `cargo build -p backend --features mock-hardware` to confirm compilation succeeds.\n5. **Manual verification**: Run `cargo run --features mock-hardware`, open a second shell, connect via `websocat ws://127.0.0.1:8488/v1/events`, and observe recurring `system.stats` JSON frames within 10 seconds.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-04T20:00:52+0200",
-  "plan_approval_message_id": "1512153735508262933",
+  "last_updated": "2026-06-04T21:12:27+0200",
+  "plan_approval_message_id": "1512161885208711208",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512153734174736446",
+  "plan_report_message_id": "1512161882918883563",
   "impl_report_message_id": null
 }
