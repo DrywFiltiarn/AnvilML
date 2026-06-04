@@ -8,7 +8,7 @@ use std::path::Path;
 
 use anvilml_core::error::AnvilError;
 use sqlx::migrate::{MigrateError, Migrator};
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 
 /// Convert a `sqlx::Error` into an `AnvilError::DbError`.
 fn sqlx_error(err: sqlx::Error) -> AnvilError {
@@ -29,14 +29,14 @@ static MIGRATIONS: Migrator = sqlx::migrate!("../../backend/migrations");
 /// Open a SQLite database at the given path, configure pragmas, run migrations,
 /// and return a ready-to-use connection pool.
 pub async fn open(path: &Path) -> Result<SqlitePool, AnvilError> {
-    let pool =
-        SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect(path.to_str().ok_or_else(|| {
-                AnvilError::DbError("database path contains invalid UTF-8".into())
-            })?)
-            .await
-            .map_err(sqlx_error)?;
+    let opts = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(opts)
+        .await
+        .map_err(sqlx_error)?;
 
     // Configure SQLite pragmas.
     sqlx::query("PRAGMA journal_mode=WAL")
@@ -180,5 +180,28 @@ mod tests {
                 .unwrap();
         assert_eq!(status, "Completed", "completed job must not be touched");
         assert!(error.is_none(), "completed job must have no error");
+    }
+
+    /// Opening a database at a path that does not yet exist must create the file.
+    #[tokio::test]
+    async fn test_open_creates_file_if_missing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("fresh.db");
+
+        assert!(!path.exists(), "database file should not exist yet");
+
+        let pool = open(&path).await.unwrap();
+
+        assert!(path.exists(), "database file must be created by open()");
+
+        // Verify the pool is usable — confirm the three expected tables exist.
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type='table' AND name IN ('jobs','models','artifacts')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 3, "expected jobs, models, and artifacts tables");
     }
 }
