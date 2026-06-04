@@ -37,16 +37,17 @@
     "P6-A1",
     "P6-A2",
     "P6-A3",
-    "P6-A4"
+    "P6-A4",
+    "P6-A5"
   ],
-  "in_progress": "P6-A5",
+  "in_progress": "P6-A6",
   "plan_approved": true,
-  "current_plan": "1. **Modify `crates/anvilml-server/src/state.rs`:**\n   - Add `use std::sync::Arc;` import (already present).\n   - Add `pub registry: Arc<ModelRegistry>` field to the `AppState` struct.\n   - Update `new()` to accept an optional `registry: Option<Arc<ModelRegistry>>` parameter, converting `None` to `Arc::new(ModelRegistry::new(pool))` when db is `Some`, or empty default otherwise.\n   - Update `new_with_hardware()` identically \u2014 add `registry: Option<Arc<ModelRegistry>>` parameter.\n   - Update the `Clone` impl to clone `self.registry`.\n\n2. **Modify `backend/src/main.rs`:**\n   - After the ghost-job reset block (after line ~145), create the registry:\n     ```rust\n     let registry = anvilml_registry::ModelRegistry::new(db.clone());\n     ```\n   - Spawn a non-blocking tokio task for the initial rescan:\n     ```rust\n     let scan_reg = registry.clone();\n     let scan_dirs = cfg.model_dirs.clone();\n     tokio::spawn(async move {\n         match scan_reg.rescan(&scan_dirs).await {\n             Ok(count) => tracing::info!(models_scanned = count, \"initial model scan complete\"),\n             Err(e) => tracing::warn!(\"initial model scan failed: {}\", e),\n         }\n     });\n     ```\n   - Pass `Arc::new(registry)` to `AppState::new_with_hardware()`:\n     ```rust\n     let state = AppState::new_with_hardware(\n         env!(\"CARGO_PKG_VERSION\"),\n         hw_info,\n         Some(db),\n         Some(Arc::new(registry)),\n     );\n     ```\n\n3. **Verify compilation** with `cargo check --workspace --features mock-hardware`.",
+  "current_plan": "1. **Read existing handler patterns.** Study `handlers/health.rs` and `handlers/system.rs` to confirm the handler signature convention: `(StatusCode, Json<T>)` return type, `State<Arc<AppState>>` extractor.\n\n2. **Create `handlers/models.rs`.** Implement `list_models`:\n   ```rust\n   use axum::{extract::Query, http::StatusCode, response::Json, extract::State};\n   use serde::Deserialize;\n   use std::sync::Arc;\n   use anvilml_core::ModelKind;\n\n   #[derive(Deserialize)]\n   pub struct ModelsListQuery {\n       pub kind: Option<ModelKind>,\n   }\n\n   pub async fn list_models(\n       State(state): State<Arc<crate::state::AppState>>,\n       Query(query): Query<ModelsListQuery>,\n   ) -> (StatusCode, Json<Vec<anvilml_core::ModelMeta>>) {\n       match state.registry.list(query.kind).await {\n           Ok(models) => (StatusCode::OK, Json(models)),\n           Err(e) => (\n               StatusCode::INTERNAL_SERVER_ERROR,\n               Json(vec![]), // fallback; in practice errors should surface as 500 with error body\n           ),\n       }\n   }\n   ```\n\n3. **Register the module.** Add `pub mod models;` to `handlers/mod.rs`.\n\n4. **Wire the route.** In `lib.rs::build_router()`, add:\n   ```rust\n   .route(\"/v1/models\", get(handlers::models::list_models))\n   ```\n\n5. **Write integration test.** Create `crates/anvilml-server/tests/api_models.rs`:\n   - Use `tempfile::tempdir()` or `std::env::temp_dir()` to create a temporary model directory.\n   - Write a zero-byte file named `model-fp16.safetensors` (the scanner will scan it; dtype inferred from filename suffix `fp16`).\n   - Create a fresh `ModelRegistry` with an in-memory SQLite pool.\n   - Call `registry.rescan()` with a `ModelDirConfig` pointing to the temp dir and kind=Diffusion.\n   - Build `AppState` with this registry.\n   - Build router, send `GET /v1/models`, assert 200 and body contains one model with name=`model-fp16`, kind=`Diffusion`, dtype_hint=`F16`.\n   - Send `GET /v1/models?kind=diffusion`, assert same result.\n   - Send `GET /v1/models?kind=vae`, assert empty array.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-04T08:38:21+0200",
-  "plan_approval_message_id": "1511981522704400475",
+  "last_updated": "2026-06-04T09:28:09+0200",
+  "plan_approval_message_id": "1511994364476264531",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1511981520984997969",
+  "plan_report_message_id": "1511994362677170207",
   "impl_report_message_id": null
 }

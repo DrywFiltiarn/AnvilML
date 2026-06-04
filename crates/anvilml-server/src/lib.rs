@@ -13,6 +13,7 @@ pub fn build_router(state: AppState) -> Router {
 
     Router::new()
         .route("/health", get(handlers::health::health))
+        .route("/v1/models", get(handlers::models::list_models))
         .route("/v1/system/env", get(handlers::system::get_env))
         .route("/v1/system", get(handlers::system::get_system))
         .with_state(state_arc)

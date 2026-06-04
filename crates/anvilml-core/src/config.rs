@@ -14,6 +14,7 @@ pub type Url = url::Url;
 
 /// Kind of a model file in the model directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum ModelKind {
     Clip,
     Diffusion,

@@ -14,6 +14,7 @@ pub use crate::config::ModelKind;
 
 /// Data type of model weights.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum DType {
     /// 32-bit floating point.
     F32,
@@ -158,7 +159,7 @@ mod tests {
             "id": "model-002",
             "name": "Minimal Model",
             "path": "/models/minimal.safetensors",
-            "kind": "Upscale",
+            "kind": "upscale",
             "size_bytes": 100,
         });
 
@@ -191,7 +192,7 @@ mod tests {
             "id": "model-003",
             "name": "No Timestamp",
             "path": "/models/no_ts.safetensors",
-            "kind": "Clip",
+            "kind": "clip",
             "size_bytes": 50,
         });
 
@@ -216,8 +217,8 @@ mod tests {
 
         let json = serde_json::to_string_pretty(&meta).expect("serialize ModelMeta");
         assert!(json.contains("\"id\": \"test-model\""));
-        assert!(json.contains("\"kind\": \"Lora\""));
-        assert!(json.contains("\"dtype_hint\": \"Q8\""));
+        assert!(json.contains("\"kind\": \"lora\""));
+        assert!(json.contains("\"dtype_hint\": \"q8\""));
         assert!(json.contains("\"vram_estimate_mib\": 512"));
     }
 }
