@@ -1,4 +1,4 @@
-Task: P7-A1
+Task: P7-A2
 Step: IMPLEMENT
 Status: COMPLETE
-Updated: 2026-06-04T13:16:00+0200
+Updated: 2026-06-04T14:30:00Z

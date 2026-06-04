@@ -4,7 +4,7 @@ mod shutdown;
 use std::sync::Arc;
 
 use anvilml_core::{load_config, DeviceType, EnumerationSource, HardwareInfo};
-use anvilml_server::{build_router, AppState};
+use anvilml_server::{build_router, AppState, EventBroadcaster};
 use tracing_subscriber::fmt::layer as fmt_layer;
 use tracing_subscriber::Layer;
 
@@ -157,12 +157,14 @@ async fn main() {
         }
     });
 
+    let broadcaster = Arc::new(EventBroadcaster::new(cfg.limits.ws_broadcast_capacity));
     let state = AppState::new_with_hardware(
         env!("CARGO_PKG_VERSION"),
         hw_info,
         Some(db),
         Some(registry),
         Some(cfg.model_dirs.clone()),
+        broadcaster,
     );
     let router = build_router(state);
 

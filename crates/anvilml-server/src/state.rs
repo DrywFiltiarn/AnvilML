@@ -5,6 +5,8 @@ use anvilml_registry::ModelRegistry;
 use sqlx::SqlitePool;
 use std::time::Instant;
 
+use crate::ws::broadcaster::EventBroadcaster;
+
 /// Application state shared across all request handlers.
 pub struct AppState {
     /// The time at which the application started.
@@ -21,6 +23,8 @@ pub struct AppState {
     pub registry: Arc<ModelRegistry>,
     /// Configured model directories for scanning.
     pub model_dirs: Vec<ModelDirConfig>,
+    /// WebSocket event broadcaster.
+    pub broadcaster: Arc<EventBroadcaster>,
 }
 
 impl AppState {
@@ -35,6 +39,7 @@ impl AppState {
         db: Option<SqlitePool>,
         registry: Option<Arc<ModelRegistry>>,
         model_dirs: Option<Vec<ModelDirConfig>>,
+        broadcaster: Arc<EventBroadcaster>,
     ) -> Self {
         let registry = match (registry, &db) {
             (Some(r), _) => r,
@@ -67,6 +72,7 @@ impl AppState {
             db,
             registry,
             model_dirs: model_dirs.unwrap_or_default(),
+            broadcaster,
         }
     }
 
@@ -78,6 +84,7 @@ impl AppState {
         db: Option<SqlitePool>,
         registry: Option<Arc<ModelRegistry>>,
         model_dirs: Option<Vec<ModelDirConfig>>,
+        broadcaster: Arc<EventBroadcaster>,
     ) -> Self {
         let registry = match (registry, &db) {
             (Some(r), _) => r,
@@ -101,6 +108,7 @@ impl AppState {
             db,
             registry,
             model_dirs: model_dirs.unwrap_or_default(),
+            broadcaster,
         }
     }
 
@@ -135,6 +143,7 @@ impl Clone for AppState {
             db: self.db.clone(),
             registry: Arc::clone(&self.registry),
             model_dirs: self.model_dirs.clone(),
+            broadcaster: Arc::clone(&self.broadcaster),
         }
     }
 }

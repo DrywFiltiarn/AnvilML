@@ -103,7 +103,7 @@ fn populate_host_info() -> HostInfo {
 #[cfg(not(feature = "mock-hardware"))]
 fn enumerate_gpus() -> Vec<GpuDevice> {
     // Primary: Vulkan detector.
-    let mut devices = vulkan::VulkanDetector.detect().unwrap_or_default();
+    let devices = vulkan::VulkanDetector.detect().unwrap_or_default();
 
     if devices.is_empty() {
         #[cfg(windows)]
@@ -118,10 +118,7 @@ fn enumerate_gpus() -> Vec<GpuDevice> {
         #[cfg(unix)]
         {
             // Fallback: sysfs on Unix.
-            let sysfs_devices = sysfs::SysfsDetector.detect().unwrap_or_default();
-            if !sysfs_devices.is_empty() {
-                devices = sysfs_devices;
-            }
+            let mut devices = sysfs::SysfsDetector.detect().unwrap_or_default();
 
             // Additional: NVML on Unix (NVIDIA only, deduplicate by PCI ID).
             let nvml_devices = nvml::NvmlDetector.detect().unwrap_or_default();
@@ -133,6 +130,8 @@ fn enumerate_gpus() -> Vec<GpuDevice> {
                     devices.push(nvml_dev);
                 }
             }
+
+            return devices;
         }
     }
 

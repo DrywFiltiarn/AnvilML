@@ -14,7 +14,7 @@ use axum::{
 use serde_json::Value;
 use tower::ServiceExt;
 
-use anvilml_server::{build_router, AppState};
+use anvilml_server::{build_router, AppState, EventBroadcaster};
 
 /// Create a unique temporary directory structure for testing model scanning.
 ///
@@ -48,7 +48,8 @@ async fn build_test_app_state(model_dir: PathBuf, db_path: PathBuf) -> AppState 
     }];
     registry.rescan(&dirs).await.expect("rescan must succeed");
 
-    AppState::new("0.1.0", Some(pool), Some(registry), Some(dirs))
+    let broadcaster = Arc::new(EventBroadcaster::new(16));
+    AppState::new("0.1.0", Some(pool), Some(registry), Some(dirs), broadcaster)
 }
 
 #[tokio::test]

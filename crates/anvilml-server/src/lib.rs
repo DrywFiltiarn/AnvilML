@@ -13,12 +13,15 @@ use axum::{
 
 pub use state::AppState;
 
+use crate::ws::handler::ws_events;
+
 /// Build the application `Router` with all routes wired up.
 pub fn build_router(state: AppState) -> Router {
     let state_arc = Arc::new(state);
 
     Router::new()
         .route("/health", get(handlers::health::health))
+        .route("/v1/events", get(ws_events))
         .route("/v1/models/rescan", post(handlers::models::rescan_models))
         .route("/v1/models/:id", get(handlers::models::get_model))
         .route("/v1/models", get(handlers::models::list_models))
@@ -29,6 +32,8 @@ pub fn build_router(state: AppState) -> Router {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -36,11 +41,12 @@ mod tests {
     use serde_json::Value;
     use tower::ServiceExt;
 
-    use crate::{build_router, AppState};
+    use crate::{build_router, AppState, EventBroadcaster};
 
     #[tokio::test]
     async fn health_returns_200() {
-        let state = AppState::new("0.1.0", None, None, None);
+        let broadcaster = Arc::new(EventBroadcaster::new(16));
+        let state = AppState::new("0.1.0", None, None, None, broadcaster);
         let app = build_router(state);
 
         let response = app
@@ -68,7 +74,8 @@ mod tests {
 
     #[tokio::test]
     async fn env_returns_200_with_stub_report() {
-        let state = AppState::new("0.1.0", None, None, None);
+        let broadcaster = Arc::new(EventBroadcaster::new(16));
+        let state = AppState::new("0.1.0", None, None, None, broadcaster);
         let app = build_router(state);
 
         let response = app
@@ -106,7 +113,8 @@ mod tests {
         let hw_info = anvilml_hardware::detect_all_devices(&anvilml_core::ServerConfig::default())
             .expect("detect_all_devices should succeed");
 
-        let state = AppState::new_with_hardware("0.1.0", hw_info, None, None, None);
+        let broadcaster = Arc::new(EventBroadcaster::new(16));
+        let state = AppState::new_with_hardware("0.1.0", hw_info, None, None, None, broadcaster);
         let app = build_router(state);
 
         let response = app
@@ -158,7 +166,8 @@ mod tests {
             .await
             .expect("open db must succeed");
         let registry = std::sync::Arc::new(anvilml_registry::ModelRegistry::new(pool));
-        let state = AppState::new("0.1.0", None, Some(registry), None);
+        let broadcaster = Arc::new(EventBroadcaster::new(16));
+        let state = AppState::new("0.1.0", None, Some(registry), None, broadcaster);
         let app = build_router(state);
 
         let response = app
@@ -185,7 +194,8 @@ mod tests {
 
     #[tokio::test]
     async fn rescan_returns_202() {
-        let state = AppState::new("0.1.0", None, None, None);
+        let broadcaster = Arc::new(EventBroadcaster::new(16));
+        let state = AppState::new("0.1.0", None, None, None, broadcaster);
         let app = build_router(state);
 
         let response = app
