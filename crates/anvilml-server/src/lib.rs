@@ -1,5 +1,8 @@
 mod handlers;
 mod state;
+pub mod ws;
+
+pub use ws::broadcaster::EventBroadcaster;
 
 use std::sync::Arc;
 

@@ -43,16 +43,17 @@
     "P6-A7",
     "P6-B1",
     "P6-B2",
-    "P6-C1"
+    "P6-C1",
+    "P6-D1"
   ],
-  "in_progress": "P6-D1",
+  "in_progress": "P7-A1",
   "plan_approved": true,
-  "current_plan": "1. **Verify dependency already present.** Confirm `tempfile = \"3\"` exists in `[dev-dependencies]` of `crates/anvilml-server/Cargo.toml`. (Already confirmed on line 22.)\n\n2. **Update `setup_test_env()` signature and body** in `crates/anvilml-server/tests/api_models.rs`:\n   - Add `use tempfile::TempDir;` at the top.\n   - Change return type from `(PathBuf, PathBuf)` to `(TempDir, PathBuf, PathBuf)`.\n   - Create a `TempDir` via `tempfile::TempDir::new()` (returns an OS-managed unique path under `/tmp`).\n   - Inside that temp dir, create the `diffusion/` subdirectory and write the model file.\n   - Pre-create the `.db` file inside the temp dir (as before).\n   - Return `(tmp, model_dir_path, db_path)`.\n\n3. **Update all three test functions** (`list_models_returns_scanned_models`, `list_models_kind_filter_diffusion`, `list_models_kind_filter_no_match`):\n   - Change destructuring from `let (model_dir, db_path) = setup_test_env();` to `let (_tmp, model_dir, db_path) = setup_test_env();`.\n   - The `_tmp` binding keeps the `TempDir` alive for the test duration; it is dropped after the test completes, cleaning up the directory automatically.\n\n4. **Run tests** with both sequential and parallel execution:\n   - `cargo test -p anvilml-server --test api_models` (parallel, default)\n   - `cargo test -p anvilml-server --test api_models -- --test-threads=1` (sequential)\n   - Both must exit 0 with all 3 tests passing.",
+  "current_plan": "1. **Add `sync` feature to tokio** in `crates/anvilml-server/Cargo.toml`: change the tokio line from `features = [\"macros\", \"rt-multi-thread\"]` to `features = [\"macros\", \"rt-multi-thread\", \"sync\"]`. This is required for `tokio::sync::broadcast`.\n\n2. **Create `crates/anvilml-server/src/ws/` directory** \u2014 new module directory for WebSocket-related code in this phase.\n\n3. **Create `crates/anvilml-server/src/ws/broadcaster.rs`**:\n   - Import `tokio::sync::broadcast`, `anvilml_core::types::events::WsEvent`, and `std::sync::Arc`.\n   - Define `pub struct EventBroadcaster { sender: broadcast::Sender<Arc<WsEvent>> }`.\n   - Implement `pub fn new(capacity: usize) -> Self` \u2014 calls `broadcast::channel(capacity)` and stores the sender.\n   - Implement `pub fn send(&self, event: WsEvent)` \u2014 wraps in `Arc::<WsEvent>::from(Box::new(event))`, calls `self.sender.send()`, discards the result (no subscribers is fine).\n   - Implement `pub fn subscribe(&self) -> broadcast::Receiver<Arc<WsEvent>>` \u2014 calls `self.sender.subscribe()`.\n\n4. **Update `crates/anvilml-server/src/lib.rs`**: add `pub mod ws;` and `pub use ws::broadcaster::EventBroadcaster;` (or `mod ws; pub mod broadcaster;`).\n\n5. **Write unit tests** inline in `broadcaster.rs`:\n   - Test 1 (`subscribe_send_receive`): create broadcaster, subscribe, send a `WsEvent::SystemStats`, receive on subscriber, assert the received event equals the sent event.\n   - Test 2 (`send_no_subscribers_no_error`): create broadcaster with capacity, call `send()` without subscribing \u2014 asserts no panic (SendError is silently ignored by design).\n\n6. **Run tests**: `cargo test -p anvilml-server -- broadcaster` to verify both tests pass.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-04T12:27:28+0200",
-  "plan_approval_message_id": "1512039192333652079",
+  "last_updated": "2026-06-04T12:51:22+0200",
+  "plan_approval_message_id": "1512045738094493776",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512039190286569473",
+  "plan_report_message_id": "1512045736530018395",
   "impl_report_message_id": null
 }

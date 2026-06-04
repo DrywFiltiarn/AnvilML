@@ -15,10 +15,11 @@ axum = { version = "0.7", features = ["json"] }
  serde_json = "1"
  tracing = "0.1"
 sqlx = { version = "0.9", features = ["sqlite", "runtime-tokio"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
 tower = { version = "0.4", features = ["util"] }
 
 [dev-dependencies]
+ chrono = "0.4"
  tempfile = "3"
 
 [features]

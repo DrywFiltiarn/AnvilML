@@ -26,8 +26,7 @@ fn setup_test_env() -> (TempDir, PathBuf, PathBuf) {
     let db_path = tmp.path().join("test.db");
 
     fs::create_dir_all(&diffusion_dir).expect("create test dir");
-    fs::File::create(diffusion_dir.join("model-fp16.safetensors"))
-        .expect("create model file");
+    fs::File::create(diffusion_dir.join("model-fp16.safetensors")).expect("create model file");
 
     // Pre-create the database file — `anvilml_registry::open` requires it.
     fs::File::create(&db_path).expect("pre-create db file");

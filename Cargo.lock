@@ -154,6 +154,7 @@ dependencies = [
  "anvilml-scheduler",
  "anvilml-worker",
  "axum",
+ "chrono",
  "serde",
  "serde_json",
  "sqlx",
