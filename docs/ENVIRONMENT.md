@@ -216,18 +216,27 @@ write the implementation report.
 ### Platform Cross-Check (`FORGE_AGENT_RULES.md §5.7`)
 
 AnvilML targets Linux and Windows as co-equal MVP platforms. Before writing the
-implementation report, run:
+implementation report, run all three of the following checks in order:
 
 ```bash
+# 1. Mock-hardware Windows cross-check (catches cfg-gated scaffold errors)
 cargo check --target x86_64-pc-windows-gnu --workspace --features mock-hardware
+
+# 2. Real-hardware Linux check (exercises #[cfg(unix)] detection paths)
+cargo check --bin anvilml
+
+# 3. Real-hardware Windows cross-check (exercises #[cfg(windows)] detection paths)
+cargo check --bin anvilml --target x86_64-pc-windows-gnu
 ```
 
 The `x86_64-pc-windows-gnu` target and `gcc-mingw-w64` linker are installed in the local
-build environment. This check runs on Linux and catches `#[cfg(windows)]`/`#[cfg(unix)]`
-mistakes and Windows-only API usage that passes on Linux but breaks the Windows CI job.
-**Zero errors required.** A clean Linux build alone is NOT sufficient.
+build environment. Checks 1 and 3 run on Linux via cross-compilation. Check 2 is native
+Linux. **All three must exit 0.** A passing mock-hardware build alone is NOT sufficient —
+the `mock-hardware` feature elides all real-hardware `#[cfg(windows)]` and `#[cfg(unix)]`
+code paths entirely.
 
-Record the verbatim output in `## Platform Cross-Check` in the implementation report.
+Record the verbatim output of all three commands in `## Platform Cross-Check` in the
+implementation report.
 
 ### Project Gates (`FORGE_AGENT_RULES.md §5.8`)
 
@@ -262,7 +271,9 @@ These are the canonical commands for all ACT sessions working on AnvilML:
 | Lint | `cargo clippy --workspace --features mock-hardware -- -D warnings` |
 | Test (Rust) | `cargo test --workspace --features mock-hardware` |
 | Test (Python worker) | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` |
-| Platform cross-check | `cargo check --target x86_64-pc-windows-gnu --workspace --features mock-hardware` |
+| Platform cross-check (mock, Windows-gnu) | `cargo check --target x86_64-pc-windows-gnu --workspace --features mock-hardware` |
+| Real-hardware check (Linux native) | `cargo check --bin anvilml` |
+| Real-hardware check (Windows-gnu) | `cargo check --bin anvilml --target x86_64-pc-windows-gnu` |
 | Config drift gate | `cargo test -p backend --features mock-hardware -- config_reference` |
 | OpenAPI drift gate | `cargo run -p anvilml-openapi && git diff --exit-code backend/openapi.json` |
 

@@ -7,7 +7,7 @@
 | Milestone group | Observable system state |
 | Depends on phases | 1-5 |
 | Task file | `forge/tasks/tasks_phase006.json` |
-| Tasks | 7 |
+| Tasks | 9 |
 
 ## Overview
 
@@ -26,8 +26,12 @@ Every task in this phase implements **one module or one endpoint** plus its test
 | P6-A5 | `backend/src/main.rs` | anvilml: initial model scan at startup + registry in AppState |
 | P6-A6 | `crates/anvilml-server/src/handlers/models.rs` | anvilml-server: GET /v1/models handler (list with kind filter) |
 | P6-A7 | `crates/anvilml-server/src/handlers/models.rs` | anvilml-server: GET /v1/models/:id and POST /v1/models/rescan |
+| P6-B1 | `crates/anvilml-hardware/src/lib.rs` | anvilml-hardware: fix real-hardware build errors (no-feature compile check) |
+| P6-B2 | `.github/workflows/ci.yml` | anvilml: add real-hardware compile check to rust-linux and rust-windows CI jobs |
 
 ## Task details
+
+### Group A — Model Registry
 
 #### P6-A1: anvilml-registry: model directory scanner
 
@@ -78,6 +82,62 @@ Create handlers/models.rs: async fn list_models(State, Query{kind:Option<ModelKi
 
 Add to handlers/models.rs: async fn get_model(State, Path<String>)->Result returning 200 ModelMeta or 404 not_found JSON body. async fn rescan_models(State)->202 spawning registry.rescan(&cfg.model_dirs) without waiting. Wire GET /v1/models/:id and POST /v1/models/rescan. Verify: curl /v1/models/<id> returns the model; curl -X POST /v1/models/rescan returns 202; add a new file then rescan then list shows it.
 
+---
+
+### Group B — CI Hardening
+
+#### P6-B1: anvilml-hardware: fix real-hardware build errors surfaced by no-feature compile check
+
+- **Prereqs:** P6-A7
+- **Tags:** —
+
+The `mock-hardware` feature flag completely replaces the real-hardware detection branch at compile time. All prior CI runs and every ACT-session gate have used `--features mock-hardware` exclusively, meaning the `#[cfg(windows)]` and `#[cfg(unix)]` code paths in `anvilml-hardware` have never been compiled as part of the automated flow. Errors in those paths are invisible until a user attempts a real run.
+
+This task runs both compile checks without the feature flag and fixes every error that surfaces:
+
+```
+cargo check --bin anvilml                                    # native Linux — exercises #[cfg(unix)] paths
+cargo check --bin anvilml --target x86_64-pc-windows-gnu    # Windows-gnu cross — exercises #[cfg(windows)] paths
+```
+
+The known entry point for errors is `enumerate_gpus()` in `crates/anvilml-hardware/src/lib.rs`, where `DxgiDetector`, `SysfsDetector`, and `NvmlDetector` are called with dot-syntax on the type path (e.g. `dxgi::DxgiDetector.detect()`) instead of being constructed first via `::default()` (e.g. `dxgi::DxgiDetector::default().detect()`). All three structs derive `Default`. Do not assume this is the only error — run both checks and fix everything reported.
+
+**Files to create or modify:**
+- `crates/anvilml-hardware/src/lib.rs` — fix all constructor call errors in `enumerate_gpus()` and any other errors surfaced by the no-feature checks
+
+**Key implementation notes:**
+- Do not add, remove, or change any `#[cfg(...)]` feature gates. Scope is compile-error fixes only.
+- Do not modify any test. The existing test suite under `--features mock-hardware` must still pass after the fixes.
+- Both no-feature `cargo check` invocations must produce zero errors before writing the implementation report. Record their verbatim output in `## Platform Cross-Check`.
+
+**Acceptance criterion:** `cargo check --bin anvilml` exits 0 AND `cargo check --bin anvilml --target x86_64-pc-windows-gnu` exits 0.
+
+---
+
+#### P6-B2: anvilml: add real-hardware compile check steps to rust-linux and rust-windows CI jobs
+
+- **Prereqs:** P6-B1
+- **Tags:** —
+
+With the real-hardware paths compiling cleanly after P6-B1, this task locks that guarantee into CI so it cannot regress. Both jobs in `.github/workflows/ci.yml` receive a new step placed immediately after their existing `Run tests` step:
+
+```yaml
+- name: Real-hardware compile check
+  run: cargo check --bin anvilml
+```
+
+No `--features` flag on either. On `rust-linux` (`ubuntu-latest`) this exercises the `#[cfg(unix)]` paths natively. On `rust-windows` (`windows-latest`, native MSVC toolchain) this exercises the `#[cfg(windows)]` paths — the same environment a real user runs. All existing jobs and steps are preserved unchanged; this task inserts only, it does not reorder or alter any existing step.
+
+**Files to create or modify:**
+- `.github/workflows/ci.yml` — add `Real-hardware compile check` step to both `rust-linux` and `rust-windows` jobs, each placed immediately after their existing `Run tests` step
+
+**Key implementation notes:**
+- Per `FORGE_AGENT_RULES §3.7`, CI workflow files may only be modified when explicitly listed in the task's Files Affected table — which this task does.
+- Do not alter any existing step name, command, or position.
+- Do not add the step to any job other than `rust-linux` and `rust-windows`.
+
+**Acceptance criterion:** `grep -c 'Real-hardware compile check' .github/workflows/ci.yml` prints `2`.
+
 
 ## Runnable Proof
 
@@ -85,10 +145,27 @@ Create a model directory with a fake model file and confirm it appears via the A
 
 ```bash
 mkdir -p models/diffusion
-touch models/diffusion/mymodel-fp16.safetensors
-# ensure anvilml.toml has a [[model_dirs]] path = "./models/diffusion" kind = "diffusion"
-cargo run --features mock-hardware
-curl -s http://127.0.0.1:8488/v1/models | python -m json.tool
+dd if=/dev/zero bs=1M count=1 > models/diffusion/model-fp16.safetensors
+cargo run --bin anvilml --features mock-hardware &
+sleep 2
+curl -s http://127.0.0.1:8488/v1/models | python3 -m json.tool
+curl -s http://127.0.0.1:8488/v1/models?kind=diffusion | python3 -m json.tool
+ID=$(curl -s http://127.0.0.1:8488/v1/models | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
+curl -s http://127.0.0.1:8488/v1/models/$ID | python3 -m json.tool
+curl -s -X POST http://127.0.0.1:8488/v1/models/rescan
+# expected: 202
+kill %1
+# Additional: verify no-feature compile
+cargo check --bin anvilml
+cargo check --bin anvilml --target x86_64-pc-windows-gnu
 ```
 
-Expected (200): an array with one `ModelMeta` whose `name` is `mymodel-fp16`, `kind` is `diffusion`, `dtype_hint` is `f16`, and a 16-hex-char `id`. `curl /v1/models/<id>` returns that one model; adding a second file then `curl -X POST /v1/models/rescan` (202) then re-listing shows both. Phase done when models scanned from disk are listed via REST.
+Expected: `GET /v1/models` returns a JSON array containing the model with `kind: "diffusion"` and `dtype_hint: "F16"`. `GET /v1/models/:id` returns the same model. `POST /v1/models/rescan` returns 202. Both no-feature `cargo check` invocations exit 0.
+
+## Known Constraints and Gotchas
+
+- The `mock-hardware` feature flag completely replaces the real-hardware detection branch at compile time. All `cargo` invocations in the automated flow use `--features mock-hardware`; the real-hardware `#[cfg(windows)]` and `#[cfg(unix)]` paths are only exercised by P6-B1 and the CI steps added in P6-B2.
+- P6-B1 must be run on the Linux build machine where the `x86_64-pc-windows-gnu` target and `gcc-mingw-w64` linker are installed. The Windows-gnu cross-check is a local ACT gate; CI uses the native `windows-latest` runner for the same coverage.
+- P6-B1 scope is compile-error fixes only — no feature gate changes, no new tests, no behavioural changes. If the no-feature checks surface errors outside `anvilml-hardware` (e.g. in `backend/src/main.rs`), fix them in the same task.
+- P6-B2 modifies `.github/workflows/ci.yml`. Per `FORGE_AGENT_RULES §3.7` this is only permitted because the file is explicitly listed in that task's Files Affected table.
+- P6-B1 and P6-B2 must run after P6-A7 to avoid disrupting the in-progress model registry implementation chain.

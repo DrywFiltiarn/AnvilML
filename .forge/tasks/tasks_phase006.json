@@ -61,5 +61,23 @@
     "prereqs": ["P6-A6"],
     "context": "Add to handlers/models.rs: async fn get_model(State, Path<String>)->Result returning 200 ModelMeta or 404 not_found JSON body. async fn rescan_models(State)->202 spawning registry.rescan(&cfg.model_dirs) without waiting. Wire GET /v1/models/:id and POST /v1/models/rescan. Verify: curl /v1/models/<id> returns the model; curl -X POST /v1/models/rescan returns 202; add a new file then rescan then list shows it.",
     "tags": []
+  },
+  {
+    "id": "P6-B1",
+    "description": "anvilml-hardware: fix real-hardware build errors surfaced by no-feature compile check",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": ["P6-A7"],
+    "context": "Run cargo check --bin anvilml (native Linux, no features) and cargo check --bin anvilml --target x86_64-pc-windows-gnu (no features). Fix every error from both runs — do not limit to known issues. Primary target: crates/anvilml-hardware/src/lib.rs enumerate_gpus(): DxgiDetector/SysfsDetector/NvmlDetector must be constructed via ::default() before calling .detect(). Fix all other errors found. Both checks must exit 0. cargo test --workspace --features mock-hardware must still pass.",
+    "tags": []
+  },
+  {
+    "id": "P6-B2",
+    "description": "anvilml: add real-hardware compile check steps to rust-linux and rust-windows CI jobs",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": ["P6-B1"],
+    "context": "Edit .github/workflows/ci.yml only. In rust-linux job add step after Run tests: name Real-hardware compile check, run cargo check --bin anvilml. In rust-windows job add step after Run tests: name Real-hardware compile check, run cargo check --bin anvilml. No features flag on either. All existing jobs and steps preserved unchanged. Acceptance: grep -c \"Real-hardware compile check\" .github/workflows/ci.yml returns 2.",
+    "tags": []
   }
 ]
