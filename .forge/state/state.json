@@ -34,16 +34,17 @@
     "P5-A2",
     "P5-A3",
     "P5-A4",
-    "P6-A1"
+    "P6-A1",
+    "P6-A2"
   ],
-  "in_progress": "P6-A2",
+  "in_progress": "P6-A3",
   "plan_approved": true,
-  "current_plan": "1. **Create `crates/anvilml-registry/src/store.rs`:**\n   - Define `pub struct ModelRegistry { pool: SqlitePool }`\n   - Implement `impl ModelRegistry { pub fn new(pool: SqlitePool) -> Self { Self { pool } } }`\n   - Implement `async fn upsert(&self, meta: &ModelMeta) -> Result<()>`:\n     - Use `sqlx::query!` macro with the models table columns in schema order: `id`, `name`, `path`, `kind`, `size_bytes`, `dtype_hint`, `vram_estimate_mib`, `scanned_at`\n     - SQL: `INSERT OR REPLACE INTO models (id, name, path, kind, size_bytes, dtype_hint, vram_estimate_mib, scanned_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`\n     - Convert `ModelMeta` fields to SQL types: `String`, `String`, `String` (PathBuf \u2192 display), `&str` (enum repr), `i64` (u64 cast), `&str`, `i64` (u32 cast), `&str` (chrono DateTime \u2192 RFC3339 string)\n     - Return `Result<(), AnvilError>` via `.await.map_err(sqlx_error)?`\n   - Implement `async fn get(&self, id: &str) -> Result<Option<ModelMeta>>`:\n     - Use `sqlx::query_as!` or `sqlx::query_as` with `SELECT * FROM models WHERE id = ?`\n     - Since `ModelMeta` derives `Serialize/Deserialize` but not `FromRow`, use manual column extraction: query returns `(id, name, path, kind, size_bytes, dtype_hint, vram_estimate_mib, scanned_at)` tuple\n     - Convert each column back to the corresponding `ModelMeta` field (string \u2192 PathBuf via `PathBuf::from`, string \u2192 enum via `serde_json::from_str`, etc.)\n     - Return `Result<Option<ModelMeta>, AnvilError>`\n\n2. **Update `crates/anvilml-registry/src/lib.rs`:**\n   - Add `pub mod store;`\n   - Add `pub use store::ModelRegistry;`\n\n3. **Create `crates/anvilml-registry/tests/store_get.rs`:**\n   - Use `tempfile::NamedTempFile` for a unique DB path per test run\n   - Call `db::open(path)` to get pool, then `ModelRegistry::new(pool)`\n   - Test 1: Create a `ModelMeta`, upsert it, get by ID \u2192 verify all fields match\n   - Test 2: Get by non-existent ID \u2192 verify returns `None`\n\n4. **Run tests:** `cargo test -p anvilml-registry -- store_get` \u2014 must exit 0.",
+  "current_plan": "1. **Add `list` method to `store.rs`** following the established pattern used by `get`:\n   - Use `sqlx::query_as` with the `ModelRow` tuple type already defined in the file\n   - Build the query string dynamically: base SELECT with optional `WHERE kind = ?` appended when `kind.is_some()`\n   - Bind the kind value as a JSON string (matching how `upsert` serialises `kind`)\n   - Order by `name ASC`\n   - Map each row through the same deserialization logic already used in `get`:\n     - Parse `kind` from JSON \u2192 `ModelKind`\n     - Parse `dtype_hint` from JSON \u2192 `DType`\n     - Parse `scanned_at` from RFC3339 \u2192 `DateTime<Utc>`\n   - Return `Vec<ModelMeta>`\n\n2. **Create test file `tests/store_list.rs`** mirroring the structure of `tests/store_get.rs`:\n   - Use the same `open_pool` helper pattern (inline or copy)\n   - Test 1 (`test_list_empty_returns_empty_vec`): open a fresh DB, call `list(None)`, assert `.is_empty()`\n   - Test 2 (`test_list_after_upserts_returns_ordered`): upsert 3 models with names \"Zebra\", \"Alpha\", \"Mango\" (different kinds), call `list(None)`, assert len is 3 and order is Alpha, Mango, Zebra\n   - Test 3 (`test_list_kind_filter`): upsert 2 Diffusion + 1 Vae models, call `list(Some(ModelKind::Diffusion))`, assert len is 2 and all are Diffusion",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-04T00:49:37+0200",
-  "plan_approval_message_id": "1511862297419710586",
+  "last_updated": "2026-06-04T07:24:34+0200",
+  "plan_approval_message_id": "1511872989245734977",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1511862295561765028",
+  "plan_report_message_id": "1511872986939003011",
   "impl_report_message_id": null
 }

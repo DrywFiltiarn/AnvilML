@@ -100,4 +100,59 @@ impl ModelRegistry {
             None => Ok(None),
         }
     }
+
+    /// List all scanned model metadata, optionally filtered by kind.
+    ///
+    /// Returns rows ordered by `name ASC`. When `kind` is `Some`, only
+    /// models whose kind matches the given value are returned.
+    pub async fn list(&self, kind: Option<ModelKind>) -> Result<Vec<ModelMeta>, AnvilError> {
+        let rows: Vec<ModelRow> = match kind {
+            Some(k) => {
+                let kind_json = serde_json::to_string(&k).map_err(|e| AnvilError::Json(e.to_string()))?;
+                sqlx::query_as(
+                    "SELECT id, name, path, kind, size_bytes, dtype_hint, vram_estimate_mib, scanned_at \
+                     FROM models WHERE kind = ?",
+                )
+                .bind(&kind_json)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(sqlx_error)?
+            }
+            None => {
+                sqlx::query_as(
+                    "SELECT id, name, path, kind, size_bytes, dtype_hint, vram_estimate_mib, scanned_at \
+                     FROM models ORDER BY name ASC",
+                )
+                .fetch_all(&self.pool)
+                .await
+                .map_err(sqlx_error)?
+            }
+        };
+
+        let mut results = Vec::with_capacity(rows.len());
+        for (id, name, path, kind_str, size_bytes, dtype_hint, vram_estimate_mib, scanned_at) in
+            rows
+        {
+            let kind: ModelKind =
+                serde_json::from_str(&kind_str).map_err(|e| AnvilError::Json(e.to_string()))?;
+            let dtype_hint: DType =
+                serde_json::from_str(&dtype_hint).map_err(|e| AnvilError::Json(e.to_string()))?;
+            let scanned_at: DateTime<Utc> = DateTime::parse_from_rfc3339(&scanned_at)
+                .map_err(|e| AnvilError::Json(e.to_string()))?
+                .with_timezone(&Utc);
+
+            results.push(ModelMeta {
+                id,
+                name,
+                path: PathBuf::from(path),
+                kind,
+                size_bytes: size_bytes as u64,
+                dtype_hint,
+                vram_estimate_mib: vram_estimate_mib as u32,
+                scanned_at,
+            });
+        }
+
+        Ok(results)
+    }
 }
