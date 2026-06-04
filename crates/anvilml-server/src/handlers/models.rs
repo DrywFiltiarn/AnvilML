@@ -20,10 +20,19 @@ pub struct ModelsListQuery {
 pub async fn list_models(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ModelsListQuery>,
-) -> (StatusCode, Json<Vec<anvilml_core::ModelMeta>>) {
+) -> (StatusCode, Json<serde_json::Value>) {
     match state.registry.list(query.kind).await {
-        Ok(models) => (StatusCode::OK, Json(models)),
-        Err(_e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(vec![])),
+        Ok(models) => (StatusCode::OK, Json(serde_json::to_value(&models).unwrap())),
+        Err(e) => {
+            tracing::error!(error = %e, "list_models: registry query failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "internal_error",
+                    "message": e.to_string()
+                })),
+            )
+        }
     }
 }
 
@@ -45,10 +54,16 @@ pub async fn get_model(
                 "message": "model not found"
             })),
         ),
-        Err(_e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "internal_error"})),
-        ),
+        Err(e) => {
+            tracing::error!(error = %e, "get_model: registry query failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "internal_error",
+                    "message": e.to_string()
+                })),
+            )
+        }
     }
 }
 

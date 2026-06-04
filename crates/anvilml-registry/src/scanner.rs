@@ -79,7 +79,10 @@ pub async fn scan_dirs(dirs: &[ModelDirConfig]) -> Vec<ModelMeta> {
         {
             let entry = match entry {
                 Ok(e) => e,
-                Err(_) => continue,
+                Err(e) => {
+                    tracing::warn!(path = %dir_config.path.display(), error = %e, "scanner: skipping unreadable entry");
+                    continue;
+                }
             };
 
             // Only process files.
@@ -99,7 +102,10 @@ pub async fn scan_dirs(dirs: &[ModelDirConfig]) -> Vec<ModelMeta> {
             // Get file size.
             let size_bytes = match entry.metadata() {
                 Ok(m) => m.len(),
-                Err(_) => continue,
+                Err(e) => {
+                    tracing::warn!(path = %entry.path().display(), error = %e, "scanner: skipping file with unreadable metadata");
+                    continue;
+                }
             };
 
             // Extract name from file stem.
@@ -111,10 +117,13 @@ pub async fn scan_dirs(dirs: &[ModelDirConfig]) -> Vec<ModelMeta> {
                 .to_string();
 
             // Compute ID from SHA-256 of canonical path string.
-            let canonical_path = entry
-                .path()
-                .canonicalize()
-                .unwrap_or_else(|_| entry.path().to_path_buf());
+            let canonical_path = match entry.path().canonicalize() {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(path = %entry.path().display(), error = %e, "scanner: canonicalize failed, using raw path");
+                    entry.path().to_path_buf()
+                }
+            };
             let canonical_str = canonical_path.to_string_lossy().to_string();
             let full_hash = sha256_hex(&canonical_str);
             let id: String = full_hash.chars().take(16).collect();

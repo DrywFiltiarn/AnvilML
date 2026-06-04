@@ -102,11 +102,14 @@ fn populate_host_info() -> HostInfo {
 /// Enumerate GPUs via Vulkan, then fall back to platform-specific detectors.
 #[cfg(not(feature = "mock-hardware"))]
 fn enumerate_gpus() -> Vec<GpuDevice> {
-  // Primary: Vulkan detector.
+    // Primary: Vulkan detector.
     let vulkan_devices = match vulkan::VulkanDetector.detect() {
         Ok(devs) if !devs.is_empty() => devs,
         Ok(_) => {
-            tracing::warn!(detector = "Vulkan", "Vulkan detector returned empty device list");
+            tracing::warn!(
+                detector = "Vulkan",
+                "Vulkan detector returned empty device list"
+            );
             Vec::new()
         }
         Err(e) => {
@@ -125,7 +128,10 @@ fn enumerate_gpus() -> Vec<GpuDevice> {
         let dxgi_devices = match dxgi::DxgiDetector::default().detect() {
             Ok(devs) if !devs.is_empty() => devs,
             Ok(_) => {
-                tracing::warn!(detector = "Dxgi", "DXGI detector returned empty device list");
+                tracing::warn!(
+                    detector = "Dxgi",
+                    "DXGI detector returned empty device list"
+                );
                 Vec::new()
             }
             Err(e) => {
@@ -144,7 +150,10 @@ fn enumerate_gpus() -> Vec<GpuDevice> {
         let mut devices = match sysfs::SysfsDetector.detect() {
             Ok(devs) if !devs.is_empty() => devs,
             Ok(_) => {
-                tracing::warn!(detector = "Sysfs", "sysfs detector returned empty device list");
+                tracing::warn!(
+                    detector = "Sysfs",
+                    "sysfs detector returned empty device list"
+                );
                 Vec::new()
             }
             Err(e) => {
@@ -157,7 +166,10 @@ fn enumerate_gpus() -> Vec<GpuDevice> {
         let nvml_devices = match nvml::NvmlDetector.detect() {
             Ok(devs) if !devs.is_empty() => devs,
             Ok(_) => {
-                tracing::warn!(detector = "Nvml", "NVML detector returned empty device list");
+                tracing::warn!(
+                    detector = "Nvml",
+                    "NVML detector returned empty device list"
+                );
                 Vec::new()
             }
             Err(e) => {
