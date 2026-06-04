@@ -38,16 +38,17 @@
     "P6-A2",
     "P6-A3",
     "P6-A4",
-    "P6-A5"
+    "P6-A5",
+    "P6-A6"
   ],
-  "in_progress": "P6-A6",
+  "in_progress": "P6-A7",
   "plan_approved": true,
-  "current_plan": "1. **Read existing handler patterns.** Study `handlers/health.rs` and `handlers/system.rs` to confirm the handler signature convention: `(StatusCode, Json<T>)` return type, `State<Arc<AppState>>` extractor.\n\n2. **Create `handlers/models.rs`.** Implement `list_models`:\n   ```rust\n   use axum::{extract::Query, http::StatusCode, response::Json, extract::State};\n   use serde::Deserialize;\n   use std::sync::Arc;\n   use anvilml_core::ModelKind;\n\n   #[derive(Deserialize)]\n   pub struct ModelsListQuery {\n       pub kind: Option<ModelKind>,\n   }\n\n   pub async fn list_models(\n       State(state): State<Arc<crate::state::AppState>>,\n       Query(query): Query<ModelsListQuery>,\n   ) -> (StatusCode, Json<Vec<anvilml_core::ModelMeta>>) {\n       match state.registry.list(query.kind).await {\n           Ok(models) => (StatusCode::OK, Json(models)),\n           Err(e) => (\n               StatusCode::INTERNAL_SERVER_ERROR,\n               Json(vec![]), // fallback; in practice errors should surface as 500 with error body\n           ),\n       }\n   }\n   ```\n\n3. **Register the module.** Add `pub mod models;` to `handlers/mod.rs`.\n\n4. **Wire the route.** In `lib.rs::build_router()`, add:\n   ```rust\n   .route(\"/v1/models\", get(handlers::models::list_models))\n   ```\n\n5. **Write integration test.** Create `crates/anvilml-server/tests/api_models.rs`:\n   - Use `tempfile::tempdir()` or `std::env::temp_dir()` to create a temporary model directory.\n   - Write a zero-byte file named `model-fp16.safetensors` (the scanner will scan it; dtype inferred from filename suffix `fp16`).\n   - Create a fresh `ModelRegistry` with an in-memory SQLite pool.\n   - Call `registry.rescan()` with a `ModelDirConfig` pointing to the temp dir and kind=Diffusion.\n   - Build `AppState` with this registry.\n   - Build router, send `GET /v1/models`, assert 200 and body contains one model with name=`model-fp16`, kind=`Diffusion`, dtype_hint=`F16`.\n   - Send `GET /v1/models?kind=diffusion`, assert same result.\n   - Send `GET /v1/models?kind=vae`, assert empty array.",
+  "current_plan": "1. **Add `model_dirs` field to `AppState`** (`state.rs`): Add `pub model_dirs: Vec<ModelDirConfig>` alongside existing fields. Update both `new()` and `new_with_hardware()` constructors to accept an optional `Vec<ModelDirConfig>` parameter (defaulting to empty when None). Update the `Clone` impl to clone the new field.\n\n2. **Add `get_model` handler** (`handlers/models.rs`):\n   - Import `axum::extract::Path` and `anvilml_core::config::ModelDirConfig`.\n   - Define a small local struct or tuple for the 404 JSON body: `{ \"error\": \"not_found\", \"message\": \"model not found\" }`.\n   - Implement `get_model` that extracts the ID from `Path(id)`, calls `state.registry.get(&id).await`, and returns either `(StatusCode::OK, Json(meta))` or `(StatusCode::NOT_FOUND, Json(error_body))`.\n\n3. **Add `rescan_models` handler** (`handlers/models.rs`):\n   - Implement `rescan_models` that clones `state.model_dirs` and `state.registry`, then spawns a `tokio::spawn` task calling `registry.rescan(&dirs).await`.\n   - The handler returns immediately with `(StatusCode::ACCEPTED, Json(rescan_response))` where the response is `{ \"status\": \"rescan_started\" }`.\n   - The spawned task logs success/failure via `tracing::info!`/`tracing::warn!`.\n\n4. **Wire routes** (`lib.rs`): Add two `.route()` calls:\n   - `.route(\"/v1/models/:id\", get(handlers::models::get_model))`\n   - `.route(\"/v1/models/rescan\", post(handlers::models::rescan_models))`\n   - Place these after the existing `/v1/models` route.\n\n5. **Pass model_dirs from main.rs** (`backend/src/main.rs`): When constructing `AppState`, pass `cfg.model_dirs.clone()` to the registry/state builder (either as a new parameter or via an updated constructor).",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-04T09:28:09+0200",
-  "plan_approval_message_id": "1511994364476264531",
+  "last_updated": "2026-06-04T10:38:47+0200",
+  "plan_approval_message_id": "1512002995993317507",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1511994362677170207",
+  "plan_report_message_id": "1512002994294620261",
   "impl_report_message_id": null
 }

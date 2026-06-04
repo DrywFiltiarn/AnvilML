@@ -1,6 +1,6 @@
 use std::sync::{Arc, RwLock};
 
-use anvilml_core::{EnvReport, HardwareInfo};
+use anvilml_core::{config::ModelDirConfig, EnvReport, HardwareInfo};
 use anvilml_registry::ModelRegistry;
 use sqlx::SqlitePool;
 use std::time::Instant;
@@ -19,6 +19,8 @@ pub struct AppState {
     pub db: Option<SqlitePool>,
     /// Model metadata registry (initialised at startup, scanned in background).
     pub registry: Arc<ModelRegistry>,
+    /// Configured model directories for scanning.
+    pub model_dirs: Vec<ModelDirConfig>,
 }
 
 impl AppState {
@@ -32,6 +34,7 @@ impl AppState {
         version: impl Into<String>,
         db: Option<SqlitePool>,
         registry: Option<Arc<ModelRegistry>>,
+        model_dirs: Option<Vec<ModelDirConfig>>,
     ) -> Self {
         let registry = match (registry, &db) {
             (Some(r), _) => r,
@@ -63,6 +66,7 @@ impl AppState {
             })),
             db,
             registry,
+            model_dirs: model_dirs.unwrap_or_default(),
         }
     }
 
@@ -73,6 +77,7 @@ impl AppState {
         hardware: HardwareInfo,
         db: Option<SqlitePool>,
         registry: Option<Arc<ModelRegistry>>,
+        model_dirs: Option<Vec<ModelDirConfig>>,
     ) -> Self {
         let registry = match (registry, &db) {
             (Some(r), _) => r,
@@ -95,6 +100,7 @@ impl AppState {
             hardware: Arc::new(RwLock::new(hardware)),
             db,
             registry,
+            model_dirs: model_dirs.unwrap_or_default(),
         }
     }
 
@@ -128,6 +134,7 @@ impl Clone for AppState {
             hardware: Arc::clone(&self.hardware),
             db: self.db.clone(),
             registry: Arc::clone(&self.registry),
+            model_dirs: self.model_dirs.clone(),
         }
     }
 }

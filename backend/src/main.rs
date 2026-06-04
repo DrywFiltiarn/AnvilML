@@ -157,8 +157,13 @@ async fn main() {
         }
     });
 
-    let state =
-        AppState::new_with_hardware(env!("CARGO_PKG_VERSION"), hw_info, Some(db), Some(registry));
+    let state = AppState::new_with_hardware(
+        env!("CARGO_PKG_VERSION"),
+        hw_info,
+        Some(db),
+        Some(registry),
+        Some(cfg.model_dirs.clone()),
+    );
     let router = build_router(state);
 
     let bind_addr = format!("{}:{}", cfg.host, cfg.port);

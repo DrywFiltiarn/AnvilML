@@ -36,7 +36,9 @@ fn setup_test_env() -> (PathBuf, PathBuf) {
 /// database that has been initialized with migrations, and the given model
 /// directory configured for rescan.
 async fn build_test_app_state(model_dir: PathBuf, db_path: PathBuf) -> AppState {
-    let pool = anvilml_registry::open(&db_path).await.expect("open db must succeed");
+    let pool = anvilml_registry::open(&db_path)
+        .await
+        .expect("open db must succeed");
     let registry = Arc::new(ModelRegistry::new(pool.clone()));
 
     let dirs = vec![ModelDirConfig {
@@ -45,7 +47,7 @@ async fn build_test_app_state(model_dir: PathBuf, db_path: PathBuf) -> AppState 
     }];
     registry.rescan(&dirs).await.expect("rescan must succeed");
 
-    AppState::new("0.1.0", Some(pool), Some(registry))
+    AppState::new("0.1.0", Some(pool), Some(registry), Some(dirs))
 }
 
 #[tokio::test]

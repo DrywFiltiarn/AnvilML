@@ -1,5 +1,5 @@
-use axum::{extract::Query, extract::State, http::StatusCode, response::Json};
-use serde::Deserialize;
+use axum::{extract::Path, extract::Query, extract::State, http::StatusCode, response::Json};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use anvilml_core::ModelKind;
@@ -25,4 +25,61 @@ pub async fn list_models(
         Ok(models) => (StatusCode::OK, Json(models)),
         Err(_e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(vec![])),
     }
+}
+
+/// GET /v1/models/:id handler.
+///
+/// Returns the model metadata for a single model identified by its ID.
+/// Returns 200 with the model on success, or 404 with an error JSON body
+/// when no model with the given ID exists.
+pub async fn get_model(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match state.registry.get(&id).await {
+        Ok(Some(meta)) => (StatusCode::OK, Json(serde_json::to_value(&meta).unwrap())),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "not_found",
+                "message": "model not found"
+            })),
+        ),
+        Err(_e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal_error"})),
+        ),
+    }
+}
+
+/// POST /v1/models/rescan handler.
+///
+/// Triggers a background model directory rescan. The handler returns 202
+/// Accepted immediately; the actual scanning work is performed by a spawned
+/// tokio task.
+pub async fn rescan_models(
+    State(state): State<Arc<AppState>>,
+) -> (StatusCode, Json<RescanResponse>) {
+    let dirs = state.model_dirs.clone();
+    let registry = Arc::clone(&state.registry);
+
+    tokio::spawn(async move {
+        match registry.rescan(&dirs).await {
+            Ok(count) => tracing::info!(models_scanned = count, "background rescan complete"),
+            Err(e) => tracing::warn!("background rescan failed: {e}"),
+        }
+    });
+
+    (
+        StatusCode::ACCEPTED,
+        Json(RescanResponse {
+            status: "rescan_started",
+        }),
+    )
+}
+
+/// Response body for POST /v1/models/rescan.
+#[derive(Serialize)]
+pub struct RescanResponse {
+    pub status: &'static str,
 }

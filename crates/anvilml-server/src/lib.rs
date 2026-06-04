@@ -3,7 +3,10 @@ mod state;
 
 use std::sync::Arc;
 
-use axum::{routing::get, Router};
+use axum::{
+    routing::{get, post},
+    Router,
+};
 
 pub use state::AppState;
 
@@ -13,6 +16,8 @@ pub fn build_router(state: AppState) -> Router {
 
     Router::new()
         .route("/health", get(handlers::health::health))
+        .route("/v1/models/rescan", post(handlers::models::rescan_models))
+        .route("/v1/models/:id", get(handlers::models::get_model))
         .route("/v1/models", get(handlers::models::list_models))
         .route("/v1/system/env", get(handlers::system::get_env))
         .route("/v1/system", get(handlers::system::get_system))
@@ -32,7 +37,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_returns_200() {
-        let state = AppState::new("0.1.0", None, None);
+        let state = AppState::new("0.1.0", None, None, None);
         let app = build_router(state);
 
         let response = app
@@ -60,7 +65,7 @@ mod tests {
 
     #[tokio::test]
     async fn env_returns_200_with_stub_report() {
-        let state = AppState::new("0.1.0", None, None);
+        let state = AppState::new("0.1.0", None, None, None);
         let app = build_router(state);
 
         let response = app
@@ -98,7 +103,7 @@ mod tests {
         let hw_info = anvilml_hardware::detect_all_devices(&anvilml_core::ServerConfig::default())
             .expect("detect_all_devices should succeed");
 
-        let state = AppState::new_with_hardware("0.1.0", hw_info, None, None);
+        let state = AppState::new_with_hardware("0.1.0", hw_info, None, None, None);
         let app = build_router(state);
 
         let response = app
@@ -138,5 +143,67 @@ mod tests {
 
         // Inference caps must be present.
         assert!(parsed["inference_caps"].is_object());
+    }
+
+    #[tokio::test]
+    async fn get_model_returns_404_when_missing() {
+        // Use a temporary file-based database with migrations so the
+        // registry actually has tables to query.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db_path = tmp.path().to_path_buf();
+        let pool = anvilml_registry::db::open(&db_path)
+            .await
+            .expect("open db must succeed");
+        let registry = std::sync::Arc::new(anvilml_registry::ModelRegistry::new(pool));
+        let state = AppState::new("0.1.0", None, Some(registry), None);
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/models/nonexistent-id")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+        let parsed: Value = serde_json::from_str(&body_str).unwrap();
+        assert_eq!(parsed["error"], "not_found");
+        assert_eq!(parsed["message"], "model not found");
+    }
+
+    #[tokio::test]
+    async fn rescan_returns_202() {
+        let state = AppState::new("0.1.0", None, None, None);
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/models/rescan")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+        let parsed: Value = serde_json::from_str(&body_str).unwrap();
+        assert_eq!(parsed["status"], "rescan_started");
     }
 }
