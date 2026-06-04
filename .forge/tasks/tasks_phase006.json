@@ -4,7 +4,9 @@
     "description": "anvilml-registry: model directory scanner",
     "phase": "6",
     "project": "anvilml",
-    "prereqs": ["P5-A4"],
+    "prereqs": [
+      "P5-A4"
+    ],
     "context": "Add walkdir, sha2, hex to anvilml-registry. Create src/scanner.rs: async fn scan_dirs(dirs:&[ModelDirConfig])->Vec<ModelMeta>. Walk each dir (follow_links false), match .safetensors/.ckpt/.pt/.bin. id=first16hex of SHA256(canonical path string). name=file stem. kind from ModelDirConfig.kind or infer from parent dir name. dtype from filename suffix else Unknown. vram_estimate_mib=size_mib*factor (f32 2.0,f16/bf16 1.0,q8 0.5,q4 0.25,unknown 1.0,min 1). cargo test -p anvilml-registry -- scanner exits 0 with tempdir fixture (2 files).",
     "tags": []
   },
@@ -13,7 +15,9 @@
     "description": "anvilml-registry: ModelRegistry store (upsert, get)",
     "phase": "6",
     "project": "anvilml",
-    "prereqs": ["P6-A1"],
+    "prereqs": [
+      "P6-A1"
+    ],
     "context": "Create src/store.rs: ModelRegistry{pool}. ModelRegistry::new(pool). async fn upsert(&self,&ModelMeta)->Result (INSERT OR REPLACE INTO models). async fn get(&self,id:&str)->Result<Option<ModelMeta>>. Map all columns. Re-export ModelRegistry from lib.rs. cargo test -p anvilml-registry -- store_get exits 0: upsert then get returns equal meta; get missing returns None.",
     "tags": []
   },
@@ -22,7 +26,9 @@
     "description": "anvilml-registry: ModelRegistry list (with kind filter)",
     "phase": "6",
     "project": "anvilml",
-    "prereqs": ["P6-A2"],
+    "prereqs": [
+      "P6-A2"
+    ],
     "context": "Add to store.rs: async fn list(&self, kind:Option<ModelKind>)->Result<Vec<ModelMeta>> -> SELECT * FROM models, optional WHERE kind=?, ORDER BY name ASC. cargo test -p anvilml-registry -- store_list exits 0: empty returns []; after 3 upserts list returns 3 ordered; kind filter returns only matching.",
     "tags": []
   },
@@ -31,7 +37,9 @@
     "description": "anvilml-registry: ModelRegistry rescan (scan + bulk upsert)",
     "phase": "6",
     "project": "anvilml",
-    "prereqs": ["P6-A3"],
+    "prereqs": [
+      "P6-A3"
+    ],
     "context": "Add to store.rs: async fn rescan(&self, dirs:&[ModelDirConfig])->Result<u32> calling scan_dirs then upsert each, returning count upserted. Never auto-removes stale rows (manual only). cargo test -p anvilml-registry -- rescan exits 0: rescan tempdir adds N, second rescan keeps N (idempotent).",
     "tags": []
   },
@@ -40,7 +48,9 @@
     "description": "anvilml: initial model scan at startup + registry in AppState",
     "phase": "6",
     "project": "anvilml",
-    "prereqs": ["P6-A4"],
+    "prereqs": [
+      "P6-A4"
+    ],
     "context": "Add registry: Arc<ModelRegistry> to AppState. In main.rs after DB open: build ModelRegistry::new(db.clone()), spawn a non-blocking tokio task calling registry.rescan(&cfg.model_dirs) (log count). Store registry Arc in AppState. Do not block server bind on the scan. Verify in next task via REST.",
     "tags": []
   },
@@ -49,7 +59,9 @@
     "description": "anvilml-server: GET /v1/models handler (list with kind filter)",
     "phase": "6",
     "project": "anvilml",
-    "prereqs": ["P6-A5"],
+    "prereqs": [
+      "P6-A5"
+    ],
     "context": "Create handlers/models.rs: async fn list_models(State, Query{kind:Option<ModelKind>})->Json<Vec<ModelMeta>> calling registry.list(kind). Wire GET /v1/models. Verify: create ./models/diffusion/, drop a fake file model-fp16.safetensors, set anvilml.toml model_dirs to it, cargo run --features mock-hardware, curl 'http://127.0.0.1:8488/v1/models' lists the model with kind diffusion + dtype f16.",
     "tags": []
   },
@@ -58,7 +70,9 @@
     "description": "anvilml-server: GET /v1/models/:id and POST /v1/models/rescan",
     "phase": "6",
     "project": "anvilml",
-    "prereqs": ["P6-A6"],
+    "prereqs": [
+      "P6-A6"
+    ],
     "context": "Add to handlers/models.rs: async fn get_model(State, Path<String>)->Result returning 200 ModelMeta or 404 not_found JSON body. async fn rescan_models(State)->202 spawning registry.rescan(&cfg.model_dirs) without waiting. Wire GET /v1/models/:id and POST /v1/models/rescan. Verify: curl /v1/models/<id> returns the model; curl -X POST /v1/models/rescan returns 202; add a new file then rescan then list shows it.",
     "tags": []
   },
@@ -67,8 +81,10 @@
     "description": "anvilml-hardware: fix real-hardware build errors surfaced by no-feature compile check",
     "phase": "6",
     "project": "anvilml",
-    "prereqs": ["P6-A7"],
-    "context": "Run cargo check --bin anvilml (native Linux, no features) and cargo check --bin anvilml --target x86_64-pc-windows-gnu (no features). Fix every error from both runs — do not limit to known issues. Primary target: crates/anvilml-hardware/src/lib.rs enumerate_gpus(): DxgiDetector/SysfsDetector/NvmlDetector must be constructed via ::default() before calling .detect(). Fix all other errors found. Both checks must exit 0. cargo test --workspace --features mock-hardware must still pass.",
+    "prereqs": [
+      "P6-A7"
+    ],
+    "context": "Run cargo check --bin anvilml (native Linux, no features) and cargo check --bin anvilml --target x86_64-pc-windows-gnu (no features). Fix every error from both runs \u2014 do not limit to known issues. Primary target: crates/anvilml-hardware/src/lib.rs enumerate_gpus(): DxgiDetector/SysfsDetector/NvmlDetector must be constructed via ::default() before calling .detect(). Fix all other errors found. Both checks must exit 0. cargo test --workspace --features mock-hardware must still pass.",
     "tags": []
   },
   {
@@ -76,8 +92,21 @@
     "description": "anvilml: add real-hardware compile check steps to rust-linux and rust-windows CI jobs",
     "phase": "6",
     "project": "anvilml",
-    "prereqs": ["P6-B1"],
+    "prereqs": [
+      "P6-B1"
+    ],
     "context": "Edit .github/workflows/ci.yml only. In rust-linux job add step after Run tests: name Real-hardware compile check, run cargo check --bin anvilml. In rust-windows job add step after Run tests: name Real-hardware compile check, run cargo check --bin anvilml. No features flag on either. All existing jobs and steps preserved unchanged. Acceptance: grep -c \"Real-hardware compile check\" .github/workflows/ci.yml returns 2.",
+    "tags": []
+  },
+  {
+    "id": "P6-C1",
+    "description": "anvilml-core: add serde snake_case to FrontendMode and DeviceType config enums",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": [
+      "P6-B2"
+    ],
+    "context": "Add #[serde(rename_all = \"snake_case\")] to FrontendMode and DeviceType enums in crates/anvilml-core/src/config.rs. Update affected tests in crates/anvilml-core/src/types/hardware.rs: device_type_json_strings (assert \"cuda\"/\"rocm\"/\"cpu\"), gpu_device_backward_compat (change hardcoded JSON \"device_type\": \"Cuda\" to \"cuda\"). Verify anvilml.toml already uses lowercase (mode = \"headless\", device_type = \"cpu\"). cargo test --workspace --features mock-hardware exits 0. cargo run --bin anvilml -- --print-hardware succeeds without config panic.",
     "tags": []
   }
 ]

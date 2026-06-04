@@ -7,7 +7,7 @@
 | Milestone group | Observable system state |
 | Depends on phases | 1-5 |
 | Task file | `forge/tasks/tasks_phase006.json` |
-| Tasks | 9 |
+| Tasks | 10 |
 
 ## Overview
 
@@ -28,6 +28,7 @@ Every task in this phase implements **one module or one endpoint** plus its test
 | P6-A7 | `crates/anvilml-server/src/handlers/models.rs` | anvilml-server: GET /v1/models/:id and POST /v1/models/rescan |
 | P6-B1 | `crates/anvilml-hardware/src/lib.rs` | anvilml-hardware: fix real-hardware build errors (no-feature compile check) |
 | P6-B2 | `.github/workflows/ci.yml` | anvilml: add real-hardware compile check to rust-linux and rust-windows CI jobs |
+| P6-C1 | `crates/anvilml-core/src/config.rs`, `crates/anvilml-core/src/types/hardware.rs` | anvilml-core: add serde snake_case to FrontendMode and DeviceType config enums |
 
 ## Task details
 
@@ -139,6 +140,37 @@ No `--features` flag on either. On `rust-linux` (`ubuntu-latest`) this exercises
 **Acceptance criterion:** `grep -c 'Real-hardware compile check' .github/workflows/ci.yml` prints `2`.
 
 
+---
+
+### Group C — Config Correctness
+
+#### P6-C1: anvilml-core: add serde snake_case to FrontendMode and DeviceType config enums
+
+- **Prereqs:** P6-B2
+- **Tags:** —
+
+`FrontendMode` and `DeviceType` in `crates/anvilml-core/src/config.rs` have no `#[serde(...)]` attribute, so serde uses variant names verbatim: `Headless`, `Cuda`, `Rocm`, `Cpu`. The committed `anvilml.toml` uses lowercase values (`mode = "headless"`, `device_type = "cpu"`) because that is the documented and expected user-facing format — but the deserialiser rejects them, causing a panic at startup as seen in production. `ModelKind` and `DType` already use `#[serde(rename_all = "snake_case")]` consistently; this task brings `FrontendMode` and `DeviceType` into alignment.
+
+Add `#[serde(rename_all = "snake_case")]` to both enums. Two existing tests in `crates/anvilml-core/src/types/hardware.rs` hardcode PascalCase JSON strings for `DeviceType` and must be updated:
+
+- `device_type_json_strings`: change assertions to `"cuda"`, `"rocm"`, `"cpu"`.
+- `gpu_device_backward_compat`: change the hardcoded JSON literal `"device_type": "Cuda"` to `"device_type": "cuda"`.
+
+No other test changes are expected — all other `DeviceType` and `FrontendMode` usage goes through round-trip serialisation and will naturally produce and consume the new lowercase strings. Verify `anvilml.toml` already uses lowercase values throughout (it does — no TOML changes required). After the fix, `cargo run --bin anvilml -- --print-hardware` must complete without a config-load panic.
+
+**Files to create or modify:**
+- `crates/anvilml-core/src/config.rs` — add `#[serde(rename_all = "snake_case")]` to `FrontendMode` and `DeviceType`
+- `crates/anvilml-core/src/types/hardware.rs` — update `device_type_json_strings` and `gpu_device_backward_compat` test assertions to lowercase
+
+**Key implementation notes:**
+- `FrontendMode` has struct variants (`Local { path }`, `Remote { url }`). `rename_all = "snake_case"` renames the tag strings only (`"Local"` → `"local"`, etc.); the field names within the variants are unaffected.
+- `DeviceType` is also used in JSON API responses via `GpuDevice` in `anvilml-core/src/types/hardware.rs`. Changing its serialisation to lowercase is a **breaking API change** for any client consuming `GET /v1/hardware`. Since no external clients exist yet (pre-release), this is acceptable. Document this in the implementation report under `## Deviations from Plan`.
+- The `config_reference` drift-guard test in `backend/tests/config_reference.rs` compares TOML key-sets only, not values — it will continue to pass without modification.
+
+**Acceptance criterion:** `cargo test --workspace --features mock-hardware` exits 0 AND `cargo run --bin anvilml -- --print-hardware` exits 0 without a config-load panic.
+
+
+
 ## Runnable Proof
 
 Create a model directory with a fake model file and confirm it appears via the API.
@@ -160,7 +192,7 @@ cargo check --bin anvilml
 cargo check --bin anvilml --target x86_64-pc-windows-gnu
 ```
 
-Expected: `GET /v1/models` returns a JSON array containing the model with `kind: "diffusion"` and `dtype_hint: "F16"`. `GET /v1/models/:id` returns the same model. `POST /v1/models/rescan` returns 202. Both no-feature `cargo check` invocations exit 0.
+Expected: `GET /v1/models` returns a JSON array containing the model with `kind: "diffusion"` and `dtype_hint: "F16"`. `GET /v1/models/:id` returns the same model. `POST /v1/models/rescan` returns 202. Both no-feature `cargo check` invocations exit 0. After P6-C1: `cargo run --bin anvilml -- --print-hardware` exits 0.
 
 ## Known Constraints and Gotchas
 
@@ -169,3 +201,5 @@ Expected: `GET /v1/models` returns a JSON array containing the model with `kind:
 - P6-B1 scope is compile-error fixes only — no feature gate changes, no new tests, no behavioural changes. If the no-feature checks surface errors outside `anvilml-hardware` (e.g. in `backend/src/main.rs`), fix them in the same task.
 - P6-B2 modifies `.github/workflows/ci.yml`. Per `FORGE_AGENT_RULES §3.7` this is only permitted because the file is explicitly listed in that task's Files Affected table.
 - P6-B1 and P6-B2 must run after P6-A7 to avoid disrupting the in-progress model registry implementation chain.
+- P6-C1 changes `DeviceType` JSON serialisation from PascalCase (`"Cuda"`) to snake_case (`"cuda"`). This is a breaking change to the `GET /v1/hardware` response shape. It is acceptable pre-release but must be noted in the implementation report.
+- P6-C1 must not change any `#[serde]` attributes on `EnumerationSource` or `CapabilitySource` — those are internal runtime types used only in JSON API responses and must retain their current PascalCase serialisation.
