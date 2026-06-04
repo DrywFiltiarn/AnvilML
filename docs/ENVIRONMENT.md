@@ -268,7 +268,8 @@ These are the canonical commands for all ACT sessions working on AnvilML:
 | Step | Command |
 |------|---------|
 | Format | `cargo fmt --all` |
-| Lint | `cargo clippy --workspace --features mock-hardware -- -D warnings` |
+| Lint (mock-hardware) | `cargo clippy --workspace --features mock-hardware -- -D warnings` |
+| Lint (real-hardware) | `cargo clippy --bin anvilml -- -D warnings` |
 | Test (Rust) | `cargo test --workspace --features mock-hardware` |
 | Test (Python worker) | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` |
 | Platform cross-check (mock, Windows-gnu) | `cargo check --target x86_64-pc-windows-gnu --workspace --features mock-hardware` |

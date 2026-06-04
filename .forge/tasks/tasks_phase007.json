@@ -43,5 +43,14 @@
     "prereqs": ["P7-A4"],
     "context": "In main.rs after AppState built, call spawn_system_stats_tick(state.clone()). Ensure broadcaster + tick are live for the bound server. Verify: cargo run --features mock-hardware, then in another shell `websocat ws://127.0.0.1:8488/v1/events` (or a browser WS console) shows a system.stats JSON frame arriving every ~5 seconds with event='system.stats' and a timestamp.",
     "tags": []
+  },
+  {
+    "id": "P7-B1",
+    "description": "anvilml: add real-hardware lint steps to rust-linux and rust-windows CI jobs",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-A5"],
+    "context": "Edit .github/workflows/ci.yml only. In rust-linux job add step after Real-hardware compile check: name Real-hardware lint, run cargo clippy --bin anvilml -- -D warnings. In rust-windows job add step after Real-hardware compile check: name Real-hardware lint, run cargo clippy --bin anvilml -- -D warnings. No features flag on either. All existing jobs and steps preserved unchanged. Acceptance: grep -c \"Real-hardware lint\" .github/workflows/ci.yml returns 2.",
+    "tags": []
   }
 ]
