@@ -137,7 +137,7 @@ mod tests {
         assert!(!gpus.is_empty(), "must have at least one GPU device");
 
         // First GPU should be a CUDA mock device.
-        assert_eq!(gpus[0]["device_type"], "Cuda");
+        assert_eq!(gpus[0]["device_type"], "cuda");
         assert_eq!(gpus[0]["vram_total_mib"].as_u64().unwrap(), 12288);
         assert_eq!(gpus[0]["enumeration_source"], "Mock");
 

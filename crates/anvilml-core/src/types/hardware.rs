@@ -242,7 +242,7 @@ mod tests {
         let json = r#"{
             "index": 0,
             "name": "Test GPU",
-            "device_type": "Cuda",
+            "device_type": "cuda",
             "vram_total_mib": 16384,
             "vram_free_mib": 15000,
             "driver_version": "535.0"
@@ -388,13 +388,13 @@ mod tests {
     #[test]
     fn device_type_json_strings() {
         let cuda_json = serde_json::to_string(&DeviceType::Cuda).unwrap();
-        assert_eq!(cuda_json, "\"Cuda\"");
+        assert_eq!(cuda_json, "\"cuda\"");
 
         let rocm_json = serde_json::to_string(&DeviceType::Rocm).unwrap();
-        assert_eq!(rocm_json, "\"Rocm\"");
+        assert_eq!(rocm_json, "\"rocm\"");
 
         let cpu_json = serde_json::to_string(&DeviceType::Cpu).unwrap();
-        assert_eq!(cpu_json, "\"Cpu\"");
+        assert_eq!(cpu_json, "\"cpu\"");
     }
 
     /// `EnumerationSource` must have exactly 8 variants and all pairs distinct.

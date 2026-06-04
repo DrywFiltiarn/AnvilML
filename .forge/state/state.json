@@ -41,16 +41,17 @@
     "P6-A5",
     "P6-A6",
     "P6-A7",
-    "P6-B1"
+    "P6-B1",
+    "P6-B2"
   ],
-  "in_progress": "P6-B2",
+  "in_progress": "P6-C1",
   "plan_approved": true,
-  "current_plan": "1. Open `.github/workflows/ci.yml`.\n2. In the `rust-linux` job, insert a new step block immediately after the \"Run tests\" step (line 30\u201331):\n   ```yaml\n       - name: Real-hardware compile check\n         run: cargo check --bin anvilml\n   ```\n3. In the `rust-windows` job, insert an identical step block immediately after the \"Run tests\" step (line 46\u201347).\n4. Verify the file still has valid YAML structure and that both steps are present by running:\n   ```bash\n   grep -c 'Real-hardware compile check' .github/workflows/ci.yml\n   ```\n   Expected output: `2`.",
+  "current_plan": "1. **Edit `crates/anvilml-core/src/config.rs`** \u2014 Add the attribute line `#[serde(rename_all = \"snake_case\")]` directly above the `DeviceType` enum definition (line 30) and above the `FrontendMode` enum definition (line 81). These are the only two lines changed in this file.\n\n2. **Edit `crates/anvilml-core/src/types/hardware.rs`** \u2014 In the `device_type_json_strings` test (lines 389\u2013398), update the three assertions:\n   - Line 391: `\"\\\"Cuda\\\"\" \u2192 \"\\\"cuda\\\"\"`\n   - Line 394: `\"\\\"Rocm\\\"\" \u2192 \"\\\"rocm\\\"\"`\n   - Line 397: `\"\\\"Cpu\\\"\" \u2192 \"\\\"cpu\\\"\"`\n\n3. **Edit `crates/anvilml-core/src/types/hardware.rs`** \u2014 In the `gpu_device_backward_compat` test (lines 240\u2013274), update the JSON literal on line 245:\n   - `\"device_type\": \"Cuda\"` \u2192 `\"device_type\": \"cuda\"`\n\n4. **Verify** \u2014 Run `cargo test --workspace --features mock-hardware` to confirm all tests pass. Run `cargo run --bin anvilml -- --print-hardware` to confirm no config-load panic.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-04T11:41:31+0200",
-  "plan_approval_message_id": "1512025166077493320",
+  "last_updated": "2026-06-04T12:03:18+0200",
+  "plan_approval_message_id": "1512033138853941319",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512025164651429948",
+  "plan_report_message_id": "1512033137150922793",
   "impl_report_message_id": null
 }

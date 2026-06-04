@@ -1,4 +1,4 @@
-Task: P6-B2
+Task: P6-C1
 Step: IMPLEMENT
 Status: COMPLETE
-Updated: 2026-06-04T09:46:52Z
+Updated: 2026-06-04T12:35:00+0200

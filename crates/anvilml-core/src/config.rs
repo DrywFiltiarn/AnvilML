@@ -28,6 +28,7 @@ pub enum ModelKind {
 
 /// Hardware device type for inference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum DeviceType {
     Cuda,
     Rocm,
@@ -79,6 +80,7 @@ pub struct HardwareOverrideConfig {
 
 /// Frontend serving mode.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum FrontendMode {
     /// Serve static files from a local directory (for a custom/third-party frontend).
     /// Not used for BloomeryUI, which SindriStudio runs as a separate server.
