@@ -54,16 +54,17 @@
     "P7-C1",
     "P7-D1",
     "P7-D2",
-    "P7-D3"
+    "P7-D3",
+    "P7-D4"
   ],
-  "in_progress": "P7-D4",
+  "in_progress": "P7-E1",
   "plan_approved": true,
-  "current_plan": "1. **Fix `backend/src/main.rs` line 17.** Replace:\n   ```rust\n   println!(\"\u2551 OS:          {}:\", \" \".repeat(50 - 8));\n   ```\n   with:\n   ```rust\n   println!(\"\u2551 OS:          {}\", hw.host.os);\n   ```\n\n2. **Fix `crates/anvilml-hardware/src/lib.rs` line 84.** Replace:\n   ```rust\n   let os = sysinfo::System::name().unwrap_or_else(|| \"Unknown\".to_string());\n   ```\n   with:\n   ```rust\n   let os = sysinfo::System::long_os_version()\n       .or_else(|| sysinfo::System::name())\n       .filter(|s| !s.is_empty())\n       .unwrap_or_else(|| \"Unknown\".to_string());\n   ```\n\n3. **Verify compilation** with `cargo build --workspace --features mock-hardware` and `cargo clippy --workspace --features mock-hardware -- -D warnings`.\n\n4. **Run tests** with `cargo test --workspace --features mock-hardware` \u2014 the existing `host_info_populated()` test asserts `!info.host.os.is_empty()`, which will catch any regression.\n\n5. **Manual acceptance criterion**: `cargo run -- --print-hardware` prints a non-empty OS string on the `OS:` line with no trailing stray colon.",
+  "current_plan": "1. **Verify MCP lookups** (already performed in PLAN session):\n   - `thiserror`: latest stable is **2.0.18** (2.x series). No public API surface \u2014 deliberate non-breaking change per the crate's own documentation: \"switching from handwritten impls to thiserror or vice versa is not a breaking change.\"\n   - `sha2`: latest in 0.11.x series is **0.11.0**. Depends on `digest ^0.11`. The `Digest` trait's `finalize()` returns `GenericArray<u8, N>` which implements `AsRef<[u8]>`.\n   - `hex 0.4.3`: accepts `impl AsRef<[u8]>` in `hex::encode()`, so sha2 0.11 output is compatible. No bump needed.\n\n2. **Edit root `Cargo.toml`** `[workspace.dependencies]`:\n   - Change line: `thiserror = \"1.0.69\"` \u2192 `thiserror = \"2\"`\n   - Change line: `sha2 = \"0.10\"` \u2192 `sha2 = \"0.11\"`\n\n3. **Build verification**: Run `cargo build --workspace --features mock-hardware` to confirm zero compilation errors.\n\n4. **Test verification**: Run `cargo test --workspace --features mock-hardware` to confirm all existing tests pass (including `test_sha256_hex` in `scanner.rs`).",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-04T23:57:46+0200",
-  "plan_approval_message_id": "1512213485864620153",
+  "last_updated": "2026-06-05T00:16:54+0200",
+  "plan_approval_message_id": "1512218520375529593",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512213484438290693",
+  "plan_report_message_id": "1512218518639349928",
   "impl_report_message_id": null
 }
