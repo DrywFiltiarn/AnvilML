@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use anvilml_core::config::ModelDirConfig;
 use anvilml_core::{DType, ModelKind, ModelMeta};
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
@@ -154,5 +155,20 @@ impl ModelRegistry {
         }
 
         Ok(results)
+    }
+
+    /// Scan the configured model directories and upsert every discovered
+    /// model into the registry. Returns the total number of models processed.
+    ///
+    /// This operation is idempotent: calling it multiple times over the same
+    /// files will not create duplicates because `upsert` uses `INSERT OR REPLACE`.
+    /// Stale rows (files deleted from disk) are NOT removed — manual cleanup
+    /// is required via a separate mechanism.
+    pub async fn rescan(&self, dirs: &[ModelDirConfig]) -> Result<u32, AnvilError> {
+        let metas = crate::scanner::scan_dirs(dirs).await;
+        for meta in &metas {
+            self.upsert(meta).await?;
+        }
+        Ok(metas.len() as u32)
     }
 }

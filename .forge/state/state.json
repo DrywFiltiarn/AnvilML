@@ -35,16 +35,17 @@
     "P5-A3",
     "P5-A4",
     "P6-A1",
-    "P6-A2"
+    "P6-A2",
+    "P6-A3"
   ],
-  "in_progress": "P6-A3",
+  "in_progress": "P6-A4",
   "plan_approved": true,
-  "current_plan": "1. **Add `list` method to `store.rs`** following the established pattern used by `get`:\n   - Use `sqlx::query_as` with the `ModelRow` tuple type already defined in the file\n   - Build the query string dynamically: base SELECT with optional `WHERE kind = ?` appended when `kind.is_some()`\n   - Bind the kind value as a JSON string (matching how `upsert` serialises `kind`)\n   - Order by `name ASC`\n   - Map each row through the same deserialization logic already used in `get`:\n     - Parse `kind` from JSON \u2192 `ModelKind`\n     - Parse `dtype_hint` from JSON \u2192 `DType`\n     - Parse `scanned_at` from RFC3339 \u2192 `DateTime<Utc>`\n   - Return `Vec<ModelMeta>`\n\n2. **Create test file `tests/store_list.rs`** mirroring the structure of `tests/store_get.rs`:\n   - Use the same `open_pool` helper pattern (inline or copy)\n   - Test 1 (`test_list_empty_returns_empty_vec`): open a fresh DB, call `list(None)`, assert `.is_empty()`\n   - Test 2 (`test_list_after_upserts_returns_ordered`): upsert 3 models with names \"Zebra\", \"Alpha\", \"Mango\" (different kinds), call `list(None)`, assert len is 3 and order is Alpha, Mango, Zebra\n   - Test 3 (`test_list_kind_filter`): upsert 2 Diffusion + 1 Vae models, call `list(Some(ModelKind::Diffusion))`, assert len is 2 and all are Diffusion",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-04T07:24:34+0200",
-  "plan_approval_message_id": "1511872989245734977",
+  "last_updated": "2026-06-04T08:05:07+0200",
+  "plan_approval_message_id": "1511973037207982142",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1511872986939003011",
+  "plan_report_message_id": "1511973034880274633",
   "impl_report_message_id": null
 }
