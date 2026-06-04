@@ -46,16 +46,17 @@
     "P6-C1",
     "P6-D1",
     "P7-A1",
-    "P7-A2"
+    "P7-A2",
+    "P7-A3"
   ],
-  "in_progress": "P7-A3",
+  "in_progress": "P7-A4",
   "plan_approved": true,
-  "current_plan": "1. **Add tokio `time` feature** \u2014 In `crates/anvilml-server/Cargo.toml`, change the tokio dependency from:\n   ```toml\n   tokio = { version = \"1\", features = [\"macros\", \"rt-multi-thread\", \"sync\"] }\n   ```\n   to:\n   ```toml\n   tokio = { version = \"1\", features = [\"macros\", \"rt-multi-thread\", \"sync\", \"time\"] }\n   ```\n   This is required because `tokio::time::interval` needs the `time` feature. The existing test file already uses `tokio::time::sleep` and `tokio::time::timeout`, which also require this feature \u2014 adding it fixes a latent build gap.\n\n2. **Add ping task to handler** \u2014 In `crates/anvilml-server/src/ws/handler.rs`:\n   - Add `use std::time::Duration;` import (or use fully-qualified path)\n   - Create a `ping_task` async block:\n     ```rust\n     let mut interval = tokio::time::interval(Duration::from_secs(30));\n     // Set initial tick to fire immediately on connect.\n     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);\n     let ping_task = async move {\n         loop {\n             if interval.tick().await.is_err() {\n                 break;\n             }\n             if ws_tx.send(Message::Ping(vec![])).await.is_err() {\n                 break;\n             }\n         }\n     };\n     ```\n   - Extend the `tokio::select!` from two arms to three:\n     ```rust\n     tokio::select! {\n         _ = forward => {},\n         _ = receive => {},\n         _ = ping_task => {},\n     }\n     ```\n\n3. **Verify** \u2014 Run `cargo test -p anvilml-server --features mock-hardware -- ws` to confirm the existing WS integration test still passes (the 30s ping interval is far beyond the ~200ms test duration, so it never fires during the test).",
+  "current_plan": "1. **Read existing types.** Confirm `GpuStatSnapshot` fields (`index: u32`, `vram_used_mib: u32`, `vram_total_mib: u32`), `SystemStatsEvent` fields, and `WsEvent::SystemStats(SystemStatsEvent)` variant from `anvilml-core/src/types/events.rs`. Confirm `HardwareInfo` has `gpus: Vec<GpuDevice>` with each device exposing `index`, `vram_used_mib`, `vram_total_mib`.\n\n2. **Create `stats_tick.rs`.** In `crates/anvilml-server/src/ws/`:\n   - Import `tokio::time::{interval, Duration}`, `anvilml_core::types::{HardwareInfo, SystemStatsEvent, WsEvent, GpuStatSnapshot}`, `crate::state::AppState`, `crate::ws::broadcaster::EventBroadcaster` (or re-exported path), `sysinfo::System`.\n   - Define `pub fn spawn_system_stats_tick(state: AppState) -> JoinHandle<()>`:\n     - Clone broadcaster reference from state (`state.broadcaster.clone()`).\n     - Clone hardware reference (`Arc<RwLock<HardwareInfo>>`).\n     - Spawn a tokio task with the interval loop.\n     - Inside the loop: `interval.tick().await`, then:\n       - Read lock `hardware.read()`.\n       - Build `gpus: hardware.gpus.iter().map(|d| GpuStatSnapshot { index: d.index, vram_used_mib: d.vram_used_mib, vram_total_mib: d.vram_total_mib }).collect()`\n       - Release lock.\n       - Create a new `sysinfo::System`, call `system.refresh_memory()`, extract `total_mib` and `used_mib`.\n       - Build `SystemStatsEvent { timestamp: Utc::now(), gpus, ram_used_mib, ram_total_mib }`.\n       - Call `broadcaster.send(WsEvent::SystemStats(event))` \u2014 ignore return value.\n   - Add a unit test: construct an AppState with mock hardware, spawn the tick, await one interval, assert broadcaster can receive an event (similar pattern to existing broadcaster tests).\n\n3. **Update `ws/mod.rs`.** Add `pub mod stats_tick;` alongside the existing `broadcaster` and `handler` declarations.\n\n4. **Verify build.** Run `cargo build --features mock-hardware -p anvilml-server` \u2014 acceptance criterion is exit 0. No runtime verification (deferred to P7-A5).",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-04T14:45:34+0200",
-  "plan_approval_message_id": "1512069428358025217",
+  "last_updated": "2026-06-04T20:00:52+0200",
+  "plan_approval_message_id": "1512153735508262933",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512069425375875243",
+  "plan_report_message_id": "1512153734174736446",
   "impl_report_message_id": null
 }
