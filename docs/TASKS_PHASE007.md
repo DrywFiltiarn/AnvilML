@@ -7,7 +7,7 @@
 | Milestone group | Observable system state |
 | Depends on phases | 1-6 |
 | Task file | `.forge/tasks/tasks_phase007.json` |
-| Tasks | 7 |
+| Tasks | 9 |
 
 ## Overview
 
@@ -15,7 +15,7 @@ Phase 7 adds the `EventBroadcaster`, the `GET /v1/events` WebSocket endpoint wit
 
 Group B locks in real-hardware lint coverage in CI, mirroring the real-hardware compile check added in P6-B2. Group C eliminates the version-authority gap by introducing `[workspace.dependencies]` and upgrading all external dependencies to their current stable releases via MCP lookup.
 
-Every task in this phase implements one module, one endpoint, or one infrastructure change plus its verification. No task touches more than its named file(s). `cargo test` and `cargo clippy` are per-task gates; the phase as a whole is only complete when the Runnable Proof below passes.
+Every task in this phase implements one module, one endpoint, or one infrastructure change plus its verification. No task touches more than its named file(s). `cargo test` and `cargo clippy` are per-task gates; the phase as a whole is only complete when the Runnable Proof below passes. Group D addresses two production bugs discovered during manual testing: a first-run database creation failure in `anvilml-registry` and silent hardware detector fallbacks in `anvilml-hardware` that mask the Vulkan extension misclassification responsible for DXGI being used instead of Vulkan on Windows AMD hardware.
 
 ## Tasks
 
@@ -28,6 +28,8 @@ Every task in this phase implements one module, one endpoint, or one infrastruct
 | P7-A5 | `backend/src/main.rs` | anvilml: start stats tick at startup; verify live WS stream |
 | P7-B1 | `.github/workflows/ci.yml` | anvilml: add real-hardware lint steps to rust-linux and rust-windows CI jobs |
 | P7-C1 | `Cargo.toml`, all per-crate `Cargo.toml` files | anvilml: introduce [workspace.dependencies] and upgrade all external deps to current stable |
+| P7-D1 | `crates/anvilml-registry/src/db.rs`, `crates/anvilml-server/tests/api_models.rs` | anvilml-registry: fix db::open to create missing database file |
+| P7-D2 | `crates/anvilml-hardware/src/vulkan.rs`, `dxgi.rs`, `sysfs.rs`, `nvml.rs`, `lib.rs` | anvilml-hardware: explicit detector warnings + Vulkan extension fix |
 
 ## Task details
 
@@ -157,6 +159,51 @@ If an MCP lookup returns a version that is semver-incompatible with existing cod
 
 ---
 
+### Group D — Bug Fixes
+
+#### P7-D1: anvilml-registry: fix db::open to create missing database file
+
+- **Prereqs:** P7-C1
+- **Tags:** —
+
+`db::open` passes a bare path string to `SqlitePoolOptions::connect`, which does not set `SQLITE_OPEN_CREATE`. On first run, when `anvilml.db` does not yet exist, SQLite returns error code 14 and the server panics before binding. The fix replaces the connect call with `SqliteConnectOptions::new().filename(path).create_if_missing(true)` passed to `connect_with`. The pre-creation workaround (`fs::File::create`) in `api_models.rs` exists solely because `open()` cannot create the file itself; it is removed in the same task.
+
+**Files to create or modify:**
+- `crates/anvilml-registry/src/db.rs` — replace `SqlitePoolOptions::connect(path_str)` with `SqliteConnectOptions::new().filename(path).create_if_missing(true)` via `connect_with`; add `SqliteConnectOptions` to the `sqlx::sqlite` import; add test `test_open_creates_file_if_missing` that calls `open()` on a path that does not yet exist and asserts the file is present afterwards
+- `crates/anvilml-server/tests/api_models.rs` — remove the `fs::File::create(&db_path)` line from `setup_test_env`
+
+**Key implementation notes:**
+- The `filename()` builder accepts `&Path` directly and handles Windows backslash paths correctly. Do not construct a `sqlite://` URI manually.
+- If P7-C1 upgraded sqlx to a version that changes the `SqliteConnectOptions` API, consult `mcp-rust-docs` for the correct import path before writing code.
+
+**Acceptance criterion:** Delete `anvilml.db` if present, then `cargo run --features mock-hardware` starts without panicking at the database open step AND `cargo test --workspace --features mock-hardware` exits 0.
+
+---
+
+#### P7-D2: anvilml-hardware: explicit detector warnings + Vulkan extension fix
+
+- **Prereqs:** P7-D1
+- **Tags:** reasoning
+
+Every silent `Ok(vec![])` early-return in the hardware detection crates discards the underlying error without any log entry, making it impossible at runtime to distinguish "no GPU present" from "detector failed for a fixable reason". The concrete consequence on Windows with an AMD GPU is that `VK_KHR_driver_properties` and `VK_EXT_memory_budget` are passed as instance-level extensions in `VkInstanceCreateInfo::ppEnabledExtensionNames`. Both are device extensions; the AMD ICD correctly rejects `vkCreateInstance` with `VK_ERROR_EXTENSION_NOT_PRESENT`, which the current code silently swallows, returning `Ok(vec![])` and falling through to the DXGI fallback. This task makes every discard visible and corrects the Vulkan extension misclassification so the primary detection path functions on AMD hardware.
+
+**Files to create or modify:**
+- `crates/anvilml-hardware/src/vulkan.rs` — remove `KHR_driver_properties` and `EXT_memory_budget` from the `extensions` vec passed to `create_instance`; pass an empty `enabled_extension_names` slice to `create_instance`; after enumerating physical devices, call `instance.enumerate_device_extension_properties(*pd, None)` per device to build the set of supported device extensions; gate the `PhysicalDeviceDriverProperties` pNext chain on `VK_KHR_driver_properties` membership in that set and the `PhysicalDeviceMemoryBudgetPropertiesEXT` pNext chain on `VK_EXT_memory_budget` membership; add `tracing::warn!(detector, error)` at every `Err(_) => return Ok(Vec::new())` site
+- `crates/anvilml-hardware/src/dxgi.rs` — add `tracing::warn!(detector, error)` at every silent `Ok(vec![])` return including COM initialisation failure and per-adapter failure paths
+- `crates/anvilml-hardware/src/sysfs.rs` — add `tracing::warn!(detector, error)` at every silent `Ok(vec![])` return
+- `crates/anvilml-hardware/src/nvml.rs` — add `tracing::warn!(detector, error)` at every silent `Ok(vec![])` return
+- `crates/anvilml-hardware/src/lib.rs` — add `tracing::warn!` at the `unwrap_or_default()` call sites in `enumerate_gpus` where a detector returning empty triggers fallback
+
+**Key implementation notes:**
+- Instance creation must use an empty extension name list. `VK_KHR_driver_properties` and `VK_EXT_memory_budget` do not appear in `vkEnumerateInstanceExtensionProperties` — passing them to `vkCreateInstance` is a Vulkan spec violation.
+- `get_physical_device_properties2` requires only Vulkan 1.1 core (already requested via `api_version: 1.3.0`) and is called unconditionally. Only the pNext chain structs that require specific device extensions are conditionally included based on the per-device extension query result.
+- All existing tests must continue to pass. `vulkan_detect_returns_ok` asserts `Ok` always — failures now warn before returning `Ok(vec![])`, which is unchanged behaviour from the public interface perspective.
+- After this fix, startup on a Windows machine with a Vulkan-capable AMD GPU must log `enumeration_source=Vulkan` rather than `enumeration_source=Dxgi`.
+
+**Acceptance criterion:** `cargo run` (without `--features mock-hardware`) logs `enumeration_source=Vulkan` for the detected GPU AND `cargo clippy --workspace -- -D warnings` exits 0 AND `cargo test --workspace --features mock-hardware` exits 0.
+
+---
+
 ## Runnable Proof
 
 Subscribe to the WebSocket and watch `system.stats` frames arrive.
@@ -178,3 +225,5 @@ Expected: roughly every 5 seconds a JSON text frame arrives with `"event":"syste
 - P7-C1 uses `mcp-rust-docs` as the authoritative version source. Any version written into `[workspace.dependencies]` without a prior MCP lookup is a protocol violation. If the MCP server is unavailable, set `Status=BLOCKED` per `FORGE_AGENT_RULES §6.4`.
 - After P7-C1, all future tasks that add a new external dependency MUST add it to `[workspace.dependencies]` first and reference it via `{ workspace = true }` in the per-crate `Cargo.toml`. Adding an inline version string to a per-crate `Cargo.toml` is a drift violation.
 - If P7-C1 encounters a semver-incompatible major bump, it pins the last compatible major and stops. A manually authored follow-on retrofit leaf task (e.g. a new Group D task — not pre-authored; created only if needed) handles the migration. The retrofit task's `context` field must open with an explicit origin reference: `"P7-C1 pinned <crate> at <old version> due to semver incompatibility. Migrate to <new version>: ..."`.
+- P7-D1 must run after P7-C1. The `SqliteConnectOptions` API surface depends on the sqlx version established by P7-C1; writing the fix against the pre-C1 version risks a second churn pass when C1 upgrades sqlx.
+- P7-D2 changes the observable startup log on Windows with a Vulkan-capable AMD GPU: after the fix, the server logs `enumeration_source=Vulkan` instead of `enumeration_source=Dxgi`. The DXGI fallback path remains correct and is still reached when Vulkan genuinely produces an empty device list — it is no longer silently reached when Vulkan fails a rejectable `vkCreateInstance` call.

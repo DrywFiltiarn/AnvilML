@@ -61,5 +61,29 @@
     "prereqs": ["P7-B1"],
     "context": "Introduce [workspace.dependencies] in root Cargo.toml. Use mcp-rust-docs to resolve the current stable version of every external dependency currently declared across all per-crate Cargo.toml files. Populate [workspace.dependencies] with those current versions and their required features. Update every per-crate Cargo.toml to reference shared deps via { workspace = true } and remove the now-redundant inline version strings. Internal path deps (anvilml-core etc) are unchanged. cargo build --workspace --features mock-hardware exits 0. cargo test --workspace --features mock-hardware exits 0.",
     "tags": ["reasoning"]
-  }
+  },
+  {
+    "id": "P7-D1",
+    "description": "anvilml-registry: fix db::open to create missing database file",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": [
+      "P7-C1"
+    ],
+    "context": "P7-C1 upgraded sqlx; if still <0.9 after P7-C1, upgrade to current stable first. Fix db::open in crates/anvilml-registry/src/db.rs: replace SqlitePoolOptions::connect(path_str) with SqliteConnectOptions::new().filename(path).create_if_missing(true), then connect_with(opts). Add SqliteConnectOptions import from sqlx::sqlite. Remove fs::File::create pre-creation workaround from crates/anvilml-server/tests/api_models.rs setup_test_env. cargo test --workspace --features mock-hardware exits 0; delete anvilml.db then cargo run exits without DB panic.",
+    "tags": []
+  },
+  {
+    "id": "P7-D2",
+    "description": "anvilml-hardware: explicit detector warnings + Vulkan extension fix",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": [
+      "P7-D1"
+    ],
+    "context": "Audit every silent Ok(vec![])/unwrap_or_default() discard in crates/anvilml-hardware/src/ (vulkan.rs, dxgi.rs, sysfs.rs, nvml.rs, lib.rs); replace each with tracing::warn!(detector, error). In vulkan.rs fix root cause: remove KHR_driver_properties + EXT_memory_budget from create_instance enabled_extension_names (device-level extensions; AMD ICD rejects them causing silent DXGI fallback); pass empty slice; guard properties2 calls with per-device enumerate_device_extension_properties check. cargo clippy --workspace exits 0. cargo test --workspace --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  }  
 ]
