@@ -12,14 +12,14 @@ anvilml-core = { path = "../crates/anvilml-core" }
 anvilml-hardware = { path = "../crates/anvilml-hardware" }
 anvilml-registry = { path = "../crates/anvilml-registry" }
 anvilml-server = { path = "../crates/anvilml-server" }
-clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["full"] }
-axum = { version = "0.7", features = ["json"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+clap = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [features]
 mock-hardware = ["anvilml-server/mock-hardware", "anvilml-hardware/mock-hardware"]
 
 [dev-dependencies]
-toml = "0.8"
+toml = { workspace = true }

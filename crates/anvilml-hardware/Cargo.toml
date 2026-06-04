@@ -9,9 +9,9 @@ anvilml-core = { path = "../anvilml-core" }
 # so absence of libvulkan.so returns a clean error rather than linker failure.
 # The "linked" feature would require libvulkan-dev at compile time, which is
 # not available in this environment but would be in CI (ubuntu-latest).
-ash = { version = "0.38", default-features = false, features = ["loaded"] }
-sysinfo = "0.32"
-log = "0.4"
+ash = { workspace = true }
+sysinfo = { workspace = true }
+log = { workspace = true }
 
 # Windows-only: DXGI GPU enumeration via COM/IDXGIFactory1.
 [target.'cfg(windows)'.dependencies]
@@ -24,10 +24,10 @@ winapi = { version = "0.3", features = [
 
 # Unix-only: dynamic loading of libnvidia-ml.so for NVML GPU enumeration.
 [target.'cfg(unix)'.dependencies]
-libloading = "0.8"
+libloading = "0.9"
 
 [dev-dependencies]
-serial_test = "3.5"
+serial_test = { workspace = true }
 
 [features]
 mock-hardware = []

@@ -13,9 +13,15 @@
 
 Phase 7 adds the `EventBroadcaster`, the `GET /v1/events` WebSocket endpoint with 30s keepalive ping and lag-disconnect, and the 5-second `system.stats` tick. After this phase a client can subscribe to the live event stream and watch system statistics arrive every five seconds — the first real-time surface of the application.
 
-Group B locks in real-hardware lint coverage in CI, mirroring the real-hardware compile check added in P6-B2. Group C eliminates the version-authority gap by introducing `[workspace.dependencies]` and upgrading all external dependencies to their current stable releases via MCP lookup.
+Every task in this phase implements one module, one endpoint, or one infrastructure change plus its verification. No task touches more than its named file(s). `cargo test` and `cargo clippy` are per-task gates; the phase as a whole is only complete when the Runnable Proof below passes. 
 
-Every task in this phase implements one module, one endpoint, or one infrastructure change plus its verification. No task touches more than its named file(s). `cargo test` and `cargo clippy` are per-task gates; the phase as a whole is only complete when the Runnable Proof below passes. Group D addresses production bugs discovered during manual testing: a first-run database creation failure in `anvilml-registry` (D1), silent hardware detector fallbacks in `anvilml-hardware` that mask the Vulkan extension misclassification responsible for DXGI being used instead of Vulkan on Windows AMD hardware (D2), and silent error discards in `anvilml-registry`'s scanner and the model HTTP handlers that make scan failures and database errors invisible at the server log level (D3).
+Group B locks in real-hardware lint coverage in CI, mirroring the real-hardware compile check added in P6-B2.
+
+Group C eliminates the version-authority gap by introducing `[workspace.dependencies]` and upgrading all external dependencies to their current stable releases via MCP lookup.
+
+Group D addresses production bugs discovered during manual testing: a first-run database creation failure in `anvilml-registry` (D1), silent hardware detector fallbacks in `anvilml-hardware` that mask the Vulkan extension misclassification responsible for DXGI being used instead of Vulkan on Windows AMD hardware (D2), and silent error discards in `anvilml-registry`'s scanner and the model HTTP handlers that make scan failures and database errors invisible at the server log level (D3).
+
+Group E completes the major-version upgrade work deferred by P7-C1: E1 bumps thiserror (derive macro unused; zero code changes) and sha2 (local usage only); E2 migrates toml 0.8→1.x across the three call sites that break; E3 performs the coordinated axum 0.7→0.8 and tower 0.4→0.5 migration across all handler signatures in anvilml-server.
 
 ## Tasks
 
@@ -31,6 +37,9 @@ Every task in this phase implements one module, one endpoint, or one infrastruct
 | P7-D1 | `crates/anvilml-registry/src/db.rs`, `crates/anvilml-server/tests/api_models.rs` | anvilml-registry: fix db::open to create missing database file |
 | P7-D2 | `crates/anvilml-hardware/src/vulkan.rs`, `dxgi.rs`, `sysfs.rs`, `nvml.rs`, `lib.rs` | anvilml-hardware: explicit detector warnings + Vulkan extension fix |
 | P7-D3 | `crates/anvilml-registry/src/scanner.rs`, `crates/anvilml-server/src/handlers/models.rs` | anvilml-registry + anvilml-server: silent error discard fixes |
+| P7-E1 | `Cargo.toml` ([workspace.dependencies]) | anvilml: upgrade thiserror to 2.x and sha2 to 0.11.x |
+| P7-E2 | `crates/anvilml-core/src/config_load.rs`, `config.rs`, `backend/tests/config_reference.rs` | anvilml-core: migrate toml dependency from 0.8.x to 1.x |
+| P7-E3 | `crates/anvilml-server/src/handlers/*`, `ws/*`, `lib.rs`, `Cargo.toml` | anvilml-server: migrate axum from 0.7.x to 0.8.x (+ tower 0.4→0.5) |
 
 ## Task details
 
@@ -225,6 +234,71 @@ Two crates outside `anvilml-hardware` contain silent discards that make failures
 
 ---
 
+### Group E — Major Version Upgrades (Deferred from P7-C1)
+
+#### P7-E1: anvilml: upgrade thiserror to 2.x and sha2 to 0.11.x
+
+- **Prereqs:** P7-C1
+- **Tags:** —
+
+Two of the four crates that P7-C1 pinned at their last compatible major have zero or near-zero migration cost and are bundled here. `thiserror` is declared as a workspace dependency but the derive macro is never invoked — `AnvilError` implements `Display`, `Error`, and `From` manually. The bump is a one-line version change. `sha2` usage is entirely local to `scanner.rs` with no `Digest` trait bounds in any public API; the only verification needed is that `hex 0.4.3`'s `hex::encode` still accepts `sha2 0.11`'s output type.
+
+**Files to create or modify:**
+- `Cargo.toml` — bump `thiserror` from `"1.0.69"` to `"2"` and `sha2` from `"0.10.8"` to `"0.11"` in `[workspace.dependencies]`
+
+**Key implementation notes:**
+- Confirm via `mcp-rust-docs` that the exact latest 2.x and 0.11.x patch versions are still what was resolved; P7-C1 may have already written the pinned versions.
+- If `hex 0.4.3` does not compile against `sha2 0.11` output (a `GenericArray` type mismatch), bump `hex` to its current stable in the same commit rather than creating a separate task — it is a cosmetic fix within the same change scope.
+
+**Acceptance criterion:** `cargo build --workspace --features mock-hardware` exits 0 AND `cargo test --workspace --features mock-hardware` exits 0.
+
+---
+
+#### P7-E2: anvilml-core: migrate toml dependency from 0.8.x to 1.x
+
+- **Prereqs:** P7-E1
+- **Tags:** reasoning
+
+`toml 1.0` introduced three breaking changes affecting this codebase. First, `toml::de::Error` moved — `ConfigError::Toml(toml::de::Error)` and its `From` impl in `config_load.rs` must be updated to the new path. Second, `toml::to_string_pretty` was removed from the crate root and moved to `toml::ser::to_string_pretty`; two files call it. Third, the `toml::Value` API must be verified for compatibility with the usage in `config_reference.rs`. Consult `mcp-rust-docs` for the `toml` 1.x migration notes before modifying any file.
+
+**Files to create or modify:**
+- `Cargo.toml` — bump `toml` from `"0.8.23"` to `"1"` in `[workspace.dependencies]`
+- `crates/anvilml-core/src/config_load.rs` — update `ConfigError::Toml` variant type and `From<toml::de::Error>` impl to the 1.x error path
+- `crates/anvilml-core/src/config.rs` — update `toml::to_string_pretty` call to `toml::ser::to_string_pretty`
+- `backend/tests/config_reference.rs` — update `toml::to_string_pretty` call; verify `toml::Value` and `toml::from_str` usage compiles unchanged
+
+**Key implementation notes:**
+- In `toml 1.x`, `toml::de::Error` is now `toml::de::Error` but accessed via `toml::Error` at the crate root for deserialization errors; check the exact type returned by `toml::from_str::<T>()` on failure against the 1.x docs.
+- The drift guard test in `config_reference.rs` serializes `ServerConfig::default()` to TOML and parses it back — this must still pass after the migration.
+
+**Acceptance criterion:** `cargo test --workspace --features mock-hardware` exits 0 AND `cargo clippy --workspace -- -D warnings` exits 0.
+
+---
+
+#### P7-E3: anvilml-server: migrate axum from 0.7.x to 0.8.x (+ tower 0.4→0.5)
+
+- **Prereqs:** P7-E2
+- **Tags:** reasoning
+
+axum 0.8 and tower 0.5 must be upgraded together — axum 0.8 requires tower 0.5 and the two are incompatible if mismatched. The primary breaking change in axum 0.8 is extractor ordering: `State<T>` must be the first extractor in every handler signature. Every handler in `anvilml-server` must be audited. Additionally `Router::with_state` was changed and any `MethodRouter` usage must be verified. Consult `mcp-rust-docs` for the axum 0.8 migration guide and tower 0.5 changelog before modifying any file.
+
+**Files to create or modify:**
+- `Cargo.toml` — bump `axum` to `"0.8"` and `tower` to `"0.5"` in `[workspace.dependencies]`
+- `crates/anvilml-server/src/handlers/health.rs` — verify/fix extractor ordering
+- `crates/anvilml-server/src/handlers/system.rs` — verify/fix extractor ordering
+- `crates/anvilml-server/src/handlers/models.rs` — verify/fix extractor ordering
+- `crates/anvilml-server/src/ws/handler.rs` — verify/fix extractor ordering and WebSocketUpgrade API changes if any
+- `crates/anvilml-server/src/lib.rs` — verify `build_router`, `Router::with_state`, and any `ServiceExt` usage in tests against 0.8 API
+
+**Key implementation notes:**
+- The test suite in `lib.rs` uses `tower::ServiceExt` for `oneshot` — verify `tower 0.5` still exposes this (it does, but confirm the import path).
+- axum 0.8 removed `TypedHeader` — verify it is not used anywhere in the codebase before starting.
+- Do not upgrade `tokio-tungstenite` as part of this task; the planning data confirms it is pinned at 0.24.x for axum 0.7 compatibility and must be re-evaluated after the axum upgrade is confirmed working.
+
+**Acceptance criterion:** `cargo clippy --workspace -- -D warnings` exits 0 AND `cargo test --workspace --features mock-hardware` exits 0.
+
+---
+
 ## Runnable Proof
 
 Subscribe to the WebSocket and watch `system.stats` frames arrive.
@@ -249,3 +323,6 @@ Expected: roughly every 5 seconds a JSON text frame arrives with `"event":"syste
 - P7-D1 must run after P7-C1. The `SqliteConnectOptions` API surface depends on the sqlx version established by P7-C1; writing the fix against the pre-C1 version risks a second churn pass when C1 upgrades sqlx.
 - P7-D2 changes the observable startup log on Windows with a Vulkan-capable AMD GPU: after the fix, the server logs `enumeration_source=Vulkan` instead of `enumeration_source=Dxgi`. The DXGI fallback path remains correct and is still reached when Vulkan genuinely produces an empty device list — it is no longer silently reached when Vulkan fails a rejectable `vkCreateInstance` call.
 - P7-D3 changes the return type of `list_models` from `(StatusCode, Json<Vec<ModelMeta>>)` to `(StatusCode, Json<serde_json::Value>)`. The existing integration test in `api_models.rs` asserts the success-path response body as a JSON array — it must continue to pass because the success arm is unchanged and `serde_json::Value` can represent an array. No test changes are required, but The Forge must verify this explicitly after implementation.
+- P7-E1 through P7-E3 are sequenced E1→E2→E3 to keep each upgrade atomic and independently revertable. They prereq P7-C1 (not each other's predecessors in the original chain) with the exception that E2 prereqs E1 and E3 prereqs E2, forming a linear sub-chain. Do not reorder.
+- P7-E3 (axum 0.8) must not be attempted until P7-E2 is complete and the workspace builds clean. A partial upgrade of axum without tower 0.5 will fail to compile immediately.
+- After P7-E3, `tokio-tungstenite` remains pinned at 0.24.x. The axum 0.8 + tower 0.5 environment may support a newer `tokio-tungstenite`; this should be evaluated as a separate follow-on leaf task in a later phase, not folded into P7-E3.

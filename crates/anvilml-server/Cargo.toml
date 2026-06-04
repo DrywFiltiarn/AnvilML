@@ -10,21 +10,21 @@ anvilml-ipc = { path = "../anvilml-ipc" }
 anvilml-registry = { path = "../anvilml-registry" }
 anvilml-scheduler = { path = "../anvilml-scheduler" }
 anvilml-worker = { path = "../anvilml-worker" }
-axum = { version = "0.7", features = ["json", "ws"] }
- serde = { version = "1", features = ["derive"] }
- serde_json = "1"
- tracing = "0.1"
-chrono = "0.4"
-sqlx = { version = "0.9", features = ["sqlite", "runtime-tokio"] }
-sysinfo = "0.32"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
-tower = { version = "0.4", features = ["util"] }
-futures-util = "0.3"
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+sqlx = { workspace = true, features = ["sqlite", "runtime-tokio"] }
+sysinfo = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tower = { workspace = true }
+futures-util = { workspace = true }
 
 [dev-dependencies]
- chrono = "0.4"
- tempfile = "3"
- tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+chrono = { workspace = true }
+tempfile = { workspace = true }
+tokio-tungstenite = { workspace = true }
 
 [features]
 mock-hardware = ["anvilml-hardware/mock-hardware", "anvilml-worker/mock-hardware"]

@@ -5,15 +5,15 @@ edition = "2021"
 
 [dependencies]
 anvilml-core = { path = "../anvilml-core" }
-chrono = { version = "0.4", features = ["serde"] }
-hex = "0.4"
-serde_json = "1"
-sha2 = "0.10"
-sqlx = { version = "0.9", features = ["sqlite", "runtime-tokio", "macros", "migrate"] }
-walkdir = "2"
+chrono = { workspace = true }
+hex = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sqlx = { workspace = true }
+walkdir = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-uuid = { version = "1", features = ["v4"] }
-sqlx = { version = "0.9", features = ["sqlite", "runtime-tokio", "macros"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+uuid = { workspace = true, features = ["v4"] }
+sqlx = { workspace = true, features = ["sqlite", "runtime-tokio", "macros"] }

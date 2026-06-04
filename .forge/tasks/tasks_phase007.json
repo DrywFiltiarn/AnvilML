@@ -96,5 +96,42 @@
     ],
     "context": "Audit silent discards outside anvilml-hardware. In crates/anvilml-registry/src/scanner.rs scan_dirs: replace Err(_)=>continue on walkdir entry errors and metadata() errors with tracing::warn!(path, error); replace canonicalize().unwrap_or_else(|_|...) with a warn+fallback. In crates/anvilml-server/src/handlers/models.rs: in list_models Err(_e) arm add tracing::error!(error=%e) and return proper JSON error body {error,message} at 500; in get_model Err(_e) arm add tracing::error!(error=%e). cargo clippy --workspace -- -D warnings exits 0. cargo test --workspace --features mock-hardware exits 0.",
     "tags": []
-  }  
+  },
+  {
+    "id": "P7-E1",
+    "description": "anvilml: upgrade thiserror to 2.x and sha2 to 0.11.x",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": [
+      "P7-C1"
+    ],
+    "context": "thiserror: bump [workspace.dependencies] from 1.x to 2.x. AnvilError in error.rs implements Display/Error/From manually and does not use the derive macro, so no code changes needed — the dep is inert. sha2: bump from 0.10.x to 0.11.x. Usage is entirely local (Sha256::new/.update/.finalize/hex::encode in scanner.rs); no public Digest trait bounds exposed. Verify hex 0.4.3 still compiles with sha2 0.11 output (GenericArray is AsRef<[u8]>). cargo build --workspace --features mock-hardware exits 0. cargo test --workspace --features mock-hardware exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P7-E2",
+    "description": "anvilml-core: migrate toml dependency from 0.8.x to 1.x",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": [
+      "P7-E1"
+    ],
+    "context": "toml 1.0 broke three sites: (1) config_load.rs: ConfigError::Toml(toml::de::Error) — update error type path; update From<toml::de::Error> impl. (2) config.rs tests: toml::to_string_pretty moved to toml::ser::to_string_pretty; update call sites. (3) backend/tests/config_reference.rs: same to_string_pretty move plus toml::Value usage — verify Value API unchanged. Bump [workspace.dependencies] toml from 0.8.x to 1.x. cargo test --workspace --features mock-hardware exits 0. cargo clippy --workspace -- -D warnings exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P7-E3",
+    "description": "anvilml-server: migrate axum from 0.7.x to 0.8.x (+ tower 0.4→0.5)",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": [
+      "P7-E2"
+    ],
+    "context": "axum 0.8 breaks handler extractor ordering and Router API; tower must move to 0.5 simultaneously. Consult mcp-rust-docs for axum 0.8 and tower 0.5 migration guides before touching any file. Audit every handler in crates/anvilml-server/src/handlers/ and ws/: State<Arc<AppState>> must be first extractor. Update Router::with_state calls and any MethodRouter usage. Update [workspace.dependencies] axum to 0.8.x and tower to 0.5.x. cargo clippy --workspace -- -D warnings exits 0. cargo test --workspace --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  }
 ]

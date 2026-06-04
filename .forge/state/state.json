@@ -49,16 +49,17 @@
     "P7-A2",
     "P7-A3",
     "P7-A4",
-    "P7-A5"
+    "P7-A5",
+    "P7-B1"
   ],
-  "in_progress": "P7-B1",
+  "in_progress": "P7-C1",
   "plan_approved": true,
-  "current_plan": "1. Open `.github/workflows/ci.yml`.\n2. In the `rust-linux` job, locate the existing step:\n   ```yaml\n   - name: Real-hardware compile check\n     run: cargo check --bin anvilml\n   ```\n3. Insert immediately after it a new step block:\n   ```yaml\n\n       - name: Real-hardware lint\n         run: cargo clippy --bin anvilml -- -D warnings\n   ```\n4. In the `rust-windows` job, locate the existing step:\n   ```yaml\n   - name: Real-hardware compile check\n     run: cargo check --bin anvilml\n   ```\n5. Insert immediately after it a new step block (same as Linux):\n   ```yaml\n\n       - name: Real-hardware lint\n         run: cargo clippy --bin anvilml -- -D warnings\n   ```\n6. Verify the file still has valid YAML structure and that both jobs are unchanged except for the added steps.\n7. Acceptance check: `grep -c 'Real-hardware lint' .github/workflows/ci.yml` must print `2`.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-04T21:33:05+0200",
-  "plan_approval_message_id": "1512176282421690599",
+  "last_updated": "2026-06-04T22:03:51+0200",
+  "plan_approval_message_id": "1512183490526052523",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512176280915939479",
+  "plan_report_message_id": "1512183487174803567",
   "impl_report_message_id": null
 }
