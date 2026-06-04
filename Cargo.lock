@@ -97,9 +97,9 @@ dependencies = [
  "anvilml-core",
  "ash",
  "libloading 0.9.0",
- "log",
  "serial_test",
  "sysinfo",
+ "tracing",
  "winapi",
 ]
 

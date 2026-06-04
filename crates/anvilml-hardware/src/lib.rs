@@ -102,40 +102,84 @@ fn populate_host_info() -> HostInfo {
 /// Enumerate GPUs via Vulkan, then fall back to platform-specific detectors.
 #[cfg(not(feature = "mock-hardware"))]
 fn enumerate_gpus() -> Vec<GpuDevice> {
-    // Primary: Vulkan detector.
-    let devices = vulkan::VulkanDetector.detect().unwrap_or_default();
-
-    if devices.is_empty() {
-        #[cfg(windows)]
-        {
-            // Fallback: DXGI on Windows.
-            let dxgi_devices = dxgi::DxgiDetector::default().detect().unwrap_or_default();
-            if !dxgi_devices.is_empty() {
-                return dxgi_devices;
-            }
+  // Primary: Vulkan detector.
+    let vulkan_devices = match vulkan::VulkanDetector.detect() {
+        Ok(devs) if !devs.is_empty() => devs,
+        Ok(_) => {
+            tracing::warn!(detector = "Vulkan", "Vulkan detector returned empty device list");
+            Vec::new()
         }
+        Err(e) => {
+            tracing::warn!(detector = "Vulkan", error = %e, "Vulkan detection failed");
+            Vec::new()
+        }
+    };
 
-        #[cfg(unix)]
-        {
-            // Fallback: sysfs on Unix.
-            let mut devices = sysfs::SysfsDetector.detect().unwrap_or_default();
+    if !vulkan_devices.is_empty() {
+        return vulkan_devices;
+    }
 
-            // Additional: NVML on Unix (NVIDIA only, deduplicate by PCI ID).
-            let nvml_devices = nvml::NvmlDetector.detect().unwrap_or_default();
-            for nvml_dev in nvml_devices {
-                if !devices.iter().any(|d| {
-                    d.pci_vendor_id == nvml_dev.pci_vendor_id
-                        && d.pci_device_id == nvml_dev.pci_device_id
-                }) {
-                    devices.push(nvml_dev);
-                }
+    #[cfg(windows)]
+    {
+        // Fallback: DXGI on Windows.
+        let dxgi_devices = match dxgi::DxgiDetector::default().detect() {
+            Ok(devs) if !devs.is_empty() => devs,
+            Ok(_) => {
+                tracing::warn!(detector = "Dxgi", "DXGI detector returned empty device list");
+                Vec::new()
             }
-
-            return devices;
+            Err(e) => {
+                tracing::warn!(detector = "Dxgi", error = %e, "DXGI detection failed");
+                Vec::new()
+            }
+        };
+        if !dxgi_devices.is_empty() {
+            return dxgi_devices;
         }
     }
 
-    devices
+    #[cfg(unix)]
+    {
+        // Fallback: sysfs on Unix.
+        let mut devices = match sysfs::SysfsDetector.detect() {
+            Ok(devs) if !devs.is_empty() => devs,
+            Ok(_) => {
+                tracing::warn!(detector = "Sysfs", "sysfs detector returned empty device list");
+                Vec::new()
+            }
+            Err(e) => {
+                tracing::warn!(detector = "Sysfs", error = %e, "sysfs detection failed");
+                Vec::new()
+            }
+        };
+
+        // Additional: NVML on Unix (NVIDIA only, deduplicate by PCI ID).
+        let nvml_devices = match nvml::NvmlDetector.detect() {
+            Ok(devs) if !devs.is_empty() => devs,
+            Ok(_) => {
+                tracing::warn!(detector = "Nvml", "NVML detector returned empty device list");
+                Vec::new()
+            }
+            Err(e) => {
+                tracing::warn!(detector = "Nvml", error = %e, "NVML detection failed");
+                Vec::new()
+            }
+        };
+        for nvml_dev in nvml_devices {
+            if !devices.iter().any(|d| {
+                d.pci_vendor_id == nvml_dev.pci_vendor_id
+                    && d.pci_device_id == nvml_dev.pci_device_id
+            }) {
+                devices.push(nvml_dev);
+            }
+        }
+
+        return devices;
+    }
+
+    // Fallback for platforms without windows or unix (e.g. macOS).
+    #[allow(unreachable_code)]
+    Vec::new()
 }
 
 /// The central hardware detection entry point.

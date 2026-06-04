@@ -132,10 +132,11 @@ pub fn resolve_caps(dev: &mut GpuDevice, vendor_id: u16, device_id: u16) {
         dev.enumeration_source = EnumerationSource::DeviceTable;
         dev.capabilities_source = CapabilitySource::DeviceTable;
     } else {
-        log::warn!(
-            "unknown PCI ID: vendor=0x{:04X} device=0x{:04X} — add to PCI_CAPABILITY_TABLE",
-            vendor_id,
-            device_id
+        tracing::warn!(
+            detector = "DeviceDB",
+            vendor_id = %format_args!("0x{:04X}", vendor_id),
+            device_id = %format_args!("0x{:04X}", device_id),
+            "unknown PCI ID — add to PCI_CAPABILITY_TABLE"
         );
         // Set conservative fallback values.
         dev.caps = anvilml_core::InferenceCaps::default();

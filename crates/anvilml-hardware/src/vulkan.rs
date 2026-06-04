@@ -27,6 +27,8 @@
 //! - `vram_free_mib`: `budget - usage` for that heap index if EXT_memory_budget is
 //!   available; otherwise falls back to `heapSize` (conservative estimate).
 
+use std::collections::HashSet;
+
 use anvilml_core::{AnvilError, CapabilitySource, DeviceType, EnumerationSource, GpuDevice};
 
 use crate::DeviceDetector;
@@ -151,16 +153,11 @@ impl DeviceDetector for VulkanDetector {
         // by returning Ok(vec![]) — no panic, no Err.
         let entry = match unsafe { ash::Entry::load() } {
             Ok(e) => e,
-            Err(_) => return Ok(Vec::new()),
+            Err(e) => {
+                tracing::warn!(detector = "Vulkan", error = %e, "Vulkan loader not available");
+                return Ok(Vec::new());
+            }
         };
-
-        // Collect extension names we want to query.
-        let extensions: Vec<std::ffi::CString> = vec![
-            std::ffi::CString::new(KHR_DRIVER_PROPERTIES).unwrap(),
-            std::ffi::CString::new(EXT_MEMORY_BUDGET).unwrap(),
-        ];
-
-        let extension_ptrs: Vec<*const i8> = extensions.iter().map(|c| c.as_ptr()).collect();
 
         // Step 2: Create a headless VkInstance (no surface extensions).
         let app_info = ash::vk::ApplicationInfo {
@@ -181,26 +178,31 @@ impl DeviceDetector for VulkanDetector {
             p_application_info: &app_info,
             enabled_layer_count: 0,
             pp_enabled_layer_names: std::ptr::null(),
-            enabled_extension_count: extension_ptrs.len() as u32,
-            pp_enabled_extension_names: extension_ptrs.as_ptr(),
+            enabled_extension_count: 0,
+            pp_enabled_extension_names: std::ptr::null(),
             _marker: std::marker::PhantomData,
         };
 
         let instance = match unsafe { entry.create_instance(&create_info, None) } {
             Ok(inst) => inst,
-            Err(_) => return Ok(Vec::new()),
+            Err(e) => {
+                tracing::warn!(detector = "Vulkan", error = %e, "vkCreateInstance failed — device extensions will not be available");
+                return Ok(Vec::new());
+            }
         };
 
         // Step 3: Enumerate physical devices.
         let phys_devs = match unsafe { instance.enumerate_physical_devices() } {
             Ok(devs) => devs,
-            Err(_) => {
+            Err(e) => {
+                tracing::warn!(detector = "Vulkan", error = %e, "vkEnumeratePhysicalDevices failed");
                 unsafe { instance.destroy_instance(None) };
                 return Ok(Vec::new());
             }
         };
 
         if phys_devs.is_empty() {
+            tracing::warn!(detector = "Vulkan", "No Vulkan physical devices found");
             unsafe { instance.destroy_instance(None) };
             return Ok(Vec::new());
         }
@@ -221,8 +223,18 @@ impl DeviceDetector for VulkanDetector {
             let mut budget_values: Vec<u64> = Vec::new();
             let mut usage_values: Vec<u64> = Vec::new();
 
+            // Query supported device extensions for this physical device.
+            let device_extensions: HashSet<String> = unsafe {
+                instance
+                    .enumerate_device_extension_properties(*pd)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|ext| cstr_to_string(&ext.extension_name))
+                    .collect()
+            };
+
             // Try to query KHR_driver_properties for a better name.
-            {
+            if device_extensions.contains(KHR_DRIVER_PROPERTIES) {
                 let mut driver_props = ash::vk::PhysicalDeviceDriverProperties {
                     s_type: ash::vk::StructureType::PHYSICAL_DEVICE_DRIVER_PROPERTIES,
                     p_next: std::ptr::null_mut(),
@@ -263,7 +275,7 @@ impl DeviceDetector for VulkanDetector {
             }
 
             // Try to query EXT_memory_budget for VRAM data.
-            {
+            if device_extensions.contains(EXT_MEMORY_BUDGET) {
                 let mut mem_budget_props = ash::vk::PhysicalDeviceMemoryBudgetPropertiesEXT {
                     s_type: ash::vk::StructureType::PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT,
                     p_next: std::ptr::null_mut(),

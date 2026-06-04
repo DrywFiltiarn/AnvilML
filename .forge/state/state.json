@@ -51,16 +51,17 @@
     "P7-A4",
     "P7-A5",
     "P7-B1",
-    "P7-C1"
+    "P7-C1",
+    "P7-D1"
   ],
-  "in_progress": "P7-D1",
+  "in_progress": "P7-D2",
   "plan_approved": true,
-  "current_plan": "1. **Read the current `db.rs`** \u2014 confirm the exact `SqlitePoolOptions::connect` call at line 35 and the existing import list on line 11 (`sqlx::sqlite::{SqlitePool, SqlitePoolOptions}`).\n\n2. **Update imports in `db.rs`** \u2014 add `SqliteConnectOptions` to the `use sqlx::sqlite` import so it reads:\n   ```rust\n   use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};\n   ```\n\n3. **Replace the connect call in `db.rs`** \u2014 change the body of `open()` from:\n   ```rust\n   let pool = SqlitePoolOptions::new()\n       .max_connections(5)\n       .connect(path.to_str().ok_or_else(|| {\n           AnvilError::DbError(\"database path contains invalid UTF-8\".into())\n       })?)\n       .await\n       .map_err(sqlx_error)?;\n   ```\n   to:\n   ```rust\n   let opts = SqliteConnectOptions::new()\n       .filename(path)\n       .create_if_missing(true);\n   let pool = SqlitePoolOptions::new()\n       .max_connections(5)\n       .connect_with(opts)\n       .await\n       .map_err(sqlx_error)?;\n   ```\n   The `filename()` builder accepts `&Path` directly (no `.to_str()` needed), and handles Windows backslash paths correctly.\n\n4. **Add test `test_open_creates_file_if_missing`** in the existing `#[cfg(test)] mod tests` block of `db.rs`. The test:\n   - Creates a path under a temp directory that does **not** yet exist as a file\n   - Calls `open(path)` and asserts success\n   - Asserts `path.exists()` is true after open\n\n5. **Remove the workaround in `api_models.rs`** \u2014 delete line 32 (`fs::File::create(&db_path).expect(\"pre-create db file\");`) and its associated comment on line 31. If `use std::fs;` (line 1) becomes unused after this removal, remove it too.\n\n6. **Verify compilation** \u2014 run `cargo check -p anvilml-registry` to confirm the changes compile cleanly.\n\n7. **Run tests** \u2014 execute `cargo test --workspace --features mock-hardware` and confirm exit code 0.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-04T22:40:03+0200",
-  "plan_approval_message_id": "1512192281334255716",
+  "last_updated": "2026-06-04T23:01:07+0200",
+  "plan_approval_message_id": "1512199139591454721",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512192279417192591",
+  "plan_report_message_id": "1512199137498628237",
   "impl_report_message_id": null
 }

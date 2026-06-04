@@ -11,7 +11,7 @@ anvilml-core = { path = "../anvilml-core" }
 # not available in this environment but would be in CI (ubuntu-latest).
 ash = { workspace = true }
 sysinfo = { workspace = true }
-log = { workspace = true }
+tracing = { workspace = true }
 
 # Windows-only: DXGI GPU enumeration via COM/IDXGIFactory1.
 [target.'cfg(windows)'.dependencies]

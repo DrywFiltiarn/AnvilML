@@ -117,7 +117,7 @@ impl DeviceDetector for DxgiDetector {
     fn detect(&self) -> Result<Vec<GpuDevice>, AnvilError> {
         // Ensure COM is initialized on this thread.
         if let Err(hr) = self.com_guard.ensure() {
-            log::warn!("DXGI: CoInitializeEx failed (hr=0x{hr:x}), skipping enumeration");
+            tracing::warn!(detector = "Dxgi", hr = %format_args!("0x{hr:x}"), "CoInitializeEx failed");
             return Ok(Vec::new());
         }
 
@@ -131,7 +131,7 @@ impl DeviceDetector for DxgiDetector {
         };
 
         if hr != 0 {
-            log::warn!("DXGI: CreateDXGIFactory1 failed (hr=0x{hr:x}), skipping enumeration");
+            tracing::warn!(detector = "Dxgi", hr = %format_args!("0x{hr:x}"), "CreateDXGIFactory1 failed");
             return Ok(Vec::new());
         }
 
@@ -150,7 +150,7 @@ impl DeviceDetector for DxgiDetector {
             }
 
             if hr != 0 {
-                log::warn!("DXGI: EnumAdapters({idx}) failed (hr=0x{hr:x}), skipping");
+                tracing::warn!(detector = "Dxgi", hr = %format_args!("0x{hr:x}"), "EnumAdapters({idx}) failed");
                 idx += 1;
                 continue;
             }
@@ -163,10 +163,7 @@ impl DeviceDetector for DxgiDetector {
             let hr = unsafe { adapter_ref.GetDesc(&mut desc) };
 
             if hr != 0 {
-                log::warn!(
-                    "DXGI: GetDesc for adapter {} failed (hr=0x{hr:x}), skipping",
-                    idx
-                );
+                tracing::warn!(detector = "Dxgi", hr = %format_args!("0x{hr:x}"), "GetDesc for adapter {idx} failed");
                 idx += 1;
                 continue;
             }

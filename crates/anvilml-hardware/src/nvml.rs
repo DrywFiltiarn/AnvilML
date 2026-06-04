@@ -187,7 +187,10 @@ impl DeviceDetector for NvmlDetector {
         let nvml = match NvmlLibrary::load() {
             Some(lib) => lib,
             None => {
-                log::warn!("nvml: libnvidia-ml.so not found or could not be loaded");
+                tracing::warn!(
+                    detector = "Nvml",
+                    "libnvidia-ml.so not found or could not be loaded"
+                );
                 return Ok(Vec::new());
             }
         };
@@ -195,7 +198,11 @@ impl DeviceDetector for NvmlDetector {
         // Initialize NVML.
         let ret = unsafe { (nvml.nvml_init_v2)() };
         if ret != NvmlReturn::Success as i32 {
-            log::warn!("nvml: nvmlInit_v2 failed (code={ret}), returning empty device list");
+            tracing::warn!(
+                detector = "Nvml",
+                code = ret,
+                "nvmlInit_v2 failed, returning empty device list"
+            );
             return Ok(Vec::new());
         }
 
@@ -203,7 +210,11 @@ impl DeviceDetector for NvmlDetector {
         let mut device_count: u32 = 0;
         let ret = unsafe { (nvml.nvml_device_get_count_v2)(&mut device_count) };
         if ret != NvmlReturn::Success as i32 {
-            log::warn!("nvml: nvmlDeviceGetCount_v2 failed (code={ret})");
+            tracing::warn!(
+                detector = "Nvml",
+                code = ret,
+                "nvmlDeviceGetCount_v2 failed"
+            );
             return Ok(Vec::new());
         }
 
@@ -214,7 +225,11 @@ impl DeviceDetector for NvmlDetector {
             let mut device: NvmlDevice = std::ptr::null_mut();
             let ret = unsafe { (nvml.nvml_device_by_index)(idx, &mut device) };
             if ret != NvmlReturn::Success as i32 {
-                log::warn!("nvml: nvmlDeviceByIndex({idx}) failed (code={ret}), skipping");
+                tracing::warn!(
+                    detector = "Nvml",
+                    code = ret,
+                    "nvmlDeviceByIndex({idx}) failed, skipping"
+                );
                 continue;
             }
 

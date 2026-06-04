@@ -169,9 +169,7 @@ impl DeviceDetector for SysfsDetector {
         let base_dir = match std::fs::read_dir(SYSFS_PCI_DEVICES) {
             Ok(d) => d,
             Err(e) => {
-                log::warn!(
-                    "sysfs: cannot read {SYSFS_PCI_DEVICES}: {e}, returning empty device list"
-                );
+                tracing::warn!(detector = "Sysfs", error = %e, "cannot read {SYSFS_PCI_DEVICES}, returning empty device list");
                 return Ok(Vec::new());
             }
         };
@@ -191,7 +189,7 @@ impl DeviceDetector for SysfsDetector {
             let vendor_content = match std::fs::read_to_string(path.join("vendor")) {
                 Ok(c) => c,
                 Err(e) => {
-                    log::warn!("sysfs: cannot read vendor for {}: {e}", path.display());
+                    tracing::warn!(detector = "Sysfs", error = %e, "cannot read vendor for {}", path.display());
                     continue;
                 }
             };
@@ -200,7 +198,7 @@ impl DeviceDetector for SysfsDetector {
             let device_content = match std::fs::read_to_string(path.join("device")) {
                 Ok(c) => c,
                 Err(e) => {
-                    log::warn!("sysfs: cannot read device for {}: {e}", path.display());
+                    tracing::warn!(detector = "Sysfs", error = %e, "cannot read device for {}", path.display());
                     continue;
                 }
             };
@@ -209,8 +207,9 @@ impl DeviceDetector for SysfsDetector {
             let vendor_id = match parse_pci_id(&vendor_content) {
                 Some(id) => id,
                 None => {
-                    log::warn!(
-                        "sysfs: failed to parse vendor ID from {} for {}",
+                    tracing::warn!(
+                        detector = "Sysfs",
+                        "failed to parse vendor ID from {} for {}",
                         path.join("vendor").display(),
                         path.display()
                     );
@@ -221,8 +220,9 @@ impl DeviceDetector for SysfsDetector {
             let device_id = match parse_pci_id(&device_content) {
                 Some(id) => id,
                 None => {
-                    log::warn!(
-                        "sysfs: failed to parse device ID from {} for {}",
+                    tracing::warn!(
+                        detector = "Sysfs",
+                        "failed to parse device ID from {} for {}",
                         path.join("device").display(),
                         path.display()
                     );
