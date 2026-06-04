@@ -207,12 +207,6 @@ These control `forge.py` and are never read by AnvilML itself.
 
 ---
 
-## 6. The Forge — Build Gates (AnvilML-specific)
-
-This section is read by the OpenCode forge-act agent per `docs/FORGE_AGENT_RULES.md §5.7`
-and `§5.8`. It defines the commands that must pass before the agent may stage changes or
-write the implementation report.
-
 ### Platform Cross-Check (`FORGE_AGENT_RULES.md §5.7`)
 
 AnvilML targets Linux and Windows as co-equal MVP platforms. Before writing the
@@ -229,14 +223,14 @@ cargo check --bin anvilml
 cargo check --bin anvilml --target x86_64-pc-windows-gnu
 ```
 
-The `x86_64-pc-windows-gnu` target and `gcc-mingw-w64` linker are installed in the local
-build environment. Checks 1 and 3 run on Linux via cross-compilation. Check 2 is native
-Linux. **All three must exit 0.** A passing mock-hardware build alone is NOT sufficient —
-the `mock-hardware` feature elides all real-hardware `#[cfg(windows)]` and `#[cfg(unix)]`
-code paths entirely.
+The `x86_64-pc-windows-gnu` target and `gcc-mingw-w64` linker are installed in the
+local build environment. Checks 1 and 3 run on Linux via cross-compilation.
+Check 2 is native Linux. **All three must exit 0.** A passing mock-hardware build
+alone is NOT sufficient — the `mock-hardware` feature elides all real-hardware
+`#[cfg(windows)]` and `#[cfg(unix)]` code paths entirely.
 
-Record the verbatim output of all three commands in `## Platform Cross-Check` in the
-implementation report.
+Record the verbatim output of all three commands in `## Platform Cross-Check` in
+the implementation report.
 
 ### Project Gates (`FORGE_AGENT_RULES.md §5.8`)
 

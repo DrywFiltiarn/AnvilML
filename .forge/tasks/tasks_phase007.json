@@ -52,5 +52,14 @@
     "prereqs": ["P7-A5"],
     "context": "Edit .github/workflows/ci.yml only. In rust-linux job add step after Real-hardware compile check: name Real-hardware lint, run cargo clippy --bin anvilml -- -D warnings. In rust-windows job add step after Real-hardware compile check: name Real-hardware lint, run cargo clippy --bin anvilml -- -D warnings. No features flag on either. All existing jobs and steps preserved unchanged. Acceptance: grep -c \"Real-hardware lint\" .github/workflows/ci.yml returns 2.",
     "tags": []
+  },
+  {
+    "id": "P7-C1",
+    "description": "anvilml: introduce [workspace.dependencies] and upgrade all external deps to current stable",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-B1"],
+    "context": "Introduce [workspace.dependencies] in root Cargo.toml. Use mcp-rust-docs to resolve the current stable version of every external dependency currently declared across all per-crate Cargo.toml files. Populate [workspace.dependencies] with those current versions and their required features. Update every per-crate Cargo.toml to reference shared deps via { workspace = true } and remove the now-redundant inline version strings. Internal path deps (anvilml-core etc) are unchanged. cargo build --workspace --features mock-hardware exits 0. cargo test --workspace --features mock-hardware exits 0.",
+    "tags": ["reasoning"]
   }
 ]
