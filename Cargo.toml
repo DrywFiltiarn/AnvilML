@@ -31,7 +31,7 @@ sqlx = { version = "0.9", features = ["sqlite", "runtime-tokio", "macros", "migr
 sysinfo = "0.39.3"
 thiserror = "2"
 tokio = { version = "1.52.3", features = ["full"] }
-toml = "0.8"
+toml = "1"
 tower = { version = "0.4", features = ["util"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }

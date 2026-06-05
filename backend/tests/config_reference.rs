@@ -58,8 +58,8 @@ fn test_toml_key_set_matches_default() {
 
     // Serialize ServerConfig::default()
     let default_config = anvilml_core::config::ServerConfig::default();
-    let default_toml_str =
-        toml::to_string_pretty(&default_config).expect("serialize ServerConfig::default() to TOML");
+    let default_toml_str = toml::ser::to_string_pretty(&default_config)
+        .expect("serialize ServerConfig::default() to TOML");
     let default_value: toml::Value = toml::from_str(&default_toml_str).expect("parse default TOML");
 
     // Collect key-sets
@@ -87,6 +87,6 @@ fn test_toml_key_set_matches_default() {
         extra_in_file.is_empty(),
         "Keys in anvilml.toml but not in ServerConfig::default():\n  {:?}\n\nParsed file keys:\n{}",
         extra_in_file,
-        toml::to_string_pretty(&file_value).expect("re-serialize file value")
+        toml::ser::to_string_pretty(&file_value).expect("re-serialize file value")
     );
 }

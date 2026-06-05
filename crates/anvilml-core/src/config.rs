@@ -293,7 +293,8 @@ mod tests {
         };
 
         // Serialize to TOML
-        let toml_str = toml::to_string_pretty(&config).expect("serialize ServerConfig to TOML");
+        let toml_str =
+            toml::ser::to_string_pretty(&config).expect("serialize ServerConfig to TOML");
 
         // Deserialize back
         let parsed: ServerConfig =

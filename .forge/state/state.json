@@ -55,16 +55,17 @@
     "P7-D1",
     "P7-D2",
     "P7-D3",
-    "P7-D4"
+    "P7-D4",
+    "P7-E1"
   ],
-  "in_progress": "P7-E1",
+  "in_progress": "P7-E2",
   "plan_approved": true,
-  "current_plan": "1. **Verify MCP lookups** (already performed in PLAN session):\n   - `thiserror`: latest stable is **2.0.18** (2.x series). No public API surface \u2014 deliberate non-breaking change per the crate's own documentation: \"switching from handwritten impls to thiserror or vice versa is not a breaking change.\"\n   - `sha2`: latest in 0.11.x series is **0.11.0**. Depends on `digest ^0.11`. The `Digest` trait's `finalize()` returns `GenericArray<u8, N>` which implements `AsRef<[u8]>`.\n   - `hex 0.4.3`: accepts `impl AsRef<[u8]>` in `hex::encode()`, so sha2 0.11 output is compatible. No bump needed.\n\n2. **Edit root `Cargo.toml`** `[workspace.dependencies]`:\n   - Change line: `thiserror = \"1.0.69\"` \u2192 `thiserror = \"2\"`\n   - Change line: `sha2 = \"0.10\"` \u2192 `sha2 = \"0.11\"`\n\n3. **Build verification**: Run `cargo build --workspace --features mock-hardware` to confirm zero compilation errors.\n\n4. **Test verification**: Run `cargo test --workspace --features mock-hardware` to confirm all existing tests pass (including `test_sha256_hex` in `scanner.rs`).",
+  "current_plan": "1. **Bump version in root Cargo.toml.** Change `toml = \"0.8\"` to `toml = \"1\"` in `[workspace.dependencies]`. The per-crate dependency (`crates/anvilml-core/Cargo.toml`) already uses `{ workspace = true }`, so no per-crate Cargo.toml edits are needed.\n\n2. **Update config_load.rs error type.** In `ConfigError::Toml` variant, change the inner type from `toml::de::Error` to `toml::Error`. Update the `From<toml::de::Error>` impl to `From<toml::Error>`. The `Display` and `source()` implementations remain unchanged since both error types implement `std::error::Error + Display`.\n\n3. **Update config.rs test serialization call.** In the `test_toml_roundtrip` test, change `toml::to_string_pretty(&config)` to `toml::ser::to_string_pretty(&config)`. The `toml::from_str` call is unchanged (it is available at the crate root in 1.x).\n\n4. **Update config_reference.rs serialization calls.** In the drift guard test, change both occurrences of `toml::to_string_pretty` to `toml::ser::to_string_pretty`. The `toml::Value` type and `toml::from_str` usage remain at the crate root path and compile unchanged.\n\n5. **Verify build + tests.** Run `cargo test --workspace --features mock-hardware` and `cargo clippy --workspace -- -D warnings`. Fix any compilation errors that arise from unforeseen API differences.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-05T00:16:54+0200",
-  "plan_approval_message_id": "1512218520375529593",
+  "last_updated": "2026-06-05T11:15:59+0200",
+  "plan_approval_message_id": "1512228211579424910",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512218518639349928",
+  "plan_report_message_id": "1512228209914155149",
   "impl_report_message_id": null
 }
