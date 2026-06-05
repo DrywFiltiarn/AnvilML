@@ -1,7 +1,7 @@
 use anvilml_core::error::AnvilError;
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::WorkerMessage;
+use crate::{WorkerEvent, WorkerMessage};
 
 /// Write a single length-prefixed msgpack frame to the given async sink.
 ///
@@ -20,6 +20,46 @@ where
     Ok(())
 }
 
+/// Read a single length-prefixed msgpack frame from the given async source.
+///
+/// The frame layout is:
+///   - 4 bytes: payload length as big-endian `u32`
+///   - N bytes: msgpack-encoded `WorkerEvent` (via `rmp_serde::from_slice`)
+///
+/// The `max_mib` parameter enforces a size cap (in MiB) on the payload
+/// *before* allocating the buffer, preventing a malicious header from
+/// triggering gigabyte-scale allocation.
+pub async fn read_frame<R>(r: &mut R, max_mib: u32) -> Result<WorkerEvent, AnvilError>
+where
+    R: AsyncRead + Unpin,
+{
+    // 1. Read exactly 4 bytes for the length header.
+    let mut header = [0u8; 4];
+    r.read_exact(&mut header).await?;
+
+    // 2. Decode big-endian u32 payload length.
+    let len = u32::from_be_bytes(header);
+
+    // 3. Enforce size cap BEFORE allocating the payload buffer.
+    let max_bytes = (max_mib as u64) * 1024 * 1024;
+    if len as u64 > max_bytes {
+        return Err(AnvilError::PayloadTooLarge(format!(
+            "frame length {} exceeds limit {} MiB",
+            len, max_mib
+        )));
+    }
+
+    // 4. Allocate and read exactly N payload bytes.
+    let mut payload = vec![0u8; len as usize];
+    r.read_exact(&mut payload).await?;
+
+    // 5. Deserialize msgpack → WorkerEvent.
+    let event = rmp_serde::from_slice::<WorkerEvent>(&payload)
+        .map_err(|e| AnvilError::Json(e.to_string()))?;
+
+    Ok(event)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -34,7 +74,9 @@ mod tests {
 
         // Write frame to Vec<u8>
         let mut buf = Vec::new();
-        super::write_frame(&mut buf, &msg).await.expect("write_frame");
+        super::write_frame(&mut buf, &msg)
+            .await
+            .expect("write_frame");
 
         // Total buffer should be 4-byte header + payload
         assert_eq!(buf.len(), 4 + payload_len);
@@ -61,7 +103,9 @@ mod tests {
     async fn write_frame_shutdown() {
         let msg = WorkerMessage::Shutdown;
         let mut buf = Vec::new();
-        super::write_frame(&mut buf, &msg).await.expect("write_frame");
+        super::write_frame(&mut buf, &msg)
+            .await
+            .expect("write_frame");
 
         let payload = rmp_serde::to_vec_named(&msg).expect("serialize");
         assert_eq!(buf.len(), 4 + payload.len());
@@ -94,7 +138,9 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        super::write_frame(&mut buf, &msg).await.expect("write_frame");
+        super::write_frame(&mut buf, &msg)
+            .await
+            .expect("write_frame");
 
         let payload = rmp_serde::to_vec_named(&msg).expect("serialize");
         assert_eq!(buf.len(), 4 + payload.len());
@@ -103,5 +149,45 @@ mod tests {
         header.copy_from_slice(&buf[0..4]);
         let decoded_len = u32::from_be_bytes(header);
         assert_eq!(decoded_len, payload.len() as u32);
+    }
+
+    #[tokio::test]
+    async fn read_frame_roundtrip() {
+        // Create a duplex (bidirectional) in-memory pipe.
+        let (mut tx, mut rx) = tokio::io::duplex(4096);
+
+        // Write a Pong event frame through the write side.
+        let event = WorkerEvent::Pong { seq: 7 };
+        let payload = rmp_serde::to_vec_named(&event).expect("serialize");
+        let len = payload.len() as u32;
+        let header = len.to_be_bytes();
+        tx.write_all(&header).await.expect("write header");
+        tx.write_all(&payload).await.expect("write payload");
+
+        // Read it back through the read side.
+        let result = super::read_frame(&mut rx, 64).await.expect("read_frame");
+
+        // Verify the round-tripped event.
+        assert_eq!(result, WorkerEvent::Pong { seq: 7 });
+    }
+
+    #[tokio::test]
+    async fn read_frame_oversize_rejected() {
+        // Construct a 4-byte header claiming ~4 GiB with zero payload bytes.
+        let oversized_header: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
+        let buf: Vec<u8> = oversized_header.into();
+
+        let mut cursor = std::io::Cursor::new(buf);
+
+        let result = super::read_frame(&mut cursor, 64).await;
+
+        // Should reject before allocating or reading payload.
+        match result {
+            Err(AnvilError::PayloadTooLarge(msg)) => {
+                assert!(msg.contains("4294967295"));
+                assert!(msg.contains("64"));
+            }
+            other => panic!("Expected PayloadTooLarge, got {:?}", other),
+        }
     }
 }
