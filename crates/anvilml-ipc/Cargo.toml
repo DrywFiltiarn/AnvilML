@@ -8,7 +8,11 @@ anvilml-core = { path = "../anvilml-core" }
 rmp-serde = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["io-util"] }
+tokio = { workspace = true, features = ["io-util", "macros", "rt"] }
 uuid = { workspace = true, features = ["serde"] }
+
+[[bin]]
+name = "ipc-probe"
+path = "src/bin/ipc-probe.rs"
 
 [dev-dependencies]

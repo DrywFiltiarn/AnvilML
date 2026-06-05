@@ -70,16 +70,17 @@
     "P7-G3",
     "P7-G4",
     "P8-A1",
-    "P8-A2"
+    "P8-A2",
+    "P8-A3"
   ],
-  "in_progress": "P8-A3",
+  "in_progress": "P8-A4",
   "plan_approved": true,
-  "current_plan": "1. **Import `AsyncReadExt`** in `framing.rs`: add `use tokio::io::{AsyncRead, AsyncReadExt};` (keeping the existing `AsyncWrite`/`AsyncWriteExt` imports on their own line).\n\n2. **Implement `read_frame`**:\n   ```rust\n   pub async fn read_frame<R>(r: &mut R, max_mib: u32) -> Result<WorkerEvent, AnvilError>\n   where\n       R: AsyncRead + Unpin,\n   {\n       // 1. Read exactly 4 bytes for the length header.\n       let mut header = [0u8; 4];\n       r.read_exact(&mut header).await?;\n\n       // 2. Decode big-endian u32 payload length.\n       let len = u32::from_be_bytes(header);\n\n       // 3. Enforce size cap BEFORE allocating the payload buffer.\n       let max_bytes = (max_mib as u64) * 1024 * 1024;\n       if len as u64 > max_bytes {\n           return Err(AnvilError::PayloadTooLarge(format!(\n               \"frame length {} exceeds limit {} MiB\",\n               len, max_mib\n           )));\n       }\n\n       // 4. Allocate and read exactly N payload bytes.\n       let mut payload = vec![0u8; len as usize];\n       r.read_exact(&mut payload).await?;\n\n       // 5. Deserialize msgpack \u2192 WorkerEvent.\n       let event = rmp_serde::from_slice::<WorkerEvent>(&payload)\n           .map_err(|e| AnvilError::Json(e.to_string()))?;\n\n       Ok(event)\n   }\n   ```\n   Key design decisions:\n   - `read_exact` is used for both header and payload. Tokio's `read_exact` internally loops on short reads, which is the critical Windows pipe correctness guarantee (\u00a77.1).\n   - The size cap is checked **before** `vec![0u8; len]`, preventing a malicious tiny header from triggering gigabyte-scale allocation.\n   - Error mapping: I/O errors propagate via `?` (auto-converted by `From<std::io::Error>`); deserialisation failures map to `AnvilError::Json`.\n\n3. **Add test `read_frame_roundtrip`**:\n   - Create a tokio duplex pair (`tokio::io::duplex(4096)`).\n   - In one direction, use `write_frame` (already tested in P8-A2) to write a `WorkerMessage::Ping { seq: 7 }`.\n   - In the other direction, call `read_frame` with `max_mib = 64`.\n   - Assert the result is `Ok(WorkerEvent::Pong { seq: 7 })`.\n\n4. **Add test `read_frame_oversize_rejected`**:\n   - Construct a buffer containing only a 4-byte header claiming an oversized length (e.g. `0xFFFFFFFF` = ~4 GiB) with zero payload bytes.\n   - Wrap it in `tokio::io::Cursor::new` and call `read_frame` with `max_mib = 64`.\n   - Assert the result is `Err(AnvilError::PayloadTooLarge(_))`.\n\n5. **Verify**: run `cargo test -p anvilml-ipc -- read_frame` \u2014 all tests must exit 0.",
+  "current_plan": "1. **Append `[[bin]]` to `anvilml-ipc/Cargo.toml`.** Add one line:\n   ```toml\n   [[bin]]\n   name = \"ipc-probe\"\n   path = \"src/bin/ipc-probe.rs\"\n   ```\n   This follows the convention already used by `backend/` and `anvilml-openapi/` crates.\n\n2. **Create `crates/anvilml-ipc/src/bin/ipc-probe.rs`.** The file will:\n   - Import `tokio::main`, `tokio::io::{AsyncWriteExt, AsyncReadExt}`, and the crate's `write_frame` / `read_frame` / `WorkerMessage` / `WorkerEvent`.\n   - Define a single `#[tokio::main]` async main function.\n   - Call `tokio::io::duplex(4096)` to get `(tx, rx)`.\n   - `write_frame(&mut tx, &WorkerMessage::Ping { seq: 7 }).await?` \u2014 write the frame.\n   - `let result = read_frame(&mut rx, 64).await?` \u2014 read back the response.\n   - Match on `result`:\n     - `WorkerEvent::Pong { seq } if seq == 7 => println!(\"OK seq=7\")`\n     - `other => { eprintln!(\"mismatch: {:?}\", other); std::process::exit(1) }`\n   - The `?` propagation will cause a panic on I/O or framing errors (appropriate for a proof-of-concept binary \u2014 it should never fail in normal operation).\n\n3. **Verify locally.** Run `cargo run -p anvilml-ipc --bin ipc-probe` and confirm output is exactly `OK seq=7`. Then run `cargo test -p anvilml-ipc` to ensure no regressions.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-05T20:59:27+0200",
-  "plan_approval_message_id": "1512531135123685458",
+  "last_updated": "2026-06-05T21:20:35+0200",
+  "plan_approval_message_id": "1512535606872244376",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512531133559078973",
+  "plan_report_message_id": "1512535605312229498",
   "impl_report_message_id": null
 }
