@@ -29,6 +29,8 @@ pub enum AnvilError {
     DbError(String),
     /// The request payload exceeded the allowed size limit.
     PayloadTooLarge(String),
+    /// A seed SQL file is missing the `-- anvil:seed_table` directive.
+    SeedMissingDirective(String),
 }
 
 // ── Display / Error ───────────────────────────────────────────────────────────
@@ -50,6 +52,9 @@ impl fmt::Display for AnvilError {
             Self::DbError(msg) => write!(f, "database error: {msg}"),
             Self::PayloadTooLarge(msg) => {
                 write!(f, "payload too large: {msg}")
+            }
+            Self::SeedMissingDirective(msg) => {
+                write!(f, "seed missing directive: {msg}")
             }
         }
     }
@@ -99,6 +104,7 @@ mod tests {
             AnvilError::ArtifactNotFound("sha256:dead".into()),
             AnvilError::DbError("connection refused".into()),
             AnvilError::PayloadTooLarge("10 MB > 5 MB limit".into()),
+            AnvilError::SeedMissingDirective("no seed_table directive".into()),
         ];
 
         for err in cases {
