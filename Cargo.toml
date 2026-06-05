@@ -18,7 +18,7 @@ version = "0.1.0"
 [workspace.dependencies]
 # Runtime dependencies (shared across multiple crates)
 ash = { version = "0.38", default-features = false, features = ["loaded"] }
-axum = { version = "0.7", features = ["json", "ws"] }
+axum = { version = "0.8", features = ["json", "ws"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.1", features = ["derive"] }
 futures-util = "0.3.32"
@@ -32,13 +32,15 @@ sysinfo = "0.39.3"
 thiserror = "2"
 tokio = { version = "1.52.3", features = ["full"] }
 toml = "1"
-tower = { version = "0.4", features = ["util"] }
+tower = { version = "0.5" }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 utoipa = { version = "5.5.0", features = ["chrono", "uuid"] }
 url = { version = "2.5.8", features = ["serde"] }
 uuid = { version = "1.23.2", features = ["serde", "v4"] }
 walkdir = "2.5.0"
+http-body-util = "0.1"
+bytes = "1"
 
 # Dev dependencies (shared across multiple crates)
 serial_test = "3.5.0"

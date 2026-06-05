@@ -48,7 +48,7 @@ async fn handle_connection(stream: WebSocket, state: AppState) {
                                 }
                             };
 
-                            if ws_tx.send(Message::Text(json)).await.is_err() {
+                            if ws_tx.send(Message::Text(json.into())).await.is_err() {
                                 break;
                             }
                         }
@@ -56,7 +56,7 @@ async fn handle_connection(stream: WebSocket, state: AppState) {
                     }
                 }
                 _ = interval.tick() => {
-                    if ws_tx.send(Message::Ping(vec![])).await.is_err() {
+                    if ws_tx.send(Message::Ping(vec![].into())).await.is_err() {
                         break;
                     }
                 }

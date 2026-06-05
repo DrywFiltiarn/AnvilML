@@ -56,16 +56,17 @@
     "P7-D2",
     "P7-D3",
     "P7-D4",
-    "P7-E1"
+    "P7-E1",
+    "P7-E2"
   ],
-  "in_progress": "P7-E2",
+  "in_progress": "P7-E3",
   "plan_approved": true,
-  "current_plan": "1. **Bump version in root Cargo.toml.** Change `toml = \"0.8\"` to `toml = \"1\"` in `[workspace.dependencies]`. The per-crate dependency (`crates/anvilml-core/Cargo.toml`) already uses `{ workspace = true }`, so no per-crate Cargo.toml edits are needed.\n\n2. **Update config_load.rs error type.** In `ConfigError::Toml` variant, change the inner type from `toml::de::Error` to `toml::Error`. Update the `From<toml::de::Error>` impl to `From<toml::Error>`. The `Display` and `source()` implementations remain unchanged since both error types implement `std::error::Error + Display`.\n\n3. **Update config.rs test serialization call.** In the `test_toml_roundtrip` test, change `toml::to_string_pretty(&config)` to `toml::ser::to_string_pretty(&config)`. The `toml::from_str` call is unchanged (it is available at the crate root in 1.x).\n\n4. **Update config_reference.rs serialization calls.** In the drift guard test, change both occurrences of `toml::to_string_pretty` to `toml::ser::to_string_pretty`. The `toml::Value` type and `toml::from_str` usage remain at the crate root path and compile unchanged.\n\n5. **Verify build + tests.** Run `cargo test --workspace --features mock-hardware` and `cargo clippy --workspace -- -D warnings`. Fix any compilation errors that arise from unforeseen API differences.",
+  "current_plan": "1. **Query MCP for version confirmation.** Use `rust-docs-lookup-crate-docs` to confirm the latest stable versions of `axum`, `tower`, `http-body-util`, and `bytes`. Record versions in plan.\n2. **Update root `Cargo.toml`.** Modify `[workspace.dependencies]`:\n   - Change `axum = { version = \"0.7\", features = [\"json\", \"ws\"] }` \u2192 `axum = { version = \"0.8\", features = [\"json\", \"ws\"] }`\n   - Change `tower = { version = \"0.4\", features = [\"util\"] }` \u2192 `tower = { version = \"0.5\" }` (remove `features`)\n   - Add `http-body-util = \"0.1\"` to workspace dependencies\n   - Add `bytes = \"1\"` to workspace dependencies\n3. **Update `crates/anvilml-server/Cargo.toml`.** Add `[dev-dependencies]` entry: `http-body-util = { workspace = true }` and `bytes = { workspace = true }`.\n4. **Audit all handler extractors.** Confirm every handler in `handlers/health.rs`, `handlers/system.rs`, `handlers/models.rs`, and `ws/handler.rs` already has `State<T>` as the first extractor parameter. (Verified: all handlers satisfy this \u2014 no reordering needed.)\n5. **Verify `Router::with_state`.** The call in `lib.rs` line 30 (`Router::new()...with_state(state_arc)`) is compatible with axum 0.8's API. No change needed.\n6. **Migrate test body types.** In `lib.rs` (tests module) and `tests/api_models.rs`:\n   - Replace `use axum::body::Body;` with `use http_body_util::Full;` + `use bytes::Bytes;`\n   - Replace `.body(Body::empty())` with `.body(Full::<Bytes>::default()).unwrap()`\n7. **Verify tower::ServiceExt.** The import `use tower::ServiceExt;` in `lib.rs` test code remains valid \u2014 tower 0.5 re-exports `ServiceExt` at the crate root from `tower-service`. No change needed.\n8. **Run verification gates.** Execute `cargo clippy --workspace --features mock-hardware -- -D warnings`, then `cargo test --workspace --features mock-hardware`, and cross-check all exit 0.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-05T11:15:59+0200",
-  "plan_approval_message_id": "1512228211579424910",
+  "last_updated": "2026-06-05T11:41:52+0200",
+  "plan_approval_message_id": "1512390544133984267",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512228209914155149",
+  "plan_report_message_id": "1512390542288490618",
   "impl_report_message_id": null
 }

@@ -7,10 +7,9 @@ use tempfile::TempDir;
 use anvilml_core::config::ModelDirConfig;
 use anvilml_core::ModelKind;
 use anvilml_registry::ModelRegistry;
-use axum::{
-    body::Body,
-    http::{Request, StatusCode},
-};
+use axum::http::{Request, StatusCode};
+use bytes::Bytes;
+use http_body_util::Full;
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -60,7 +59,7 @@ async fn list_models_returns_scanned_models() {
         .oneshot(
             Request::builder()
                 .uri("/v1/models")
-                .body(Body::empty())
+                .body(Full::<Bytes>::default())
                 .unwrap(),
         )
         .await
@@ -94,7 +93,7 @@ async fn list_models_kind_filter_diffusion() {
         .oneshot(
             Request::builder()
                 .uri("/v1/models?kind=diffusion")
-                .body(Body::empty())
+                .body(Full::<Bytes>::default())
                 .unwrap(),
         )
         .await
@@ -131,7 +130,7 @@ async fn list_models_kind_filter_no_match() {
         .oneshot(
             Request::builder()
                 .uri("/v1/models?kind=vae")
-                .body(Body::empty())
+                .body(Full::<Bytes>::default())
                 .unwrap(),
         )
         .await

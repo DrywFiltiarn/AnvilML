@@ -23,7 +23,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/health", get(handlers::health::health))
         .route("/v1/events", get(ws_events))
         .route("/v1/models/rescan", post(handlers::models::rescan_models))
-        .route("/v1/models/:id", get(handlers::models::get_model))
+        .route("/v1/models/{id}", get(handlers::models::get_model))
         .route("/v1/models", get(handlers::models::list_models))
         .route("/v1/system/env", get(handlers::system::get_env))
         .route("/v1/system", get(handlers::system::get_system))
@@ -34,10 +34,9 @@ pub fn build_router(state: AppState) -> Router {
 mod tests {
     use std::sync::Arc;
 
-    use axum::{
-        body::Body,
-        http::{Request, StatusCode},
-    };
+    use axum::http::{Request, StatusCode};
+    use bytes::Bytes;
+    use http_body_util::Full;
     use serde_json::Value;
     use tower::ServiceExt;
 
@@ -53,7 +52,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/health")
-                    .body(Body::empty())
+                    .body(Full::<Bytes>::default())
                     .unwrap(),
             )
             .await
@@ -82,7 +81,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/v1/system/env")
-                    .body(Body::empty())
+                    .body(Full::<Bytes>::default())
                     .unwrap(),
             )
             .await
@@ -121,7 +120,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/v1/system")
-                    .body(Body::empty())
+                    .body(Full::<Bytes>::default())
                     .unwrap(),
             )
             .await
@@ -174,7 +173,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/v1/models/nonexistent-id")
-                    .body(Body::empty())
+                    .body(Full::<Bytes>::default())
                     .unwrap(),
             )
             .await
@@ -203,7 +202,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/v1/models/rescan")
-                    .body(Body::empty())
+                    .body(Full::<Bytes>::default())
                     .unwrap(),
             )
             .await
