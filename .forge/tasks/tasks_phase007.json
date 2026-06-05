@@ -144,5 +144,50 @@
     "tags": [
       "reasoning"
     ]
-  }
+  },
+  {
+    "id": "P7-F0",
+    "description": "anvilml-core: extend InferenceCaps with fp32, fp8, fp4, nvfp4 fields",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-E3"],
+    "context": "Extend InferenceCaps in crates/anvilml-core/src/types/hardware.rs: fields fp32:bool, fp16:bool, bf16:bool, fp8:bool, fp4:bool, nvfp4:bool, flash_attention:bool — all #[serde(default)]. Update or_all_caps in crates/anvilml-hardware/src/lib.rs to OR all 7 fields. Fix every InferenceCaps struct literal in the workspace (lib.rs, hardware.rs, cpu.rs, mock.rs, device_db.rs) — add new fields defaulting false. Update print_hardware_table in backend/src/main.rs to show all 7 flags in order. cargo test --workspace --features mock-hardware exits 0. cargo clippy --workspace -- -D warnings exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P7-F1",
+    "description": "anvilml-registry: migration 004_device_capabilities.sql",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-F0"],
+    "context": "Create backend/migrations/004_device_capabilities.sql per the DDL in docs/SUPPORTED_DEVICES_DB.md (Migration DDL reference section). Columns: vendor_id, device_id, model_name, arch, fp32, fp16, bf16, fp8, fp4, nvfp4, flash_attn — all INTEGER NOT NULL DEFAULT 0 except model_name/arch TEXT NOT NULL; PRIMARY KEY(vendor_id,device_id); UNIQUE INDEX idx_device_capabilities_pci. Extend test_open_creates_tables to assert device_capabilities in sqlite_master. cargo test -p anvilml-registry exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P7-F2",
+    "description": "anvilml-registry: DeviceCapabilityStore upsert + get + seed",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-F1"],
+    "context": "Create crates/anvilml-registry/src/device_store.rs. pub struct DeviceCapabilityRow{vendor_id:u16,device_id:u16,model_name:String,arch:String,fp32:bool,fp16:bool,bf16:bool,fp8:bool,fp4:bool,nvfp4:bool,flash_attn:bool}. DeviceCapabilityStore{pool}: new(pool); async upsert(&DeviceCapabilityRow)->Result<()> INSERT OR REPLACE; async get(u16,u16)->Result<Option<DeviceCapabilityRow>>; async seed(&[DeviceCapabilityRow])->Result<u64> single tx, returns count. i64<->u16; bool as i64/!=0. Re-export. Tests: roundtrip, miss, seed count, bool. cargo test -p anvilml-registry -- device_store exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P7-F3",
+    "description": "anvilml-hardware: device_db SEED_ENTRIES from SUPPORTED_DEVICES_DB.md + resolve_caps_from_row",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-F2"],
+    "context": "Rewrite crates/anvilml-hardware/src/device_db.rs per docs/SUPPORTED_DEVICES_DB.md. Build pub const SEED_ENTRIES:&[DeviceCapabilityEntry] from both tables (Y=true N=false); fields: vendor_id,device_id,model_name,arch,fp32,fp16,bf16,fp8,fp4,nvfp4,flash_attn. Remove lookup() and resolve_caps(). Add resolve_caps_from_row(dev:&mut GpuDevice,row:Option<&DeviceCapabilityRow>): hit sets name/arch/caps/sources=DeviceTable; miss preserves dev.name, default/Fallback, warn!. anvilml-registry={workspace=true}. Rewrite tests via SEED_ENTRIES.iter().find(). cargo test -p anvilml-hardware exits 0.",
+    "tags": ["reasoning"]
+  },
+  {
+    "id": "P7-F4",
+    "description": "anvilml-hardware: detect_all_devices seeds and queries device_capabilities",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-F3"],
+    "context": "Make detect_all_devices in crates/anvilml-hardware/src/lib.rs async, add pool:&SqlitePool param. At entry: DeviceCapabilityStore::new(pool.clone()).seed(&SEED_ENTRIES).await?. Per device: store.get(pci_vendor_id,pci_device_id).await?, pass result to resolve_caps_from_row. Update backend/src/main.rs call site: pass &db, add .await. Update mod tests to use #[tokio::test] + pool from anvilml_registry::db::open_in_memory(). Add pub async fn open_in_memory()->Result<SqlitePool,AnvilError> to crates/anvilml-registry/src/db.rs. cargo test --workspace --features mock-hardware exits 0.",
+    "tags": ["reasoning"]
+  }  
 ]

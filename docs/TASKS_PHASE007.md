@@ -7,7 +7,7 @@
 | Milestone group | Observable system state |
 | Depends on phases | 1-6 |
 | Task file | `.forge/tasks/tasks_phase007.json` |
-| Tasks | 14 |
+| Tasks | 19 |
 
 ## Overview
 
@@ -41,6 +41,11 @@ Group E completes the major-version upgrade work deferred by P7-C1: E1 bumps thi
 | P7-E1 | `Cargo.toml` ([workspace.dependencies]) | anvilml: upgrade thiserror to 2.x and sha2 to 0.11.x |
 | P7-E2 | `crates/anvilml-core/src/config_load.rs`, `config.rs`, `backend/tests/config_reference.rs` | anvilml-core: migrate toml dependency from 0.8.x to 1.x |
 | P7-E3 | `crates/anvilml-server/src/handlers/*`, `ws/*`, `lib.rs`, `Cargo.toml` | anvilml-server: migrate axum from 0.7.x to 0.8.x (+ tower 0.4→0.5) |
+| P7-F0 | `crates/anvilml-core/src/types/hardware.rs`, `crates/anvilml-hardware/src/lib.rs`, `backend/src/main.rs` | anvilml-core: extend InferenceCaps with fp32, fp8, fp4, nvfp4 fields |
+| P7-F1 | `backend/migrations/004_device_capabilities.sql` | anvilml-registry: migration 004_device_capabilities.sql |
+| P7-F2 | `crates/anvilml-registry/src/device_store.rs` | anvilml-registry: DeviceCapabilityStore upsert + get + seed |
+| P7-F3 | `crates/anvilml-hardware/src/device_db.rs` | anvilml-hardware: SEED_ENTRIES from SUPPORTED_DEVICES_DB.md + resolve_caps_from_row |
+| P7-F4 | `crates/anvilml-hardware/src/lib.rs`, `backend/src/main.rs` | anvilml-hardware: detect_all_devices seeds and queries device_capabilities |
 
 ## Task details
 
@@ -331,6 +336,190 @@ axum 0.8 and tower 0.5 must be upgraded together — axum 0.8 requires tower 0.5
 - Do not upgrade `tokio-tungstenite` as part of this task; the planning data confirms it is pinned at 0.24.x for axum 0.7 compatibility and must be re-evaluated after the axum upgrade is confirmed working.
 
 **Acceptance criterion:** `cargo clippy --workspace -- -D warnings` exits 0 AND `cargo test --workspace --features mock-hardware` exits 0.
+
+---
+
+## Group F — Device Capability DB Migration
+
+### Why this group exists here
+
+`InferenceCaps` in `anvilml-core` currently has three fields (`fp16`, `bf16`, `flash_attention`). Hardware detection on an AMD Radeon RX 9070 XT exposed two problems: the card was missing from `PCI_CAPABILITY_TABLE`, causing fallback with all-false capabilities, and the Vulkan driver string appeared as the device name because `resolve_caps` overwrote it on miss. Both are symptoms of the same root issue — capability data is baked into the binary at compile time, making it impossible to add a new card without a recompile.
+
+Group F solves this in four sequential steps. First, `InferenceCaps` is extended to carry the full precision vocabulary needed for the worker phases (`fp32` via TF32, `fp8`, `fp4`, `nvfp4`), with the canonical field order `fp32 → fp16 → bf16 → fp8 → fp4 → nvfp4 → flash_attn` locked in across every surface: struct declaration, migration DDL, store row type, and CLI display. Second, a `device_capabilities` SQLite table and corresponding store are created. Third, `device_db.rs` is rewritten to export a `SEED_ENTRIES` const sourced verbatim from `docs/SUPPORTED_DEVICES_DB.md` — the 126-entry reference document that the Forge reads at PLAN time — replacing the old `PCI_CAPABILITY_TABLE`. Fourth, `detect_all_devices` is made async and wired to seed then query the store on every startup.
+
+The group prereqs P7-E3 to avoid a second broad Cargo.toml churn pass, and begins with P7-F0 because adding fields to `InferenceCaps` is a workspace-wide breaking change: every `InferenceCaps` struct literal across six files fails to compile until the new fields are present.
+
+---
+
+### Task Descriptions
+
+#### P7-F0: anvilml-core: extend InferenceCaps with fp32, fp8, fp4, nvfp4 fields
+
+- **Prereqs:** P7-E3
+- **Tags:** —
+
+This is a workspace-wide breaking change. `InferenceCaps` struct literals are exhaustive in Rust — any site that names fields will fail to compile when new ones are added. All sites must be updated in the same commit.
+
+**Files to create or modify:**
+
+- `crates/anvilml-core/src/types/hardware.rs` — add four `bool` fields to `InferenceCaps` in canonical order: `fp32`, then `fp16` (existing), `bf16` (existing), `fp8`, `fp4`, `nvfp4`, `flash_attention` (existing). All new fields: `#[serde(default)]`. All fields: `pub`.
+- `crates/anvilml-hardware/src/lib.rs` — extend `or_all_caps` to OR all seven fields. Update every `InferenceCaps` construction in tests.
+- `crates/anvilml-hardware/src/cpu.rs` — update `GpuDevice` construction: new `InferenceCaps` fields default `false`.
+- `crates/anvilml-hardware/src/mock.rs` — same.
+- `crates/anvilml-hardware/src/device_db.rs` — any `InferenceCaps` literal constructions updated.
+- `backend/src/main.rs` — update `print_hardware_table` to display all seven flags in canonical order. The existing display shows only `FP16 / BF16 / Flash Attention`; after this task it must show `FP32 / FP16 / BF16 / FP8 / FP4 / NVFP4 / FA`.
+
+**Key implementation notes:**
+
+The canonical field order (`fp32, fp16, bf16, fp8, fp4, nvfp4, flash_attention`) must match the order in `SUPPORTED_DEVICES_DB.md`'s Migration DDL reference section and in the `DeviceCapabilityRow` struct that P7-F2 will create. Divergence here causes silent column misalignment in the SQLite store.
+
+The `InferenceCaps` struct derives `Copy` and `Default`. Adding `bool` fields with `#[serde(default)]` is backward-compatible for JSON deserialization — old JSON without the new fields deserialises to `false` for each. The existing `inference_caps_backward_compat` test in `hardware.rs` must continue to pass without modification.
+
+**Acceptance criterion:** `cargo test --workspace --features mock-hardware` exits 0 AND `cargo clippy --workspace -- -D warnings` exits 0.
+
+---
+
+#### P7-F1: anvilml-registry: migration 004_device_capabilities.sql
+
+- **Prereqs:** P7-F0
+- **Tags:** —
+
+Schema-only task. No Rust code.
+
+**Files to create or modify:**
+
+- `backend/migrations/004_device_capabilities.sql` — DDL exactly as specified in `docs/SUPPORTED_DEVICES_DB.md` under "Migration DDL reference". Column order must match the canonical precision order: `vendor_id, device_id, model_name, arch, fp32, fp16, bf16, fp8, fp4, nvfp4, flash_attn`. All capability columns `INTEGER NOT NULL DEFAULT 0`. `model_name` and `arch` are `TEXT NOT NULL`. Primary key is composite `(vendor_id, device_id)`. One named unique index: `idx_device_capabilities_pci ON device_capabilities(vendor_id, device_id)`.
+- `crates/anvilml-registry/tests/` — extend the existing `test_open_creates_tables` integration test to additionally assert that `device_capabilities` appears in `sqlite_master` after calling `db::open`.
+
+**Key implementation notes:**
+
+`sqlx::migrate!` discovers files by sorted filename. `004_` sorts correctly after `003_artifacts.sql`. Once this migration is applied to a database its filename checksum is recorded in `_sqlx_migrations` — never rename or edit the file after merging.
+
+**Acceptance criterion:** `cargo test -p anvilml-registry` exits 0.
+
+---
+
+#### P7-F2: anvilml-registry: DeviceCapabilityStore upsert + get + seed
+
+- **Prereqs:** P7-F1
+- **Tags:** —
+
+Follow the patterns established in `store.rs` exactly: tuple row type alias, `sqlx_error` helper, `sqlx::query_as` with manual column mapping.
+
+**Files to create or modify:**
+
+- `crates/anvilml-registry/src/device_store.rs` — `DeviceCapabilityRow` struct and `DeviceCapabilityStore` struct with three async methods.
+- `crates/anvilml-registry/src/lib.rs` — re-export both types.
+- `crates/anvilml-registry/tests/device_store.rs` — integration tests.
+
+**Key implementation notes:**
+
+`DeviceCapabilityRow` field order must match the migration column order exactly: `vendor_id: u16, device_id: u16, model_name: String, arch: String, fp32: bool, fp16: bool, bf16: bool, fp8: bool, fp4: bool, nvfp4: bool, flash_attn: bool`. The DB stores `vendor_id` and `device_id` as `INTEGER` (i64); cast to/from `u16` at the boundary. Boolean columns map via `field as i64` on write and `value != 0` on read.
+
+`seed` runs all inserts in a single transaction using `INSERT OR REPLACE`. Re-seeding is idempotent — calling it twice with the same entries produces the same result. It returns the count of rows written (not affected), which equals `entries.len()` on a clean database.
+
+Required tests (minimum 4): `upsert_then_get_roundtrip` verifying all 11 fields survive a round-trip; `get_miss_returns_none`; `seed_returns_correct_count` seeding 3 entries and asserting return value is 3; `bool_flags_roundtrip` verifying `fp32=true, fp16=false, fp8=true, nvfp4=false` survive serialisation.
+
+**Acceptance criterion:** `cargo test -p anvilml-registry -- device_store` exits 0 with ≥4 tests passing.
+
+---
+
+#### P7-F3: anvilml-hardware: SEED_ENTRIES from SUPPORTED_DEVICES_DB.md + resolve_caps_from_row
+
+- **Prereqs:** P7-F2
+- **Tags:** reasoning
+
+**Files to create or modify:**
+
+- `crates/anvilml-hardware/src/device_db.rs` — complete rewrite.
+- `crates/anvilml-hardware/Cargo.toml` — add `anvilml-registry = { workspace = true }`.
+
+**Key implementation notes:**
+
+At PLAN time, open `docs/SUPPORTED_DEVICES_DB.md` and locate the two Markdown device tables (NVIDIA and AMD). For each data row, construct one `DeviceCapabilityEntry` struct literal: `Y` maps to `true`, `N` maps to `false`. The resulting `pub const SEED_ENTRIES: &[DeviceCapabilityEntry]` must contain all 126 rows in table order. Do not generate, infer, or look up entries — copy the table values verbatim.
+
+`DeviceCapabilityEntry` field order must match `DeviceCapabilityRow` exactly: `vendor_id: u16, device_id: u16, model_name: &'static str, arch: &'static str, fp32: bool, fp16: bool, bf16: bool, fp8: bool, fp4: bool, nvfp4: bool, flash_attn: bool`.
+
+`resolve_caps_from_row(dev: &mut GpuDevice, row: Option<&DeviceCapabilityRow>)`:
+
+- **Hit:** set `dev.name = row.model_name.clone()`, `dev.arch = Some(row.arch.clone())`, populate all seven `InferenceCaps` fields from the row, set `dev.capabilities_source = CapabilitySource::DeviceTable`, `dev.enumeration_source = EnumerationSource::DeviceTable`.
+- **Miss:** do **not** overwrite `dev.name` (the enumerator has already set a driver-supplied name); set `dev.caps = InferenceCaps::default()`, `dev.capabilities_source = CapabilitySource::Fallback`; emit `tracing::warn!(detector="DeviceDB", vendor_id=%format_args!("0x{:04X}", dev.pci_vendor_id), device_id=%format_args!("0x{:04X}", dev.pci_device_id), "unknown PCI ID — add to SUPPORTED_DEVICES_DB.md")`.
+
+Remove `lookup()` and `resolve_caps()` entirely. Rewrite all existing tests to use `SEED_ENTRIES.iter().find(|e| e.vendor_id == v && e.device_id == d)` in place of `lookup()`. Add a `rx9070xt_entry_correct` test asserting `vendor_id=0x1002, device_id=0x7550` resolves to `model_name="AMD Radeon RX 9070 XT", arch="gfx1201", fp8=true, fp32=false`.
+
+Before committing, verify no dependency cycle: run `cargo tree -p anvilml-hardware` and confirm `anvilml-registry` appears without `anvilml-hardware` in its subtree.
+
+**Acceptance criterion:** `cargo test -p anvilml-hardware` exits 0.
+
+---
+
+#### P7-F4: anvilml-hardware: detect_all_devices seeds and queries device_capabilities
+
+- **Prereqs:** P7-F3
+- **Tags:** reasoning
+
+This task has two call-site updates that must land in the same commit as the signature change, or the workspace will not compile.
+
+**Files to create or modify:**
+
+- `crates/anvilml-hardware/src/lib.rs` — make `detect_all_devices` async, add `pool: &SqlitePool` parameter.
+- `backend/src/main.rs` — update the `detect_all_devices` call site to pass `&db` and `.await`.
+- `crates/anvilml-registry/src/db.rs` — add `pub async fn open_in_memory() -> Result<SqlitePool, AnvilError>` if absent.
+
+**Key implementation notes:**
+
+At the top of `detect_all_devices`, before any device enumeration:
+
+```rust
+let store = DeviceCapabilityStore::new(pool.clone());
+store.seed(&SEED_ENTRIES).await?;
+```
+
+For each detected device, replace the existing `device_db::resolve_caps(dev, ...)` call with:
+
+```rust
+let row = store.get(dev.pci_vendor_id, dev.pci_device_id).await?;
+device_db::resolve_caps_from_row(&mut dev, row.as_ref());
+```
+
+This applies to all three code paths in `detect_all_devices`: the override branch, the mock branch, and the real enumeration branch.
+
+All tests in `mod tests` that call `detect_all_devices` must be converted to `#[tokio::test]` and supply a pool:
+
+```rust
+let pool = anvilml_registry::db::open_in_memory().await.unwrap();
+let info = detect_all_devices(&cfg, &pool).await.unwrap();
+```
+
+`open_in_memory` calls `open(Path::new(":memory:"))`, which runs all four migrations including `004_device_capabilities.sql`. This means the in-memory pool used in tests is fully migrated and the seed step in `detect_all_devices` will actually write 126 rows — this is correct and expected behaviour.
+
+**Acceptance criterion:** `cargo test --workspace --features mock-hardware` exits 0.
+
+---
+
+## Known Constraints and Gotchas — append these entries
+
+- **P7-F0 is a workspace-wide breaking change.** `InferenceCaps` struct literals are exhaustive. Adding four new fields breaks every construction site simultaneously. The Forge must update all six files (`hardware.rs`, `lib.rs`, `cpu.rs`, `mock.rs`, `device_db.rs`, `main.rs`) in a single commit. A partial update will not compile.
+
+- **Canonical field order is a contract, not a preference.** `fp32, fp16, bf16, fp8, fp4, nvfp4, flash_attn` must be the field order in `InferenceCaps`, `DeviceCapabilityRow`, `DeviceCapabilityEntry`, and the migration DDL columns. Any divergence between the struct field order and the DDL column order causes silent data misalignment when `sqlx::query_as` maps a row tuple positionally.
+
+- **`SUPPORTED_DEVICES_DB.md` is the seed source; do not regenerate.** P7-F3 must copy the table rows verbatim into `SEED_ENTRIES`. The Forge must not infer, supplement, or re-derive entries from training knowledge — the reference document was verified against hardware reports, ROCm docs, and kernel driver sources. Any row generated from memory will likely contain errors.
+
+- **Migration `004_` checksum is immutable.** Once `004_device_capabilities.sql` is applied to any database, its content is recorded in `_sqlx_migrations`. Editing the file after merging will cause a checksum mismatch error on the next `db::open` call, breaking all existing databases. Author it correctly in P7-F1 and never modify it.
+
+- **`detect_all_devices` signature change has exactly two call sites.** `backend/src/main.rs` and the `mod tests` block in `lib.rs`. Both must be updated in P7-F4's commit. The Forge must search for all occurrences before writing the plan.
+
+- **`anvilml-hardware → anvilml-registry` is a new intra-workspace dependency introduced in P7-F3.** The permitted direction is `hardware → registry → core`. The direction `registry → hardware` or `core → hardware` is forbidden. Run `cargo tree -p anvilml-hardware` and verify no cycle before committing.
+
+- **Seed is unconditional `INSERT OR REPLACE`.** Every startup overwrites all 126 rows with the compiled-in baseline. User-edited rows are overwritten on the next restart. This is the documented design decision; do not add a skip-if-exists guard.
+
+---
+
+## Interfaces and Contracts — append this row
+
+| Contract document | Relevant to tasks | What must match |
+|---|---|---|
+| `SUPPORTED_DEVICES_DB.md` | P7-F1, P7-F2, P7-F3 | Migration DDL column order, `DeviceCapabilityRow` field order, `SEED_ENTRIES` const block — all must use the canonical order `fp32, fp16, bf16, fp8, fp4, nvfp4, flash_attn` |
 
 ---
 
