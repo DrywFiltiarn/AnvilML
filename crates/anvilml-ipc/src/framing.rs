@@ -12,11 +12,20 @@ pub async fn write_frame<W>(w: &mut W, msg: &WorkerMessage) -> Result<(), AnvilE
 where
     W: AsyncWrite + Unpin,
 {
-    let payload = rmp_serde::to_vec_named(msg).map_err(|e| AnvilError::Json(e.to_string()))?;
+    let payload = rmp_serde::to_vec_named(msg).map_err(|e| {
+        tracing::error!(error = %e, "IPC frame write failed");
+        AnvilError::Json(e.to_string())
+    })?;
     let len = payload.len() as u32;
     let header = len.to_be_bytes();
-    w.write_all(&header).await.map_err(AnvilError::Io)?;
-    w.write_all(&payload).await.map_err(AnvilError::Io)?;
+    w.write_all(&header).await.map_err(|e| {
+        tracing::error!(error = %e, "IPC frame write failed");
+        AnvilError::Io(e)
+    })?;
+    w.write_all(&payload).await.map_err(|e| {
+        tracing::error!(error = %e, "IPC frame write failed");
+        AnvilError::Io(e)
+    })?;
     Ok(())
 }
 
@@ -42,7 +51,13 @@ where
 
     // 3. Enforce size cap BEFORE allocating the payload buffer.
     let max_bytes = (max_mib as u64) * 1024 * 1024;
-    if len as u64 > max_bytes {
+    let payload_len = len as u64;
+    if payload_len > max_bytes {
+        tracing::warn!(
+            payload_mib = payload_len / 1024 / 1024,
+            limit_mib = max_mib,
+            "IPC frame rejected: payload too large"
+        );
         return Err(AnvilError::PayloadTooLarge(format!(
             "frame length {} exceeds limit {} MiB",
             len, max_mib
@@ -54,8 +69,10 @@ where
     r.read_exact(&mut payload).await?;
 
     // 5. Deserialize msgpack → WorkerEvent.
-    let event = rmp_serde::from_slice::<WorkerEvent>(&payload)
-        .map_err(|e| AnvilError::Json(e.to_string()))?;
+    let event = rmp_serde::from_slice::<WorkerEvent>(&payload).map_err(|e| {
+        tracing::error!(error = %e, "IPC frame deserialize failed");
+        AnvilError::Json(e.to_string())
+    })?;
 
     Ok(event)
 }

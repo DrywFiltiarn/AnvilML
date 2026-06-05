@@ -9,6 +9,7 @@ rmp-serde = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "rt"] }
+tracing = { workspace = true }
 uuid = { workspace = true, features = ["serde"] }
 
 [[bin]]
