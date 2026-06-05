@@ -1,9 +1,9 @@
 # AnvilML Backend — Functional & Technical Design
 
 **Document:** `ANVILML_DESIGN.md`
-**Revision:** 5 (SDK-free Vulkan GPU detection + ROCm-on-Windows mandatory; see Revision History)
+**Revision:** 6 (Auto-provisioning, version introspection, release automation, distribution phases)
 **Project:** SindriStudio / AnvilML
-**Status:** Draft for review — supersedes Revision 3
+**Status:** Active — supersedes Revision 5
 
 ---
 
@@ -14,8 +14,9 @@
 | 1 | Initial architecture sketch. |
 | 2 | Approved architecture: crate decomposition, domain types, IPC, scheduler, server, worker outline. |
 | 3 | **This document.** Expands Rev 2 into a build-complete functional + technical design: per-crate module APIs, node IO contract, model cache, cancellation, logging, testing, build/toolchain, operations runbook, and implementation roadmap. Two intentional additions to the Rev 2 IPC schema (`CancelJob` message, `Cancelled` event) are introduced in §7 and flagged inline. Revision 2 remains the architectural authority; where this document adds detail it does not contradict it. A cross-platform pass (§1.5, §22.4) makes Linux and Windows co-equal first-class targets. The backend binary and database are named `anvilml` / `anvilml.db`, and SindriStudio is clarified throughout as the separate one-click launcher that starts AnvilML and BloomeryUI (Rev 2 conflated the two). |
-| 4 | Roadmap correction (§23 only). The implementation roadmap is reframed around **vertical-slice phases** (000–022, authoritative in `docs/PHASES.md`) rather than crate-dependency-ordered layers; each phase delivers a runnable, independently verifiable binary. The M0–M6 milestones are retained as a higher-level capability summary mapped to phase ranges, no longer as the unit of execution. No architectural, type, API, or IPC content changed. |
+| 4 | Roadmap correction (§23 only). The implementation roadmap is reframed around **vertical-slice phases** (000–025, authoritative in `docs/PHASES.md`) rather than crate-dependency-ordered layers; each phase delivers a runnable, independently verifiable binary. The M0–M6 milestones are retained as a higher-level capability summary mapped to phase ranges, no longer as the unit of execution. No architectural, type, API, or IPC content changed. |
 | 5 | Re-applies two decisions made after this document branched from Rev 3 (absent from the Rev 4 base): **(a) ROCm on Windows promoted to a mandatory MVP backend** (Linux + Windows, via AMD's *PyTorch on Windows* package, ROCm ≥ 7.2, on supported Radeon RX 7000/9000-series / Ryzen AI hardware); and **(b) SDK-free GPU detection** — Vulkan primary (driver-bundled), DXGI (Windows) / PCI-sysfs + NVML (Linux) fallback, a hardcoded PCI-ID capability table (`device_db.rs`), and authoritative capabilities reported by the worker's PyTorch at `Ready`. VRAM is read dynamically in every path. Updates §1.5, §2.2, §4.3, §5, §7.3, §8.3, §16, §21, §22; adds a `--print-hardware` CLI subcommand. The headless-by-default frontend model and the vertical-slice roadmap (Rev 4) are unchanged. |
+| 6 | Distribution phases 023–025: auto-provisioning, version introspection, release automation, documentation site. §6 updated: AnvilML now auto-provisions the Python venv on first run via background execution of the provisioning scripts; `ProvisioningState` enum and `provisioning` field added to `EnvReport` (§4.4). `ComponentVersions` type added (§4.5). `WsEvent::ProvisioningProgress` added (§4.5). `GET /v1/system/versions` endpoint added (§10.3). `/health` `version` field now reports workspace release version (§16.2). Startup sequence updated for immediate-bind with deferred WorkerPool when provisioning needed (§16.2). `provisioning` 503 error code added (§18). `seeds_path` field added to `ServerConfig` (§3.1) and `anvilml.toml` (§3.2); `SeedLoader` documented (§5.5, §2). §21.4 updated: provisioning scripts are invoked automatically on first run. §21.5 runtime layout updated. §21.6 updated with full automated release pipeline (signed cross-platform GitHub Release zips, SHA256SUMS + GPG). §22.1 first-run runbook updated. §23 roadmap extended to phases 000–025 with M7. §25 gains items 10–11. |
 
 This document is now the **single source of truth** for the AnvilML backend. Any earlier task lists or contract documents (`tasks.json`, `API_CONTRACT.md`, `IPC_PROTOCOL.md`, `ENVIRONMENT.md`, `TESTING_STRATEGY.md`) are non-authoritative and are superseded by the sections below.
 
@@ -114,6 +115,8 @@ anvilml/
     src/main.rs                 (anvilml launcher binary)
     openapi.json                (generated; committed)
     migrations/                 (sqlx migration SQL files)
+    seeds/
+      devices.sql               (SHA256-gated device capability seed data)
     scripts/
       install_worker_deps.sh    (Linux/macOS venv provisioning)
       install_worker_deps.ps1   (Windows venv provisioning)
@@ -170,7 +173,7 @@ anvilml-core
 | :-- | :-- | :-- |
 | `anvilml-core` | Pure data: domain types, config, errors. No I/O, no async runtime. | `config.rs`, `error.rs`, `types/{job,model,hardware,worker,events}.rs` |
 | `anvilml-hardware` | Detect GPUs and host **SDK-free**; refreshable VRAM snapshot. | `lib.rs` (`detect_all_devices`), `vulkan.rs`, `dxgi.rs` (Windows), `sysfs.rs` + `nvml.rs` (Linux fallback), `device_db.rs` (capability table), `cpu.rs`, `mock.rs` |
-| `anvilml-registry` | Scan model dirs, persist `ModelMeta` to SQLite, serve queries. | `scanner.rs`, `store.rs`, `lib.rs` |
+| `anvilml-registry` | Scan model dirs, persist `ModelMeta` to SQLite, serve queries; `SeedLoader` (SHA256-gated SQL seed runner for `backend/seeds/`). | `scanner.rs`, `store.rs`, `device_store.rs`, `seed_loader.rs`, `lib.rs` |
 | `anvilml-ipc` | IPC message enums + length-prefixed msgpack framing. | `messages.rs`, `framing.rs` |
 | `anvilml-worker` | Spawn/supervise/respawn workers, IPC bridge, env injection. | `pool.rs`, `managed.rs`, `ipc_bridge.rs`, `env.rs` |
 | `anvilml-scheduler` | Job queue, VRAM ledger, DAG validation, dispatch loop. | `queue.rs`, `ledger.rs`, `dag.rs`, `scheduler.rs` |
@@ -200,10 +203,11 @@ pub struct ServerConfig {
     pub model_dirs: Vec<ModelDirConfig>,
     pub artifact_dir: PathBuf,               // default: ./artifacts
     pub db_path: PathBuf,                    // default: ./anvilml.db
-    pub venv_path: PathBuf,                  // default: ./venv  (user-managed)
+    pub venv_path: PathBuf,                  // default: ./venv  (auto-provisioned on first run)
     pub rocm: RocmConfig,
     pub hardware_override: Option<HardwareOverrideConfig>,
     pub worker_log_dir: Option<PathBuf>,     // default: ./logs
+    pub seeds_path: PathBuf,                 // default: <exe_dir>/seeds (debug: backend/seeds fallback)
     pub num_threads: usize,                  // default: 14
     pub num_interop_threads: usize,          // default: 4
     pub frontend: FrontendConfig,
@@ -260,6 +264,7 @@ artifact_dir = "./artifacts"
 db_path = "./anvilml.db"
 venv_path = "./venv"
 worker_log_dir = "./logs"
+# seeds_path = "./seeds"  # default: <exe_dir>/seeds; falls back to backend/seeds/ in debug builds
 num_threads = 14
 num_interop_threads = 4
 
@@ -302,6 +307,7 @@ ws_broadcast_capacity = 256
 | `ANVILML_ARTIFACT_DIR` | `artifact_dir` | `./artifacts` |
 | `ANVILML_VENV_PATH` | `venv_path` | `./venv` |
 | `ANVILML_WORKER_LOG_DIR` | `worker_log_dir` | `./logs` |
+| `ANVILML_SEEDS_PATH` | `seeds_path` | `<exe_dir>/seeds` |
 | `ANVILML_NUM_THREADS` | `num_threads`; passed to worker | `14` |
 | `ANVILML_NUM_INTEROP_THREADS` | `num_interop_threads`; passed to worker | `4` |
 | `ANVILML_FRONTEND__MODE` | `frontend.mode` | `headless` |
@@ -429,9 +435,45 @@ pub struct WorkerInfo {
 }
 
 pub enum WorkerStatus { Initializing, Idle, Busy, Dead, Respawning }
+
+pub struct EnvReport {
+    pub python_path: String,
+    pub python_version: String,
+    pub torch_version: String,
+    pub preflight_ok: bool,
+    pub reason: String,             // empty on success; "python_missing" | "torch_unavailable" | …
+    pub provisioning: ProvisioningState,
+}
+
+pub enum ProvisioningState {
+    NotStarted,
+    InProgress { percent: Option<u8>, message: String },
+    Ready,
+    Failed { reason: String },
+}
 ```
 
-### 4.5 WebSocket Event Types
+### 4.5 Version Types
+
+```rust
+pub struct ComponentVersions {
+    pub anvilml: String,            // workspace release version ([workspace.package] version)
+    pub backend: String,
+    pub core: String,
+    pub hardware: String,
+    pub registry: String,
+    pub ipc: String,
+    pub worker: String,
+    pub scheduler: String,
+    pub server: String,
+    pub openapi: String,
+    pub python_worker: Option<String>, // from worker/__init__.py __version__; None if absent
+}
+```
+
+Each workspace crate exposes `pub const VERSION: &str = env!("CARGO_PKG_VERSION")`. The workspace root additionally declares `[workspace.package] version` as the **product release version**, independent of per-crate versions; this is what `GET /health` and `GET /v1/system/versions` report as `anvilml`.
+
+### 4.6 WebSocket Event Types
 
 All events serialize as `{ "event": "<type>", "timestamp": "<iso8601>", ...fields }`.
 
@@ -446,6 +488,7 @@ pub enum WsEvent {
     JobFailed(JobFailedEvent),                  // "job.failed"
     JobCancelled(JobCancelledEvent),            // "job.cancelled"
     WorkerStatusChanged(WorkerStatusChangedEvent), // "worker.status"
+    ProvisioningProgress(ProvisioningProgressEvent), // "provisioning.progress"
 }
 
 pub struct SystemStatsEvent {
@@ -478,7 +521,7 @@ pub struct JobImageReadyEvent {
 }
 ```
 
-> Raw image bytes are **never** sent over WebSocket. Clients receive the artifact hash and fetch the PNG via REST. `JobFailed` carries `{ job_id, error, traceback? }`; `JobCancelled` carries `{ job_id }`; `WorkerStatusChanged` carries `{ worker_id, status }`.
+> Raw image bytes are **never** sent over WebSocket. Clients receive the artifact hash and fetch the PNG via REST. `JobFailed` carries `{ job_id, error, traceback? }`; `JobCancelled` carries `{ job_id }`; `WorkerStatusChanged` carries `{ worker_id, status }`; `ProvisioningProgress` carries `{ state, percent?, message, timestamp }` and is emitted on every provisioning state transition.
 
 ---
 
@@ -532,6 +575,20 @@ Querying ML-relevant capabilities *directly from the driver* is intentionally **
 
 A compile-time table (a `const` slice, or an embedded RON file validated by a unit test) mapping `(u16 vendor_id, u16 device_id)` → `DeviceCapabilityEntry { model_name, arch, fp16, bf16, flash_attention }`. It is deliberately hardcoded and must be updated as new GPUs ship; the update procedure is documented alongside it. Because torch is authoritative at runtime (§5.4), a missing or stale entry degrades only pre-spawn *display* for that card — never the correctness of a running job. **No VRAM values are stored in the table.**
 
+### 5.6 SeedLoader and `backend/seeds/`
+
+The `device_capabilities` SQLite table is populated from SQL seed files in `backend/seeds/` rather than from a compiled-in Rust const, so the data can be updated without a recompile. `anvilml_registry::seed_loader::run(pool, seeds_dir)` runs at startup after migrations:
+
+1. Bootstraps a `seed_history` table (`CREATE TABLE IF NOT EXISTS`) — self-managed, not in migrations.
+2. For each `.sql` file in `seeds_dir`: parses two required header directives (`-- anvil:seed_table <name>` and `-- anvil:seed_strategy <replace_all|merge>`); computes SHA256 of the file content; skips if the hash matches `seed_history`; otherwise executes in a single transaction.
+   - `replace_all`: `DELETE FROM <table>` then all INSERTs then `seed_history` upsert.
+   - `merge`: `INSERT OR REPLACE` statements only then `seed_history` upsert.
+3. A missing `anvil:seed_table` directive is a fatal startup error.
+
+`backend/seeds/devices.sql` is the first seed file; it uses `replace_all` and contains `INSERT OR REPLACE` rows for all known NVIDIA and AMD SKUs. It ships co-located with the binary in release packages. In debug builds, if `<exe_dir>/seeds` does not exist the loader falls back to the workspace-relative `backend/seeds/` path.
+
+The `seeds_path` config field (default `<exe_dir>/seeds`; env `ANVILML_SEEDS_PATH`; CLI `--seeds-path`) overrides the resolved directory.
+
 ### 5.6 Rules
 
 - Per-device enumeration/probe failures are logged at `warn` and skipped; they never abort startup.
@@ -546,28 +603,38 @@ Intel (IPEX), Apple MPS, and AMD DirectML are **deferred** (§25); `DeviceType` 
 
 ## 6. Python Environment (`venv_path`)
 
-AnvilML **does not manage** the Python virtual environment; it only consumes it. This keeps the heavy, hardware-specific ML stack under explicit user control and out of the Rust build.
-
-The `venv_path` config field (default `./venv`, relative to the config file) points to a user-managed venv. The launcher resolves the interpreter as:
+The `venv_path` config field (default `./venv`, relative to the config file) points to the Python virtual environment. The launcher resolves the interpreter as:
 
 - Linux/macOS: `{venv_path}/bin/python3`
 - Windows: `{venv_path}\Scripts\python.exe`
 
-Provisioning is done once by the user via the checked-in scripts (`backend/scripts/install_worker_deps.sh` / `.ps1`), which detect CUDA/ROCm/CPU and OS, then install the matching torch build on top of `base.txt`. On **Windows + ROCm** this installs AMD's *PyTorch on Windows* package (ROCm ≥ 7.2) rather than the Linux pip ROCm index. See §21.4.
+### 6.1 Auto-Provisioning on First Run
 
-### 6.1 Preflight Check
+On startup, if the venv is absent or `import torch` fails (and `ANVILML_WORKER_MOCK` is unset), AnvilML automatically provisions the venv by spawning the checked-in provisioning script as a background child process (`anvilml-worker::provisioner::provision`). The binary **binds the HTTP server immediately** before provisioning completes — the API is responsive at `:8488` throughout.
 
-At startup, before spawning workers:
+Provisioning state is surfaced via:
+- `GET /v1/system/env` → `EnvReport.provisioning` field (`NotStarted → InProgress → Ready / Failed`)
+- `WS /v1/events` → `provisioning.progress` frames
 
-1. Verify the resolved interpreter exists and is executable. If not → all workers `Dead` with reason `python_missing`; server still starts; `POST /v1/jobs` returns `503` (`workers_unavailable`).
+`POST /v1/jobs` returns `503` (`provisioning`) while `ProvisioningState` is `NotStarted` or `InProgress`, and `503` (`workers_unavailable`) if it reaches `Failed`. Jobs are accepted normally once `Ready`. The `WorkerPool` is spawned automatically when provisioning reaches `Ready`.
+
+### 6.2 Provisioning Scripts
+
+`backend/scripts/install_worker_deps.sh` (Linux/macOS) and `.ps1` (Windows) are the provisioning scripts. AnvilML invokes them automatically on first run; they may also be run manually for venv repair or to swap torch versions without restarting the server. See §21.4 for the full script logic.
+
+### 6.3 Preflight Check
+
+At startup (before or during the provisioning decision):
+
+1. Verify the resolved interpreter exists and is executable. If not → `reason = "python_missing"`.
 2. Run `python --version`; warn (do not abort) if not `Python 3.12.x`.
-3. Run `python -c "import torch; print(torch.__version__)"` with `ANVILML_WORKER_MOCK` unset. On failure → workers `Dead` with reason `torch_unavailable`; server starts; job submission returns `503` until repaired.
+3. Run `python -c "import torch; print(torch.__version__)"` with `ANVILML_WORKER_MOCK` unset. On failure → `reason = "torch_unavailable"`.
 
-`GET /v1/system/env` reports `EnvReport { python_path, python_version, torch_version, preflight_ok, reason }` so the frontend can surface environment health.
+`GET /v1/system/env` reports the full `EnvReport` including `preflight_ok`, `reason`, and `provisioning` state.
 
-### 6.2 Repair Flow
+### 6.4 Repair Flow
 
-The user edits the venv independently (install nightly torch, swap ROCm version, etc.). AnvilML re-runs preflight and re-detects on next startup, or on demand via `POST /v1/workers/:id/restart` (§8.5), which respawns the worker and re-runs `InitializeHardware`.
+To repair a broken venv without restarting the server: delete and recreate the venv manually (or re-run the provisioning script), then call `POST /v1/workers/:id/restart`. The restart re-runs preflight and re-sends `InitializeHardware` to the worker.
 
 ---
 
@@ -821,7 +888,8 @@ pub struct AppState {
 | :-- | :-- | :-- | :-- |
 | GET | `/health` | Liveness probe | 200 `{ status, version, uptime_s }` |
 | GET | `/v1/system` | Full hardware info | 200 `HardwareInfo` |
-| GET | `/v1/system/env` | Python environment health | 200 `EnvReport` |
+| GET | `/v1/system/env` | Python environment health + provisioning state | 200 `EnvReport` |
+| GET | `/v1/system/versions` | Per-component version report | 200 `ComponentVersions` |
 | POST | `/v1/jobs` | Submit job (validates graph) | 202 `SubmitJobResponse` |
 | GET | `/v1/jobs` | List jobs (`?status=`, `?limit=`, `?before=`) | 200 `Vec<Job>` |
 | GET | `/v1/jobs/:id` | Get one job | 200 `Job` |
@@ -837,6 +905,10 @@ pub struct AppState {
 | GET | `/v1/artifacts/:hash` | Serve the PNG | 200 `image/png` |
 
 All list endpoints honour `?limit=` (default 100, max 1000) and `?before=<iso8601>` cursor pagination.
+
+**`/health` version field.** Reports the workspace release version (`[workspace.package] version` in `Cargo.toml`), not the backend crate version. This is the canonical way to determine which AnvilML release is running.
+
+**`GET /v1/system/versions` response.** Returns `ComponentVersions` (§4.5) with each crate's `pub const VERSION`, the workspace release version as `anvilml`, and the Python worker's `__version__` as `python_worker` (read from `worker/__init__.py` at startup; `null` if absent).
 
 ### 10.4 WebSocket Route
 
@@ -1076,15 +1148,19 @@ Flags override config (highest precedence). `--help` prints usage. `--print-hard
 ```
 1.  Parse CLI; load + merge config (defaults → toml → env → flags).
 2.  Init tracing subscriber (§19).
-3.  Open SqlitePool; set PRAGMAs; run sqlx migrations.
+3.  Open SqlitePool; set PRAGMAs; run sqlx migrations; run SeedLoader (§5.6).
 4.  Reset ghost jobs: UPDATE jobs SET status='Failed', error='server_restart'
     WHERE status IN ('Running','Queued').
 5.  Detect hardware (§5) → HardwareInfo.
-6.  Python preflight (§6.1) → EnvReport.
+6.  Python preflight (§6.3) → EnvReport (initial).
 7.  Build registry; perform initial model scan (async; non-blocking for server bind).
-8.  Spawn WorkerPool (one per device, or one CPU worker). Send InitializeHardware to each.
-9.  Build AppState; start scheduler dispatch loop; start system.stats tick.
-10. Bind axum server on host:port. (If preflight failed, server still binds; jobs 503.)
+8.  If venv absent or torch unavailable AND ANVILML_WORKER_MOCK unset:
+      Set EnvReport.provisioning = InProgress; tokio::spawn provisioner::provision.
+      (WorkerPool deferred until provisioning reaches Ready.)
+    Else:
+      Spawn WorkerPool (one per device, or one CPU worker). Send InitializeHardware to each.
+9.  Build AppState (includes ComponentVersions); start scheduler dispatch loop; start system.stats tick.
+10. Bind axum server on host:port. (API immediately responsive; jobs 503 until provisioning Ready.)
 11. Unless --no-browser or Headless: open the default browser at http://host:port.
 12. Await shutdown signal.
 ```
@@ -1131,6 +1207,7 @@ Uniform error body:
 | Cancel a terminal job | 409 | `job_not_cancellable` |
 | Delete a running/queued job | 409 | `job_active` |
 | Worker environment unhealthy / shutting down | 503 | `workers_unavailable` |
+| Job submitted while provisioning is NotStarted or InProgress | 503 | `provisioning` |
 | Malformed request body / query | 400 | `bad_request` |
 | Internal error | 500 | `internal_error` |
 
@@ -1251,14 +1328,15 @@ cargo run -p anvilml-openapi          # regenerate backend/openapi.json
 5. Print resolved torch version + detected device for verification.
 ```
 
-These are run once by the user; AnvilML never invokes them automatically.
+These scripts are invoked automatically by the provisioner on first run (§6.1) and may also be run manually for repair or to swap torch versions without restarting the server.
 
 ### 21.5 Runtime Directory Layout (working directory)
 
 ```
 ./anvilml            (binary)
 ./anvilml.toml            (config)
-./venv/                   (user-managed Python env)
+./seeds/                  (SQL seed files — devices.sql)
+./venv/                   (Python env — auto-provisioned on first run)
 ./frontend/               (custom frontend dist, only if Local mode; not BloomeryUI)
 ./models/                 (diffusion/, vae/, lora/, … per model_dirs)
 ./artifacts/{ab}/{hash}.png
@@ -1266,9 +1344,35 @@ These are run once by the user; AnvilML never invokes them automatically.
 ./logs/worker-{n}.log
 ```
 
-### 21.6 Release Artifact
+### 21.6 Release Artifact & Automation
 
-A single self-contained Rust binary per OS/arch (`x86_64`/`aarch64` × Linux/Windows/macOS). The binary plus `anvilml.toml`, the `worker/` directory, and the provisioning scripts constitute a release. The venv and models are provisioned by the user post-install.
+**Product release version:** `[workspace.package] version` in the workspace root `Cargo.toml`. This value is independent of per-crate versions. Bumping it on `main` is the sole trigger for a release.
+
+**Release pipeline:**
+
+1. `release-tag.yml` (triggered on push to `main`) reads `[workspace.package] version` at `HEAD` vs `HEAD~1`. If changed, creates and pushes annotated tag `v<new>`. Unchanged pushes are no-ops.
+2. `release.yml` (triggered on `v*` tag push):
+   - **build-linux** (ubuntu-latest): `cargo build --release --target x86_64-unknown-linux-gnu -p anvilml`. Packages into `anvilml-<version>-linux-x64.zip`.
+   - **build-windows** (windows-latest): `cargo build --release --target x86_64-pc-windows-msvc -p anvilml`. Packages into `anvilml-<version>-windows-x64.zip`.
+   - **sign** (ubuntu): generates `SHA256SUMS` covering both zips plus detached GPG signatures (`.asc` per zip + `SHA256SUMS.asc`) using `ANVILML_GPG_KEY` / `ANVILML_GPG_PASSPHRASE` from repo secrets. If secrets absent, produces `SHA256SUMS` and warns; does not fail the release.
+   - **publish**: creates GitHub Release titled `AnvilML <version>`; attaches both zips, `SHA256SUMS`, and all `.asc` signatures; auto-generates release notes (commits since the previous tag); marks pre-release if version contains a hyphen suffix (e.g. `0.2.0-rc1`).
+
+**Release zip contents** (both platforms):
+```
+anvilml[.exe]
+anvilml.toml                (frontend.mode = "headless")
+seeds/devices.sql
+worker/                     (full Python source + requirements/*.txt baseline)
+scripts/install_worker_deps.{sh,ps1}
+backend/openapi.json
+dist/QUICKSTART.md
+LICENSE
+models/diffusion/ models/lora/ models/vae/ models/controlnet/
+models/clip/ models/unet/ models/upscale/  (each with README.txt)
+logs/  artifacts/           (empty, with .gitkeep)
+```
+
+Release documentation: `docs/RELEASE.md`.
 
 ---
 
@@ -1276,16 +1380,17 @@ A single self-contained Rust binary per OS/arch (`x86_64`/`aarch64` × Linux/Win
 
 ### 22.1 First Run
 
-1. Place the binary, `worker/`, and scripts in a working directory; create `anvilml.toml` (or rely on defaults).
-2. Run the provisioning script to build `./venv` with the correct torch backend.
+1. Extract the release zip to a working directory. Ensure Python 3.12 is installed (`python3.12` on Linux, `py -3.12` on Windows).
+2. Start `./anvilml` (or `anvilml.exe`). The binary binds `http://127.0.0.1:8488` immediately. On first run with no venv, AnvilML auto-provisions the Python venv in the background. Progress is visible via `GET /v1/system/env` (`.provisioning` field) and `WS /v1/events` (`provisioning.progress` frames). Jobs return `503 provisioning` until `Ready`.
 3. Drop model files into the configured `model_dirs`.
-4. Start `./anvilml`. Verify `GET /health` and `GET /v1/system/env` (`preflight_ok = true`).
+4. Once `GET /v1/system/env` reports `provisioning = "Ready"`, submit jobs normally.
 
 ### 22.2 Common Failure Modes
 
 | Symptom | Likely cause | Resolution |
 | :-- | :-- | :-- |
-| Jobs return `503 workers_unavailable` | Preflight failed (`python_missing` / `torch_unavailable`) | Re-run provisioning; check `GET /v1/system/env`; `POST /v1/workers/:id/restart`. |
+| Jobs return `503 provisioning` | Provisioning in progress | Wait; monitor `GET /v1/system/env` `.provisioning` |
+| Jobs return `503 workers_unavailable` | Preflight failed or provisioning `Failed` | Check `GET /v1/system/env`; repair venv; `POST /v1/workers/:id/restart`. |
 | Worker repeatedly `Respawning` | Native crash on load (bad wheel, driver mismatch) | Inspect `logs/worker-{n}.log`; run `test_inference.py` to reproduce in isolation. |
 | Job `Failed: cuda_oom` | Model + working set exceeds VRAM | Lower resolution/steps; rely on pipeline-cache eviction; use a smaller dtype. |
 | No GPU detected | GPU driver / Vulkan runtime not installed (Vulkan loader missing), or enumeration failed | Install the GPU driver (it bundles the Vulkan runtime); confirm with `anvilml --print-hardware`; or set `hardware_override` in `anvilml.toml`. |
@@ -1344,6 +1449,7 @@ The milestone groupings below are a higher-level capability summary that the pha
 | **M4 — End-to-end & Server Surface** | 014–020 | Artifact storage; full job lifecycle over WS; cancellation; job/artifact management; worker restart API + preflight; frontend serving; OpenAPI + launcher polish. | Completed job's PNG downloads via REST; cancel + delete work; `openapi.json` diff gate green; binary opens browser when a custom frontend is configured (headless default opens none). |
 | **M5 — Python Worker (ZiT)** | 021 | `worker_main`, `executor`, `base`/registry, `pipeline_cache`, ZiT nodes + `SaveImage`, mock mode + parity test. | `Execute→Progress→ImageReady→Completed` in mock; ZiT end-to-end smoke on real hardware. |
 | **M6 — SDXL & Hardening** | 022 | SDXL nodes; cancel cooperative path end-to-end; OOM trap; crash-recovery + full REST integration tests; provisioning scripts; debug harness. | Both pipelines run; cancel + crash-recovery smoke pass; CI fully green on Linux and Windows. |
+| **M7 — Distribution** | 023–025 | Auto-provisioning with background venv install + live state; workspace release version + `GET /v1/system/versions`; signed cross-platform GitHub Release zips (SHA256SUMS + GPG); mdBook documentation site on GitHub Pages. | Clean run: API up immediately; `provisioning.progress` → Ready; version bump → published zips; docs site live. |
 
 Frontend (BloomeryUI) work proceeds in parallel against the committed `openapi.json` and is gated by its own repo.
 
@@ -1365,9 +1471,12 @@ Frontend (BloomeryUI) work proceeds in parallel against the committed `openapi.j
 | Term | Meaning |
 | :-- | :-- |
 | **Artifact** | A content-addressed output file (PNG) produced by a job. |
+| **ComponentVersions** | Aggregate type reporting the version of every crate, the workspace release version, and the Python worker version. Returned by `GET /v1/system/versions`. |
 | **Edge reference** | A node input pointing to another node's output: `{ node_id, output_slot }`. |
 | **ManagedWorker** | Rust supervisor wrapper around one Python child process. |
 | **Pipeline cache** | In-worker LRU of loaded diffusion pipelines keyed by `(model_id, dtype)`. |
+| **ProvisioningState** | `NotStarted \| InProgress \| Ready \| Failed` — lifecycle of the background venv provisioning step. |
+| **Release version** | `[workspace.package] version` in `Cargo.toml`; the single value bumped to trigger a release (phases 024). |
 | **ValidatedGraph** | Newtype proving a graph passed DAG validation; the only enqueueable graph form. |
 | **VramLedger** | Per-device free-VRAM tracker used for dispatch ranking (advisory, not a gate). |
 | **Worker** | A Python inference process; one per device. |
@@ -1388,6 +1497,8 @@ Tracked, intentionally out of MVP:
 7. **Artifact refcounting.** If identical hashes ever span jobs, deletion must refcount; MVP deletes directly.
 8. **Multi-job-per-GPU.** Currently one job per worker; concurrent jobs on a single large GPU would need per-job VRAM partitioning and a richer ledger.
 9. **Node parameter exposure.** A `GET /v1/nodes` returning each node's slots + tunable defaults (from `worker/defaults.py`) so frontends render forms without hardcoding numbers.
+10. **Authenticode / cosign signing.** Real code-signing for Windows SmartScreen trust and verifiable Linux binaries. Current release uses GPG detached signatures only.
+11. **Worker-dependency update facility.** A built-in mechanism for updating `worker/requirements/*.txt` and re-provisioning in place after a release, without requiring a full binary upgrade.
 
 ---
 

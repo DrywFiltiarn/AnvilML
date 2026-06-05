@@ -29,6 +29,7 @@ artifact_dir = "./artifacts"
 db_path = "./anvilml.db"
 venv_path = "./venv"
 worker_log_dir = "./logs"
+# seeds_path = "./seeds"  # default: <exe_dir>/seeds; falls back to backend/seeds/ in debug builds
 num_threads = 14
 num_interop_threads = 4
 
@@ -70,14 +71,15 @@ underscores (`__`). All variables are optional; built-in defaults apply when uns
 
 ### 3.1 Server & Storage
 
-| Variable              | Config field      | Default              | Notes                              |
-|-----------------------|-------------------|----------------------|------------------------------------|
-| `ANVILML_HOST`        | `host`            | `127.0.0.1`          | Bind address                       |
-| `ANVILML_PORT`        | `port`            | `8488`               | HTTP port                          |
-| `ANVILML_DB_PATH`     | `db_path`         | `./anvilml.db`       | SQLite database path               |
-| `ANVILML_ARTIFACT_DIR`| `artifact_dir`    | `./artifacts`        | Where generated images are stored  |
-| `ANVILML_VENV_PATH`   | `venv_path`       | `./venv`             | Python venv root (user-managed)    |
-| `ANVILML_WORKER_LOG_DIR` | `worker_log_dir` | `./logs`           | Worker stderr capture directory    |
+| Variable                 | Config field      | Default              | Notes                              |
+|--------------------------|-------------------|----------------------|------------------------------------|
+| `ANVILML_HOST`           | `host`            | `127.0.0.1`          | Bind address                       |
+| `ANVILML_PORT`           | `port`            | `8488`               | HTTP port                          |
+| `ANVILML_DB_PATH`        | `db_path`         | `./anvilml.db`       | SQLite database path               |
+| `ANVILML_ARTIFACT_DIR`   | `artifact_dir`    | `./artifacts`        | Where generated images are stored  |
+| `ANVILML_VENV_PATH`      | `venv_path`       | `./venv`             | Python venv root                   |
+| `ANVILML_WORKER_LOG_DIR` | `worker_log_dir`  | `./logs`             | Worker stderr capture directory    |
+| `ANVILML_SEEDS_PATH`     | `seeds_path`      | `<exe_dir>/seeds`    | SQL seed files directory           |
 
 ### 3.2 Threading
 
@@ -148,14 +150,14 @@ worker child process. Do not set these manually.
 
 ## 4. Python Venv
 
-The `venv_path` directory is **user-managed**. AnvilML does not create or modify it;
-it only resolves the interpreter from it.
+The `venv_path` directory is provisioned automatically by AnvilML on first run if it is absent
+or `import torch` fails. The server binds immediately and the API is responsive at `:8488`
+throughout provisioning. State is observable via `GET /v1/system/env` (`.provisioning` field)
+and `WS /v1/events` (`provisioning.progress` frames). Jobs return `503 provisioning` until
+provisioning reaches `Ready`.
 
-**Interpreter resolution:**
-- Linux / macOS: `{venv_path}/bin/python3`
-- Windows: `{venv_path}\Scripts\python.exe`
+The provisioning scripts may also be run manually for venv repair or to swap torch versions:
 
-**Provisioning scripts (run once, before starting AnvilML):**
 ```bash
 # Linux / macOS
 bash backend/scripts/install_worker_deps.sh
@@ -163,6 +165,10 @@ bash backend/scripts/install_worker_deps.sh
 # Windows
 powershell -ExecutionPolicy Bypass -File backend\scripts\install_worker_deps.ps1
 ```
+
+**Interpreter resolution:**
+- Linux / macOS: `{venv_path}/bin/python3`
+- Windows: `{venv_path}\Scripts\python.exe`
 
 These scripts detect the available hardware backend (CUDA / ROCm / CPU) **and the OS** — SDK-free,
 via `anvilml --print-hardware` (Vulkan/DXGI enumeration; falls back to PCI sysfs on Linux or
@@ -180,7 +186,7 @@ of `base.txt`:
 RX 7000/9000-series GPU or select Ryzen AI APU; hardware outside AMD's supported list falls back to
 CPU. (Authoritative: `ANVILML_DESIGN.md` §5, §6, §21.)
 
-**Preflight checks at startup (§6.1):**
+**Preflight checks at startup (§6.4):**
 1. Interpreter exists and is executable.
 2. Python version is `3.12.x` (warning only if not).
 3. `import torch` succeeds (failure → workers `Dead`, server starts, jobs return `503`).
