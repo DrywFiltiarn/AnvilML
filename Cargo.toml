@@ -41,6 +41,7 @@ uuid = { version = "1.23.2", features = ["serde", "v4"] }
 walkdir = "2.5.0"
 http-body-util = "0.1"
 bytes = "1"
+anvilml-registry = { path = "crates/anvilml-registry" }
 
 # Dev dependencies (shared across multiple crates)
 serial_test = "3.5.0"

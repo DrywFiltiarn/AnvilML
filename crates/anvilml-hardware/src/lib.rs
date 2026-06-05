@@ -209,7 +209,7 @@ fn enumerate_gpus() -> Vec<GpuDevice> {
 /// 2. If `mock-hardware` feature is enabled → use [`MockDetector`] directly.
 /// 3. Else enumerate via [`VulkanDetector`]; if empty, fall back to platform-specific
 ///    detectors (DXGI on Windows, sysfs+NVML on Unix).
-/// 4. For each enumerated device, call [`device_db::resolve_caps`] to populate
+/// 4. For each enumerated device, call [`device_db::resolve_caps_from_row`] to populate
 ///    name/arch/caps from the PCI-ID capability table.
 /// 5. Map PCI vendor ID → [`DeviceType`]: `0x10DE` = Cuda, `0x1002` = Rocm,
 ///    `0x8086` or unknown = Cpu.
@@ -250,7 +250,23 @@ pub fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, AnvilError
 
         // Resolve capabilities from device DB.
         for dev in &mut gpus {
-            device_db::resolve_caps(dev, dev.pci_vendor_id, dev.pci_device_id);
+            let row = device_db::SEED_ENTRIES
+                .iter()
+                .find(|e| e.vendor_id == dev.pci_vendor_id && e.device_id == dev.pci_device_id)
+                .map(|e| anvilml_registry::DeviceCapabilityRow {
+                    vendor_id: e.vendor_id,
+                    device_id: e.device_id,
+                    model_name: e.model_name.to_string(),
+                    arch: e.arch.to_string(),
+                    fp32: e.fp32,
+                    fp16: e.fp16,
+                    bf16: e.bf16,
+                    fp8: e.fp8,
+                    fp4: e.fp4,
+                    nvfp4: e.nvfp4,
+                    flash_attn: e.flash_attention,
+                });
+            device_db::resolve_caps_from_row(dev, row.as_ref());
         }
 
         let host = populate_host_info();
@@ -277,7 +293,23 @@ pub fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, AnvilError
         // Resolve capabilities from device DB for each enumerated device.
         for dev in &mut gpus {
             if dev.pci_vendor_id != 0 || dev.pci_device_id != 0 {
-                device_db::resolve_caps(dev, dev.pci_vendor_id, dev.pci_device_id);
+                let row = device_db::SEED_ENTRIES
+                    .iter()
+                    .find(|e| e.vendor_id == dev.pci_vendor_id && e.device_id == dev.pci_device_id)
+                    .map(|e| anvilml_registry::DeviceCapabilityRow {
+                        vendor_id: e.vendor_id,
+                        device_id: e.device_id,
+                        model_name: e.model_name.to_string(),
+                        arch: e.arch.to_string(),
+                        fp32: e.fp32,
+                        fp16: e.fp16,
+                        bf16: e.bf16,
+                        fp8: e.fp8,
+                        fp4: e.fp4,
+                        nvfp4: e.nvfp4,
+                        flash_attn: e.flash_attention,
+                    });
+                device_db::resolve_caps_from_row(dev, row.as_ref());
             } else {
                 // No PCI IDs available — set fallback defaults.
                 dev.caps = InferenceCaps::default();
