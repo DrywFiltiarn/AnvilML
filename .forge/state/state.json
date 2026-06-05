@@ -74,16 +74,17 @@
     "P8-A3",
     "P8-A4",
     "P900-A1",
-    "P900-A2"
+    "P900-A2",
+    "P900-A3"
   ],
-  "in_progress": "P900-A3",
+  "in_progress": "P900-A4",
   "plan_approved": true,
-  "current_plan": "1. Locate the `enumerate_gpus()` function (lines 111\u2013202) in `crates/anvilml-hardware/src/lib.rs`. This function is behind `#[cfg(not(feature = \"mock-hardware\"))]`, so it is never compiled under `--features mock-hardware`.\n\n2. Inside the `Ok(_)` arm of the Vulkan detector (line 115\u2013121), after the existing `tracing::warn!` call and before the closing `}` of that match arm \u2014 specifically, after `Vec::new()` is constructed but before the function continues to the fallback blocks \u2014 insert two cfg-gated debug log calls.\n\n   The placement is at the top of the `Ok(_)` arm (the \"empty result\" path), ensuring the log fires only when Vulkan returned zero devices and control will flow into a fallback detector:\n\n   ```rust\n   Ok(_) => {\n       tracing::warn!(\n           detector = \"Vulkan\",\n           \"Vulkan detector returned empty device list\"\n       );\n       #[cfg(windows)]\n       tracing::debug!(fallback = \"dxgi\", \"Vulkan returned no devices; using DXGI\");\n       #[cfg(unix)]\n       tracing::debug!(fallback = \"sysfs_nvml\", \"Vulkan returned no devices; using sysfs+NVML\");\n       Vec::new()\n   }\n   ```\n\n3. The `#[cfg(windows)]` and `#[cfg(unix)]` guards ensure each debug call is only compiled on its target platform. On Linux, only the unix variant compiles; on Windows, only the windows variant compiles. macOS (which has neither) gets neither call \u2014 consistent with the existing code which returns an empty vec for unsupported platforms.\n\n4. Verify the log uses structured `=` notation per \u00a711.6: `fallback = \"dxgi\"` / `fallback = \"sysfs_nvml\"`.",
+  "current_plan": "1. Open `crates/anvilml-hardware/src/device_db.rs` and locate the `resolve_caps_from_row` function (lines 56\u2013102).\n2. **Hit path** \u2014 after line 81 (`dev.enumeration_source = EnumerationSource::DeviceTable;`), insert:\n   ```rust\n   tracing::debug!(\n       vendor_id = %format_args!(\"0x{:04X}\", dev.pci_vendor_id),\n       device_id = %format_args!(\"0x{:04X}\", dev.pci_device_id),\n       name = %dev.name,\n       source = \"DeviceTable\",\n       \"caps resolved\"\n   );\n   ```\n3. **Miss path** \u2014 before line 92 (the existing `tracing::warn!` call), insert the same debug call but with `source = \"Fallback\"`:\n   ```rust\n   tracing::debug!(\n       vendor_id = %format_args!(\"0x{:04X}\", dev.pci_vendor_id),\n       device_id = %format_args!(\"0x{:04X}\", dev.pci_device_id),\n       name = %dev.name,\n       source = \"Fallback\",\n       \"caps resolved\"\n   );\n   ```\n4. Verify `tracing` is already a dependency (confirmed in `Cargo.toml` line 15: `tracing = { workspace = true }`). No Cargo.toml changes needed.\n5. Run the acceptance criterion: `cargo test -p anvilml-hardware --features mock-hardware` \u2014 must exit 0 with no regressions.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-06T00:07:11+0200",
-  "plan_approval_message_id": "1512578069595029635",
+  "last_updated": "2026-06-06T00:24:42+0200",
+  "plan_approval_message_id": "1512581763824877651",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512578067820974113",
+  "plan_report_message_id": "1512581762096824461",
   "impl_report_message_id": null
 }

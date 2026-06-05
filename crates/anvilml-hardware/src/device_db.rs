@@ -79,6 +79,13 @@ pub fn resolve_caps_from_row(
             };
             dev.capabilities_source = CapabilitySource::DeviceTable;
             dev.enumeration_source = EnumerationSource::DeviceTable;
+            tracing::debug!(
+                vendor_id = %format_args!("0x{:04X}", dev.pci_vendor_id),
+                device_id = %format_args!("0x{:04X}", dev.pci_device_id),
+                name = %dev.name,
+                source = "DeviceTable",
+                "caps resolved"
+            );
         }
         None => {
             if dev.name.is_empty() || is_generic_driver_name(&dev.name) {
@@ -88,6 +95,13 @@ pub fn resolve_caps_from_row(
                 );
                 dev.db_group_name = None;
             }
+            tracing::debug!(
+                vendor_id = %format_args!("0x{:04X}", dev.pci_vendor_id),
+                device_id = %format_args!("0x{:04X}", dev.pci_device_id),
+                name = %dev.name,
+                source = "Fallback",
+                "caps resolved"
+            );
             // If the device already has a specific name, keep it unchanged.
             tracing::warn!(
                 detector = "DeviceDB",
