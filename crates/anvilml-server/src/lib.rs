@@ -110,12 +110,10 @@ mod tests {
         std::env::set_var("ANVILML_MOCK_VRAM_MIB", "12288");
 
         let pool = anvilml_registry::open_in_memory().await.unwrap();
-        let hw_info = anvilml_hardware::detect_all_devices(
-            &anvilml_core::ServerConfig::default(),
-            &pool,
-        )
-        .await
-        .expect("detect_all_devices should succeed");
+        let hw_info =
+            anvilml_hardware::detect_all_devices(&anvilml_core::ServerConfig::default(), &pool)
+                .await
+                .expect("detect_all_devices should succeed");
 
         let broadcaster = Arc::new(EventBroadcaster::new(16));
         let state = AppState::new_with_hardware("0.1.0", hw_info, None, None, None, broadcaster);

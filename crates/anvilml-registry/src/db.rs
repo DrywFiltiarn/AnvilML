@@ -36,7 +36,9 @@ static MIGRATIONS: Migrator = sqlx::migrate!("../../backend/migrations");
 /// per-connection in SQLite — the migrator must run on the same connection
 /// that serves queries.
 pub async fn open_in_memory() -> Result<SqlitePool, AnvilError> {
-    let opts = SqliteConnectOptions::new().filename(Path::new(":memory:")).create_if_missing(true);
+    let opts = SqliteConnectOptions::new()
+        .filename(Path::new(":memory:"))
+        .create_if_missing(true);
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(opts)

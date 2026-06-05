@@ -470,7 +470,7 @@ mod tests {
         assert_eq!(info.gpus[0].vram_total_mib, 24576);
     }
 
-   /// detect_all_devices with mock-hardware feature must return a Mock device.
+    /// detect_all_devices with mock-hardware feature must return a Mock device.
     #[cfg(feature = "mock-hardware")]
     #[tokio::test]
     #[serial]
@@ -480,7 +480,9 @@ mod tests {
 
         let cfg = ServerConfig::default();
         let pool = anvilml_registry::open_in_memory().await.unwrap();
-        let info = detect_all_devices(&cfg, &pool).await.expect("detect_all_devices should succeed");
+        let info = detect_all_devices(&cfg, &pool)
+            .await
+            .expect("detect_all_devices should succeed");
 
         assert_eq!(info.gpus.len(), 1);
         assert!(matches!(info.gpus[0].device_type, DeviceType::Cuda));
@@ -500,7 +502,9 @@ mod tests {
 
         let cfg = ServerConfig::default();
         let pool = anvilml_registry::open_in_memory().await.unwrap();
-        let info = detect_all_devices(&cfg, &pool).await.expect("detect_all_devices should succeed");
+        let info = detect_all_devices(&cfg, &pool)
+            .await
+            .expect("detect_all_devices should succeed");
 
         assert_eq!(info.gpus.len(), 1);
         assert!(matches!(info.gpus[0].device_type, DeviceType::Rocm));
@@ -648,7 +652,7 @@ mod tests {
         ));
     }
 
-  /// Mock device new fields must be correct (mock-hardware feature).
+    /// Mock device new fields must be correct (mock-hardware feature).
     #[cfg(feature = "mock-hardware")]
     #[tokio::test]
     #[serial]
@@ -657,7 +661,9 @@ mod tests {
 
         let cfg = ServerConfig::default();
         let pool = anvilml_registry::open_in_memory().await.unwrap();
-        let info = detect_all_devices(&cfg, &pool).await.expect("detect_all_devices should succeed");
+        let info = detect_all_devices(&cfg, &pool)
+            .await
+            .expect("detect_all_devices should succeed");
 
         let dev = &info.gpus[0];
         assert!(matches!(dev.enumeration_source, EnumerationSource::Mock));
@@ -676,7 +682,9 @@ mod tests {
 
         let cfg = ServerConfig::default();
         let pool = anvilml_registry::open_in_memory().await.unwrap();
-        let info = detect_all_devices(&cfg, &pool).await.expect("detect_all_devices should succeed");
+        let info = detect_all_devices(&cfg, &pool)
+            .await
+            .expect("detect_all_devices should succeed");
 
         assert!(matches!(
             info.gpus[0].enumeration_source,
@@ -693,7 +701,9 @@ mod tests {
 
         let cfg = ServerConfig::default();
         let pool = anvilml_registry::open_in_memory().await.unwrap();
-        let info = detect_all_devices(&cfg, &pool).await.expect("detect_all_devices should succeed");
+        let info = detect_all_devices(&cfg, &pool)
+            .await
+            .expect("detect_all_devices should succeed");
 
         assert!(matches!(info.gpus[0].device_type, DeviceType::Rocm));
     }
@@ -708,9 +718,10 @@ mod tests {
 
         let cfg = ServerConfig::default();
         let pool = anvilml_registry::open_in_memory().await.unwrap();
-        let info = detect_all_devices(&cfg, &pool).await.expect("detect_all_devices should succeed");
+        let info = detect_all_devices(&cfg, &pool)
+            .await
+            .expect("detect_all_devices should succeed");
 
         assert_eq!(info.gpus[0].vram_total_mib, 32768);
     }
-
-  }
+}
