@@ -59,16 +59,17 @@
     "P7-E1",
     "P7-E2",
     "P7-E3",
-    "P7-F0"
+    "P7-F0",
+    "P7-F1"
   ],
-  "in_progress": "P7-F1",
+  "in_progress": "P7-F2",
   "plan_approved": true,
-  "current_plan": "1. **Create migration file** \u2014 Write `backend/migrations/004_device_capabilities.sql` using the exact DDL from `docs/SUPPORTED_DEVICES_DB.md` line 259\u2013276. The file must contain:\n   - `CREATE TABLE IF NOT EXISTS device_capabilities` with columns in canonical order: `vendor_id`, `device_id`, `model_name`, `arch`, `fp32`, `fp16`, `bf16`, `fp8`, `fp4`, `nvfp4`, `flash_attn`\n   - All capability columns as `INTEGER NOT NULL DEFAULT 0`; `model_name` and `arch` as `TEXT NOT NULL`\n   - Composite primary key on `(vendor_id, device_id)`\n   - Unique index `idx_device_capabilities_pci` on `(vendor_id, device_id)`\n\n2. **Extend integration test** \u2014 In `crates/anvilml-registry/tests/anvilml_registry_db.rs::test_open_creates_tables`:\n   - Update the count assertion from 3 to 4 tables (jobs, models, artifacts, device_capabilities)\n   - Add `\"device_capabilities\"` to the list of expected table names in the `IN (...)` clause\n   - Add `\"device_capabilities\"` to the individual existence check loop\n\n3. **Verify** \u2014 Run `cargo test -p anvilml-registry` and confirm exit code 0.",
+  "current_plan": "1. **Read existing patterns.** Study `store.rs` for: tuple row type alias, `sqlx_error` helper function, `sqlx::query_as` with positional column mapping, `INSERT OR REPLACE` syntax, and the `Result<T, AnvilError>` return convention. Read `db.rs` for the shared `sqlx_error` pattern (defined in `store.rs` locally, not re-exported).\n\n2. **Define `DeviceCapabilityRow`.** A plain `pub struct` with 11 fields matching the migration column order exactly. No derives needed beyond what's practical \u2014 the task description specifies field types only; follow `ModelRegistry` pattern which deserializes via `query_as` tuple mapping, not serde.\n\n3. **Define row type alias.** Create a private tuple type `DeviceCapabilityRow` mapped from SQL columns: `(i64, i64, String, String, i64, i64, i64, i64, i64, i64, i64)` \u2014 matching the 11 INTEGER/TEXT columns in `004_device_capabilities.sql`.\n\n4. **Implement `DeviceCapabilityStore::new`.** Take `SqlitePool` and store it as a field. No async needed.\n\n5. **Implement `upsert`.** Use `sqlx::query(\"INSERT OR REPLACE INTO device_capabilities (vendor_id, device_id, model_name, arch, fp32, fp16, bf16, fp8, fp4, nvfp4, flash_attn) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)\")` with `.bind()` for each field. Cast `u16 \u2192 i64` via `as i64`, cast bool \u2192 `i64` via `if x { 1 } else { 0 }`.\n\n6. **Implement `get`.** Use `sqlx::query_as(\"SELECT vendor_id, device_id, model_name, arch, fp32, fp16, bf16, fp8, fp4, nvfp4, flash_attn FROM device_capabilities WHERE vendor_id = ? AND device_id = ?\")` with `.fetch_optional`. Map tuple fields: `i64 \u2192 u16` via `as u16`, bool via `!= 0`.\n\n7. **Implement `seed`.** Begin a transaction via `pool.begin().await`. Loop over entries, calling the same `INSERT OR REPLACE` per entry. Commit and return `entries.len() as u64`. Use `sqlx::query` (not `query_as`) since we don't need to read back.\n\n8. **Update `lib.rs`.** Add `pub mod device_store;` and re-export both types: `pub use device_store::{DeviceCapabilityRow, DeviceCapabilityStore};`.\n\n9. **Write integration tests.** Create `tests/device_store.rs` with 4+ tests following the pattern in `tests/store_get.rs`: open a temp-file pool, exercise the store, assert results.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-05T12:41:53+0200",
-  "plan_approval_message_id": "1512402943029018777",
+  "last_updated": "2026-06-05T13:06:17+0200",
+  "plan_approval_message_id": "1512410994733875331",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512402941724721202",
+  "plan_report_message_id": "1512410991470575717",
   "impl_report_message_id": null
 }
