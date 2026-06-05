@@ -125,8 +125,12 @@ pub fn resolve_caps(dev: &mut GpuDevice, vendor_id: u16, device_id: u16) {
         dev.name = entry.model_name.to_string();
         dev.arch = Some(entry.arch.to_string());
         dev.caps = anvilml_core::InferenceCaps {
+            fp32: false,
             fp16: entry.fp16,
             bf16: entry.bf16,
+            fp8: false,
+            fp4: false,
+            nvfp4: false,
             flash_attention: entry.flash_attention,
         };
         dev.enumeration_source = EnumerationSource::DeviceTable;

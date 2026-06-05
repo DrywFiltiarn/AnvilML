@@ -68,8 +68,12 @@ fn map_vendor_to_device_type(vendor_id: u16) -> DeviceType {
 fn or_all_caps(caps_list: &[&InferenceCaps]) -> InferenceCaps {
     let mut result = InferenceCaps::default();
     for caps in caps_list {
+        result.fp32 |= caps.fp32;
         result.fp16 |= caps.fp16;
         result.bf16 |= caps.bf16;
+        result.fp8 |= caps.fp8;
+        result.fp4 |= caps.fp4;
+        result.nvfp4 |= caps.nvfp4;
         result.flash_attention |= caps.flash_attention;
     }
     result
@@ -354,19 +358,31 @@ mod tests {
     #[test]
     fn or_all_caps_merges() {
         let caps_a = InferenceCaps {
+            fp32: false,
             fp16: true,
             bf16: false,
+            fp8: false,
+            fp4: false,
+            nvfp4: false,
             flash_attention: false,
         };
         let caps_b = InferenceCaps {
+            fp32: false,
             fp16: false,
             bf16: true,
+            fp8: false,
+            fp4: false,
+            nvfp4: false,
             flash_attention: true,
         };
 
         let result = or_all_caps(&[&caps_a, &caps_b]);
+        assert!(result.fp32 == false);
         assert!(result.fp16);
         assert!(result.bf16);
+        assert!(result.fp8 == false);
+        assert!(result.fp4 == false);
+        assert!(result.nvfp4 == false);
         assert!(result.flash_attention);
     }
 
@@ -374,8 +390,12 @@ mod tests {
     #[test]
     fn or_all_caps_empty() {
         let result = or_all_caps(&[] as &[&InferenceCaps]);
+        assert!(!result.fp32);
         assert!(!result.fp16);
         assert!(!result.bf16);
+        assert!(!result.fp8);
+        assert!(!result.fp4);
+        assert!(!result.nvfp4);
         assert!(!result.flash_attention);
     }
 

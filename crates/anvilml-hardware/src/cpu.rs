@@ -81,8 +81,12 @@ mod tests {
         assert_eq!(dev.pci_vendor_id, 0);
         assert_eq!(dev.pci_device_id, 0);
         assert!(dev.arch.is_none());
+        assert!(!dev.caps.fp32);
         assert!(!dev.caps.fp16);
         assert!(!dev.caps.bf16);
+        assert!(!dev.caps.fp8);
+        assert!(!dev.caps.fp4);
+        assert!(!dev.caps.nvfp4);
         assert!(!dev.caps.flash_attention);
         assert!(matches!(dev.enumeration_source, EnumerationSource::Mock));
         assert!(matches!(

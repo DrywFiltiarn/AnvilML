@@ -62,12 +62,24 @@ pub struct HostInfo {
 /// Inference capability flags for detected hardware.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, ToSchema)]
 pub struct InferenceCaps {
+    /// Whether the device supports FP32 (single-precision) inference.
+    #[serde(default)]
+    pub fp32: bool,
     /// Whether the device supports FP16 (half-precision) inference.
     #[serde(default)]
     pub fp16: bool,
     /// Whether the device supports BF16 (bfloat16) inference.
     #[serde(default)]
     pub bf16: bool,
+    /// Whether the device supports FP8 inference.
+    #[serde(default)]
+    pub fp8: bool,
+    /// Whether the device supports FP4 inference.
+    #[serde(default)]
+    pub fp4: bool,
+    /// Whether the device supports NVIDIA FP4 (NVFP4) inference.
+    #[serde(default)]
+    pub nvfp4: bool,
     /// Whether the device supports Flash Attention.
     #[serde(default)]
     pub flash_attention: bool,
@@ -152,8 +164,12 @@ mod tests {
     #[test]
     fn inference_caps_defaults() {
         let caps = InferenceCaps::default();
+        assert!(!caps.fp32);
         assert!(!caps.fp16);
         assert!(!caps.bf16);
+        assert!(!caps.fp8);
+        assert!(!caps.fp4);
+        assert!(!caps.nvfp4);
         assert!(!caps.flash_attention);
     }
 
@@ -161,8 +177,12 @@ mod tests {
     #[test]
     fn inference_caps_roundtrip() {
         let caps = InferenceCaps {
+            fp32: false,
             fp16: true,
             bf16: false,
+            fp8: false,
+            fp4: false,
+            nvfp4: false,
             flash_attention: true,
         };
 
@@ -170,8 +190,12 @@ mod tests {
         let restored: InferenceCaps =
             serde_json::from_str(&json).expect("deserialize InferenceCaps");
 
+        assert_eq!(restored.fp32, false);
         assert_eq!(restored.fp16, true);
         assert_eq!(restored.bf16, false);
+        assert_eq!(restored.fp8, false);
+        assert_eq!(restored.fp4, false);
+        assert_eq!(restored.nvfp4, false);
         assert_eq!(restored.flash_attention, true);
     }
 
@@ -208,8 +232,12 @@ mod tests {
             pci_device_id: 0x20B0,
             arch: Some("8.0".to_string()),
             caps: InferenceCaps {
+                fp32: false,
                 fp16: true,
                 bf16: true,
+                fp8: false,
+                fp4: false,
+                nvfp4: false,
                 flash_attention: true,
             },
             enumeration_source: EnumerationSource::Vulkan,
@@ -228,8 +256,12 @@ mod tests {
         assert_eq!(restored.pci_vendor_id, device.pci_vendor_id);
         assert_eq!(restored.pci_device_id, device.pci_device_id);
         assert_eq!(restored.arch, device.arch);
+        assert_eq!(restored.caps.fp32, device.caps.fp32);
         assert_eq!(restored.caps.fp16, device.caps.fp16);
         assert_eq!(restored.caps.bf16, device.caps.bf16);
+        assert_eq!(restored.caps.fp8, device.caps.fp8);
+        assert_eq!(restored.caps.fp4, device.caps.fp4);
+        assert_eq!(restored.caps.nvfp4, device.caps.nvfp4);
         assert_eq!(restored.caps.flash_attention, device.caps.flash_attention);
         assert_eq!(restored.enumeration_source, device.enumeration_source);
         assert_eq!(restored.capabilities_source, device.capabilities_source);
@@ -260,8 +292,12 @@ mod tests {
         assert_eq!(restored.pci_vendor_id, 0);
         assert_eq!(restored.pci_device_id, 0);
         assert!(restored.arch.is_none());
+        assert!(!restored.caps.fp32);
         assert!(!restored.caps.fp16);
         assert!(!restored.caps.bf16);
+        assert!(!restored.caps.fp8);
+        assert!(!restored.caps.fp4);
+        assert!(!restored.caps.nvfp4);
         assert!(!restored.caps.flash_attention);
         assert!(matches!(
             restored.enumeration_source,
@@ -295,8 +331,12 @@ mod tests {
                     pci_device_id: 0x20B0,
                     arch: Some("8.0".to_string()),
                     caps: InferenceCaps {
+                        fp32: false,
                         fp16: true,
                         bf16: true,
+                        fp8: false,
+                        fp4: false,
+                        nvfp4: false,
                         flash_attention: true,
                     },
                     enumeration_source: EnumerationSource::Vulkan,
@@ -313,8 +353,12 @@ mod tests {
                     pci_device_id: 0x20B0,
                     arch: Some("8.0".to_string()),
                     caps: InferenceCaps {
+                        fp32: false,
                         fp16: true,
                         bf16: true,
+                        fp8: false,
+                        fp4: false,
+                        nvfp4: false,
                         flash_attention: true,
                     },
                     enumeration_source: EnumerationSource::Vulkan,
@@ -322,8 +366,12 @@ mod tests {
                 },
             ],
             inference_caps: InferenceCaps {
+                fp32: false,
                 fp16: true,
                 bf16: true,
+                fp8: false,
+                fp4: false,
+                nvfp4: false,
                 flash_attention: true,
             },
         };
@@ -346,14 +394,22 @@ mod tests {
             assert_eq!(a.pci_vendor_id, b.pci_vendor_id);
             assert_eq!(a.pci_device_id, b.pci_device_id);
             assert_eq!(a.arch, b.arch);
+            assert_eq!(a.caps.fp32, b.caps.fp32);
             assert_eq!(a.caps.fp16, b.caps.fp16);
             assert_eq!(a.caps.bf16, b.caps.bf16);
+            assert_eq!(a.caps.fp8, b.caps.fp8);
+            assert_eq!(a.caps.fp4, b.caps.fp4);
+            assert_eq!(a.caps.nvfp4, b.caps.nvfp4);
             assert_eq!(a.caps.flash_attention, b.caps.flash_attention);
             assert_eq!(a.enumeration_source, b.enumeration_source);
             assert_eq!(a.capabilities_source, b.capabilities_source);
         }
+        assert_eq!(restored.inference_caps.fp32, info.inference_caps.fp32);
         assert_eq!(restored.inference_caps.fp16, info.inference_caps.fp16);
         assert_eq!(restored.inference_caps.bf16, info.inference_caps.bf16);
+        assert_eq!(restored.inference_caps.fp8, info.inference_caps.fp8);
+        assert_eq!(restored.inference_caps.fp4, info.inference_caps.fp4);
+        assert_eq!(restored.inference_caps.nvfp4, info.inference_caps.nvfp4);
         assert_eq!(
             restored.inference_caps.flash_attention,
             info.inference_caps.flash_attention
@@ -379,8 +435,12 @@ mod tests {
             serde_json::from_str(&json).expect("deserialize HardwareInfo with no GPUs");
 
         assert!(restored.gpus.is_empty());
+        assert!(!restored.inference_caps.fp32);
         assert!(!restored.inference_caps.fp16);
         assert!(!restored.inference_caps.bf16);
+        assert!(!restored.inference_caps.fp8);
+        assert!(!restored.inference_caps.fp4);
+        assert!(!restored.inference_caps.nvfp4);
         assert!(!restored.inference_caps.flash_attention);
     }
 

@@ -41,16 +41,32 @@ fn print_hardware_table(hw: &HardwareInfo) {
             EnumerationSource::DeviceTable => "DB",
             EnumerationSource::Fallback => "Fallback",
         };
-        let caps_str = if dev.caps.fp16 && dev.caps.bf16 && dev.caps.flash_attention {
-            "FP16+BF16+FA"
-        } else if dev.caps.fp16 && dev.caps.bf16 {
-            "FP16+BF16"
-        } else if dev.caps.fp16 {
-            "FP16"
-        } else if dev.caps.bf16 {
-            "BF16"
-        } else {
+        let mut caps_parts: Vec<&str> = Vec::new();
+        if dev.caps.fp32 {
+            caps_parts.push("FP32");
+        }
+        if dev.caps.fp16 {
+            caps_parts.push("FP16");
+        }
+        if dev.caps.bf16 {
+            caps_parts.push("BF16");
+        }
+        if dev.caps.fp8 {
+            caps_parts.push("FP8");
+        }
+        if dev.caps.fp4 {
+            caps_parts.push("FP4");
+        }
+        if dev.caps.nvfp4 {
+            caps_parts.push("NVFP4");
+        }
+        if dev.caps.flash_attention {
+            caps_parts.push("FA");
+        }
+        let caps_str = if caps_parts.is_empty() {
             "-"
+        } else {
+            caps_parts.join("+").leak()
         };
         let arch_str = dev.arch.as_deref().unwrap_or("-");
 
@@ -73,8 +89,14 @@ fn print_hardware_table(hw: &HardwareInfo) {
 
     println!("\nInference capabilities:");
     println!(
-        "  FP16: {}  BF16: {}  Flash Attention: {}",
-        hw.inference_caps.fp16, hw.inference_caps.bf16, hw.inference_caps.flash_attention
+        "  FP32: {}  FP16: {}  BF16: {}  FP8: {}  FP4: {}  NVFP4: {}  Flash Attention: {}",
+        hw.inference_caps.fp32,
+        hw.inference_caps.fp16,
+        hw.inference_caps.bf16,
+        hw.inference_caps.fp8,
+        hw.inference_caps.fp4,
+        hw.inference_caps.nvfp4,
+        hw.inference_caps.flash_attention,
     );
 }
 
