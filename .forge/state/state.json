@@ -64,16 +64,17 @@
     "P7-F2",
     "P7-F3",
     "P7-F4",
-    "P7-G1"
+    "P7-G1",
+    "P7-G2a"
   ],
-  "in_progress": "P7-G2a",
+  "in_progress": "P7-G2b",
   "plan_approved": true,
-  "current_plan": "1. **Add error variant.** Append `SeedMissingDirective(String)` to `AnvilError` enum in `crates/anvilml-core/src/error.rs`. Add the `Display` arm `\"seed missing directive: {msg}\"`. Update the `all_variants_display` test case list to include the new variant.\n\n2. **Create `seed_loader.rs`.** Implement the module with these internal pieces:\n   - `fn parse_header(bytes: &[u8]) -> Result<(String, String), AnvilError>` \u2014 reads first non-empty lines beginning with `-- anvil:`, extracts `seed_table` and `seed_strategy` (defaults to `replace_all` if absent). Returns error if `seed_table` is missing.\n   - `fn compute_sha256(bytes: &[u8]) -> String` \u2014 uses `sha2::Sha256` and `hex::encode` to produce lowercase hex digest.\n   - `pub async fn run(pool: &SqlitePool, seeds_dir: &Path) -> Result<(), AnvilError>` \u2014 the main entry point:\n     a. Execute `CREATE TABLE IF NOT EXISTS seed_history(...)`.\n     b. Read directory entries from `seeds_dir`, filter `.sql` files, sort by filename.\n     c. For each file: read bytes \u2192 parse header \u2192 compute SHA256 \u2192 query `seed_history` for matching `filename`. If hash matches, continue to next file. Otherwise call the execution stub (no-op) then upsert `seed_history`.\n   - Execution stub: a private async fn `execute_seed(pool, _table: &str, _body: &[u8], _strategy: &str)` that returns `Ok(())` without executing any SQL.\n\n3. **Wire re-export.** Add `pub mod seed_loader;` and `pub use seed_loader::run;` to `crates/anvilml-registry/src/lib.rs`.\n\n4. **Write integration tests.** Place in `crates/anvilml-registry/tests/seed_loader.rs` (integration test file). Use `open_in_memory()` for an isolated database per test. Test cases:\n   - `test_table_bootstrap_idempotent`: call `run()` twice with same seeds dir; second call must not fail.\n   - `test_directive_parsing_hit`: write a `.sql` file with both directives, call `run()`, verify seed_history row is created.\n   - `test_directive_parsing_miss`: write a `.sql` file without `-- anvil:seed_table`, call `run()`, expect `Err(AnvilError::SeedMissingDirective)`.\n   - `test_sha256_skip_unchanged`: first run with a seed file (creates row); modify nothing; second run must skip execution (stubbed so no side effect, but the hash comparison path is exercised).",
+  "current_plan": "1. **Parse body from raw bytes.** After header directives are parsed and SHA256 computed, the remaining content after the last `-- anvil:` line is the SQL body. Strip leading/trailing whitespace.\n\n2. **Split on semicolons.** Split body by `;` into individual statement strings. Trim each. Skip empty strings.\n\n3. **Execute in single transaction.** For each strategy:\n   - `replace_all`: execute `DELETE FROM <table>` first, then each non-empty statement from the body (these are INSERT statements), finally the `seed_history` update (which is done after `execute_seed` returns).\n   - `merge`: execute each non-empty statement from the body directly (INSERT OR REPLACE).\n   - The `seed_history` UPDATE remains in the caller (`run`) to keep transaction scope clear: BEGIN \u2192 seed statements \u2192 COMMIT.\n\n4. **Transaction management.** Use `sqlx::query` for each statement. On any error, propagate it up \u2014 sqlx will handle rollback on transaction drop. No explicit ROLLBACK needed; Drop impl of `Transaction` handles it.\n\n5. **Add tests** to `tests/seed_loader.rs` using `open_in_memory()` and temporary seed files via `tempfile::TempDir`.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-05T17:21:23+0200",
-  "plan_approval_message_id": "1512472354968567979",
+  "last_updated": "2026-06-05T17:42:21+0200",
+  "plan_approval_message_id": "1512481529161453838",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512472352712032398",
+  "plan_report_message_id": "1512481526867038391",
   "impl_report_message_id": null
 }

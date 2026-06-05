@@ -70,16 +70,73 @@ fn compute_sha256(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// Extract the SQL body from raw file bytes.
+///
+/// The body is everything after the last `-- anvil:` header line,
+/// with leading and trailing whitespace stripped.
+fn extract_body(bytes: &[u8]) -> String {
+    let mut header_end = None;
+    for (i, line) in bytes.split(|&b| b == b'\n').enumerate() {
+        let trimmed = std::str::from_utf8(line).unwrap_or("").trim();
+        if trimmed.starts_with("-- anvil:") {
+            header_end = Some(i);
+        }
+    }
+
+    let start = header_end.map(|i| i + 1).unwrap_or(0);
+    bytes
+        .split(|&b| b == b'\n')
+        .skip(start)
+        .map(|line| std::str::from_utf8(line).unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
 /// Execute a single seed file against the database.
 ///
-/// This is a **stub** — it returns `Ok(())` without executing any SQL.
-/// Actual DELETE/INSERT logic will be implemented in P7-G2b.
+/// Parses the SQL body, splits on semicolons, and executes each statement
+/// within a single transaction. On any error the transaction is rolled back.
+///
+/// - `replace_all`: DELETE FROM <table> first, then INSERT statements from body.
+/// - `merge`: execute each INSERT statement from body directly (INSERT OR REPLACE).
 async fn execute_seed(
-    _pool: &SqlitePool,
-    _table: &str,
-    _body: &[u8],
-    _strategy: &str,
+    pool: &SqlitePool,
+    table: &str,
+    body: &[u8],
+    strategy: &str,
 ) -> Result<(), AnvilError> {
+    let body_str = extract_body(body);
+    let statements: Vec<String> = body_str
+        .split(';')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if statements.is_empty() {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await.map_err(sqlx_error)?;
+
+    if strategy == "replace_all" {
+        let delete_sql = format!("DELETE FROM {table}");
+        sqlx::query(sqlx::AssertSqlSafe(delete_sql))
+            .execute(&mut *tx)
+            .await
+            .map_err(sqlx_error)?;
+    }
+
+    for stmt in statements {
+        sqlx::query(sqlx::AssertSqlSafe(stmt))
+            .execute(&mut *tx)
+            .await
+            .map_err(sqlx_error)?;
+    }
+
+    tx.commit().await.map_err(sqlx_error)?;
+
     Ok(())
 }
 
@@ -128,9 +185,9 @@ pub async fn run(pool: &SqlitePool, seeds_dir: &Path) -> Result<(), AnvilError> 
         let bytes = std::fs::read(file_path).map_err(AnvilError::from)?;
 
         // Parse header (fails fast on missing directive).
-        let (_table, _strategy) = parse_header(&bytes)?;
+        let (table, strategy) = parse_header(&bytes)?;
 
-        // Compute SHA256.
+        // Compute SHA256 of the full file content.
         let hash = compute_sha256(&bytes);
 
         // Check if this file has already been applied with the same content.
@@ -148,8 +205,8 @@ pub async fn run(pool: &SqlitePool, seeds_dir: &Path) -> Result<(), AnvilError> 
             }
         }
 
-        // Execute the seed (stub).
-        execute_seed(pool, "", &bytes, "").await?;
+        // Execute the seed.
+        execute_seed(pool, &table, &bytes, &strategy).await?;
 
         // Upsert the tracking row.
         let now = chrono::Utc::now().timestamp();
