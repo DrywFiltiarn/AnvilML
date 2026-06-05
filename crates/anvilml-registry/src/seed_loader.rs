@@ -201,12 +201,15 @@ pub async fn run(pool: &SqlitePool, seeds_dir: &Path) -> Result<(), AnvilError> 
         if let Some(stored_hash) = existing {
             if stored_hash == hash {
                 // Hash matches — skip execution.
+                tracing::info!(file = %filename, status = "up-to-date", "seed skipped");
                 continue;
             }
         }
 
         // Execute the seed.
         execute_seed(pool, &table, &bytes, &strategy).await?;
+
+        tracing::info!(file = %filename, sha256 = %hash, "seed applied");
 
         // Upsert the tracking row.
         let now = chrono::Utc::now().timestamp();

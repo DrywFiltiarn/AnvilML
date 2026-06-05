@@ -72,16 +72,17 @@
     "P8-A1",
     "P8-A2",
     "P8-A3",
-    "P8-A4"
+    "P8-A4",
+    "P900-A1"
   ],
-  "in_progress": "P900-A1",
+  "in_progress": "P900-A2",
   "plan_approved": true,
-  "current_plan": "1. **Import check.** Confirm `use tracing;` is already available \u2014 `tracing` is declared as `{ workspace = true }` in `crates/anvilml-registry/Cargo.toml` (line 13). No import needed beyond what `sqlx::query` and other existing code may already bring in implicitly via the crate's own imports. Add `use tracing;` at the top of `db.rs` if not present (the `tracing` crate is used by other modules in this crate, so it is available as a dependency).\n\n2. **Pre-connect path check.** In `open()`, before constructing `SqliteConnectOptions`, insert:\n   ```rust\n   if !path.exists() {\n       tracing::info!(path = %path.display(), \"database created\");\n   } else {\n       tracing::debug!(path = %path.display(), \"database exists\");\n   }\n   ```\n   This goes immediately before the existing `let opts = SqliteConnectOptions::new()...` line.\n\n3. **Post-migration query.** After `MIGRATIONS.run(&pool).await.map_err(migrate_error)?;`, insert a query against `_sqlx_migrations`:\n   ```rust\n   let rows = sqlx::query(\"SELECT version, description FROM _sqlx_migrations WHERE success = TRUE ORDER BY installed_on\")\n       .fetch_all(&pool)\n       .await\n       .map_err(sqlx_error)?;\n\n   if rows.is_empty() {\n       tracing::info!(migrations_applied = 0, \"database schema up to date\");\n   } else {\n       for row in &rows {\n           let version: i64 = row.get(\"version\");\n           let description: String = row.get(\"description\");\n           tracing::info!(migration = %description, version = version, \"migration applied\");\n       }\n   }\n   ```\n   This goes immediately after the `MIGRATIONS.run(...)` line and before the pragmas are set (the pragmas can run either way; placing migration logging right after `run()` keeps it logically grouped).\n\n4. **Verify compilation.** Run `cargo check -p anvilml-registry --features mock-hardware` to confirm no compile errors.\n\n5. **Run tests.** Execute `cargo test -p anvilml-registry -- db` and confirm exit 0 with no regressions.",
+  "current_plan": "1. **Locate the skip branch** in `run()` at line ~204 where `stored_hash == hash` is true and `continue;` executes. Insert a `tracing::info!` call immediately before `continue;`:\n   ```rust\n   tracing::info!(file = %filename, status = \"up-to-date\", \"seed skipped\");\n   ```\n\n2. **Locate the apply branch** in `run()` at line ~209 where `execute_seed()` is called. Insert a `tracing::info!` call immediately after `execute_seed()` returns successfully and before the `INSERT OR REPLACE` upsert:\n   ```rust\n   tracing::info!(file = %filename, sha256 = %hash, \"seed applied\");\n   ```\n\n3. **Verify** both calls use structured `=` notation with `%` for string values per \u00a711.6. No string interpolation (`{}`) anywhere in the log call arguments.\n\n4. **Run acceptance test:** `cargo test -p anvilml-registry -- seed` must exit 0 with no regressions.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-05T23:24:57+0200",
-  "plan_approval_message_id": "1512567173380575243",
+  "last_updated": "2026-06-05T23:50:13+0200",
+  "plan_approval_message_id": "1512572466675978291",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512567171799191634",
+  "plan_report_message_id": "1512572463853211648",
   "impl_report_message_id": null
 }
