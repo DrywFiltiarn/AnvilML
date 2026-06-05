@@ -5,3 +5,9 @@ edition = "2021"
 
 [dependencies]
 anvilml-core = { path = "../anvilml-core" }
+rmp-serde = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+uuid = { workspace = true, features = ["serde"] }
+
+[dev-dependencies]
