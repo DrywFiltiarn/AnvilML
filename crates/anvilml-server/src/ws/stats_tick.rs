@@ -98,6 +98,7 @@ mod tests {
                     caps: InferenceCaps::default(),
                     enumeration_source: EnumerationSource::Mock,
                     capabilities_source: anvilml_core::CapabilitySource::Fallback,
+                    db_group_name: None,
                 },
                 GpuDevice {
                     index: 1,
@@ -112,6 +113,7 @@ mod tests {
                     caps: InferenceCaps::default(),
                     enumeration_source: EnumerationSource::Mock,
                     capabilities_source: anvilml_core::CapabilitySource::Fallback,
+                    db_group_name: None,
                 },
             ],
             inference_caps: InferenceCaps::default(),

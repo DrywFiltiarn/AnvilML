@@ -366,6 +366,7 @@ impl DeviceDetector for VulkanDetector {
                 caps: anvilml_core::InferenceCaps::default(),
                 enumeration_source: EnumerationSource::Vulkan,
                 capabilities_source: CapabilitySource::Fallback,
+                db_group_name: None,
             });
         }
 

@@ -246,6 +246,7 @@ pub async fn detect_all_devices(
                 caps: InferenceCaps::default(),
                 enumeration_source: EnumerationSource::Override,
                 capabilities_source: CapabilitySource::Fallback,
+                db_group_name: None,
             }],
             inference_caps: InferenceCaps::default(),
         });

@@ -118,6 +118,10 @@ pub struct GpuDevice {
     /// Source used to resolve inference capabilities.
     #[serde(default)]
     pub capabilities_source: CapabilitySource,
+    /// Database group name — the model name from the device capability DB, shown in parentheses
+    /// alongside a preserved Vulkan SKU name (e.g. "Radeon RX 7900 XTX (Navi 31 XL)").
+    #[serde(default)]
+    pub db_group_name: Option<String>,
 }
 
 /// Complete hardware report for the host.
@@ -242,6 +246,7 @@ mod tests {
             },
             enumeration_source: EnumerationSource::Vulkan,
             capabilities_source: CapabilitySource::DeviceTable,
+            db_group_name: None,
         };
 
         let json = serde_json::to_string(&device).expect("serialize GpuDevice");
@@ -265,6 +270,7 @@ mod tests {
         assert_eq!(restored.caps.flash_attention, device.caps.flash_attention);
         assert_eq!(restored.enumeration_source, device.enumeration_source);
         assert_eq!(restored.capabilities_source, device.capabilities_source);
+        assert_eq!(restored.db_group_name, device.db_group_name);
     }
 
     /// `GpuDevice` with old fields only must deserialize with sensible defaults.
@@ -307,6 +313,8 @@ mod tests {
             restored.capabilities_source,
             CapabilitySource::Fallback
         ));
+        // New field should default to None.
+        assert_eq!(restored.db_group_name, None);
     }
 
     /// `HardwareInfo` with multiple GPUs must round-trip through JSON serialization.
@@ -341,6 +349,7 @@ mod tests {
                     },
                     enumeration_source: EnumerationSource::Vulkan,
                     capabilities_source: CapabilitySource::DeviceTable,
+                    db_group_name: None,
                 },
                 GpuDevice {
                     index: 1,
@@ -363,6 +372,7 @@ mod tests {
                     },
                     enumeration_source: EnumerationSource::Vulkan,
                     capabilities_source: CapabilitySource::DeviceTable,
+                    db_group_name: None,
                 },
             ],
             inference_caps: InferenceCaps {
@@ -403,6 +413,7 @@ mod tests {
             assert_eq!(a.caps.flash_attention, b.caps.flash_attention);
             assert_eq!(a.enumeration_source, b.enumeration_source);
             assert_eq!(a.capabilities_source, b.capabilities_source);
+            assert_eq!(a.db_group_name, b.db_group_name);
         }
         assert_eq!(restored.inference_caps.fp32, info.inference_caps.fp32);
         assert_eq!(restored.inference_caps.fp16, info.inference_caps.fp16);

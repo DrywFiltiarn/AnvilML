@@ -270,6 +270,7 @@ impl DeviceDetector for SysfsDetector {
                 caps: anvilml_core::InferenceCaps::default(),
                 enumeration_source: EnumerationSource::Sysfs,
                 capabilities_source: CapabilitySource::Fallback,
+                db_group_name: None,
             });
 
             index += 1;
@@ -486,6 +487,7 @@ mod tests {
                     caps: anvilml_core::InferenceCaps::default(),
                     enumeration_source: EnumerationSource::Sysfs,
                     capabilities_source: CapabilitySource::Fallback,
+                    db_group_name: None,
                 });
 
                 index += 1;

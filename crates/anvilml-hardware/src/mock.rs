@@ -48,6 +48,7 @@ impl DeviceDetector for MockDetector {
             caps: anvilml_core::InferenceCaps::default(),
             enumeration_source: EnumerationSource::Mock,
             capabilities_source: anvilml_core::CapabilitySource::Fallback,
+            db_group_name: None,
         }])
     }
 

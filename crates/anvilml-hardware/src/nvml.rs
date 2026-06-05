@@ -291,6 +291,7 @@ impl DeviceDetector for NvmlDetector {
                 caps: anvilml_core::InferenceCaps::default(),
                 enumeration_source: EnumerationSource::Nvml,
                 capabilities_source: CapabilitySource::Fallback,
+                db_group_name: None,
             });
         }
 

@@ -70,7 +70,11 @@ fn print_hardware_table(hw: &HardwareInfo) {
         };
         let arch_str = dev.arch.as_deref().unwrap_or("-");
 
-        let name_trunc: String = dev.name.chars().take(20).collect();
+        let display_name = match &dev.db_group_name {
+            Some(group) if group != &dev.name => format!("{} ({})", dev.name, group),
+            _ => dev.name.clone(),
+        };
+        let name_trunc: String = display_name.chars().take(20).collect();
         let arch_trunc: String = arch_str.chars().take(16).collect();
 
         println!(

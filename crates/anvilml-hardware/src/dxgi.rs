@@ -200,6 +200,7 @@ impl DeviceDetector for DxgiDetector {
                 caps: anvilml_core::InferenceCaps::default(),
                 enumeration_source: EnumerationSource::Dxgi,
                 capabilities_source: CapabilitySource::Fallback,
+                db_group_name: None,
             });
 
             idx += 1;
