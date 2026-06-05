@@ -117,6 +117,13 @@ fn enumerate_gpus() -> Vec<GpuDevice> {
                 detector = "Vulkan",
                 "Vulkan detector returned empty device list"
             );
+            #[cfg(windows)]
+            tracing::debug!(fallback = "dxgi", "Vulkan returned no devices; using DXGI");
+            #[cfg(unix)]
+            tracing::debug!(
+                fallback = "sysfs_nvml",
+                "Vulkan returned no devices; using sysfs+NVML"
+            );
             Vec::new()
         }
         Err(e) => {

@@ -73,16 +73,17 @@
     "P8-A2",
     "P8-A3",
     "P8-A4",
-    "P900-A1"
+    "P900-A1",
+    "P900-A2"
   ],
-  "in_progress": "P900-A2",
+  "in_progress": "P900-A3",
   "plan_approved": true,
-  "current_plan": "1. **Locate the skip branch** in `run()` at line ~204 where `stored_hash == hash` is true and `continue;` executes. Insert a `tracing::info!` call immediately before `continue;`:\n   ```rust\n   tracing::info!(file = %filename, status = \"up-to-date\", \"seed skipped\");\n   ```\n\n2. **Locate the apply branch** in `run()` at line ~209 where `execute_seed()` is called. Insert a `tracing::info!` call immediately after `execute_seed()` returns successfully and before the `INSERT OR REPLACE` upsert:\n   ```rust\n   tracing::info!(file = %filename, sha256 = %hash, \"seed applied\");\n   ```\n\n3. **Verify** both calls use structured `=` notation with `%` for string values per \u00a711.6. No string interpolation (`{}`) anywhere in the log call arguments.\n\n4. **Run acceptance test:** `cargo test -p anvilml-registry -- seed` must exit 0 with no regressions.",
+  "current_plan": "1. Locate the `enumerate_gpus()` function (lines 111\u2013202) in `crates/anvilml-hardware/src/lib.rs`. This function is behind `#[cfg(not(feature = \"mock-hardware\"))]`, so it is never compiled under `--features mock-hardware`.\n\n2. Inside the `Ok(_)` arm of the Vulkan detector (line 115\u2013121), after the existing `tracing::warn!` call and before the closing `}` of that match arm \u2014 specifically, after `Vec::new()` is constructed but before the function continues to the fallback blocks \u2014 insert two cfg-gated debug log calls.\n\n   The placement is at the top of the `Ok(_)` arm (the \"empty result\" path), ensuring the log fires only when Vulkan returned zero devices and control will flow into a fallback detector:\n\n   ```rust\n   Ok(_) => {\n       tracing::warn!(\n           detector = \"Vulkan\",\n           \"Vulkan detector returned empty device list\"\n       );\n       #[cfg(windows)]\n       tracing::debug!(fallback = \"dxgi\", \"Vulkan returned no devices; using DXGI\");\n       #[cfg(unix)]\n       tracing::debug!(fallback = \"sysfs_nvml\", \"Vulkan returned no devices; using sysfs+NVML\");\n       Vec::new()\n   }\n   ```\n\n3. The `#[cfg(windows)]` and `#[cfg(unix)]` guards ensure each debug call is only compiled on its target platform. On Linux, only the unix variant compiles; on Windows, only the windows variant compiles. macOS (which has neither) gets neither call \u2014 consistent with the existing code which returns an empty vec for unsupported platforms.\n\n4. Verify the log uses structured `=` notation per \u00a711.6: `fallback = \"dxgi\"` / `fallback = \"sysfs_nvml\"`.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-05T23:50:13+0200",
-  "plan_approval_message_id": "1512572466675978291",
+  "last_updated": "2026-06-06T00:07:11+0200",
+  "plan_approval_message_id": "1512578069595029635",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512572463853211648",
+  "plan_report_message_id": "1512578067820974113",
   "impl_report_message_id": null
 }
