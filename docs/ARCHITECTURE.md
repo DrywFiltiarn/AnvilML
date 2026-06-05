@@ -222,11 +222,12 @@ Every commit must pass all of the following:
 
 | Gate | Command | Notes |
 |------|---------|-------|
-| Format | `cargo fmt --all` | Linux CI |
+| Format | `cargo fmt --all -- --check` | Linux CI — check-only; exits non-zero if unformatted |
 | Clippy (mock) | `cargo clippy --workspace --features mock-hardware -- -D warnings` | Linux + Windows CI |
 | Tests | `cargo test --workspace --features mock-hardware` | Linux + Windows CI |
-| Windows cross-check (mock) | `cargo check --target x86_64-pc-windows-gnu --workspace --features mock-hardware` | Linux CI (cross) |
-| Real-hardware Linux | `cargo check --bin anvilml` | Linux CI |
+| Linux cross-check (mock) | `cargo check --workspace --features mock-hardware` | Linux CI (native) |
+| Windows cross-check (mock) | `cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu` | Linux CI (cross) |
+| Real-hardware Linux | `cargo check --bin anvilml` | Linux CI (native) |
 | Real-hardware Windows | `cargo check --bin anvilml --target x86_64-pc-windows-gnu` | Linux CI (cross) |
 | Config drift | `cargo test -p backend --features mock-hardware -- config_reference` | Included in tests |
 | OpenAPI diff | `cargo run -p anvilml-openapi && git diff --exit-code backend/openapi.json` | On handler/schema changes |

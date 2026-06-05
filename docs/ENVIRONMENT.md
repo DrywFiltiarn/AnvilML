@@ -102,13 +102,26 @@ underscores (`__`). All variables are optional; built-in defaults apply when uns
 
 ### 3.5 Logging
 
-| Variable              | Purpose                          | Default |
-|-----------------------|----------------------------------|---------|
-| `ANVILML_LOG`         | `tracing` filter (§19)           | `info`  |
-| `RUST_LOG`            | Fallback for `ANVILML_LOG`       | `info`  |
+| Variable              | Purpose                                    | Default |
+|-----------------------|--------------------------------------------|---------|
+| `ANVILML_LOG`         | `tracing` filter directive                 | `info`  |
+| `RUST_LOG`            | Fallback when `ANVILML_LOG` is unset       | `info`  |
 
 `ANVILML_LOG` takes precedence over `RUST_LOG`. Output format is selected by the
 `--log-format plain|json` CLI flag (default `plain`), not by an environment variable.
+
+The `--verbose` CLI flag (when implemented) maps to `ANVILML_LOG=debug` and enables
+all DEBUG-level instrumentation. Until that flag exists, set `ANVILML_LOG=debug`
+directly to see debug output.
+
+Common filter examples:
+```
+ANVILML_LOG=debug          # all crates at DEBUG
+ANVILML_LOG=info           # default — operational events only
+ANVILML_LOG=anvilml=debug  # AnvilML crates at DEBUG, dependencies at INFO
+```
+
+See §9 for the logging conventions all code in this project must follow.
 
 ### 3.6 Mock & CI Variables
 
@@ -213,34 +226,84 @@ These control `forge.py` and are never read by AnvilML itself.
 
 ---
 
-### Platform Cross-Check (`FORGE_AGENT_RULES.md §5.7`)
+## 6. Build, Format, and Lint Commands
+
+These are the canonical commands for all ACT sessions working on AnvilML.
+
+### Formatter Commands (two-pass contract — `FORGE_AGENT_RULES.md §5.9`)
+
+The ACT agent runs the formatter **twice** per session. The two modes are distinct commands:
+
+| Pass                        | Mode        | Command                        | When                                          |
+|-----------------------------|-------------|--------------------------------|-----------------------------------------------|
+| Pass 1                      | In-place    | `cargo fmt --all`              | Immediately after IMPLEMENT                   |
+| Pass 2 (gate)               | Check-only  | `cargo fmt --all -- --check`   | Immediately before `git add -A`               |
+| Pass 1 re-run (conditional) | In-place    | `cargo fmt --all`              | Only if pass 2 exits non-zero (drift found)   |
+
+**Pass 2 exit codes:**
+- `0` — no formatting drift; proceed to staging
+- `1` — drift found; run pass 1 re-run (`cargo fmt --all`), then immediately run the
+  post-reformat compile check below to verify compilation, then re-run pass 2 to confirm
+
+**Post-reformat compile check** (run after pass 1 re-run only, when pass 2 was non-zero):
+```bash
+cargo check --workspace --features mock-hardware
+```
+If this exits non-zero after the pass 1 re-run, set Status=BLOCKED and STOP — do not stage.
+
+### All Build and Lint Commands
+
+| Step | Command | Notes |
+|------|---------|-------|
+| Format (in-place) | `cargo fmt --all` | Pass 1 — apply formatting |
+| Format (check-only) | `cargo fmt --all -- --check` | Pass 2 gate — must exit 0 before staging |
+| Post-reformat compile check | `cargo check --workspace --features mock-hardware` | Only if pass 2 was non-zero |
+| Lint (mock-hardware) | `cargo clippy --workspace --features mock-hardware -- -D warnings` | Zero warnings |
+| Lint (real-hardware) | `cargo clippy --bin anvilml -- -D warnings` | Zero warnings |
+| Test (Rust) | `cargo test --workspace --features mock-hardware` | Zero failures |
+| Test (Python worker) | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` | Zero failures |
+| Config drift gate | `cargo test -p backend --features mock-hardware -- config_reference` | See §8 Gate 1 |
+| OpenAPI drift gate | `cargo run -p anvilml-openapi && git diff --exit-code backend/openapi.json` | On handler/schema changes only |
+
+The OpenAPI drift gate applies only when `anvilml-server` handler signatures or
+`utoipa` annotations are modified. It is not required for every task.
+
+---
+
+## 7. Platform Cross-Check (`FORGE_AGENT_RULES.md §5.7`)
 
 AnvilML targets Linux and Windows as co-equal MVP platforms. Before writing the
-implementation report, run all three of the following checks in order:
+implementation report, run all four of the following checks in order:
 
 ```bash
-# 1. Mock-hardware Windows cross-check (catches cfg-gated scaffold errors)
-cargo check --target x86_64-pc-windows-gnu --workspace --features mock-hardware
+# 1. Mock-hardware Linux check (exercises #[cfg(unix)] scaffold and cfg-gated mock paths)
+cargo check --workspace --features mock-hardware
 
-# 2. Real-hardware Linux check (exercises #[cfg(unix)] detection paths)
+# 2. Mock-hardware Windows cross-check (exercises #[cfg(windows)] scaffold and cfg-gated mock paths)
+cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu
+
+# 3. Real-hardware Linux check (exercises #[cfg(unix)] detection paths)
 cargo check --bin anvilml
 
-# 3. Real-hardware Windows cross-check (exercises #[cfg(windows)] detection paths)
+# 4. Real-hardware Windows cross-check (exercises #[cfg(windows)] detection paths)
 cargo check --bin anvilml --target x86_64-pc-windows-gnu
 ```
 
 The `x86_64-pc-windows-gnu` target and `gcc-mingw-w64` linker are installed in the
-local build environment. Checks 1 and 3 run on Linux via cross-compilation.
-Check 2 is native Linux. **All three must exit 0.** A passing mock-hardware build
-alone is NOT sufficient — the `mock-hardware` feature elides all real-hardware
-`#[cfg(windows)]` and `#[cfg(unix)]` code paths entirely.
+local build environment. Checks 2 and 4 run on Linux via cross-compilation.
+Checks 1 and 3 are native Linux. **All four must exit 0.** Neither mock-hardware nor
+real-hardware alone is sufficient — `mock-hardware` elides all real-hardware
+`#[cfg(windows)]` and `#[cfg(unix)]` detection paths, while the real-hardware checks
+exercise code that `mock-hardware` never compiles.
 
-Record the verbatim output of all three commands in `## Platform Cross-Check` in
+Record the verbatim output of all four commands in `## Platform Cross-Check` in
 the implementation report.
 
-### Project Gates (`FORGE_AGENT_RULES.md §5.8`)
+---
 
-#### Gate 1 — Config Surface Sync
+## 8. Project Gates (`FORGE_AGENT_RULES.md §5.8`)
+
+### Gate 1 — Config Surface Sync
 
 Any task that adds, renames, or removes a field on `ServerConfig` or any nested config
 struct **must** in the same task:
@@ -260,23 +323,78 @@ weaken or skip the test. **Skip only** if task P3-B2 has not yet been implemente
 (i.e. `backend/tests/config_reference.rs` does not yet exist).
 
 Record the verbatim output in `## Project Gates` in the implementation report.
+---
 
-### Build and Lint Commands (AnvilML)
+## 9. Logging Conventions (`FORGE_AGENT_RULES.md §11`)
 
-These are the canonical commands for all ACT sessions working on AnvilML:
+All code in this project must follow the logging conventions defined in
+`FORGE_AGENT_RULES.md §11`. This section lists the AnvilML-specific mandatory
+log points that §11 requires to be present at INFO level.
 
-| Step | Command |
-|------|---------|
-| Format | `cargo fmt --all` |
-| Lint (mock-hardware) | `cargo clippy --workspace --features mock-hardware -- -D warnings` |
-| Lint (real-hardware) | `cargo clippy --bin anvilml -- -D warnings` |
-| Test (Rust) | `cargo test --workspace --features mock-hardware` |
-| Test (Python worker) | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` |
-| Platform cross-check (mock, Windows-gnu) | `cargo check --target x86_64-pc-windows-gnu --workspace --features mock-hardware` |
-| Real-hardware check (Linux native) | `cargo check --bin anvilml` |
-| Real-hardware check (Windows-gnu) | `cargo check --bin anvilml --target x86_64-pc-windows-gnu` |
-| Config drift gate | `cargo test -p backend --features mock-hardware -- config_reference` |
-| OpenAPI drift gate | `cargo run -p anvilml-openapi && git diff --exit-code backend/openapi.json` |
+### Mandatory INFO log points
 
-The OpenAPI drift gate applies only when `anvilml-server` handler signatures or
-`utoipa` annotations are modified. It is not required for every task.
+These events must always be logged at INFO. They are unconditionally visible at the
+default log level and must never be demoted to DEBUG or removed:
+
+| Subsystem | Event | Required fields |
+|-----------|-------|-----------------|
+| Database | SQLite database file created (did not previously exist) | `path=` |
+| Database | Each migration applied | `migration=`, `version=` (or migration filename) |
+| Database | All migrations already up to date (no-op) | `migrations_applied=0` or equivalent |
+| Seeds | Seed file applied (SHA256 changed or first run) | `file=`, `sha256=` |
+| Seeds | Seed file skipped (SHA256 unchanged) | `file=`, `status=up-to-date` |
+| Server | Bind address and port on successful listen | `addr=` |
+| Server | Graceful shutdown initiated (signal received) | signal name |
+| Hardware | Each detected device on startup | `index=`, `name=`, `device_type=`, `vram_total_mib=` |
+| Workers | Worker spawned | `worker_id=`, `device_index=` |
+| Workers | Worker respawned after unexpected exit | `worker_id=`, `exit_code=` or `signal=` |
+| Workers | Worker reached Ready state | `worker_id=` |
+| Model scan | Scan completed | `models_scanned=` |
+| Provisioning | Provisioning started | `reason=` (absent venv, torch import failure, etc.) |
+| Provisioning | Provisioning completed | `duration_ms=` |
+
+### Mandatory DEBUG log points
+
+These events must exist at DEBUG level and are visible only when
+`ANVILML_LOG=debug` (or `--verbose` once implemented):
+
+| Subsystem | Event | Required fields |
+|-----------|-------|-----------------|
+| Database | Each SQL query executed (if feasible via sqlx instrumentation) | query summary |
+| IPC | Each message sent to a worker | `worker_id=`, `message_type=` |
+| IPC | Each event received from a worker | `worker_id=`, `event_type=` |
+| Model scan | Each file examined (accepted or skipped) | `path=`, `reason=` if skipped |
+| Job scheduler | Job dispatched to worker | `job_id=`, `worker_id=` |
+| Job scheduler | Job state transition | `job_id=`, `from=`, `to=` |
+| Hardware | Detection fallback used (Vulkan unavailable, falling back to DXGI/sysfs) | `fallback=` |
+
+### WARN and ERROR conventions
+
+| Level | Use for | Field discipline |
+|-------|---------|-----------------|
+| `WARN` | Recoverable anomalies — the system continues but something unexpected happened | Include `path=` or relevant identifier; include `error=` **only** when the error message adds information beyond what the other fields already convey. A "not found" error on a path field that already names the path is redundant — omit `error=`. A permission denied or unexpected OS error on a named path is not redundant — include `error=`. |
+| `ERROR` | Unrecoverable failures that cause a subsystem or operation to fail | Always include `error=` |
+
+**WARN field example — redundant (do not write):**
+```rust
+tracing::warn!(path = %entry.path().display(), error = %e,
+    "scanner: skipping unreadable entry");
+// When e is "The system cannot find the file specified. (os error 2)" and
+// path already names the missing file — the error adds nothing.
+```
+
+**WARN field example — correct:**
+```rust
+tracing::warn!(path = %entry.path().display(),
+    "scanner: skipping missing path");
+// If the error is something unexpected (e.g. permission denied), include it:
+tracing::warn!(path = %entry.path().display(), error = %e,
+    "scanner: skipping unreadable entry");
+```
+
+### Span and context conventions
+
+- Use `tracing::instrument` on async functions that represent a meaningful
+  unit of work (migration runner, seed loader, worker spawn, job dispatch).
+- Span names must be lowercase snake_case and match the function or subsystem name.
+- Do not instrument tight inner loops or per-frame/per-packet functions.
