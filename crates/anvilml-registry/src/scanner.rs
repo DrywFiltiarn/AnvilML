@@ -3,6 +3,8 @@
 //! Discovers `.safetensors`, `.ckpt`, `.pt`, `.bin` files, computes deterministic IDs
 //! via SHA-256 of canonical paths, and infers kind/dtype heuristics.
 
+use std::io;
+
 use anvilml_core::config::ModelDirConfig;
 use anvilml_core::{DType, ModelKind, ModelMeta};
 use sha2::{Digest, Sha256};
@@ -80,22 +82,32 @@ pub async fn scan_dirs(dirs: &[ModelDirConfig]) -> Vec<ModelMeta> {
             let entry = match entry {
                 Ok(e) => e,
                 Err(e) => {
-                    tracing::warn!(path = %dir_config.path.display(), error = %e, "scanner: skipping unreadable entry");
+                    let path = dir_config.path.clone();
+                    if e.io_error().map(|inner| inner.kind()) == Some(io::ErrorKind::NotFound) {
+                        tracing::warn!(path = %path.display(), "scanner: skipping missing path");
+                    } else {
+                        tracing::warn!(path = %path.display(), error = %e, "scanner: skipping unreadable entry");
+                    }
                     continue;
                 }
             };
 
             // Only process files.
             if !entry.file_type().is_file() {
+                tracing::debug!(path = %entry.path().display(), reason = "not a file", "scanner: skipped");
                 continue;
             }
 
             // Check allowed extension.
             let ext = match entry.path().extension().and_then(|e| e.to_str()) {
                 Some(ext) => ext,
-                None => continue,
+                None => {
+                    tracing::debug!(path = %entry.path().display(), reason = "extension not matched", "scanner: skipped");
+                    continue;
+                }
             };
             if !ALLOWED_EXTENSIONS.contains(&ext) {
+                tracing::debug!(path = %entry.path().display(), reason = "extension not matched", "scanner: skipped");
                 continue;
             }
 
@@ -103,7 +115,11 @@ pub async fn scan_dirs(dirs: &[ModelDirConfig]) -> Vec<ModelMeta> {
             let size_bytes = match entry.metadata() {
                 Ok(m) => m.len(),
                 Err(e) => {
-                    tracing::warn!(path = %entry.path().display(), error = %e, "scanner: skipping file with unreadable metadata");
+                    if e.io_error().map(|inner| inner.kind()) == Some(io::ErrorKind::NotFound) {
+                        tracing::warn!(path = %entry.path().display(), "scanner: skipping missing path");
+                    } else {
+                        tracing::warn!(path = %entry.path().display(), error = %e, "scanner: skipping file with unreadable metadata");
+                    }
                     continue;
                 }
             };
@@ -120,13 +136,18 @@ pub async fn scan_dirs(dirs: &[ModelDirConfig]) -> Vec<ModelMeta> {
             let canonical_path = match entry.path().canonicalize() {
                 Ok(p) => p,
                 Err(e) => {
-                    tracing::warn!(path = %entry.path().display(), error = %e, "scanner: canonicalize failed, using raw path");
+                    if e.kind() == io::ErrorKind::NotFound {
+                        tracing::warn!(path = %entry.path().display(), "scanner: skipping missing path");
+                    } else {
+                        tracing::warn!(path = %entry.path().display(), error = %e, "scanner: canonicalize failed, using raw path");
+                    }
                     entry.path().to_path_buf()
                 }
             };
             let canonical_str = canonical_path.to_string_lossy().to_string();
             let full_hash = sha256_hex(&canonical_str);
             let id: String = full_hash.chars().take(16).collect();
+            let id_clone = id.clone();
 
             // Infer kind: explicit config or from parent directory name.
             let parent_dir_name = canonical_path
@@ -152,13 +173,15 @@ pub async fn scan_dirs(dirs: &[ModelDirConfig]) -> Vec<ModelMeta> {
             results.push(ModelMeta {
                 id,
                 name,
-                path: canonical_path,
+                path: canonical_path.clone(),
                 kind,
                 size_bytes,
                 dtype_hint: dtype,
                 vram_estimate_mib: vram,
                 ..ModelMeta::default()
             });
+
+            tracing::debug!(path = %canonical_path.display(), id = %id_clone, "scanner: accepted");
         }
     }
 
