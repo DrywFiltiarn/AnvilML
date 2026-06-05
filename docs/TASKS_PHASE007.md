@@ -7,7 +7,7 @@
 | Milestone group | Observable system state |
 | Depends on phases | 1-6 |
 | Task file | `.forge/tasks/tasks_phase007.json` |
-| Tasks | 19 |
+| Tasks | 25 |
 
 ## Overview
 
@@ -46,6 +46,11 @@ Group E completes the major-version upgrade work deferred by P7-C1: E1 bumps thi
 | P7-F2 | `crates/anvilml-registry/src/device_store.rs` | anvilml-registry: DeviceCapabilityStore upsert + get + seed |
 | P7-F3 | `crates/anvilml-hardware/src/device_db.rs` | anvilml-hardware: SEED_ENTRIES from SUPPORTED_DEVICES_DB.md + resolve_caps_from_row |
 | P7-F4 | `crates/anvilml-hardware/src/lib.rs`, `backend/src/main.rs` | anvilml-hardware: detect_all_devices seeds and queries device_capabilities |
+| P7-G1 | `backend/seeds/devices.sql` | Create devices.sql seed file from SUPPORTED_DEVICES_DB.md |
+| P7-G2a | `crates/anvilml-registry/src/seed_loader.rs` | seed_loader: tracking table bootstrap + SHA256 comparison |
+| P7-G2b | `crates/anvilml-registry/src/seed_loader.rs` | seed_loader: replace_all and merge execution engine |
+| P7-G3 | `crates/anvilml-hardware/src/lib.rs`, `crates/anvilml-hardware/src/device_db.rs` | Replace SEED_ENTRIES startup call with SeedLoader; remove const |
+| P7-G4 | `crates/anvilml-hardware/src/device_db.rs`, `backend/src/main.rs` | Fix name resolution priority and --print-hardware display |
 
 ## Task details
 
@@ -515,11 +520,235 @@ let info = detect_all_devices(&cfg, &pool).await.unwrap();
 
 ---
 
+## Group G — Seed Infrastructure and Name Resolution
+
+### Why this group exists here
+
+Group F completed the SQLite-backed capability store and wired it into startup, but left two unfinished concerns.
+
+The first is that capability data is still compiled into the binary. `SEED_ENTRIES` in `device_db.rs` is a Rust const populated at compile time; `detect_all_devices` calls `store.seed(&SEED_ENTRIES)` to push this data into SQLite on every startup. This means adding or correcting a device entry requires a recompile and redeployment, which is exactly the problem the SQLite migration was meant to solve. Group G replaces this with a SQL seed file at `backend/seeds/devices.sql`, loaded by a generic `SeedLoader` in `anvilml-registry`. The loader bootstraps its own `seed_history` tracking table, computes SHA256 of the seed file content, and only re-applies the data when the file has changed. This is the first seed file; the infrastructure is designed generically so any future seed file in any crate can use the same loader.
+
+The second concern is name resolution priority. After Group F, `resolve_caps_from_row` on a hit sets `dev.db_group_name` and preserves `dev.name`. But if the Vulkan enumerator provided no useful name (empty string, or a generic driver string), the display shows that rather than falling back to the database group label. The correct priority is: Vulkan-reported name (if non-empty and non-generic) → database group label → `"Unknown GPU (0x{vendor}:{device})"` as the last resort when neither is available.
+
+Group G prereqs P7-F4, the final F task. All F tasks will have completed before any G task executes.
+
+---
+
+### Seed file header specification
+
+Every file in `backend/seeds/` must begin with two directive comment lines before any SQL:
+
+```sql
+-- anvil:seed_table <table_name>
+-- anvil:seed_strategy <replace_all|merge>
+```
+
+`seed_table` names the SQLite table the file targets. The `SeedLoader` uses this to scope the `DELETE` (for `replace_all`) and for `seed_history` keying by filename.
+
+`seed_strategy` controls execution:
+- `replace_all` — transaction wrapping `DELETE FROM <table>`, then all INSERTs, then `seed_history` update. The full table content is replaced. User-added rows are lost.
+- `merge` — transaction wrapping `INSERT OR REPLACE` statements only, then `seed_history` update. Rows not present in the file are retained. User-added rows with unique keys are preserved.
+
+A seed file missing the `seed_table` directive is a fatal error at startup. A missing `seed_strategy` defaults to `replace_all`.
+
+---
+
+### Task Descriptions
+
+#### P7-G1: Create backend/seeds/devices.sql seed file
+
+- **Prereqs:** P7-F4
+- **Tags:** reasoning
+
+**Files to create:**
+
+- `backend/seeds/devices.sql`
+
+**Key implementation notes:**
+
+At PLAN time, open `docs/SUPPORTED_DEVICES_DB.md` and locate both device tables (NVIDIA and AMD). The file header must be exactly:
+
+```sql
+-- anvil:seed_table devices
+-- anvil:seed_strategy replace_all
+```
+
+For every data row in both tables, emit one statement:
+
+```sql
+INSERT OR REPLACE INTO devices (vendor_id, device_id, model_name, arch, fp32, fp16, bf16, fp8, fp4, nvfp4, flash_attn)
+VALUES (0x10DE, 0x2684, 'NVIDIA GeForce RTX 4090', '8.9', 1, 1, 1, 1, 0, 0, 1);
+```
+
+Column order must exactly match the `004_device_capabilities.sql` DDL. `Y` in the table maps to `1`, `N` maps to `0`. `vendor_id` and `device_id` may be written as hex literals or decimal — hex is preferred for readability. `model_name` and `arch` are single-quoted strings.
+
+Copy the rows verbatim from the reference document — do not generate, reorder, or supplement entries from training knowledge. The table is named `devices` (matching `anvil:seed_table devices`), not `device_capabilities` — note that the SQLite table created by migration `004_device_capabilities.sql` is named `device_capabilities`, while this seed file targets a view or synonym. **Verify the actual table name in the migration DDL before writing any INSERT statement.** If the migration table is named `device_capabilities`, the seed directive and INSERT target must both be `device_capabilities`, not `devices`.
+
+**Acceptance criterion:** `backend/seeds/devices.sql` exists, begins with both directive comments, contains one INSERT per row from `SUPPORTED_DEVICES_DB.md`, and is syntactically valid SQL (verify by inspection — no Rust compilation required for this task).
+
+---
+
+#### P7-G2a: anvilml-registry: seed_loader — tracking table bootstrap + SHA256 comparison
+
+- **Prereqs:** P7-G1
+- **Tags:** —
+
+**Files to create or modify:**
+
+- `crates/anvilml-registry/src/seed_loader.rs` — new file.
+- `crates/anvilml-registry/src/lib.rs` — re-export `run` or `SeedLoader`.
+
+**Key implementation notes:**
+
+The `seed_history` table is created by the loader itself, not by a migration. Issue this DDL unconditionally at the start of every `run` call:
+
+```sql
+CREATE TABLE IF NOT EXISTS seed_history (
+    filename   TEXT    PRIMARY KEY,
+    sha256     TEXT    NOT NULL,
+    applied_at INTEGER NOT NULL
+);
+```
+
+`applied_at` stores a Unix timestamp as `INTEGER` (seconds since epoch).
+
+`run(pool: &SqlitePool, seeds_dir: &Path) -> Result<(), AnvilError>`:
+
+1. Create `seed_history` table (idempotent `IF NOT EXISTS`).
+2. Enumerate `.sql` files in `seeds_dir` in sorted filename order.
+3. For each file: read bytes, parse header directives (first non-empty lines starting with `-- anvil:`). If `seed_table` directive is absent, return `Err(AnvilError::seed_missing_directive(filename))`.
+4. Compute `sha256` of file bytes using the `sha2` crate (`Sha256::digest`).
+5. Query `seed_history` for this filename. If the stored sha256 matches, skip. Otherwise proceed to execution (implemented in G2b).
+6. After execution, upsert `seed_history`: `INSERT OR REPLACE INTO seed_history VALUES (filename, sha256, now)`.
+
+Add `sha2` to `[workspace.dependencies]` and `crates/anvilml-registry/Cargo.toml`. Use `mcp-rust-docs` to resolve the correct version before pinning.
+
+G2a covers steps 1–5 (scaffolding, parsing, comparison, skip logic) plus the `seed_history` upsert at step 6. Execution (the actual DELETE/INSERT) is stubbed as a no-op in G2a and implemented in G2b.
+
+**Acceptance criterion:** `cargo test -p anvilml-registry -- seed` exits 0 (tests for: table bootstrap idempotent, directive parsing hit, directive parsing miss/error, sha256 skip on unchanged file).
+
+---
+
+#### P7-G2b: anvilml-registry: seed_loader — execution engine
+
+- **Prereqs:** P7-G2a
+- **Tags:** —
+
+**Files to create or modify:**
+
+- `crates/anvilml-registry/src/seed_loader.rs` — complete the execution stub from G2a.
+
+**Key implementation notes:**
+
+The SQL file body (everything after the `-- anvil:` header lines) contains `INSERT OR REPLACE` statements separated by semicolons. The parser must split on `;` and execute each non-empty statement individually within a single transaction.
+
+`replace_all` strategy transaction sequence:
+
+```sql
+BEGIN;
+DELETE FROM <seed_table>;
+<INSERT statement 1>;
+<INSERT statement 2>;
+-- ...
+UPDATE seed_history SET sha256=?, applied_at=? WHERE filename=?;
+COMMIT;
+```
+
+`merge` strategy transaction sequence:
+
+```sql
+BEGIN;
+<INSERT OR REPLACE statement 1>;
+<INSERT OR REPLACE statement 2>;
+-- ...
+UPDATE seed_history SET sha256=?, applied_at=? WHERE filename=?;
+COMMIT;
+```
+
+Both strategies are skipped entirely when the sha256 matches (enforced in G2a). The transaction must be rolled back on any statement error; the `seed_history` row must not be updated if the transaction fails.
+
+Required tests (≥5): `sha256_skip_does_not_execute`, `replace_all_replaces_table_content`, `merge_preserves_unreferenced_rows`, `changed_sha256_reruns_seed`, `missing_seed_table_directive_returns_error`.
+
+**Acceptance criterion:** `cargo test -p anvilml-registry -- seed` exits 0 with ≥5 tests passing.
+
+---
+
+#### P7-G3: anvilml-hardware: replace SEED_ENTRIES with SeedLoader; remove const
+
+- **Prereqs:** P7-G2b
+- **Tags:** reasoning
+
+**Files to create or modify:**
+
+- `crates/anvilml-hardware/src/lib.rs` — replace `store.seed(&SEED_ENTRIES).await?` with `anvilml_registry::seed_loader::run(pool, &cfg.seeds_path).await?`.
+- `crates/anvilml-hardware/src/device_db.rs` — remove `pub const SEED_ENTRIES` and its entire entry list. Gate `DeviceCapabilityStore::seed()` in `device_store.rs` with `#[cfg(any(test, feature = "seed-util"))]`.
+- `crates/anvilml-core/src/config.rs` (or wherever `ServerConfig` is defined) — add `seeds_path: PathBuf` with a default of `executable_dir().join("seeds")`. Add `ANVILML_SEEDS_PATH` env var override and `--seeds-path` CLI flag consistent with existing config resolution precedence.
+- `backend/src/main.rs` — no change needed if `detect_all_devices` already receives `&cfg`.
+
+**Key implementation notes:**
+
+`executable_dir()` is `std::env::current_exe()?.parent()`. This means the `backend/seeds/` directory must be co-located with the compiled binary in development (`cargo run` places the binary in `target/debug/` or `target/release/`; seeds must be copied there or the path overridden via config). For development, the config default should fall back to the workspace root `backend/seeds/` if the exe-relative path does not exist. Add this fallback: try `exe_dir/seeds`, else try `CARGO_MANIFEST_DIR/../backend/seeds` (only when compiled with `debug_assertions`).
+
+Update `mod tests` in `lib.rs` that previously called `store.seed(&SEED_ENTRIES)`: copy `backend/seeds/devices.sql` to a `tempfile::TempDir` and pass its path as `seeds_dir` to `detect_all_devices`.
+
+**Acceptance criterion:** `cargo test --workspace --features mock-hardware` exits 0.
+
+---
+
+#### P7-G4: Fix name resolution priority and --print-hardware display
+
+- **Prereqs:** P7-G3
+- **Tags:** —
+
+**Files to create or modify:**
+
+- `crates/anvilml-hardware/src/device_db.rs` — update `resolve_caps_from_row` hit and miss paths.
+- `backend/src/main.rs` — update `print_hardware_table` display logic.
+
+**Key implementation notes:**
+
+Define a helper to detect whether a driver-supplied name is generic (not SKU-specific). A name is considered generic if it is empty, equals `"AMD Radeon Graphics"`, equals `"AMD proprietary driver"`, or matches the pattern `"Device {hex}"` (common before `update-pciids`). This list can be extended; keep it as a small `fn is_generic_driver_name(s: &str) -> bool`.
+
+`resolve_caps_from_row` hit path:
+
+```
+if dev.name is empty OR is_generic_driver_name(&dev.name):
+    dev.name = row.model_name.clone()      // group label becomes primary name
+    dev.db_group_name = None               // no redundant braces
+else:
+    // dev.name is a real Vulkan SKU name — keep it
+    dev.db_group_name = Some(row.model_name.clone())
+```
+
+`resolve_caps_from_row` miss path:
+
+```
+if dev.name is empty OR is_generic_driver_name(&dev.name):
+    dev.name = format!("Unknown GPU (0x{:04X}:0x{:04X})", dev.pci_vendor_id, dev.pci_device_id)
+// else: keep whatever the enumerator set
+```
+
+`print_hardware_table` display:
+
+```
+let display_name = match &dev.db_group_name {
+    Some(group) if group != &dev.name => format!("{} ({})", dev.name, group),
+    _ => dev.name.clone(),
+};
+```
+
+Add tests: `generic_name_replaced_by_group_label`, `specific_vulkan_name_preserved`, `miss_with_empty_name_shows_unknown`, `miss_with_specific_name_preserved`.
+
+**Acceptance criterion:** `cargo test --workspace --features mock-hardware` exits 0.
+
+---
+
 ## Interfaces and Contracts — append this row
 
 | Contract document | Relevant to tasks | What must match |
 |---|---|---|
 | `SUPPORTED_DEVICES_DB.md` | P7-F1, P7-F2, P7-F3 | Migration DDL column order, `DeviceCapabilityRow` field order, `SEED_ENTRIES` const block — all must use the canonical order `fp32, fp16, bf16, fp8, fp4, nvfp4, flash_attn` |
+| `SUPPORTED_DEVICES_DB.md` | P7-G1 | `devices.sql` INSERT column order must match `004_device_capabilities.sql` DDL: `vendor_id, device_id, model_name, arch, fp32, fp16, bf16, fp8, fp4, nvfp4, flash_attn` |
 
 ---
 
@@ -551,3 +780,10 @@ Expected: roughly every 5 seconds a JSON text frame arrives with `"event":"syste
 - P7-E1 through P7-E3 are sequenced E1→E2→E3 to keep each upgrade atomic and independently revertable. They prereq P7-C1 (not each other's predecessors in the original chain) with the exception that E2 prereqs E1 and E3 prereqs E2, forming a linear sub-chain. Do not reorder.
 - P7-E3 (axum 0.8) must not be attempted until P7-E2 is complete and the workspace builds clean. A partial upgrade of axum without tower 0.5 will fail to compile immediately.
 - After P7-E3, `tokio-tungstenite` remains pinned at 0.24.x. The axum 0.8 + tower 0.5 environment may support a newer `tokio-tungstenite`; this should be evaluated as a separate follow-on leaf task in a later phase, not folded into P7-E3.
+- **G1 table name must match the migration DDL exactly.** The `anvil:seed_table` directive and every `INSERT INTO` target in `devices.sql` must name the same table that `004_device_capabilities.sql` creates. The migration uses `device_capabilities`; if `devices.sql` uses `devices` instead, all inserts will fail at runtime with a "no such table" error. The Forge must read the migration file to verify the table name before writing any INSERT statement.
+- **`seed_history` is self-bootstrapped, not migration-managed.** The `SeedLoader` issues `CREATE TABLE IF NOT EXISTS seed_history` itself on every `run` call. Do not add a migration for this table. The tracking table is an implementation detail of the seed infrastructure and must not appear in `_sqlx_migrations`.
+- **`sha2` crate must be added to `[workspace.dependencies]` via `mcp-rust-docs`.** Do not pin a version from training data. Version information changes; the MCP lookup is mandatory per `.clinerules §7.7`.
+- **`SEED_ENTRIES` removal is a one-way change.** Once removed in G3, the const cannot be restored without re-authoring 126 entries. If the Forge encounters a compile error after removal, the fix is never to restore the const — it is to fix the call site.
+- **Development path fallback for `seeds_path`.** In `cargo run` (debug builds), the binary is in `target/debug/` which does not contain a `seeds/` subdirectory. The config default must fall back to the workspace-relative `backend/seeds/` path when `debug_assertions` is enabled and the exe-relative path does not exist. Without this fallback, all local development runs will fail to find the seed file.
+- **G4's `is_generic_driver_name` list is intentionally non-exhaustive.** It covers the known cases from hardware testing. New generic driver strings should be added when encountered; they do not require a new task. The miss-path fallback ensures the worst case is always `"Unknown GPU (0x{vendor}:{device})"`, never an empty name column.
+- **`DeviceCapabilityStore::seed()` is gated, not removed.** After G3, the method is compiled only under `#[cfg(any(test, feature = "seed-util"))]`. Any test that previously called `store.seed(&SEED_ENTRIES)` must be updated to either use `SeedLoader` with a temp dir or construct `DeviceCapabilityRow` values inline. The Forge must search for all test call sites in G3 and update them.

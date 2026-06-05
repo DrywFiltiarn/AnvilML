@@ -189,5 +189,50 @@
     "prereqs": ["P7-F3"],
     "context": "Make detect_all_devices in crates/anvilml-hardware/src/lib.rs async, add pool:&SqlitePool param. At entry: DeviceCapabilityStore::new(pool.clone()).seed(&SEED_ENTRIES).await?. Per device: store.get(pci_vendor_id,pci_device_id).await?, pass result to resolve_caps_from_row. Update backend/src/main.rs call site: pass &db, add .await. Update mod tests to use #[tokio::test] + pool from anvilml_registry::db::open_in_memory(). Add pub async fn open_in_memory()->Result<SqlitePool,AnvilError> to crates/anvilml-registry/src/db.rs. cargo test --workspace --features mock-hardware exits 0.",
     "tags": ["reasoning"]
+  },
+  {
+    "id": "P7-G1",
+    "description": "backend: create backend/seeds/devices.sql seed file",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-F4"],
+    "context": "Create backend/seeds/devices.sql. Header: \"-- anvil:seed_table devices\\n-- anvil:seed_strategy replace_all\". Body: one INSERT OR REPLACE INTO devices(...) VALUES(...) per row from both tables in docs/SUPPORTED_DEVICES_DB.md (read the file; copy verbatim; Y=1 N=0). Columns match 004_device_capabilities.sql order: vendor_id,device_id,model_name,arch,fp32,fp16,bf16,fp8,fp4,nvfp4,flash_attn. No Rust code. Verify SQL is syntactically valid by inspection. File must be present at backend/seeds/devices.sql.",
+    "tags": ["reasoning"]
+  },
+  {
+    "id": "P7-G2a",
+    "description": "anvilml-registry: seed_loader — tracking table bootstrap + SHA256 comparison",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-G1"],
+    "context": "Create crates/anvilml-registry/src/seed_loader.rs. Bootstrap \"CREATE TABLE IF NOT EXISTS seed_history(filename TEXT PRIMARY KEY,sha256 TEXT NOT NULL,applied_at INTEGER NOT NULL)\" on every run. Parse header directives \"-- anvil:seed_table <name>\" and \"-- anvil:seed_strategy <replace_all|merge>\" from .sql file header; reject file missing seed_table directive. Compute SHA256 of file bytes; compare to seed_history; skip if unchanged. pub async fn run(pool:&SqlitePool,seeds_dir:&Path)->Result<(),AnvilError>. Re-export from lib.rs. cargo test -p anvilml-registry -- seed exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P7-G2b",
+    "description": "anvilml-registry: seed_loader — execution engine for replace_all and merge strategies",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-G2a"],
+    "context": "Implement seed execution in crates/anvilml-registry/src/seed_loader.rs. replace_all: single transaction — DELETE FROM <seed_table>, execute each INSERT from file body, UPDATE seed_history with new sha256+applied_at. merge: single transaction — INSERT OR REPLACE statements only, UPDATE seed_history. Both skip when sha256 unchanged. Tests (>=5): sha256_skip, replace_all_applies, merge_preserves_rows, changed_sha256_reruns, missing_directive_errors. cargo test -p anvilml-registry -- seed exits 0 >=5 tests.",
+    "tags": []
+  },
+  {
+    "id": "P7-G3",
+    "description": "anvilml-hardware: replace SEED_ENTRIES startup seed with SeedLoader; remove SEED_ENTRIES const",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-G2b"],
+    "context": "Replace store.seed(&SEED_ENTRIES) in detect_all_devices in crates/anvilml-hardware/src/lib.rs with SeedLoader::run(pool,seeds_dir).await?. seeds_dir resolved from ServerConfig (add seeds_path:PathBuf defaulting to executable_dir/seeds). Remove SEED_ENTRIES const and its import from device_db.rs. Gate DeviceCapabilityStore::seed() with #[cfg(any(test,feature=\"seed-util\"))]. Update detect_all_devices mod tests to copy backend/seeds/devices.sql to a tempdir and pass it as seeds_dir. cargo test --workspace --features mock-hardware exits 0.",
+    "tags": ["reasoning"]
+  },
+  {
+    "id": "P7-G4",
+    "description": "anvilml-hardware + backend: fix name resolution priority and display",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-G3"],
+    "context": "Fix name resolution in crates/anvilml-hardware/src/device_db.rs resolve_caps_from_row and backend/src/main.rs print_hardware_table. Hit path: if dev.name is empty or generic set dev.name=row.model_name; else preserve dev.name and set dev.db_group_name=Some(row.model_name). Miss path: if dev.name empty set dev.name=format!(\"Unknown GPU (0x{:04X}:0x{:04X})\",vendor_id,device_id). Display: \"{name} ({db_group_name})\" when db_group_name differs from name, else \"{name}\". cargo test --workspace --features mock-hardware exits 0.",
+    "tags": []
   }  
 ]
