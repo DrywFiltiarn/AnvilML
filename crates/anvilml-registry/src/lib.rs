@@ -5,7 +5,8 @@ pub mod device_store;
 pub mod scanner;
 pub mod store;
 
-pub use db::open;
+pub use db::{open, open_in_memory};
 pub use device_store::{DeviceCapabilityRow, DeviceCapabilityStore};
 pub use scanner::scan_dirs;
+pub use sqlx::sqlite::SqlitePool;
 pub use store::ModelRegistry;

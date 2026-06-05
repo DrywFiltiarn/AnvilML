@@ -26,6 +26,43 @@ fn migrate_error(err: MigrateError) -> AnvilError {
 // the workspace-level backend/migrations/ directory.
 static MIGRATIONS: Migrator = sqlx::migrate!("../../backend/migrations");
 
+/// Open an in-memory SQLite database, configure pragmas, run migrations,
+/// and return a ready-to-use connection pool.
+///
+/// This is the preferred helper for unit tests that need a fully migrated
+/// database without touching the filesystem.
+///
+/// **Note:** uses a single-connection pool because `:memory:` databases are
+/// per-connection in SQLite — the migrator must run on the same connection
+/// that serves queries.
+pub async fn open_in_memory() -> Result<SqlitePool, AnvilError> {
+    let opts = SqliteConnectOptions::new().filename(Path::new(":memory:")).create_if_missing(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+        .map_err(sqlx_error)?;
+
+    sqlx::query("PRAGMA journal_mode=WAL")
+        .execute(&pool)
+        .await
+        .map_err(sqlx_error)?;
+
+    sqlx::query("PRAGMA synchronous=NORMAL")
+        .execute(&pool)
+        .await
+        .map_err(sqlx_error)?;
+
+    sqlx::query("PRAGMA foreign_keys=ON")
+        .execute(&pool)
+        .await
+        .map_err(sqlx_error)?;
+
+    MIGRATIONS.run(&pool).await.map_err(migrate_error)?;
+
+    Ok(pool)
+}
+
 /// Open a SQLite database at the given path, configure pragmas, run migrations,
 /// and return a ready-to-use connection pool.
 pub async fn open(path: &Path) -> Result<SqlitePool, AnvilError> {

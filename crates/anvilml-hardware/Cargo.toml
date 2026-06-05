@@ -29,6 +29,7 @@ libloading = "0.9"
 
 [dev-dependencies]
 serial_test = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [features]
 mock-hardware = []

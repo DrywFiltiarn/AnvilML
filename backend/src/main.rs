@@ -136,16 +136,25 @@ async fn main() {
 
     let cfg = load_config(toml_path, overrides).expect("Failed to load config");
 
+    // Open the SQLite database and run migrations first — needed for device
+    // capability lookups in detect_all_devices.
+    let db = anvilml_registry::db::open(&cfg.db_path)
+        .await
+        .expect("failed to open database");
+
     // --print-hardware: detect hardware, print table, exit 0.
     if args.print_hardware {
-        let hw_info =
-            anvilml_hardware::detect_all_devices(&cfg).expect("hardware detection failed");
+        let hw_info = anvilml_hardware::detect_all_devices(&cfg, &db)
+            .await
+            .expect("hardware detection failed");
         print_hardware_table(&hw_info);
         std::process::exit(0);
     }
 
     // Normal server path: detect hardware, log devices, store in AppState.
-    let hw_info = anvilml_hardware::detect_all_devices(&cfg).expect("hardware detection failed");
+    let hw_info = anvilml_hardware::detect_all_devices(&cfg, &db)
+        .await
+        .expect("hardware detection failed");
 
     for dev in &hw_info.gpus {
         tracing::info!(
@@ -157,11 +166,6 @@ async fn main() {
             capabilities_source = ?dev.capabilities_source,
         );
     }
-
-    // Open the SQLite database and run migrations.
-    let db = anvilml_registry::db::open(&cfg.db_path)
-        .await
-        .expect("failed to open database");
 
     // Reset any ghost jobs left from a previous unclean exit.
     let ghost_count = anvilml_registry::db::reset_ghost_jobs(&db)

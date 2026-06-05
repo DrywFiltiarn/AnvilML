@@ -209,15 +209,38 @@ fn enumerate_gpus() -> Vec<GpuDevice> {
 /// 2. If `mock-hardware` feature is enabled → use [`MockDetector`] directly.
 /// 3. Else enumerate via [`VulkanDetector`]; if empty, fall back to platform-specific
 ///    detectors (DXGI on Windows, sysfs+NVML on Unix).
-/// 4. For each enumerated device, call [`device_db::resolve_caps_from_row`] to populate
-///    name/arch/caps from the PCI-ID capability table.
+/// 4. For each enumerated device, query the device DB store by PCI vendor/device ID and
+///    call [`device_db::resolve_caps_from_row`] to populate name/arch/caps.
 /// 5. Map PCI vendor ID → [`DeviceType`]: `0x10DE` = Cuda, `0x1002` = Rocm,
 ///    `0x8086` or unknown = Cpu.
 /// 6. If zero GPUs detected → add one CPU device via [`CpuDetector`].
 /// 7. Populate [`HostInfo`] via sysinfo (os, cpu_model, ram_total_mib, ram_free_mib).
 /// 8. Set `inference_caps` on [`HardwareInfo`] to the OR of all device caps
 ///    (or defaults if no GPUs).
-pub fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, AnvilError> {
+pub async fn detect_all_devices(
+    cfg: &ServerConfig,
+    pool: &anvilml_registry::SqlitePool,
+) -> Result<HardwareInfo, AnvilError> {
+    // Seed the device capability store so lookups work.
+    let store = anvilml_registry::DeviceCapabilityStore::new(pool.clone());
+    let rows: Vec<anvilml_registry::DeviceCapabilityRow> = device_db::SEED_ENTRIES
+        .iter()
+        .map(|e| anvilml_registry::DeviceCapabilityRow {
+            vendor_id: e.vendor_id,
+            device_id: e.device_id,
+            model_name: e.model_name.to_string(),
+            arch: e.arch.to_string(),
+            fp32: e.fp32,
+            fp16: e.fp16,
+            bf16: e.bf16,
+            fp8: e.fp8,
+            fp4: e.fp4,
+            nvfp4: e.nvfp4,
+            flash_attn: e.flash_attention,
+        })
+        .collect();
+    store.seed(&rows).await?;
+
     // Branch 1: hardware override takes highest priority.
     if let Some(override_cfg) = &cfg.hardware_override {
         return Ok(HardwareInfo {
@@ -248,24 +271,9 @@ pub fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, AnvilError
     {
         let mut gpus = mock::MockDetector.detect()?;
 
-        // Resolve capabilities from device DB.
+        // Resolve capabilities from device DB via store lookup.
         for dev in &mut gpus {
-            let row = device_db::SEED_ENTRIES
-                .iter()
-                .find(|e| e.vendor_id == dev.pci_vendor_id && e.device_id == dev.pci_device_id)
-                .map(|e| anvilml_registry::DeviceCapabilityRow {
-                    vendor_id: e.vendor_id,
-                    device_id: e.device_id,
-                    model_name: e.model_name.to_string(),
-                    arch: e.arch.to_string(),
-                    fp32: e.fp32,
-                    fp16: e.fp16,
-                    bf16: e.bf16,
-                    fp8: e.fp8,
-                    fp4: e.fp4,
-                    nvfp4: e.nvfp4,
-                    flash_attn: e.flash_attention,
-                });
+            let row = store.get(dev.pci_vendor_id, dev.pci_device_id).await?;
             device_db::resolve_caps_from_row(dev, row.as_ref());
         }
 
@@ -293,22 +301,7 @@ pub fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, AnvilError
         // Resolve capabilities from device DB for each enumerated device.
         for dev in &mut gpus {
             if dev.pci_vendor_id != 0 || dev.pci_device_id != 0 {
-                let row = device_db::SEED_ENTRIES
-                    .iter()
-                    .find(|e| e.vendor_id == dev.pci_vendor_id && e.device_id == dev.pci_device_id)
-                    .map(|e| anvilml_registry::DeviceCapabilityRow {
-                        vendor_id: e.vendor_id,
-                        device_id: e.device_id,
-                        model_name: e.model_name.to_string(),
-                        arch: e.arch.to_string(),
-                        fp32: e.fp32,
-                        fp16: e.fp16,
-                        bf16: e.bf16,
-                        fp8: e.fp8,
-                        fp4: e.fp4,
-                        nvfp4: e.nvfp4,
-                        flash_attn: e.flash_attention,
-                    });
+                let row = store.get(dev.pci_vendor_id, dev.pci_device_id).await?;
                 device_db::resolve_caps_from_row(dev, row.as_ref());
             } else {
                 // No PCI IDs available — set fallback defaults.
@@ -432,8 +425,8 @@ mod tests {
     }
 
     /// detect_all_devices with hardware_override must return one Override device.
-    #[test]
-    fn detect_all_devices_override() {
+    #[tokio::test]
+    async fn detect_all_devices_override() {
         let cfg = ServerConfig {
             hardware_override: Some(HardwareOverrideConfig {
                 device_type: DeviceType::Cuda,
@@ -442,7 +435,10 @@ mod tests {
             ..ServerConfig::default()
         };
 
-        let info = detect_all_devices(&cfg).expect("detect_all_devices should succeed");
+        let pool = anvilml_registry::open_in_memory().await.unwrap();
+        let info = detect_all_devices(&cfg, &pool)
+            .await
+            .expect("detect_all_devices should succeed");
         assert_eq!(info.gpus.len(), 1);
         let dev = &info.gpus[0];
         assert!(matches!(dev.device_type, DeviceType::Cuda));
@@ -455,8 +451,8 @@ mod tests {
     }
 
     /// detect_all_devices with override and Rocm device type.
-    #[test]
-    fn detect_all_devices_override_rocm() {
+    #[tokio::test]
+    async fn detect_all_devices_override_rocm() {
         let cfg = ServerConfig {
             hardware_override: Some(HardwareOverrideConfig {
                 device_type: DeviceType::Rocm,
@@ -465,22 +461,26 @@ mod tests {
             ..ServerConfig::default()
         };
 
-        let info = detect_all_devices(&cfg).expect("detect_all_devices should succeed");
+        let pool = anvilml_registry::open_in_memory().await.unwrap();
+        let info = detect_all_devices(&cfg, &pool)
+            .await
+            .expect("detect_all_devices should succeed");
         assert_eq!(info.gpus.len(), 1);
         assert!(matches!(info.gpus[0].device_type, DeviceType::Rocm));
         assert_eq!(info.gpus[0].vram_total_mib, 24576);
     }
 
-    /// detect_all_devices with mock-hardware feature must return a Mock device.
+   /// detect_all_devices with mock-hardware feature must return a Mock device.
     #[cfg(feature = "mock-hardware")]
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn detect_all_devices_mock_cuda() {
+    async fn detect_all_devices_mock_cuda() {
         std::env::set_var("ANVILML_MOCK_DEVICE_TYPE", "cuda");
         std::env::set_var("ANVILML_MOCK_VRAM_MIB", "12288");
 
         let cfg = ServerConfig::default();
-        let info = detect_all_devices(&cfg).expect("detect_all_devices should succeed");
+        let pool = anvilml_registry::open_in_memory().await.unwrap();
+        let info = detect_all_devices(&cfg, &pool).await.expect("detect_all_devices should succeed");
 
         assert_eq!(info.gpus.len(), 1);
         assert!(matches!(info.gpus[0].device_type, DeviceType::Cuda));
@@ -493,24 +493,26 @@ mod tests {
 
     /// detect_all_devices with mock-hardware feature and ROCm.
     #[cfg(feature = "mock-hardware")]
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn detect_all_devices_mock_rocm() {
+    async fn detect_all_devices_mock_rocm() {
         std::env::set_var("ANVILML_MOCK_DEVICE_TYPE", "rocm");
 
         let cfg = ServerConfig::default();
-        let info = detect_all_devices(&cfg).expect("detect_all_devices should succeed");
+        let pool = anvilml_registry::open_in_memory().await.unwrap();
+        let info = detect_all_devices(&cfg, &pool).await.expect("detect_all_devices should succeed");
 
         assert_eq!(info.gpus.len(), 1);
         assert!(matches!(info.gpus[0].device_type, DeviceType::Rocm));
     }
 
     /// Vulkan detection must not panic even without a GPU.
-    #[test]
-    fn detect_all_devices_vulkan_empty() {
+    #[tokio::test]
+    async fn detect_all_devices_vulkan_empty() {
         let cfg = ServerConfig::default();
+        let pool = anvilml_registry::open_in_memory().await.unwrap();
         // This should always succeed — may return empty GPUs on systems without Vulkan.
-        let result = detect_all_devices(&cfg);
+        let result = detect_all_devices(&cfg, &pool).await;
         assert!(result.is_ok(), "detect_all_devices must never return Err");
 
         let info = result.unwrap();
@@ -519,8 +521,8 @@ mod tests {
     }
 
     /// detect_all_devices with override returns Override enumeration source.
-    #[test]
-    fn detect_all_devices_override_source() {
+    #[tokio::test]
+    async fn detect_all_devices_override_source() {
         let cfg = ServerConfig {
             hardware_override: Some(HardwareOverrideConfig {
                 device_type: DeviceType::Cuda,
@@ -529,7 +531,10 @@ mod tests {
             ..ServerConfig::default()
         };
 
-        let info = detect_all_devices(&cfg).expect("detect_all_devices should succeed");
+        let pool = anvilml_registry::open_in_memory().await.unwrap();
+        let info = detect_all_devices(&cfg, &pool)
+            .await
+            .expect("detect_all_devices should succeed");
         assert!(matches!(
             info.gpus[0].enumeration_source,
             EnumerationSource::Override
@@ -541,8 +546,8 @@ mod tests {
     }
 
     /// detect_all_devices with override and CPU device type.
-    #[test]
-    fn detect_all_devices_override_cpu() {
+    #[tokio::test]
+    async fn detect_all_devices_override_cpu() {
         let cfg = ServerConfig {
             hardware_override: Some(HardwareOverrideConfig {
                 device_type: DeviceType::Cpu,
@@ -551,35 +556,47 @@ mod tests {
             ..ServerConfig::default()
         };
 
-        let info = detect_all_devices(&cfg).expect("detect_all_devices should succeed");
+        let pool = anvilml_registry::open_in_memory().await.unwrap();
+        let info = detect_all_devices(&cfg, &pool)
+            .await
+            .expect("detect_all_devices should succeed");
         assert_eq!(info.gpus.len(), 1);
         assert!(matches!(info.gpus[0].device_type, DeviceType::Cpu));
         assert_eq!(info.gpus[0].vram_total_mib, 0);
     }
 
     /// detect_all_devices must always return Ok (never Err).
-    #[test]
-    fn detect_all_devices_never_errs() {
+    #[tokio::test]
+    async fn detect_all_devices_never_errs() {
+        let pool = anvilml_registry::open_in_memory().await.unwrap();
+
         // Test with default config.
-        let result = detect_all_devices(&ServerConfig::default());
+        let result = detect_all_devices(&ServerConfig::default(), &pool).await;
         assert!(result.is_ok());
 
         // Test with override config.
-        let result = detect_all_devices(&ServerConfig {
-            hardware_override: Some(HardwareOverrideConfig {
-                device_type: DeviceType::Cuda,
-                vram_total_mib: 8192,
-            }),
-            ..ServerConfig::default()
-        });
+        let result = detect_all_devices(
+            &ServerConfig {
+                hardware_override: Some(HardwareOverrideConfig {
+                    device_type: DeviceType::Cuda,
+                    vram_total_mib: 8192,
+                }),
+                ..ServerConfig::default()
+            },
+            &pool,
+        )
+        .await;
         assert!(result.is_ok());
     }
 
     /// HostInfo fields must be populated correctly.
-    #[test]
-    fn host_info_populated() {
+    #[tokio::test]
+    async fn host_info_populated() {
         let cfg = ServerConfig::default();
-        let info = detect_all_devices(&cfg).expect("detect_all_devices should succeed");
+        let pool = anvilml_registry::open_in_memory().await.unwrap();
+        let info = detect_all_devices(&cfg, &pool)
+            .await
+            .expect("detect_all_devices should succeed");
 
         assert!(!info.host.os.is_empty());
         assert!(!info.host.cpu_model.is_empty());
@@ -588,10 +605,13 @@ mod tests {
     }
 
     /// detect_all_devices must produce sequential device indices.
-    #[test]
-    fn devices_have_sequential_indices() {
+    #[tokio::test]
+    async fn devices_have_sequential_indices() {
         let cfg = ServerConfig::default();
-        let info = detect_all_devices(&cfg).expect("detect_all_devices should succeed");
+        let pool = anvilml_registry::open_in_memory().await.unwrap();
+        let info = detect_all_devices(&cfg, &pool)
+            .await
+            .expect("detect_all_devices should succeed");
 
         for (i, dev) in info.gpus.iter().enumerate() {
             assert_eq!(dev.index, i as u32);
@@ -599,8 +619,8 @@ mod tests {
     }
 
     /// Override device new fields must be correct.
-    #[test]
-    fn override_device_new_fields() {
+    #[tokio::test]
+    async fn override_device_new_fields() {
         let cfg = ServerConfig {
             hardware_override: Some(HardwareOverrideConfig {
                 device_type: DeviceType::Cuda,
@@ -609,7 +629,10 @@ mod tests {
             ..ServerConfig::default()
         };
 
-        let info = detect_all_devices(&cfg).expect("detect_all_devices should succeed");
+        let pool = anvilml_registry::open_in_memory().await.unwrap();
+        let info = detect_all_devices(&cfg, &pool)
+            .await
+            .expect("detect_all_devices should succeed");
         let dev = &info.gpus[0];
 
         assert_eq!(dev.pci_vendor_id, 0);
@@ -625,15 +648,16 @@ mod tests {
         ));
     }
 
-    /// Mock device new fields must be correct (mock-hardware feature).
+  /// Mock device new fields must be correct (mock-hardware feature).
     #[cfg(feature = "mock-hardware")]
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn mock_device_new_fields_in_detect_all() {
+    async fn mock_device_new_fields_in_detect_all() {
         std::env::set_var("ANVILML_MOCK_DEVICE_TYPE", "cuda");
 
         let cfg = ServerConfig::default();
-        let info = detect_all_devices(&cfg).expect("detect_all_devices should succeed");
+        let pool = anvilml_registry::open_in_memory().await.unwrap();
+        let info = detect_all_devices(&cfg, &pool).await.expect("detect_all_devices should succeed");
 
         let dev = &info.gpus[0];
         assert!(matches!(dev.enumeration_source, EnumerationSource::Mock));
@@ -645,13 +669,14 @@ mod tests {
 
     /// detect_all_devices with mock-hardware returns Mock enumeration source.
     #[cfg(feature = "mock-hardware")]
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn detect_all_devices_mock_enum_source() {
+    async fn detect_all_devices_mock_enum_source() {
         std::env::set_var("ANVILML_MOCK_DEVICE_TYPE", "cpu");
 
         let cfg = ServerConfig::default();
-        let info = detect_all_devices(&cfg).expect("detect_all_devices should succeed");
+        let pool = anvilml_registry::open_in_memory().await.unwrap();
+        let info = detect_all_devices(&cfg, &pool).await.expect("detect_all_devices should succeed");
 
         assert!(matches!(
             info.gpus[0].enumeration_source,
@@ -661,28 +686,31 @@ mod tests {
 
     /// detect_all_devices with mock-hardware returns Mock device type.
     #[cfg(feature = "mock-hardware")]
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn detect_all_devices_mock_device_type() {
+    async fn detect_all_devices_mock_device_type() {
         std::env::set_var("ANVILML_MOCK_DEVICE_TYPE", "rocm");
 
         let cfg = ServerConfig::default();
-        let info = detect_all_devices(&cfg).expect("detect_all_devices should succeed");
+        let pool = anvilml_registry::open_in_memory().await.unwrap();
+        let info = detect_all_devices(&cfg, &pool).await.expect("detect_all_devices should succeed");
 
         assert!(matches!(info.gpus[0].device_type, DeviceType::Rocm));
     }
 
     /// detect_all_devices with mock-hardware returns Mock device VRAM.
     #[cfg(feature = "mock-hardware")]
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn detect_all_devices_mock_vram() {
+    async fn detect_all_devices_mock_vram() {
         std::env::set_var("ANVILML_MOCK_DEVICE_TYPE", "cuda");
         std::env::set_var("ANVILML_MOCK_VRAM_MIB", "32768");
 
         let cfg = ServerConfig::default();
-        let info = detect_all_devices(&cfg).expect("detect_all_devices should succeed");
+        let pool = anvilml_registry::open_in_memory().await.unwrap();
+        let info = detect_all_devices(&cfg, &pool).await.expect("detect_all_devices should succeed");
 
         assert_eq!(info.gpus[0].vram_total_mib, 32768);
     }
-}
+
+  }
