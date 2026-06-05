@@ -252,6 +252,7 @@ pub fn load_config(
         config.port = port;
     }
 
+    tracing::debug!(host = %config.host, port = config.port, db_path = %config.db_path.display(), frontend_mode = ?config.frontend.mode, "config resolved");
     Ok(config)
 }
 

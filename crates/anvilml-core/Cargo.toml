@@ -11,4 +11,5 @@ toml = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 url = { workspace = true }
+tracing = { workspace = true }
 utoipa = { workspace = true }
