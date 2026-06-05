@@ -1,0 +1,79 @@
+[
+  {
+    "id": "P900-A1",
+    "description": "anvilml-registry: retrofit INFO logging to db.rs (DB create, migrations, up-to-date)",
+    "phase": "900",
+    "project": "anvilml",
+    "prereqs": [
+      "P8-A4"
+    ],
+    "context": "In crates/anvilml-registry/src/db.rs, retrofit logging per FORGE_AGENT_RULES \u00a711. open(): before SqliteConnectOptions, check path.exists(); tracing::info!(path=%path.display(), \"database created\") if absent, tracing::debug!(path=%path.display(), \"database exists\") if present. After sqlx::migrate!, query _sqlx_migrations for applied migrations: log each at tracing::info!(migration=%name, version=%ver, \"migration applied\"); if none applied log tracing::info!(migrations_applied=0, \"database schema up to date\"). cargo test -p anvilml-registry -- db exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P900-A2",
+    "description": "anvilml-registry: retrofit INFO logging to seed_loader.rs (seed applied/skipped)",
+    "phase": "900",
+    "project": "anvilml",
+    "prereqs": [
+      "P900-A1"
+    ],
+    "context": "In crates/anvilml-registry/src/seed_loader.rs, add INFO logging per FORGE_AGENT_RULES \u00a711.3. When sha256 matches seed_history: tracing::info!(file=%filename, status=\"up-to-date\", \"seed skipped\"). When applied (sha256 changed or first run): tracing::info!(file=%filename, sha256=%hex_str, \"seed applied\"). All fields use structured = notation. No changes to logic, tests, or other files. cargo test -p anvilml-registry -- seed exits 0 with no regressions.",
+    "tags": []
+  },
+  {
+    "id": "P900-A3",
+    "description": "anvilml-hardware: retrofit DEBUG fallback log to lib.rs (Vulkan\u2192DXGI/sysfs fallback)",
+    "phase": "900",
+    "project": "anvilml",
+    "prereqs": [
+      "P900-A2"
+    ],
+    "context": "In crates/anvilml-hardware/src/lib.rs, add DEBUG fallback log per FORGE_AGENT_RULES \u00a711.5. In detect_all_devices (real-hardware path), after VulkanDetector returns empty and before invoking the platform fallback: on #[cfg(windows)] tracing::debug!(fallback=\"dxgi\", \"Vulkan returned no devices; using DXGI\"); on #[cfg(unix)] tracing::debug!(fallback=\"sysfs_nvml\", \"Vulkan returned no devices; using sysfs+NVML\"). Emit only when actually falling back. cargo test -p anvilml-hardware --features mock-hardware exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P900-A4",
+    "description": "anvilml-hardware: retrofit DEBUG caps resolution log to device_db.rs",
+    "phase": "900",
+    "project": "anvilml",
+    "prereqs": [
+      "P900-A3"
+    ],
+    "context": "In crates/anvilml-hardware/src/device_db.rs, add DEBUG caps resolution log per FORGE_AGENT_RULES \u00a711.1. In resolve_caps_from_row: on hit add tracing::debug!(vendor_id=%format_args!(\"0x{:04X}\",dev.pci_vendor_id), device_id=%format_args!(\"0x{:04X}\",dev.pci_device_id), name=%dev.name, source=\"DeviceTable\", \"caps resolved\"); on miss add same with source=\"Fallback\" (the existing warn! on miss is unchanged). cargo test -p anvilml-hardware exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P900-A5",
+    "description": "anvilml-core: retrofit DEBUG resolved config log to config_load.rs",
+    "phase": "900",
+    "project": "anvilml",
+    "prereqs": [
+      "P900-A4"
+    ],
+    "context": "In crates/anvilml-core/src/config_load.rs, add DEBUG resolved config log per FORGE_AGENT_RULES \u00a711.1. After the final ServerConfig is assembled and overrides applied, emit: tracing::debug!(host=%cfg.host, port=cfg.port, db_path=%cfg.db_path.display(), frontend_mode=?cfg.frontend.mode, \"config resolved\"). Use = structured fields; no string interpolation. No logic changes. cargo test -p anvilml-core -- config_load exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P900-A6",
+    "description": "anvilml-registry: retrofit WARN discipline and DEBUG per-file log to scanner.rs",
+    "phase": "900",
+    "project": "anvilml",
+    "prereqs": [
+      "P900-A5"
+    ],
+    "context": "In crates/anvilml-registry/src/scanner.rs, two changes per FORGE_AGENT_RULES \u00a711.4/\u00a711.5. (1) WARN discipline: at each OS-error skip site, io::ErrorKind::NotFound emits tracing::warn!(path=%..., \"scanner: skipping missing path\") without error=; all other errors retain error= field. Apply to all three existing warn sites (walkdir entry, metadata, canonicalize). (2) DEBUG per file: accepted tracing::debug!(path=%entry.path().display(), id=%meta.id, \"scanner: accepted\"); skipped tracing::debug!(path=%..., reason=%reason, \"scanner: skipped\"). cargo test -p anvilml-registry -- scanner exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P900-A7",
+    "description": "anvilml-ipc: retrofit WARN/ERROR logging to framing.rs error paths",
+    "phase": "900",
+    "project": "anvilml",
+    "prereqs": [
+      "P900-A6"
+    ],
+    "context": "In crates/anvilml-ipc/src/framing.rs, add tracing per FORGE_AGENT_RULES \u00a711.1. Add tracing = {workspace=true} to crates/anvilml-ipc/Cargo.toml. In read_frame: before returning PayloadTooLarge emit tracing::warn!(payload_mib=payload_len/1024/1024, limit_mib=max_mib, \"IPC frame rejected: payload too large\"); on deserialize failure emit tracing::error!(error=%e, \"IPC frame deserialize failed\"). In write_frame: on error emit tracing::error!(error=%e, \"IPC frame write failed\"). cargo test -p anvilml-ipc exits 0.",
+    "tags": []
+  }
+]

@@ -52,6 +52,8 @@ This rebuild is organised by **vertical slice**. Phase 1 produces a binary you c
 | 024 | Release Packaging & Automation | Version-bump → auto-tag → signed cross-platform GitHub Release zips | Bump workspace version → published Linux+Windows zips + SHA256SUMS + GPG |
 | 025 | Documentation Site | Full mdBook user/operator manual, auto-deployed to GitHub Pages | `mdbook build docs-site`; site publishes to Pages |
 
+> **Phase numbers 900–999 are reserved for retrofit phases.** See the Retrofit Phases section below.
+
 ## Milestone groupings (for reporting)
 
 | Group | Phases | Theme |
@@ -64,6 +66,23 @@ This rebuild is organised by **vertical slice**. Phase 1 produces a binary you c
 | Production surface | 018–020 | Worker admin, frontend, OpenAPI, launcher polish |
 | Real inference | 021–022 | Real ZiT + SDXL pipelines; hardening; CI green |
 | Distribution readiness | 023–025 | Self-provisioning on first run; signed cross-platform releases |
+| Retrofit | 900–999 | Post-hoc corrections and adjustments inserted between primary phases |
+
+## Retrofit Phases (900–999)
+
+Phase numbers 900–999 are reserved exclusively for retrofit, correction, and adjustment work that must be inserted between already-executed primary phases. They are never part of the original development plan — they are authored on demand when a gap is identified in the committed codebase (for example: a new rule added to `FORGE_AGENT_RULES.md` after earlier phases ran, a production bug that must be fixed before the next primary phase begins, or a cross-cutting concern that spans multiple already-completed files).
+
+**This section does not enumerate every retrofit phase.** Retrofit phases are self-documenting: each has its own `tasks_phase9NN.json` and `TASKS_PHASE9NN.md` which describe what was retrofitted and why. To see what retrofit phases exist, list the `9xx` entries in `.forge/tasks/`. PHASES.md is not updated when a new retrofit phase is added — only when a retrofit phase is first introduced (to record the convention) or when a retrofit phase affects the Registered Projects list.
+
+**Execution order** is determined entirely by `prereqs`, not by the phase number. A retrofit phase inserted between primary phases P and Q must have its first task prereq the terminal task of P, and the first task of Q must prereq the terminal task of the retrofit phase.
+
+**Known retrofit phases:**
+
+| Phase | Name | Inserted between | Addresses |
+|------:|------|-----------------|-----------|
+| 900 | Logging Retrofit | 008 → 009 | Retrofit `FORGE_AGENT_RULES.md §11` logging obligations to phases 000–008 |
+
+---
 
 ## Dependency principle
 

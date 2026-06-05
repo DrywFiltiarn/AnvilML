@@ -5,7 +5,7 @@
     "phase": "9",
     "project": "anvilml",
     "prereqs": [
-      "P8-A4"
+      "P8-A4", "P900-A7"
     ],
     "context": "Create worker/ package: __init__.py, nodes/__init__.py, tests/__init__.py. worker/requirements/: base.txt (msgpack>=1.0, pillow>=10.0, numpy, safetensors, diffusers, transformers, pytest) plus torch-selectors per design 2.2/21: cuda.txt, rocm-linux.txt, rocm-windows.txt (AMD PyTorch-on-Windows, ROCm>=7.2), cpu.txt. Create worker/ipc.py: at top if win32 msvcrt.setmode O_BINARY on stdin+stdout. read_frame(): 4-byte big-endian len then N bytes, unpackb(raw=False). write_frame(): packb(use_bin_type=True), 4-byte prefix, write stdout.buffer, flush. pytest worker/tests/test_ipc.py exits 0.",
     "tags": [
