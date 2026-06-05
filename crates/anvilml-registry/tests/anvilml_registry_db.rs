@@ -7,19 +7,22 @@ async fn test_open_creates_tables() {
 
     let pool = anvilml_registry::db::open(path).await.unwrap();
 
-    // Verify all three tables exist in sqlite_master.
+    // Verify all four tables exist in sqlite_master.
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sqlite_master \
-         WHERE type='table' AND name IN ('jobs','models','artifacts')",
+         WHERE type='table' AND name IN ('jobs','models','artifacts','device_capabilities')",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
 
-    assert_eq!(count, 3, "expected jobs, models, and artifacts tables");
+    assert_eq!(
+        count, 4,
+        "expected jobs, models, artifacts, and device_capabilities tables"
+    );
 
     // Verify each table individually.
-    for table in ["jobs", "models", "artifacts"] {
+    for table in ["jobs", "models", "artifacts", "device_capabilities"] {
         let exists: i64 = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
         )
