@@ -6,9 +6,12 @@
 
 use std::path::Path;
 
+use tracing;
+
 use anvilml_core::error::AnvilError;
 use sqlx::migrate::{MigrateError, Migrator};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use sqlx::Row;
 
 /// Convert a `sqlx::Error` into an `AnvilError::DbError`.
 fn sqlx_error(err: sqlx::Error) -> AnvilError {
@@ -68,6 +71,12 @@ pub async fn open_in_memory() -> Result<SqlitePool, AnvilError> {
 /// Open a SQLite database at the given path, configure pragmas, run migrations,
 /// and return a ready-to-use connection pool.
 pub async fn open(path: &Path) -> Result<SqlitePool, AnvilError> {
+    if !path.exists() {
+        tracing::info!(path = %path.display(), "database created");
+    } else {
+        tracing::debug!(path = %path.display(), "database exists");
+    }
+
     let opts = SqliteConnectOptions::new()
         .filename(path)
         .create_if_missing(true);
@@ -95,6 +104,25 @@ pub async fn open(path: &Path) -> Result<SqlitePool, AnvilError> {
 
     // Run embedded migrations.
     MIGRATIONS.run(&pool).await.map_err(migrate_error)?;
+
+    // Log applied migrations.
+    let rows = sqlx::query(
+        "SELECT version, description FROM _sqlx_migrations \
+         WHERE success = TRUE ORDER BY installed_on",
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(sqlx_error)?;
+
+    if rows.is_empty() {
+        tracing::info!(migrations_applied = 0, "database schema up to date");
+    } else {
+        for row in &rows {
+            let version: i64 = row.get("version");
+            let description: String = row.get("description");
+            tracing::info!(migration = %description, version = version, "migration applied");
+        }
+    }
 
     Ok(pool)
 }
