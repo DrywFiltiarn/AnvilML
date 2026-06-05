@@ -18,3 +18,6 @@ tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 uuid = { workspace = true, features = ["v4"] }
 sqlx = { workspace = true, features = ["sqlite", "runtime-tokio", "macros"] }
+
+[features]
+seed-util = []

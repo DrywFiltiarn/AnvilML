@@ -135,6 +135,7 @@ impl DeviceCapabilityStore {
     ///
     /// Returns the number of entries inserted or updated. If any entry fails,
     /// the entire transaction is rolled back.
+    #[cfg(any(test, feature = "seed-util"))]
     pub async fn seed(&self, entries: &[DeviceCapabilityRow]) -> Result<u64, AnvilError> {
         let mut tx = self.pool.begin().await.map_err(sqlx_error)?;
 
@@ -166,7 +167,7 @@ impl DeviceCapabilityStore {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "seed-util"))]
 mod tests {
     use super::*;
 

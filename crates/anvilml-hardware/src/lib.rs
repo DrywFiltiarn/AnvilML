@@ -221,25 +221,10 @@ pub async fn detect_all_devices(
     cfg: &ServerConfig,
     pool: &anvilml_registry::SqlitePool,
 ) -> Result<HardwareInfo, AnvilError> {
-    // Seed the device capability store so lookups work.
+    // Seed the device capability store via SQL seed files.
+    anvilml_registry::seed_loader::run(pool, &cfg.seeds_path).await?;
+
     let store = anvilml_registry::DeviceCapabilityStore::new(pool.clone());
-    let rows: Vec<anvilml_registry::DeviceCapabilityRow> = device_db::SEED_ENTRIES
-        .iter()
-        .map(|e| anvilml_registry::DeviceCapabilityRow {
-            vendor_id: e.vendor_id,
-            device_id: e.device_id,
-            model_name: e.model_name.to_string(),
-            arch: e.arch.to_string(),
-            fp32: e.fp32,
-            fp16: e.fp16,
-            bf16: e.bf16,
-            fp8: e.fp8,
-            fp4: e.fp4,
-            nvfp4: e.nvfp4,
-            flash_attn: e.flash_attention,
-        })
-        .collect();
-    store.seed(&rows).await?;
 
     // Branch 1: hardware override takes highest priority.
     if let Some(override_cfg) = &cfg.hardware_override {
@@ -350,6 +335,35 @@ mod tests {
     use anvilml_core::config::HardwareOverrideConfig;
     use anvilml_core::DeviceType;
     use serial_test::serial;
+    use std::fs;
+
+    /// RAII guard that keeps a temp seeds directory alive for the duration of a test.
+    struct SeedsGuard {
+        _tmp: tempfile::TempDir,
+        path: std::path::PathBuf,
+    }
+
+    impl SeedsGuard {
+        fn new() -> Self {
+            let tmp = tempfile::tempdir().expect("create temp dir");
+            let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("backend")
+                .join("seeds")
+                .join("devices.sql");
+            let dst = tmp.path().join("devices.sql");
+            fs::copy(&src, &dst).expect("copy devices.sql into temp seeds dir");
+            let path = tmp.path().to_path_buf();
+            Self { _tmp: tmp, path }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
 
     /// Vendor ID 0x10DE must map to Cuda.
     #[cfg(not(feature = "mock-hardware"))]
@@ -427,11 +441,13 @@ mod tests {
     /// detect_all_devices with hardware_override must return one Override device.
     #[tokio::test]
     async fn detect_all_devices_override() {
+        let guard = SeedsGuard::new();
         let cfg = ServerConfig {
             hardware_override: Some(HardwareOverrideConfig {
                 device_type: DeviceType::Cuda,
                 vram_total_mib: 16384,
             }),
+            seeds_path: guard.path().to_path_buf(),
             ..ServerConfig::default()
         };
 
@@ -453,11 +469,13 @@ mod tests {
     /// detect_all_devices with override and Rocm device type.
     #[tokio::test]
     async fn detect_all_devices_override_rocm() {
+        let guard = SeedsGuard::new();
         let cfg = ServerConfig {
             hardware_override: Some(HardwareOverrideConfig {
                 device_type: DeviceType::Rocm,
                 vram_total_mib: 24576,
             }),
+            seeds_path: guard.path().to_path_buf(),
             ..ServerConfig::default()
         };
 
@@ -478,7 +496,11 @@ mod tests {
         std::env::set_var("ANVILML_MOCK_DEVICE_TYPE", "cuda");
         std::env::set_var("ANVILML_MOCK_VRAM_MIB", "12288");
 
-        let cfg = ServerConfig::default();
+        let guard = SeedsGuard::new();
+        let cfg = ServerConfig {
+            seeds_path: guard.path().to_path_buf(),
+            ..ServerConfig::default()
+        };
         let pool = anvilml_registry::open_in_memory().await.unwrap();
         let info = detect_all_devices(&cfg, &pool)
             .await
@@ -500,7 +522,11 @@ mod tests {
     async fn detect_all_devices_mock_rocm() {
         std::env::set_var("ANVILML_MOCK_DEVICE_TYPE", "rocm");
 
-        let cfg = ServerConfig::default();
+        let guard = SeedsGuard::new();
+        let cfg = ServerConfig {
+            seeds_path: guard.path().to_path_buf(),
+            ..ServerConfig::default()
+        };
         let pool = anvilml_registry::open_in_memory().await.unwrap();
         let info = detect_all_devices(&cfg, &pool)
             .await
@@ -513,7 +539,11 @@ mod tests {
     /// Vulkan detection must not panic even without a GPU.
     #[tokio::test]
     async fn detect_all_devices_vulkan_empty() {
-        let cfg = ServerConfig::default();
+        let guard = SeedsGuard::new();
+        let cfg = ServerConfig {
+            seeds_path: guard.path().to_path_buf(),
+            ..ServerConfig::default()
+        };
         let pool = anvilml_registry::open_in_memory().await.unwrap();
         // This should always succeed — may return empty GPUs on systems without Vulkan.
         let result = detect_all_devices(&cfg, &pool).await;
@@ -527,11 +557,13 @@ mod tests {
     /// detect_all_devices with override returns Override enumeration source.
     #[tokio::test]
     async fn detect_all_devices_override_source() {
+        let guard = SeedsGuard::new();
         let cfg = ServerConfig {
             hardware_override: Some(HardwareOverrideConfig {
                 device_type: DeviceType::Cuda,
                 vram_total_mib: 16384,
             }),
+            seeds_path: guard.path().to_path_buf(),
             ..ServerConfig::default()
         };
 
@@ -552,11 +584,13 @@ mod tests {
     /// detect_all_devices with override and CPU device type.
     #[tokio::test]
     async fn detect_all_devices_override_cpu() {
+        let guard = SeedsGuard::new();
         let cfg = ServerConfig {
             hardware_override: Some(HardwareOverrideConfig {
                 device_type: DeviceType::Cpu,
                 vram_total_mib: 0,
             }),
+            seeds_path: guard.path().to_path_buf(),
             ..ServerConfig::default()
         };
 
@@ -575,28 +609,36 @@ mod tests {
         let pool = anvilml_registry::open_in_memory().await.unwrap();
 
         // Test with default config.
-        let result = detect_all_devices(&ServerConfig::default(), &pool).await;
+        let guard1 = SeedsGuard::new();
+        let cfg1 = ServerConfig {
+            seeds_path: guard1.path().to_path_buf(),
+            ..ServerConfig::default()
+        };
+        let result = detect_all_devices(&cfg1, &pool).await;
         assert!(result.is_ok());
 
         // Test with override config.
-        let result = detect_all_devices(
-            &ServerConfig {
-                hardware_override: Some(HardwareOverrideConfig {
-                    device_type: DeviceType::Cuda,
-                    vram_total_mib: 8192,
-                }),
-                ..ServerConfig::default()
-            },
-            &pool,
-        )
-        .await;
+        let guard2 = SeedsGuard::new();
+        let cfg2 = ServerConfig {
+            hardware_override: Some(HardwareOverrideConfig {
+                device_type: DeviceType::Cuda,
+                vram_total_mib: 8192,
+            }),
+            seeds_path: guard2.path().to_path_buf(),
+            ..ServerConfig::default()
+        };
+        let result = detect_all_devices(&cfg2, &pool).await;
         assert!(result.is_ok());
     }
 
     /// HostInfo fields must be populated correctly.
     #[tokio::test]
     async fn host_info_populated() {
-        let cfg = ServerConfig::default();
+        let guard = SeedsGuard::new();
+        let cfg = ServerConfig {
+            seeds_path: guard.path().to_path_buf(),
+            ..ServerConfig::default()
+        };
         let pool = anvilml_registry::open_in_memory().await.unwrap();
         let info = detect_all_devices(&cfg, &pool)
             .await
@@ -611,7 +653,11 @@ mod tests {
     /// detect_all_devices must produce sequential device indices.
     #[tokio::test]
     async fn devices_have_sequential_indices() {
-        let cfg = ServerConfig::default();
+        let guard = SeedsGuard::new();
+        let cfg = ServerConfig {
+            seeds_path: guard.path().to_path_buf(),
+            ..ServerConfig::default()
+        };
         let pool = anvilml_registry::open_in_memory().await.unwrap();
         let info = detect_all_devices(&cfg, &pool)
             .await
@@ -625,11 +671,13 @@ mod tests {
     /// Override device new fields must be correct.
     #[tokio::test]
     async fn override_device_new_fields() {
+        let guard = SeedsGuard::new();
         let cfg = ServerConfig {
             hardware_override: Some(HardwareOverrideConfig {
                 device_type: DeviceType::Cuda,
                 vram_total_mib: 16384,
             }),
+            seeds_path: guard.path().to_path_buf(),
             ..ServerConfig::default()
         };
 
@@ -659,7 +707,11 @@ mod tests {
     async fn mock_device_new_fields_in_detect_all() {
         std::env::set_var("ANVILML_MOCK_DEVICE_TYPE", "cuda");
 
-        let cfg = ServerConfig::default();
+        let guard = SeedsGuard::new();
+        let cfg = ServerConfig {
+            seeds_path: guard.path().to_path_buf(),
+            ..ServerConfig::default()
+        };
         let pool = anvilml_registry::open_in_memory().await.unwrap();
         let info = detect_all_devices(&cfg, &pool)
             .await
@@ -680,7 +732,11 @@ mod tests {
     async fn detect_all_devices_mock_enum_source() {
         std::env::set_var("ANVILML_MOCK_DEVICE_TYPE", "cpu");
 
-        let cfg = ServerConfig::default();
+        let guard = SeedsGuard::new();
+        let cfg = ServerConfig {
+            seeds_path: guard.path().to_path_buf(),
+            ..ServerConfig::default()
+        };
         let pool = anvilml_registry::open_in_memory().await.unwrap();
         let info = detect_all_devices(&cfg, &pool)
             .await
@@ -699,7 +755,11 @@ mod tests {
     async fn detect_all_devices_mock_device_type() {
         std::env::set_var("ANVILML_MOCK_DEVICE_TYPE", "rocm");
 
-        let cfg = ServerConfig::default();
+        let guard = SeedsGuard::new();
+        let cfg = ServerConfig {
+            seeds_path: guard.path().to_path_buf(),
+            ..ServerConfig::default()
+        };
         let pool = anvilml_registry::open_in_memory().await.unwrap();
         let info = detect_all_devices(&cfg, &pool)
             .await
@@ -716,7 +776,11 @@ mod tests {
         std::env::set_var("ANVILML_MOCK_DEVICE_TYPE", "cuda");
         std::env::set_var("ANVILML_MOCK_VRAM_MIB", "32768");
 
-        let cfg = ServerConfig::default();
+        let guard = SeedsGuard::new();
+        let cfg = ServerConfig {
+            seeds_path: guard.path().to_path_buf(),
+            ..ServerConfig::default()
+        };
         let pool = anvilml_registry::open_in_memory().await.unwrap();
         let info = detect_all_devices(&cfg, &pool)
             .await

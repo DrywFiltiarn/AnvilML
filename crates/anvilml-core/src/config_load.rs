@@ -289,6 +289,7 @@ fn merge_config(base: ServerConfig, override_cfg: ServerConfig) -> ServerConfig 
             },
         },
         limits: merge_limits(base.limits, override_cfg.limits),
+        seeds_path: override_cfg.seeds_path,
     }
 }
 

@@ -99,6 +99,12 @@ mode = "headless"  # headless (default) | local | remote
 #   <int> — specific device index (e.g. 0, 1, 2)
 default_device = "auto"
 
+# ── Seed Files Directory ──────────────────────────────────────────────────────
+
+# Path to the directory containing SQL seed files for device capabilities.
+# Defaults to <exe_dir>/seeds; falls back to backend/seeds/ in debug builds.
+seeds_path = "./seeds"
+
 # ── Resource Limits ───────────────────────────────────────────────────────────
 
 [limits]

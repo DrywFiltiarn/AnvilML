@@ -61,6 +61,7 @@ async fn get_miss_returns_none() {
 }
 
 /// Seeding 3 entries returns count `3` and all entries are retrievable.
+#[cfg(feature = "seed-util")]
 #[tokio::test]
 async fn seed_returns_correct_count() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -206,6 +207,7 @@ async fn upsert_overwrites_existing() {
 }
 
 /// Seed with an empty slice returns count `0`.
+#[cfg(feature = "seed-util")]
 #[tokio::test]
 async fn seed_empty_returns_zero() {
     let tmp = tempfile::NamedTempFile::new().unwrap();

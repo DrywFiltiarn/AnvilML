@@ -65,16 +65,17 @@
     "P7-F3",
     "P7-F4",
     "P7-G1",
-    "P7-G2a"
+    "P7-G2a",
+    "P7-G2b"
   ],
-  "in_progress": "P7-G2b",
+  "in_progress": "P7-G3",
   "plan_approved": true,
-  "current_plan": "1. **Parse body from raw bytes.** After header directives are parsed and SHA256 computed, the remaining content after the last `-- anvil:` line is the SQL body. Strip leading/trailing whitespace.\n\n2. **Split on semicolons.** Split body by `;` into individual statement strings. Trim each. Skip empty strings.\n\n3. **Execute in single transaction.** For each strategy:\n   - `replace_all`: execute `DELETE FROM <table>` first, then each non-empty statement from the body (these are INSERT statements), finally the `seed_history` update (which is done after `execute_seed` returns).\n   - `merge`: execute each non-empty statement from the body directly (INSERT OR REPLACE).\n   - The `seed_history` UPDATE remains in the caller (`run`) to keep transaction scope clear: BEGIN \u2192 seed statements \u2192 COMMIT.\n\n4. **Transaction management.** Use `sqlx::query` for each statement. On any error, propagate it up \u2014 sqlx will handle rollback on transaction drop. No explicit ROLLBACK needed; Drop impl of `Transaction` handles it.\n\n5. **Add tests** to `tests/seed_loader.rs` using `open_in_memory()` and temporary seed files via `tempfile::TempDir`.",
+  "current_plan": "1. **Add `seeds_path` to `ServerConfig`** in `crates/anvilml-core/src/config.rs`:\n   - Add field `#[serde(default = \"default_seeds_path\")] pub seeds_path: PathBuf` after the `limits` field\n   - Add `fn default_seeds_path() -> PathBuf` that calls `std::env::current_exe()` to get the executable directory, then `.join(\"seeds\")`. If `debug_assertions` is enabled and that path does not exist, fall back to `PathBuf::from(env!(\"CARGO_MANIFEST_DIR\")).parent().unwrap().parent().unwrap().join(\"backend\").join(\"seeds\")`\n   - Add `seeds_path: default_seeds_path()` to the `Default` impl\n\n2. **Replace seeding in `detect_all_devices()`** in `crates/anvilml-hardware/src/lib.rs`:\n   - Remove lines 225-242 (store creation + SEED_ENTRIES iteration + seed call)\n   - Replace with: `anvilml_registry::seed_loader::run(pool, &cfg.seeds_path).await?;`\n\n3. **Remove `SEED_ENTRIES` const** from `crates/anvilml-hardware/src/device_db.rs`:\n   - Remove the entire `pub const SEED_ENTRIES` block (lines 45-1701)\n   - Keep `DeviceCapabilityEntry` struct definition and `resolve_caps_from_row()` function intact\n\n4. **Gate `DeviceCapabilityStore::seed()`** in `crates/anvilml-registry/src/device_store.rs`:\n   - Prepend `#[cfg(any(test, feature = \"seed-util\"))]` to the `seed()` method (line 138)\n   - Prepend `#[cfg(any(test, feature = \"seed-util\"))]` to the entire `mod tests` block (line 169)\n\n5. **Update test modules** in `crates/anvilml-hardware/src/lib.rs`:\n   - Add `tempfile` as a dev-dependency if not already present\n   - For each test calling `detect_all_devices()`, after creating the pool, also create a temp dir, copy `backend/seeds/devices.sql` into it, and set up the config with `seeds_path` pointing to that temp dir\n   - The simplest approach: add a helper function in the test module that creates a temp seeds directory and returns the path\n\n6. **Clean up imports** in `lib.rs`:\n   - Remove any imports now unused after removing SEED_ENTRIES conversion logic (e.g., `anvilml_registry::DeviceCapabilityRow` if it was only used for the conversion)\n\n7. **Verify**: `cargo test --workspace --features mock-hardware` exits 0, and cross-checks pass.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-05T17:42:21+0200",
-  "plan_approval_message_id": "1512481529161453838",
+  "last_updated": "2026-06-05T18:19:29+0200",
+  "plan_approval_message_id": "1512490786921385990",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512481526867038391",
+  "plan_report_message_id": "1512490785440796703",
   "impl_report_message_id": null
 }

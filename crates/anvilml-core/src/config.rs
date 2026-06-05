@@ -159,6 +159,31 @@ fn default_ws_broadcast_capacity() -> usize {
     256
 }
 
+/// Default path for seed files: `<current_exe_dir>/seeds`, falling back to
+/// `backend/seeds/` relative to CARGO_MANIFEST_DIR in debug builds.
+fn default_seeds_path() -> PathBuf {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(PathBuf::from));
+
+    #[cfg(debug_assertions)]
+    if let Some(exe_dir) = exe_dir {
+        let seeds = exe_dir.join("seeds");
+        if seeds.is_dir() {
+            return seeds;
+        }
+    }
+
+    // Fallback: relative to CARGO_MANIFEST_DIR (crates/anvilml-hardware → repo root → backend/seeds)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("backend")
+        .join("seeds")
+}
+
 /// Top-level server configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
@@ -190,6 +215,9 @@ pub struct ServerConfig {
     pub gpu_selection: GpuSelectionConfig,
     #[serde(default)]
     pub limits: LimitsConfig,
+    /// Path to the directory containing SQL seed files for device capabilities.
+    #[serde(default = "default_seeds_path")]
+    pub seeds_path: PathBuf,
 }
 
 fn default_host() -> IpAddr {
@@ -241,6 +269,7 @@ impl Default for ServerConfig {
             frontend: FrontendConfig::default(),
             gpu_selection: GpuSelectionConfig::default(),
             limits: LimitsConfig::default(),
+            seeds_path: default_seeds_path(),
         }
     }
 }
@@ -290,6 +319,7 @@ mod tests {
                 list_max_limit: 500,
                 ws_broadcast_capacity: 512,
             },
+            seeds_path: PathBuf::from("/tmp/seeds"),
         };
 
         // Serialize to TOML
