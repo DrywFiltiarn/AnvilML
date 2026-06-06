@@ -135,11 +135,12 @@ impl ManagedWorker {
 
         // Build the command.
         let mut cmd = Command::new(&python_path);
-        cmd.arg("worker_main.py")
+        cmd.arg("worker/worker_main.py")
             .arg("--worker-id")
             .arg(&self.worker_id)
             .arg("--device-index")
             .arg(self.device_index.to_string())
+            .current_dir(_repo_root_for_worker())
             .envs(build_worker_env(device, cfg))
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -683,6 +684,19 @@ fn resolve_python_path(venv_path: &Path) -> std::path::PathBuf {
     venv_path.join(python)
 }
 
+/// Return the repository root directory where `worker/worker_main.py` lives.
+///
+/// This is used as the current working directory for the worker subprocess so that
+/// the relative path `worker/worker_main.py` resolves correctly regardless of
+/// where the test or binary is invoked from.
+fn _repo_root_for_worker() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -693,12 +707,8 @@ mod tests {
     use rmp_serde;
 
     /// Spawn a mock worker, send Ping, receive Pong, then Shutdown.
-    ///
-    /// Skipped by default because it requires a Python interpreter at a
-    /// specific path. Set `ANVILML_TEST_WORKER_PYTHON` to override the path.
     #[tokio::test]
     #[cfg(feature = "mock-hardware")]
-    #[ignore = "requires Python worker; set ANVILML_TEST_WORKER_PYTHON to enable"]
     async fn spawn_ping_pong() {
         let worker = ManagedWorker::new("test-worker".to_string(), 0);
 
@@ -721,7 +731,9 @@ mod tests {
 
         // Use the system python3 directly for tests.
         let cfg = ServerConfig {
-            venv_path: std::path::PathBuf::from("/home/dryw/forge/.venv"),
+            venv_path: std::env::var("ANVILML_VENV_PATH")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::path::PathBuf::from("/home/dryw/forge/.venv")),
             ..ServerConfig::default()
         };
 
@@ -783,7 +795,6 @@ mod tests {
     /// Verify status transitions: Initializing → Idle (on Ready) → Dead.
     #[tokio::test]
     #[cfg(feature = "mock-hardware")]
-    #[ignore = "requires Python worker; set ANVILML_TEST_WORKER_PYTHON to enable"]
     async fn status_transitions() {
         let worker = ManagedWorker::new("status-test".to_string(), 0);
 
@@ -804,7 +815,9 @@ mod tests {
         };
 
         let cfg = ServerConfig {
-            venv_path: std::path::PathBuf::from("/home/dryw/forge/.venv"),
+            venv_path: std::env::var("ANVILML_VENV_PATH")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::path::PathBuf::from("/home/dryw/forge/.venv")),
             ..ServerConfig::default()
         };
 
@@ -816,6 +829,103 @@ mod tests {
 
         // After spawn returns, status should be Idle (Ready was received).
         assert_eq!(worker.get_status().await, WorkerStatus::Idle);
+    }
+
+    /// End-to-end handshake regression test: spawn → exactly one Ready → Idle.
+    ///
+    /// Guards against re-introduction of the double InitializeHardware write bug
+    /// (P10-B1). Asserts that after spawn completes:
+    /// - Status is Idle
+    /// - Exactly one `Ready` event is received in a 500ms drain window
+    /// - No second Ready, no Dying, no Dead events appear during the drain
+    #[tokio::test]
+    #[cfg(feature = "mock-hardware")]
+    async fn handshake_completes_once() {
+        // Fast keepalive parameters for test execution.
+        std::env::set_var("ANVILML_WORKER_MOCK", "1");
+        std::env::set_var("ANVILML_PING_INTERVAL_MS", "50");
+        std::env::set_var("ANVILML_PONG_TIMEOUT_MS", "150");
+
+        let worker = ManagedWorker::new("handshake-test".to_string(), 0);
+
+        // Build a mock device (same shape as existing tests).
+        let device = GpuDevice {
+            index: 0,
+            name: "Mock GPU".to_string(),
+            device_type: anvilml_core::DeviceType::Cpu,
+            vram_total_mib: 8192,
+            vram_free_mib: 8192,
+            driver_version: "mock".to_string(),
+            pci_vendor_id: 0,
+            pci_device_id: 0,
+            arch: Some("gfx1100".to_string()),
+            caps: Default::default(),
+            enumeration_source: anvilml_core::EnumerationSource::Mock,
+            capabilities_source: anvilml_core::CapabilitySource::Fallback,
+            db_group_name: None,
+        };
+
+        let cfg = ServerConfig {
+            venv_path: std::env::var("ANVILML_VENV_PATH")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::path::PathBuf::from("/home/dryw/forge/.venv")),
+            ..ServerConfig::default()
+        };
+
+        // Subscribe to broadcast channel *before* spawning.
+        let mut rx = worker.subscribe();
+
+        // Spawn the worker (writes InitializeHardware internally, waits for Ready).
+        worker.spawn(&device, &cfg).await.expect("spawn");
+
+        // Assert status is Idle after spawn completes.
+        assert_eq!(worker.get_status().await, WorkerStatus::Idle);
+
+        // Drain broadcast channel with 500ms timeout: collect all events within window.
+        let drain_timeout = tokio::time::Duration::from_millis(500);
+        let start = std::time::Instant::now();
+        let mut ready_count = 0u32;
+        let mut had_dying = false;
+        let mut had_dead = false;
+
+        while start.elapsed() < drain_timeout {
+            match tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await {
+                Ok(Ok((_, event))) => match &event {
+                    WorkerEvent::Ready { .. } => ready_count += 1,
+                    WorkerEvent::Dying { .. } => had_dying = true,
+                    WorkerEvent::WorkerStatusChanged { status }
+                        if *status == WorkerStatus::Dead =>
+                    {
+                        had_dead = true
+                    }
+                    _ => {} // Pong, etc. are expected — ignore.
+                },
+                Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(broadcast::error::RecvError::Closed)) => break,
+                Err(_) => {
+                    // No event within 100ms — drain window is effectively over.
+                    break;
+                }
+            }
+        }
+
+        // Exactly one Ready event must have been received.
+        assert_eq!(
+            ready_count, 1,
+            "expected exactly one Ready event, got {ready_count}"
+        );
+
+        // No second Ready, no Dying, no Dead during the drain window.
+        assert!(!had_dying, "unexpected Dying event during handshake drain");
+        assert!(
+            !had_dead,
+            "unexpected WorkerStatusChanged(Dead) during handshake drain"
+        );
+
+        // Cleanup env vars.
+        std::env::remove_var("ANVILML_WORKER_MOCK");
+        std::env::remove_var("ANVILML_PING_INTERVAL_MS");
+        std::env::remove_var("ANVILML_PONG_TIMEOUT_MS");
     }
 
     /// Verify that EOF on the pipe sets status to Dead.

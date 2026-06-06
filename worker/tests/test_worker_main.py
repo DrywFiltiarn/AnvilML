@@ -185,3 +185,46 @@ class TestWorkerMain:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+
+    def test_double_init_exits(self):
+        """Sending two InitializeHardware frames: first produces Ready, second
+        is silently ignored (not a crash). Worker responds to Shutdown with Dying
+        + exit 0. Guards against the double-InitializeHardware write bug."""
+        proc = self._spawn_worker()
+
+        try:
+            # Send two InitializeHardware frames in sequence.
+            init_frame = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            proc.stdin.write(init_frame)
+            proc.stdin.write(init_frame)
+            # Then send Shutdown to trigger a clean exit.
+            shutdown_frame = _make_frame({"_type": "Shutdown"})
+            proc.stdin.write(shutdown_frame)
+            proc.stdin.close()
+
+            stdout_data = proc.stdout.read(4096)
+            proc.wait(timeout=5)
+
+            parsed = self._parse_frames(stdout_data)
+
+            # There should be exactly one Ready event.
+            ready_events = [f for f in parsed if f["_type"] == "Ready"]
+            assert len(ready_events) == 1, (
+                f"expected exactly one Ready, got {len(ready_events)}"
+            )
+            assert ready_events[0]["worker_id"] == "test-0"
+            assert ready_events[0]["device_index"] == 0
+
+            # There should be exactly one Dying event (from Shutdown).
+            dying_events = [f for f in parsed if f["_type"] == "Dying"]
+            assert len(dying_events) == 1, (
+                f"expected exactly one Dying, got {len(dying_events)}"
+            )
+            assert dying_events[0]["reason"] == "shutdown"
+
+            # The process should exit cleanly.
+            assert proc.returncode == 0, f"worker exited with code {proc.returncode}"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
