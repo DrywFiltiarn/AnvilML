@@ -1,0 +1,2 @@
+--extra-index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple  # AMD PyTorch on Windows fallback
+torch>=2.5.0
