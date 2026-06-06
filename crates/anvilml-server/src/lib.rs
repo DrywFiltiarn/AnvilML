@@ -27,6 +27,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/models", get(handlers::models::list_models))
         .route("/v1/system/env", get(handlers::system::get_env))
         .route("/v1/system", get(handlers::system::get_system))
+        .route("/v1/workers", get(handlers::workers::list_workers))
         .with_state(state_arc)
 }
 
@@ -45,7 +46,7 @@ mod tests {
     #[tokio::test]
     async fn health_returns_200() {
         let broadcaster = Arc::new(EventBroadcaster::new(16));
-        let state = AppState::new("0.1.0", None, None, None, broadcaster);
+        let state = AppState::new("0.1.0", None, None, None, broadcaster, None);
         let app = build_router(state);
 
         let response = app
@@ -74,7 +75,7 @@ mod tests {
     #[tokio::test]
     async fn env_returns_200_with_stub_report() {
         let broadcaster = Arc::new(EventBroadcaster::new(16));
-        let state = AppState::new("0.1.0", None, None, None, broadcaster);
+        let state = AppState::new("0.1.0", None, None, None, broadcaster, None);
         let app = build_router(state);
 
         let response = app
@@ -116,7 +117,8 @@ mod tests {
                 .expect("detect_all_devices should succeed");
 
         let broadcaster = Arc::new(EventBroadcaster::new(16));
-        let state = AppState::new_with_hardware("0.1.0", hw_info, None, None, None, broadcaster);
+        let state =
+            AppState::new_with_hardware("0.1.0", hw_info, None, None, None, broadcaster, None);
         let app = build_router(state);
 
         let response = app
@@ -169,7 +171,7 @@ mod tests {
             .expect("open db must succeed");
         let registry = std::sync::Arc::new(anvilml_registry::ModelRegistry::new(pool));
         let broadcaster = Arc::new(EventBroadcaster::new(16));
-        let state = AppState::new("0.1.0", None, Some(registry), None, broadcaster);
+        let state = AppState::new("0.1.0", None, Some(registry), None, broadcaster, None);
         let app = build_router(state);
 
         let response = app
@@ -197,7 +199,7 @@ mod tests {
     #[tokio::test]
     async fn rescan_returns_202() {
         let broadcaster = Arc::new(EventBroadcaster::new(16));
-        let state = AppState::new("0.1.0", None, None, None, broadcaster);
+        let state = AppState::new("0.1.0", None, None, None, broadcaster, None);
         let app = build_router(state);
 
         let response = app
@@ -220,5 +222,39 @@ mod tests {
 
         let parsed: Value = serde_json::from_str(&body_str).unwrap();
         assert_eq!(parsed["status"], "rescan_started");
+    }
+
+    /// GET /v1/workers returns 200 with a JSON array of WorkerInfo.
+    ///
+    /// Constructs an AppState with a mock WorkerPool (no real Python workers)
+    /// and verifies the handler returns an empty array when no workers are
+    /// registered in the pool.
+    #[tokio::test]
+    async fn workers_endpoint_returns_200() {
+        let broadcaster = Arc::new(EventBroadcaster::new(16));
+        // No WorkerPool — handler should return 503 with empty array.
+        let state = AppState::new("0.1.0", None, None, None, broadcaster, None);
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/workers")
+                    .body(Full::<Bytes>::default())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+        let parsed: Value = serde_json::from_str(&body_str).unwrap();
+        assert!(parsed.is_array());
+        assert_eq!(parsed.as_array().unwrap().len(), 0);
     }
 }

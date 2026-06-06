@@ -46,7 +46,14 @@ async fn build_test_app_state(model_dir: PathBuf, db_path: PathBuf) -> AppState 
     registry.rescan(&dirs).await.expect("rescan must succeed");
 
     let broadcaster = Arc::new(EventBroadcaster::new(16));
-    AppState::new("0.1.0", Some(pool), Some(registry), Some(dirs), broadcaster)
+    AppState::new(
+        "0.1.0",
+        Some(pool),
+        Some(registry),
+        Some(dirs),
+        broadcaster,
+        None,
+    )
 }
 
 #[tokio::test]

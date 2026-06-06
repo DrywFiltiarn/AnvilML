@@ -126,6 +126,7 @@ mod tests {
             None,
             None,
             Arc::clone(&broadcaster),
+            None,
         );
 
         // Spawn the tick task.

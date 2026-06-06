@@ -2,6 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use anvilml_core::{config::ModelDirConfig, EnvReport, HardwareInfo};
 use anvilml_registry::ModelRegistry;
+use anvilml_worker::WorkerPool;
 use sqlx::SqlitePool;
 use std::time::Instant;
 
@@ -25,6 +26,8 @@ pub struct AppState {
     pub model_dirs: Vec<ModelDirConfig>,
     /// WebSocket event broadcaster.
     pub broadcaster: Arc<EventBroadcaster>,
+    /// Worker pool — spawned after hardware detection at startup.
+    pub workers: Option<Arc<WorkerPool>>,
 }
 
 impl AppState {
@@ -40,6 +43,7 @@ impl AppState {
         registry: Option<Arc<ModelRegistry>>,
         model_dirs: Option<Vec<ModelDirConfig>>,
         broadcaster: Arc<EventBroadcaster>,
+        workers: Option<Arc<WorkerPool>>,
     ) -> Self {
         let registry = match (registry, &db) {
             (Some(r), _) => r,
@@ -73,6 +77,7 @@ impl AppState {
             registry,
             model_dirs: model_dirs.unwrap_or_default(),
             broadcaster,
+            workers,
         }
     }
 
@@ -85,6 +90,7 @@ impl AppState {
         registry: Option<Arc<ModelRegistry>>,
         model_dirs: Option<Vec<ModelDirConfig>>,
         broadcaster: Arc<EventBroadcaster>,
+        workers: Option<Arc<WorkerPool>>,
     ) -> Self {
         let registry = match (registry, &db) {
             (Some(r), _) => r,
@@ -109,6 +115,7 @@ impl AppState {
             registry,
             model_dirs: model_dirs.unwrap_or_default(),
             broadcaster,
+            workers,
         }
     }
 
@@ -144,6 +151,7 @@ impl Clone for AppState {
             registry: Arc::clone(&self.registry),
             model_dirs: self.model_dirs.clone(),
             broadcaster: Arc::clone(&self.broadcaster),
+            workers: self.workers.clone(),
         }
     }
 }

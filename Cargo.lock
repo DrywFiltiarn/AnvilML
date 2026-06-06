@@ -292,6 +292,7 @@ dependencies = [
  "anvilml-hardware",
  "anvilml-registry",
  "anvilml-server",
+ "anvilml-worker",
  "axum",
  "clap",
  "tokio",

@@ -16,7 +16,7 @@ use anvilml_server::{build_router, AppState, EventBroadcaster};
 #[tokio::test]
 async fn ws_connect_broadcast_receive() {
     let broadcaster = Arc::new(EventBroadcaster::new(16));
-    let state = AppState::new("0.1.0", None, None, None, broadcaster.clone());
+    let state = AppState::new("0.1.0", None, None, None, broadcaster.clone(), None);
     let app: Router = build_router(state);
 
     // Bind the server on a random port.

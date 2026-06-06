@@ -188,6 +188,13 @@ async fn main() {
         }
     });
 
+    // Spawn the worker pool: one worker per GPU device (or CPU fallback).
+    let workers = anvilml_worker::WorkerPool::spawn_all(&hw_info, &cfg).await;
+    tracing::info!(
+        workers_spawned = workers.list().await.len(),
+        "worker pool spawned"
+    );
+
     let broadcaster = Arc::new(EventBroadcaster::new(cfg.limits.ws_broadcast_capacity));
     let state = AppState::new_with_hardware(
         env!("CARGO_PKG_VERSION"),
@@ -196,6 +203,7 @@ async fn main() {
         Some(registry),
         Some(cfg.model_dirs.clone()),
         broadcaster,
+        Some(Arc::new(workers)),
     );
     spawn_system_stats_tick(state.clone());
     let router = build_router(state);

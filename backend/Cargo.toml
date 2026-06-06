@@ -12,6 +12,7 @@ anvilml-core = { path = "../crates/anvilml-core" }
 anvilml-hardware = { path = "../crates/anvilml-hardware" }
 anvilml-registry = { path = "../crates/anvilml-registry" }
 anvilml-server = { path = "../crates/anvilml-server" }
+anvilml-worker = { path = "../crates/anvilml-worker" }
 clap = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
