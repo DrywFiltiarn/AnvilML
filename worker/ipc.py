@@ -5,6 +5,7 @@ communication between the Rust server and Python worker subprocesses.
 """
 
 import sys
+import io
 import struct
 
 import msgpack
