@@ -7,7 +7,7 @@
 | Milestone group | Worker lifecycle |
 | Depends on phases | 1-9 |
 | Task file | `forge/tasks/tasks_phase010.json` |
-| Tasks | 6 |
+| Tasks | 8 |
 
 ## Overview
 
@@ -24,7 +24,9 @@ Every task in this phase implements **one module or one endpoint** plus its test
 | P10-A3 | `backend/src/main.rs` | anvilml-server: broadcast worker status changes to WS |
 | P10-A4 | `crates/anvilml-worker/src/pool.rs` | anvilml: test-only worker PID accessor for crash-recovery proof |
 | P10-B1 | `crates/anvilml-worker/src/managed.rs` | anvilml-worker: fix double InitializeHardware write causing worker death at startup |
-| P10-B2 | `crates/anvilml-worker/src/managed.rs`, `worker/tests/test_worker_main.py` | anvilml-worker: end-to-end handshake regression test (spawn → Ready → Idle) |
++| P10-B2 | `crates/anvilml-worker/src/managed.rs`, `worker/tests/test_worker_main.py` | anvilml-worker: end-to-end handshake regression test (spawn → Ready → Idle) |
++| P10-B3 | `crates/anvilml-worker/src/managed.rs` | anvilml-worker: fix epoll edge-trigger missed wakeup — deliver handles before writing InitializeHardware |
++| P10-B4 | `crates/anvilml-worker/src/managed.rs`, `worker/tests/test_worker_main.py` | anvilml-worker: end-to-end spawn→Ready→Idle regression test against epoll fix |
 
 ## Task details
 
@@ -81,6 +83,37 @@ Add a new Rust test `handshake_completes_once` in `managed.rs`: subscribe to the
 Add a new pytest test `test_double_init_exits` in `worker/tests/test_worker_main.py`: send `InitializeHardware` twice in sequence to a reshly spawned worker subprocess; assert the worker sends `Ready` in response to the first, then sends `Dying` (or exits non-zero) in esponse to the second. This ensures the Python side explicitly rejects duplicate initialisation rather than silently accepting it.
 
 `cargo test -p anvilml-worker --features mock-hardware -- handshake` exits 0. `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py -v` exits 0. `cargo check --target x86_64-pc-windows-gnu --features mock-hardware` exits 0.
+
+
+#### P10-B3: anvilml-worker: fix epoll edge-trigger missed wakeup — deliver handles before writing InitializeHardware
+
+- **Prereqs:** P10-B2
+- **Tags:** reasoning
+
+`ManagedWorker::spawn()` currently writes `InitializeHardware` directly to the pipe fd before delivering `IpcHandles` to `run_loop` via the oneshot channel. Because `reader_task` has not yet called `poll_read`, the fd is not yet registered with epoll. On Linux, `ChildStdout` uses edge-triggered epoll: a notification only fires on a state transition from empty to data-available. Data written before registration is never signalled, so `reader_task` blocks forever. This is why `os.read()` on the raw fd works (bypasses epoll) while tokio's async read does not.
+
+Three changes to `spawn()` in `crates/anvilml-worker/src/managed.rs`:
+
+1. **Remove the 500 ms sleep.** It was a workaround for the direct-write race and is no longer needed.
+2. **Deliver IpcHandles via oneshot immediately after taking stdin/stdout** — before any write. Move the `ipc_tx.lock().unwrap().take().send(IpcHandles { stdin, stdout })` call to immediately follow the `child.stdout.take()` call, before any frame write. This lets `run_loop` start `reader_task` and register the fd with epoll before any data arrives.
+3. **Remove the direct synchronous write entirely.** Delete the `#[cfg(unix)]` fd-dup block and the `#[cfg(windows)]` async-write block. Send `InitializeHardware` through the mpsc channel only: `self.tx.send(init_msg).await`. The `writer_task` will write it after `reader_task` is already polling. The mpsc send may not complete until `writer_task` is scheduled, which is correct — it must not write before the reader is ready.
+
+Also remove the `#[cfg(unix)]` imports for `std::io::Write`, `std::os::fd::{AsRawFd, FromRawFd, IntoRawFd}`, and the `libc::dup` usage in `spawn()`. Remove the `rmp_serde` direct usage in `spawn()` if it was added solely for the direct-write path (the framing crate already handles serialization via `write_frame`). Retain the `libc` dependency for `PR_SET_PDEATHSIG` in `pre_exec`.
+
+The `wait_for_ready` polling loop at the end of `spawn()` (which polls status until `Idle` with a timeout) must remain unchanged — it is still the correct mechanism to confirm the handshake completed.
+
+`cargo run --features mock-hardware` with `ANVILML_WORKER_MOCK=1` and `ANVILML_VENV_PATH` set must reach a live Idle worker without panicking. `cargo test -p anvilml-worker --features mock-hardware` exits 0. `cargo check --target x86_64-pc-windows-gnu --features mock-hardware` exits 0.
+
+#### P10-B4: anvilml-worker: end-to-end spawn→Ready→Idle regression test against epoll fix
+
+- **Prereqs:** P10-B3
+- **Tags:** reasoning
+
+With the epoll fix in place, the three previously-failing Rust integration tests (`spawn_ping_pong`, `status_transitions`, `handshake_completes_once`) must now pass against a real Python subprocess. Verify and un-skip any remaining `#[ignore]` attributes. Add one new Rust test `spawn_reaches_idle` in `managed.rs` as the canonical regression guard: spawn a `ManagedWorker` with `ANVILML_WORKER_MOCK=1` and `ANVILML_VENV_PATH`, call `spawn()`, assert the returned `Result` is `Ok`, assert `get_status().await == WorkerStatus::Idle`. This test must pass without any sleep or timing workaround — if it requires a sleep to be reliable, the epoll fix is incomplete.
+
+Also update `test_double_init_exits` in `worker/tests/test_worker_main.py` if the current assertion (`Ready` then silent ignore then `Shutdown` → `Dying`) was written as a workaround for the old worker behaviour: confirm the assertion matches actual Python worker behaviour under the current `worker_main.py` message loop and tighten it if possible.
+
+`cargo test -p anvilml-worker --features mock-hardware` exits 0 with 0 ignored tests. `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py -v` exits 0. `ANVILML_WORKER_MOCK=1 ANVILML_VENV_PATH=./venv cargo run --features mock-hardware` starts, logs `status=idle` for worker-0, and `/v1/workers` returns one worker with `"status":"idle"`. `cargo check --target x86_64-pc-windows-gnu --features mock-hardware` exits 0.
 
 ## Runnable Proof
 

@@ -72,5 +72,31 @@
     "tags": [
       "reasoning"
     ]
-  }  
+  },
+  {
+    "id": "P10-B3",
+    "description": "anvilml-worker: fix epoll edge-trigger missed wakeup — deliver IpcHandles before writing InitializeHardware",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": [
+      "P10-B2"
+    ],
+    "context": "Root cause: spawn() writes InitializeHardware to the pipe fd before run_loop delivers IpcHandles to reader_task. ChildStdout uses edge-triggered epoll; data arriving before the fd is registered with epoll (i.e. before the first poll_read) is never signalled — read blocks forever. Fix three things in spawn(): (1) remove the 500ms sleep entirely, (2) move the ipc_tx oneshot send of IpcHandles to immediately after child.stdout.take() — before any frame write — so reader_task registers the fd with epoll first, (3) remove the #[cfg(unix)] fd-dup direct write and #[cfg(windows)] async-write block entirely; send InitializeHardware via self.tx.send(init_msg).await only (writer_task delivers it after reader_task is polling). Remove now-unused unix fd imports (AsRawFd, FromRawFd, IntoRawFd, std::io::Write) and rmp_serde direct usage in spawn() if only used for the direct-write path. Retain libc for PR_SET_PDEATHSIG. cargo run --features mock-hardware with ANVILML_WORKER_MOCK=1 must reach Idle without panic. cargo test -p anvilml-worker --features mock-hardware exits 0. cargo check --target x86_64-pc-windows-gnu --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P10-B4",
+    "description": "anvilml-worker: end-to-end spawn->Ready->Idle regression test validating epoll fix",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": [
+      "P10-B3"
+    ],
+    "context": "With the epoll fix in place the three previously-failing Rust integration tests (spawn_ping_pong, status_transitions, handshake_completes_once) must now pass against a real Python subprocess with no #[ignore]. Verify and remove any remaining #[ignore] attributes. Add Rust test spawn_reaches_idle in managed.rs: spawn a ManagedWorker with ANVILML_WORKER_MOCK=1 and ANVILML_VENV_PATH set, call spawn(), assert Ok result and get_status()==Idle. This test must pass without any sleep or timing workaround — a required sleep indicates the epoll fix is incomplete. Update test_double_init_exits in worker/tests/test_worker_main.py if any assertion was a workaround for old worker behaviour; tighten assertions to match actual current message loop. cargo test -p anvilml-worker --features mock-hardware exits 0 with 0 ignored tests. ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py -v exits 0. ANVILML_WORKER_MOCK=1 ANVILML_VENV_PATH=./venv cargo run --features mock-hardware reaches status=idle on /v1/workers. cargo check --target x86_64-pc-windows-gnu --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  }
 ]
