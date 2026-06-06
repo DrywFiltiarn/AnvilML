@@ -13,8 +13,6 @@
 
 Phase 9 brings the Python worker to life: the worker package with the binary-stdio guard and framing, a mock-mode `worker_main.py` that handles Ping/Init/Shutdown, the Rust `ManagedWorker` (spawn + IPC bridge), the `WorkerPool`, and `GET /v1/workers`. After this phase the running binary spawns a real Python child process, completes the Init/Ready handshake, and reports the worker as Idle over the API.
 
-Two leaf tasks (P9-B1, P9-B2) extend the CI matrix: they add the Python venv prerequisite that the Rust worker subprocess tests need on both Linux and Windows, and add a standalone `python-worker` pytest job running on both runners. The `msvcrt.setmode` binary-mode guard in `ipc.py` is Windows-only code; it is only verified by the Windows pytest job.
-
 Every task in this phase implements **one module or one endpoint** plus its test. No task touches more than its named file(s). `cargo test` and `cargo clippy` are per-task gates; the phase as a whole is only complete when the **Runnable Proof** below passes.
 
 ## Tasks
@@ -28,7 +26,7 @@ Every task in this phase implements **one module or one endpoint** plus its test
 | P9-A5 | `crates/anvilml-worker/src/pool.rs` | anvilml-worker: WorkerPool spawn_all + list + acquire/set status |
 | P9-A6 | `backend/src/main.rs` | anvilml: spawn WorkerPool at startup + GET /v1/workers |
 | P9-B1 | `.github/workflows/ci.yml` | ci: add Python venv setup to rust-linux and rust-windows jobs for worker subprocess tests |
-| P9-B2 | `.github/workflows/ci.yml` | ci: add python-worker-linux and python-worker-windows pytest jobs |
+| P9-B2 | `.github/workflows/ci.yml` | ci: add python-worker job (Linux + Windows pytest, ANVILML_WORKER_MOCK=1) |
 
 ## Task details
 
@@ -79,14 +77,14 @@ Add anvilml-worker to backend + AppState workers: Arc<WorkerPool>. In main.rs af
 - **Prereqs:** P9-A6
 - **Tags:** —
 
-The Rust tests for `managed` and `pool` in `anvilml-worker` spawn a real Python subprocess via `ManagedWorker::spawn()`. Without a venv containing `msgpack` on the CI runner, those tests fail. In ci.yml rust-linux job: before "Run tests" add step "Setup Python for worker tests": `python3 -m venv .ci-venv && .ci-venv/bin/pip install msgpack pillow`; set env `ANVILML_VENV_PATH: .ci-venv` and `ANVILML_WORKER_MOCK: "1"` on the cargo test step. In rust-windows job: `python -m venv .ci-venv && .ci-venv\Scripts\pip install msgpack pillow`; same env vars. `cargo test --workspace --features mock-hardware` exits 0 on both jobs.
+In ci.yml rust-linux job: before "Run tests" add step "Setup Python for worker tests": `python3 -m venv .ci-venv && .ci-venv/bin/pip install msgpack pillow`; set env `ANVILML_VENV_PATH: .ci-venv` on the cargo test step. In rust-windows job: `python -m venv .ci-venv && .ci-venv\Scripts\pip install msgpack pillow`; `ANVILML_VENV_PATH: .ci-venv`. Both: `ANVILML_WORKER_MOCK` must be set on the test step or in step env. `cargo test --workspace --features mock-hardware` exits 0 on both jobs including managed/pool worker subprocess tests.
 
-#### P9-B2: ci: add python-worker-linux and python-worker-windows pytest jobs
+#### P9-B2: ci: add python-worker job (Linux + Windows pytest, ANVILML_WORKER_MOCK=1)
 
 - **Prereqs:** P9-B1
 - **Tags:** —
 
-The `msvcrt.setmode` binary-mode guard in `ipc.py` (ANVILML_DESIGN §7.1) is Windows-only code that goes unexercised if pytest only runs on Linux. In ci.yml add two independent jobs: `python-worker-linux` (ubuntu-latest) and `python-worker-windows` (windows-latest). Both: checkout@v6; setup-python python-version 3.12; `pip install msgpack pillow pytest`; run `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v`. No torch needed. Verify: `pytest worker/tests/test_ipc.py` exits 0 on both runners.
+In ci.yml add job `python-worker` with matrix `os: [ubuntu-latest, windows-latest]`: steps: checkout@v6; setup-python python-version 3.12; `pip install msgpack pillow pytest`; run `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v`. No torch needed (ANVILML_WORKER_MOCK=1 skips import). Independent hermetic job per ANVILML_DESIGN §20.2. Verify locally (Linux only): `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` exits 0. Windows runner verified by CI only.
 
 
 ## Runnable Proof

@@ -1,9 +1,9 @@
 # AnvilML Backend — Functional & Technical Design
 
 **Document:** `ANVILML_DESIGN.md`
-**Revision:** 7 (Auto-provisioning, version introspection, release automation, distribution phases)
+**Revision:** 7 (CI Python prerequisites for Rust worker tests; python-worker job on Linux + Windows from Phase 9)
 **Project:** SindriStudio / AnvilML
-**Status:** Active — supersedes Revision 5
+**Status:** Active — supersedes Revision 6
 
 ---
 
@@ -17,6 +17,7 @@
 | 4 | Roadmap correction (§23 only). The implementation roadmap is reframed around **vertical-slice phases** (000–025, authoritative in `docs/PHASES.md`) rather than crate-dependency-ordered layers; each phase delivers a runnable, independently verifiable binary. The M0–M6 milestones are retained as a higher-level capability summary mapped to phase ranges, no longer as the unit of execution. No architectural, type, API, or IPC content changed. |
 | 5 | Re-applies two decisions made after this document branched from Rev 3 (absent from the Rev 4 base): **(a) ROCm on Windows promoted to a mandatory MVP backend** (Linux + Windows, via AMD's *PyTorch on Windows* package, ROCm ≥ 7.2, on supported Radeon RX 7000/9000-series / Ryzen AI hardware); and **(b) SDK-free GPU detection** — Vulkan primary (driver-bundled), DXGI (Windows) / PCI-sysfs + NVML (Linux) fallback, a hardcoded PCI-ID capability table (`device_db.rs`), and authoritative capabilities reported by the worker's PyTorch at `Ready`. VRAM is read dynamically in every path. Updates §1.5, §2.2, §4.3, §5, §7.3, §8.3, §16, §21, §22; adds a `--print-hardware` CLI subcommand. The headless-by-default frontend model and the vertical-slice roadmap (Rev 4) are unchanged. |
 | 6 | Distribution phases 023–025: auto-provisioning, version introspection, release automation, documentation site. §6 updated: AnvilML now auto-provisions the Python venv on first run via background execution of the provisioning scripts; `ProvisioningState` enum and `provisioning` field added to `EnvReport` (§4.4). `ComponentVersions` type added (§4.5). `WsEvent::ProvisioningProgress` added (§4.5). `GET /v1/system/versions` endpoint added (§10.3). `/health` `version` field now reports workspace release version (§16.2). Startup sequence updated for immediate-bind with deferred WorkerPool when provisioning needed (§16.2). `provisioning` 503 error code added (§18). `seeds_path` field added to `ServerConfig` (§3.1) and `anvilml.toml` (§3.2); `SeedLoader` documented (§5.5, §2). §21.4 updated: provisioning scripts are invoked automatically on first run. §21.5 runtime layout updated. §21.6 updated with full automated release pipeline (signed cross-platform GitHub Release zips, SHA256SUMS + GPG). §22.1 first-run runbook updated. §23 roadmap extended to phases 000–025 with M7. §25 gains items 10–11. |
+| 7 | CI testing clarification for §20. (a) The Rust worker tests (`managed`, `pool`) spawn a real Python subprocess and require Python + `msgpack` + `pillow` in a CI venv (`ANVILML_VENV_PATH`) on both Linux and Windows runners; stated explicitly in §20.1. (b) The `python-worker` CI job runs on both Linux and Windows (not Linux only); corrected in §20.2 and in `ARCHITECTURE.md §9`. The job is first activated in Phase 9 when `worker/tests/test_ipc.py` is created. The Forge agent verifies the Linux runner locally; the Windows runner is verified by CI only. No architectural, type, API, or IPC content changed. |
 
 This document is now the **single source of truth** for the AnvilML backend. Any earlier task lists or contract documents (`tasks.json`, `API_CONTRACT.md`, `IPC_PROTOCOL.md`, `ENVIRONMENT.md`, `TESTING_STRATEGY.md`) are non-authoritative and are superseded by the sections below.
 
@@ -1251,17 +1252,24 @@ cargo run -p anvilml-openapi   # regenerate + diff openapi.json
 ```
 
 - **Unit tests** per crate: framing round-trips + size-limit enforcement (`anvilml-ipc`); detector fixtures (`anvilml-hardware`); queue/ledger/DAG logic incl. cycle detection (`anvilml-scheduler`); scanner with tempdir fixtures (`anvilml-registry`).
-- **Worker tests** spawn the *real* Python worker with `ANVILML_WORKER_MOCK=1` and assert `Ping→Pong`, `Execute→Progress→ImageReady→Completed`, and `CancelJob→Cancelled`.
+- **Worker tests** spawn the *real* Python worker with `ANVILML_WORKER_MOCK=1` and assert `Ping→Pong`, `Execute→Progress→ImageReady→Completed`, and `CancelJob→Cancelled`. **CI prerequisite (both Linux and Windows runners):** a venv containing `msgpack` and `pillow` must be created before `cargo test` runs, and `ANVILML_VENV_PATH` must point to it. No torch is required; mock mode skips the torch import. The venv is created inline in the CI step and is not committed to the repository.
 - **Integration tests** (`backend/tests/api_*.rs`) drive the live axum app with `mock-hardware`: health, system, jobs CRUD + cancel, models, workers, artifacts, and a WS test (`tokio-tungstenite`) asserting `system.stats` arrives within 6 s and that an `ImageReady` IPC event yields a `job.image_ready` WS event.
 - **Parity test**: `KNOWN_NODE_TYPES` (Rust) == `set(NODE_REGISTRY)` (Python), asserted from a small fixture the worker can dump.
 
 ### 20.2 Python Worker (`python-worker`)
 
+Runs on Linux + Windows CI. First activated in Phase 9 when `worker/tests/test_ipc.py` is
+created; coverage grows with each subsequent phase. No torch installation required —
+`ANVILML_WORKER_MOCK=1` skips the torch import throughout. The Forge agent verifies the
+Linux runner locally; the Windows runner is verified by CI only.
+
 ```
-ANVILML_WORKER_MOCK=1 python -m pytest worker/tests
+ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v
 ```
 
-`test_executor.py` (topo-sort, input resolution, cycle detection, exception → Failed, cancel-flag → Cancelled) and `test_nodes_zit.py` / `test_nodes_sdxl.py` (each node returns the declared output slots; SaveImage emits ImageReady).
+- `test_ipc.py` — IPC framing round-trips: `read_frame`/`write_frame` correctness, length-prefix encoding, Windows binary-mode guard (Phase 9).
+- `test_executor.py` — topo-sort, input resolution, cycle detection, exception → Failed, cancel-flag → Cancelled (Phase 21).
+- `test_nodes_zit.py` / `test_nodes_sdxl.py` — each node returns the declared output slots; SaveImage emits ImageReady (Phase 21/22).
 
 ### 20.3 Frontend (`frontend`)
 

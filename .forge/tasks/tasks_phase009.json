@@ -86,13 +86,13 @@
   },
   {
     "id": "P9-B2",
-    "description": "ci: add python-worker-linux and python-worker-windows pytest jobs",
+    "description": "ci: add python-worker job (Linux + Windows pytest, ANVILML_WORKER_MOCK=1)",
     "phase": "9",
     "project": "anvilml",
     "prereqs": [
       "P9-B1"
     ],
-    "context": "In ci.yml add job python-worker with two sub-jobs: python-worker-linux (ubuntu-latest) and python-worker-windows (windows-latest). Both: checkout@v6; setup-python python-version 3.12; pip install msgpack pillow pytest; run ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v. No torch needed. Windows exercises the msvcrt.setmode binary-mode guard in ipc.py (ANVILML_DESIGN §7.1). Verify: pytest worker/tests/test_ipc.py exits 0 on both runners.",
+    "context": "In ci.yml add job python-worker with matrix os:[ubuntu-latest,windows-latest]: steps: checkout@v6; setup-python python-version 3.12; pip install msgpack pillow pytest; run ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v. No torch needed (ANVILML_WORKER_MOCK=1 skips import). Independent hermetic job per ANVILML_DESIGN §20.2. Verify locally (Linux only): ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v exits 0. Windows runner verified by CI only.",
     "tags": []
-  }  
+  }
 ]

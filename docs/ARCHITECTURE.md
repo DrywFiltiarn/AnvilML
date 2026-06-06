@@ -231,6 +231,6 @@ Every commit must pass all of the following:
 | Real-hardware Windows | `cargo check --bin anvilml --target x86_64-pc-windows-gnu` | Linux CI (cross) |
 | Config drift | `cargo test -p backend --features mock-hardware -- config_reference` | Included in tests |
 | OpenAPI diff | `cargo run -p anvilml-openapi && git diff --exit-code backend/openapi.json` | On handler/schema changes |
-| Python worker | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` | Linux CI |
+| Python worker | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` | Linux + Windows CI |
 
 Full gate specifications: `docs/ENVIRONMENT.md`.
