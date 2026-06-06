@@ -163,6 +163,7 @@ impl ManagedWorker {
             AnvilError::Json(format!("Failed to serialize InitializeHardware: {e}"))
         })?;
         let init_len = init_frame_data.len() as u32;
+        #[allow(unused_variables)]
         let init_header = init_len.to_be_bytes();
 
         #[cfg(unix)]
@@ -257,6 +258,12 @@ impl ManagedWorker {
     /// Get the current worker status.
     pub async fn get_status(&self) -> WorkerStatus {
         *self.status.read().await
+    }
+
+    /// Set the worker's lifecycle status.
+    pub async fn set_status(&self, status: WorkerStatus) {
+        let mut s = self.status.write().await;
+        *s = status;
     }
 
     /// Get a reference to the worker ID.

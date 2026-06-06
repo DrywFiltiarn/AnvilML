@@ -5,7 +5,7 @@
     "phase": "10",
     "project": "anvilml",
     "prereqs": [
-      "P9-A6"
+      "P9-B2"
     ],
     "context": "In pool.rs / managed.rs add a keepalive task per worker: send Ping{seq} every 30s, expect Pong{seq} within 10s; on timeout call Child::kill() (SIGKILL unix / TerminateProcess windows via tokio Child::kill). For testability allow the interval to be overridden via ANVILML_PING_INTERVAL_MS / ANVILML_PONG_TIMEOUT_MS env (used by tests). cargo test -p anvilml-worker --features mock-hardware -- keepalive exits 0: with short intervals, a mock worker that stops responding is killed. Also pass: cargo check --target x86_64-pc-windows-gnu --features mock-hardware.",
     "tags": [

@@ -1,7 +1,7 @@
 # AnvilML Backend — Functional & Technical Design
 
 **Document:** `ANVILML_DESIGN.md`
-**Revision:** 6 (Auto-provisioning, version introspection, release automation, distribution phases)
+**Revision:** 7 (Auto-provisioning, version introspection, release automation, distribution phases)
 **Project:** SindriStudio / AnvilML
 **Status:** Active — supersedes Revision 5
 

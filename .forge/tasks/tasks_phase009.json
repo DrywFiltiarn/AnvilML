@@ -72,5 +72,27 @@
     ],
     "context": "Add anvilml-worker to backend + AppState workers: Arc<WorkerPool>. In main.rs after hardware detect: WorkerPool::spawn_all(&hw,&cfg), send InitializeHardware to each, store in AppState. device_str maps Cuda AND Rocm -> 'cuda:{index}' (HIP exposes via torch.cuda on both Linux+Windows, design 6), Cpu -> 'cpu'. Create handlers/workers.rs list_workers(State)->Json<Vec<WorkerInfo>>. Wire GET /v1/workers. Verify: ANVILML_WORKER_MOCK=1 ANVILML_VENV_PATH=<venv> cargo run --features mock-hardware; curl /v1/workers shows one worker reaching status Idle.",
     "tags": []
-  }
+  },
+  {
+    "id": "P9-B1",
+    "description": "ci: add Python venv setup to rust-linux and rust-windows jobs for worker subprocess tests",
+    "phase": "9",
+    "project": "anvilml",
+    "prereqs": [
+      "P9-A6"
+    ],
+    "context": "In ci.yml rust-linux job: before \"Run tests\" add step \"Setup Python for worker tests\": python3 -m venv .ci-venv && .ci-venv/bin/pip install msgpack pillow; set env ANVILML_VENV_PATH: .ci-venv on the cargo test step. In rust-windows job: python -m venv .ci-venv && .ci-venv\\Scripts\\pip install msgpack pillow; ANVILML_VENV_PATH: .ci-venv. Both: ANVILML_WORKER_MOCK must already be set on the test step or in step env. cargo test --workspace --features mock-hardware exits 0 on both jobs including managed/pool worker subprocess tests.",
+    "tags": []
+  },
+  {
+    "id": "P9-B2",
+    "description": "ci: add python-worker-linux and python-worker-windows pytest jobs",
+    "phase": "9",
+    "project": "anvilml",
+    "prereqs": [
+      "P9-B1"
+    ],
+    "context": "In ci.yml add job python-worker with two sub-jobs: python-worker-linux (ubuntu-latest) and python-worker-windows (windows-latest). Both: checkout@v6; setup-python python-version 3.12; pip install msgpack pillow pytest; run ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v. No torch needed. Windows exercises the msvcrt.setmode binary-mode guard in ipc.py (ANVILML_DESIGN §7.1). Verify: pytest worker/tests/test_ipc.py exits 0 on both runners.",
+    "tags": []
+  }  
 ]

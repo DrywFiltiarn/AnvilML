@@ -7,11 +7,13 @@
 | Milestone group | Worker lifecycle |
 | Depends on phases | 1-8 |
 | Task file | `forge/tasks/tasks_phase009.json` |
-| Tasks | 6 |
+| Tasks | 8 |
 
 ## Overview
 
 Phase 9 brings the Python worker to life: the worker package with the binary-stdio guard and framing, a mock-mode `worker_main.py` that handles Ping/Init/Shutdown, the Rust `ManagedWorker` (spawn + IPC bridge), the `WorkerPool`, and `GET /v1/workers`. After this phase the running binary spawns a real Python child process, completes the Init/Ready handshake, and reports the worker as Idle over the API.
+
+Two leaf tasks (P9-B1, P9-B2) extend the CI matrix: they add the Python venv prerequisite that the Rust worker subprocess tests need on both Linux and Windows, and add a standalone `python-worker` pytest job running on both runners. The `msvcrt.setmode` binary-mode guard in `ipc.py` is Windows-only code; it is only verified by the Windows pytest job.
 
 Every task in this phase implements **one module or one endpoint** plus its test. No task touches more than its named file(s). `cargo test` and `cargo clippy` are per-task gates; the phase as a whole is only complete when the **Runnable Proof** below passes.
 
@@ -25,12 +27,14 @@ Every task in this phase implements **one module or one endpoint** plus its test
 | P9-A4 | `crates/anvilml-worker/src/managed.rs` | anvilml-worker: ManagedWorker spawn + IPC bridge (writer/reader tasks) |
 | P9-A5 | `crates/anvilml-worker/src/pool.rs` | anvilml-worker: WorkerPool spawn_all + list + acquire/set status |
 | P9-A6 | `backend/src/main.rs` | anvilml: spawn WorkerPool at startup + GET /v1/workers |
+| P9-B1 | `.github/workflows/ci.yml` | ci: add Python venv setup to rust-linux and rust-windows jobs for worker subprocess tests |
+| P9-B2 | `.github/workflows/ci.yml` | ci: add python-worker-linux and python-worker-windows pytest jobs |
 
 ## Task details
 
 #### P9-A1: worker: Python package skeleton + ipc.py binary-stdio guard + framing
 
-- **Prereqs:** P8-A4
+- **Prereqs:** P8-A4, P900-A7
 - **Tags:** reasoning
 
 Create worker/ package: __init__.py, nodes/__init__.py, tests/__init__.py. worker/requirements/: base.txt (msgpack>=1.0, pillow>=10.0, numpy, safetensors, diffusers, transformers, pytest) plus torch-selectors per design 2.2/21: cuda.txt, rocm-linux.txt, rocm-windows.txt (AMD PyTorch-on-Windows, ROCm>=7.2), cpu.txt. Create worker/ipc.py: at top if win32 msvcrt.setmode O_BINARY on stdin+stdout. read_frame(): 4-byte big-endian len then N bytes, unpackb(raw=False). write_frame(): packb(use_bin_type=True), 4-byte prefix, write stdout.buffer, flush. pytest worker/tests/test_ipc.py exits 0.
@@ -69,6 +73,20 @@ Create src/pool.rs: WorkerPool holding Vec<Arc<ManagedWorker>>. spawn_all(hw,cfg
 - **Tags:** —
 
 Add anvilml-worker to backend + AppState workers: Arc<WorkerPool>. In main.rs after hardware detect: WorkerPool::spawn_all(&hw,&cfg), send InitializeHardware to each, store in AppState. device_str maps Cuda AND Rocm -> 'cuda:{index}' (HIP exposes via torch.cuda on both Linux+Windows, design 6), Cpu -> 'cpu'. Create handlers/workers.rs list_workers(State)->Json<Vec<WorkerInfo>>. Wire GET /v1/workers. Verify: ANVILML_WORKER_MOCK=1 ANVILML_VENV_PATH=<venv> cargo run --features mock-hardware; curl /v1/workers shows one worker reaching status Idle.
+
+#### P9-B1: ci: add Python venv setup to rust-linux and rust-windows jobs for worker subprocess tests
+
+- **Prereqs:** P9-A6
+- **Tags:** —
+
+The Rust tests for `managed` and `pool` in `anvilml-worker` spawn a real Python subprocess via `ManagedWorker::spawn()`. Without a venv containing `msgpack` on the CI runner, those tests fail. In ci.yml rust-linux job: before "Run tests" add step "Setup Python for worker tests": `python3 -m venv .ci-venv && .ci-venv/bin/pip install msgpack pillow`; set env `ANVILML_VENV_PATH: .ci-venv` and `ANVILML_WORKER_MOCK: "1"` on the cargo test step. In rust-windows job: `python -m venv .ci-venv && .ci-venv\Scripts\pip install msgpack pillow`; same env vars. `cargo test --workspace --features mock-hardware` exits 0 on both jobs.
+
+#### P9-B2: ci: add python-worker-linux and python-worker-windows pytest jobs
+
+- **Prereqs:** P9-B1
+- **Tags:** —
+
+The `msvcrt.setmode` binary-mode guard in `ipc.py` (ANVILML_DESIGN §7.1) is Windows-only code that goes unexercised if pytest only runs on Linux. In ci.yml add two independent jobs: `python-worker-linux` (ubuntu-latest) and `python-worker-windows` (windows-latest). Both: checkout@v6; setup-python python-version 3.12; `pip install msgpack pillow pytest`; run `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v`. No torch needed. Verify: `pytest worker/tests/test_ipc.py` exits 0 on both runners.
 
 
 ## Runnable Proof
