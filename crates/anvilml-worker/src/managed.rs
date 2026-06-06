@@ -24,6 +24,7 @@ use tracing::{debug, info, warn};
 use crate::build_worker_env;
 
 /// Shared IPC stdin/stdout handles for the writer/reader tasks.
+#[derive(Debug)]
 struct IpcHandles {
     stdin: tokio::process::ChildStdin,
     stdout: tokio::process::ChildStdout,
@@ -44,13 +45,18 @@ pub struct ManagedWorker {
     tx: mpsc::Sender<WorkerMessage>,
     /// Broadcast sender for events emitted by the reader task.
     event_tx: broadcast::Sender<(String, WorkerEvent)>,
-    /// Child process handle (Some while alive).
-    child: Mutex<Option<tokio::process::Child>>,
+    /// Child process handle (Some while alive), wrapped in Arc for shared access
+    /// by both the spawn path and the keepalive watchdog task.
+    child: Arc<Mutex<Option<tokio::process::Child>>>,
     /// Join handle for the combined writer+reader task loop.
     #[allow(dead_code)]
     handle: JoinHandle<()>,
     /// Oneshot sender used to deliver IPC handles to the loop.
     ipc_tx: Mutex<Option<oneshot::Sender<IpcHandles>>>,
+    /// Configurable ping interval (default: 30_000 ms).
+    ping_interval: std::time::Duration,
+    /// Configurable pong timeout (default: 10_000 ms).
+    pong_timeout: std::time::Duration,
 }
 
 impl ManagedWorker {
@@ -58,6 +64,10 @@ impl ManagedWorker {
     ///
     /// The broadcast channel capacity matches the config default
     /// `ws_broadcast_capacity = 256`.
+    ///
+    /// Ping interval and pong timeout are read from environment variables
+    /// (`ANVILML_PING_INTERVAL_MS`, `ANVILML_PONG_TIMEOUT_MS`) or fall back
+    /// to built-in defaults of 30 s and 10 s respectively.
     pub fn new(worker_id: String, device_index: u32) -> Self {
         let (tx, rx) = mpsc::channel(64);
         let (event_tx, _rx) = broadcast::channel(256);
@@ -67,6 +77,19 @@ impl ManagedWorker {
         // Create a oneshot channel for delivering IPC handles from spawn()
         // to the run_loop.
         let (ipc_tx, ipc_rx) = oneshot::channel::<IpcHandles>();
+
+        // Read configurable keepalive parameters from environment.
+        let ping_interval = std::env::var("ANVILML_PING_INTERVAL_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(std::time::Duration::from_millis)
+            .unwrap_or(std::time::Duration::from_secs(30));
+
+        let pong_timeout = std::env::var("ANVILML_PONG_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(std::time::Duration::from_millis)
+            .unwrap_or(std::time::Duration::from_secs(10));
 
         // Spawn the combined writer+reader loop; it waits for IPC handles.
         let handle = spawn(Self::run_loop(
@@ -83,9 +106,11 @@ impl ManagedWorker {
             status,
             tx,
             event_tx,
-            child: Mutex::new(None),
+            child: Arc::new(Mutex::new(None)),
             handle,
             ipc_tx: Mutex::new(Some(ipc_tx)),
+            ping_interval,
+            pong_timeout,
         }
     }
 
@@ -286,6 +311,108 @@ impl ManagedWorker {
             status,
             current_job_id: None,
             vram_used_mib: 0,
+        }
+    }
+
+    /// Start the keepalive watchdog task.
+    ///
+    /// Spawns an async task that sends `Ping{seq}` messages at regular intervals
+    /// over the IPC channel and force-kills the child process if a matching `Pong{seq}`
+    /// is not received within the configured pong timeout.
+    ///
+    /// This method must be called after `spawn()` returns, when the worker is
+    /// in the `Idle` state and the child handle is stored.
+    pub fn start_keepalive(&self) {
+        let ping_interval = self.ping_interval;
+        let pong_timeout = self.pong_timeout;
+        let worker_id = self.worker_id.clone();
+        let tx = self.tx.clone();
+        let status = self.status.clone();
+        let event_tx = self.event_tx.clone();
+        let child = self.child.clone();
+
+        tokio::spawn(async move {
+            debug!(worker_id = %worker_id, "keepalive task started");
+
+            let mut interval = tokio::time::interval(ping_interval);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut next_seq: u64 = 0;
+
+            loop {
+                interval.tick().await;
+                let seq = next_seq;
+                next_seq += 1;
+
+                debug!(worker_id = %worker_id, seq = seq, "sending ping");
+
+                // Send Ping message. If channel is closed, worker is dead — exit.
+                if tx.send(WorkerMessage::Ping { seq }).await.is_err() {
+                    warn!(worker_id = %worker_id, "keepalive: send failed, worker may be dead");
+                    break;
+                }
+
+                // Per-pong timeout: spawn a task that kills the child if no Pong{seq} arrives.
+                let pw_id = worker_id.clone();
+                let child_handle = child.clone();
+                let status_clone = status.clone();
+                let ev_tx = event_tx.clone();
+                tokio::spawn(async move {
+                    let mut rx = ev_tx.subscribe();
+                    let pong_received = tokio::time::timeout(pong_timeout, async {
+                        loop {
+                            match rx.recv().await {
+                                Ok((_, WorkerEvent::Pong { seq: rseq })) if rseq == seq => {
+                                    return true
+                                }
+                                Ok(_) => continue,
+                                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                                Err(broadcast::error::RecvError::Closed) => break false,
+                            }
+                        }
+                    })
+                    .await;
+
+                    match pong_received {
+                        Ok(true) => {
+                            // Pong received — nothing to do.
+                            debug!(worker_id = %pw_id, seq = seq, "received pong");
+                        }
+                        _ => {
+                            warn!(worker_id = %pw_id, seq = seq, "pong timeout — killing worker");
+                            // Force-kill the child process.
+                            if let Some(mut ch) = child_handle.lock().await.take() {
+                                if let Err(e) = ch.kill().await {
+                                    warn!(worker_id = %pw_id, error = %e, "failed to kill worker on pong timeout");
+                                } else {
+                                    info!(worker_id = %pw_id, "killed worker on pong timeout");
+                                }
+                            }
+                            let mut s = status_clone.write().await;
+                            *s = WorkerStatus::Dead;
+                        }
+                    }
+                });
+            }
+
+            debug!(worker_id = %worker_id, "keepalive task exiting");
+        });
+    }
+
+    /// Inject mock IPC handles for testing without spawning a real Python process.
+    ///
+    /// Delivers the provided stdin/stdout handles to the run_loop via the oneshot
+    /// channel, bypassing the actual child process spawn. The caller is responsible
+    /// for ensuring the handles are compatible with the framing protocol.
+    #[cfg(test)]
+    pub async fn inject_handles_for_test(
+        &self,
+        stdin: tokio::process::ChildStdin,
+        stdout: tokio::process::ChildStdout,
+    ) {
+        let mut guard = self.ipc_tx.lock().await;
+        if let Some(tx) = guard.take() {
+            tx.send(IpcHandles { stdin, stdout })
+                .expect("run_loop alive");
         }
     }
 
@@ -615,5 +742,76 @@ mod tests {
             .expect("frame ok");
 
         assert!(matches!(event, WorkerEvent::Ready { .. }));
+    }
+
+    /// Keepalive watchdog: sends Pongs for seq 0–1, then stops; verifies the
+    /// worker transitions to Dead after a pong timeout with no Python process.
+    #[tokio::test]
+    #[cfg(feature = "mock-hardware")]
+    async fn keepalive_pings_and_kills_on_timeout() {
+        // Use short intervals for fast testing.
+        std::env::set_var("ANVILML_PING_INTERVAL_MS", "50");
+        std::env::set_var("ANVILML_PONG_TIMEOUT_MS", "150");
+
+        let worker = ManagedWorker::new("keepalive-test".to_string(), 0);
+
+        // Set status to Idle directly (simulating what Ready event would do).
+        worker.set_status(WorkerStatus::Idle).await;
+
+        // Spawn a dummy child process so the keepalive task has something to kill.
+        let child = spawn_dummy_child();
+        {
+            let mut guard = worker.child.lock().await;
+            *guard = Some(child);
+        }
+
+        // Start the keepalive watchdog.
+        worker.start_keepalive();
+
+        // Send 2 Pongs (for seq 0 and 1) via the event broadcast channel,
+        // then stop sending so seq=2 times out.
+        let pong_0 = WorkerEvent::Pong { seq: 0 };
+        let _ = worker.event_tx.send((worker.worker_id.clone(), pong_0));
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        let pong_1 = WorkerEvent::Pong { seq: 1 };
+        let _ = worker.event_tx.send((worker.worker_id.clone(), pong_1));
+
+        // No more pongs — seq=2 will time out at 150ms.
+
+        // Wait for timeout and verify worker is Dead.
+        let result = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if worker.get_status().await == WorkerStatus::Dead {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+
+        assert!(result.is_ok(), "worker should be Dead after pong timeout");
+        assert_eq!(worker.get_status().await, WorkerStatus::Dead);
+
+        // Cleanup.
+        std::env::remove_var("ANVILML_PING_INTERVAL_MS");
+        std::env::remove_var("ANVILML_PONG_TIMEOUT_MS");
+    }
+
+    /// Spawn a dummy child process and return its handle, for use in keepalive tests.
+    fn spawn_dummy_child() -> tokio::process::Child {
+        #[cfg(unix)]
+        {
+            Command::new("true").spawn().expect("spawn dummy")
+        }
+        #[cfg(windows)]
+        {
+            Command::new("cmd")
+                .arg("/c")
+                .arg("exit 0")
+                .spawn()
+                .expect("spawn dummy")
+        }
     }
 }

@@ -57,6 +57,7 @@ impl WorkerPool {
         for (i, device) in hw.gpus.iter().enumerate() {
             let worker = Arc::new(ManagedWorker::new(format!("worker-{i}"), i as u32));
             worker.spawn(device, cfg).await.expect("spawn gpu worker");
+            worker.start_keepalive();
             workers.push(worker);
             device_map.insert(i as u32, i);
         }
@@ -83,6 +84,7 @@ impl WorkerPool {
                 .spawn(&synthetic, cfg)
                 .await
                 .expect("spawn cpu worker");
+            worker.start_keepalive();
             workers.push(worker);
             device_map.insert(0, 0);
         }
