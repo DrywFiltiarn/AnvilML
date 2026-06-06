@@ -24,6 +24,7 @@ Every task in this phase implements **one module or one endpoint** plus its test
 | P11-A3 | `crates/anvilml-scheduler/src/dag.rs` | anvilml-scheduler: dag.rs edge-reference validation |
 | P11-A4 | `crates/anvilml-scheduler/src/dag.rs` | anvilml-scheduler: dag.rs cycle detection (Kahn) |
 | P11-A5 | `crates/anvilml-server/src/handlers/jobs.rs` | anvilml-server: POST /v1/jobs validating graph (422 on invalid) |
+| P11-B1 | `crates/anvilml-hardware/src/mock.rs`, `src/lib.rs` | anvilml-hardware: serial mock test env-var teardown |
 
 ## Task details
 
@@ -62,6 +63,49 @@ Extend dag.rs: build adjacency from edge refs, run Kahn topo-sort; if processed<
 
 Add anvilml-scheduler to anvilml-server. Create handlers/jobs.rs submit_job(State, Json<SubmitJobRequest>): call validate_graph(&req.graph); on Err return 422 with body {error:'invalid_graph', message: errors joined, request_id}. On Ok do NOT yet enqueue (queue is phase 12) - return 202 with a placeholder SubmitJobResponse{job_id:new uuid, queue_position:0}. Wire POST /v1/jobs. Verify: curl -X POST /v1/jobs -d '{bad graph}' returns 422 listing offending types; a valid ZiT graph returns 202.
 
+### Group B — Test Reliability
+
+#### P11-B1: anvilml-hardware: add clear_mock_env teardown to all serial mock tests
+
+- **Prereqs:** P11-A1
+- **Tags:** —
+
+`serial_test` serialises all `#[serial]` tests within a process under a single
+mutex. When a test sets `ANVILML_MOCK_VRAM_MIB` (or any other `ANVILML_MOCK_*`
+var) and exits without removing it, the next test in scheduler order inherits
+the stale value. This causes `mock_detect_default_cpu` to see `vram_total_mib
+== 12288` (left by `detect_all_devices_mock_vram`) instead of the expected
+default `8192`, producing a randomly-ordered CI failure.
+
+Add `fn clear_mock_env()` (private, `#[cfg(test)]`) to both `mock.rs` and
+`lib.rs`:
+
+```rust
+fn clear_mock_env() {
+    std::env::remove_var("ANVILML_MOCK_DEVICE_TYPE");
+    std::env::remove_var("ANVILML_MOCK_VRAM_MIB");
+    std::env::remove_var("ANVILML_MOCK_GFX_ARCH");
+}
+```
+
+Call `clear_mock_env()` as the **last statement** of every `#[serial]` test
+that sets any of these vars. Affected tests:
+
+- `mock.rs`: `mock_detect_default_cpu`, `mock_detect_cuda`, `mock_detect_rocm`,
+  `mock_device_new_fields`
+- `lib.rs`: `detect_all_devices_mock_cuda`, `detect_all_devices_mock_rocm`,
+  `detect_all_devices_mock_vram`, `detect_all_devices_mock_device_type`,
+  `detect_all_devices_mock_enum_source`, `mock_device_new_fields_in_detect_all`
+
+Do **not** add `set_var` calls for vars a test does not itself set — that would
+change test semantics. The teardown alone is sufficient because every test that
+reads a default already implicitly relies on the var being absent; removing it
+at the end of the preceding test restores that invariant.
+
+Acceptance: `cargo test -p anvilml-hardware --features mock-hardware` exits 0
+with all 48 tests passing. The fix must hold across 20 consecutive runs with
+`cargo test ... -- --test-threads=1` to verify no ordering-dependent failure
+remains.
 
 ## Runnable Proof
 

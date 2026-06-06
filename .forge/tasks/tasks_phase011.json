@@ -43,5 +43,14 @@
     "prereqs": ["P11-A4"],
     "context": "Add anvilml-scheduler to anvilml-server. Create handlers/jobs.rs submit_job(State, Json<SubmitJobRequest>): call validate_graph(&req.graph); on Err return 422 with body {error:'invalid_graph', message: errors joined, request_id}. On Ok do NOT yet enqueue (queue is phase 12) - return 202 with a placeholder SubmitJobResponse{job_id:new uuid, queue_position:0}. Wire POST /v1/jobs. Verify: curl -X POST /v1/jobs -d '{bad graph}' returns 422 listing offending types; a valid ZiT graph returns 202.",
     "tags": []
-  }
+  },
+  {
+    "id": "P11-B1",
+    "description": "anvilml-hardware: add clear_mock_env teardown to all serial mock tests to eliminate env-var bleed",
+    "phase": "11",
+    "project": "anvilml",
+    "prereqs": ["P11-A1"],
+    "context": "In crates/anvilml-hardware/src/mock.rs and src/lib.rs, add a private fn clear_mock_env() that calls std::env::remove_var for ANVILML_MOCK_DEVICE_TYPE, ANVILML_MOCK_VRAM_MIB, and ANVILML_MOCK_GFX_ARCH. Call clear_mock_env() as the last statement of every #[serial] test in both files that sets any of these vars (mock_detect_default_cpu, mock_detect_cuda, mock_detect_rocm, mock_device_new_fields in mock.rs; detect_all_devices_mock_cuda, detect_all_devices_mock_rocm, detect_all_devices_mock_vram, detect_all_devices_mock_device_type, detect_all_devices_mock_enum_source, mock_device_new_fields_in_detect_all in lib.rs). Do not add set_var calls for vars a test does not itself set. cargo test -p anvilml-hardware --features mock-hardware exits 0 with 48 tests passing across 20 consecutive runs (no ordering-dependent failures).",
+    "tags": []
+  }  
 ]
