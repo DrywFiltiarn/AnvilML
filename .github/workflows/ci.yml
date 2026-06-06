@@ -30,8 +30,14 @@ jobs:
       - name: Real-hardware lint
         run: cargo clippy --bin anvilml -- -D warnings
 
+      - name: Setup Python for worker tests
+        run: python3 -m venv .ci-venv && .ci-venv/bin/pip install msgpack pillow
+
       - name: Run tests
         run: cargo test --workspace --features mock-hardware
+        env:
+          ANVILML_VENV_PATH: .ci-venv
+          ANVILML_WORKER_MOCK: "1"
 
       - name: Mock-hardware compile check
         run: cargo check --bin anvilml --features mock-hardware
@@ -57,8 +63,14 @@ jobs:
       - name: Real-hardware lint
         run: cargo clippy --bin anvilml -- -D warnings
 
+      - name: Setup Python for worker tests
+        run: python -m venv .ci-venv && .ci-venv\Scripts\pip install msgpack pillow
+
       - name: Run tests
         run: cargo test --workspace --features mock-hardware
+        env:
+          ANVILML_VENV_PATH: .ci-venv
+          ANVILML_WORKER_MOCK: "1"
 
       - name: Mock-hardware compile check
         run: cargo check --bin anvilml --features mock-hardware

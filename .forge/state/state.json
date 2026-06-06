@@ -84,16 +84,17 @@
     "P9-A2",
     "P9-A3",
     "P9-A4",
-    "P9-A5"
+    "P9-A5",
+    "P9-A6"
   ],
-  "in_progress": "P9-A6",
+  "in_progress": "P9-B1",
   "plan_approved": true,
-  "current_plan": "1. **Add dependency.** Add `anvilml-worker = { path = \"../crates/anvilml-worker\" }` to `backend/Cargo.toml` under `[dependencies]`.\n\n2. **Extend AppState.** In `crates/anvilml-server/src/state.rs`:\n   - Add `pub workers: Option<Arc<anvilml_worker::WorkerPool>>` field (Option because during early startup / provisioning the pool may not yet exist).\n   - Update `new()` to accept an optional `Arc<WorkerPool>` parameter (defaulting to `None`).\n   - Update `new_with_hardware()` similarly.\n\n3. **Wire WorkerPool spawn in main.rs.** In `backend/src/main.rs`, after hardware detection and ghost-job reset (after line ~178), before building AppState:\n   ```rust\n   let workers = anvilml_worker::WorkerPool::spawn_all(&hw_info, &cfg).await;\n   tracing::info!(workers_spawned = workers.list().await.len(), \"worker pool spawned\");\n   ```\n   Pass `Arc::new(workers)` into the AppState constructor.\n\n4. **Create handlers/workers.rs.** New file `crates/anvilml-server/src/handlers/workers.rs`:\n   - Import `anvilml_core::WorkerInfo` and `anvilml_worker::WorkerPool`.\n   - Define `list_workers(State<Arc<AppState>>) -> (StatusCode, Json<Vec<WorkerInfo>>)` that calls `state.workers.list().await` and returns the result.\n   - If `state.workers` is `None`, return 503 with an empty array or a descriptive error \u2014 but since we always spawn in this task, `None` shouldn't occur after startup.\n\n5. **Wire the route.** In `crates/anvilml-server/src/lib.rs`:\n   - Add `pub mod workers;` to `handlers/mod.rs`.\n   - Add `.route(\"/v1/workers\", get(handlers::workers::list_workers))` to `build_router()`.\n\n6. **Logging per design \u00a711.3.** Add an INFO log at the worker pool spawn point:\n   ```rust\n   tracing::info!(workers_spawned = workers.list().await.len(), \"worker pool spawned\");\n   ```\n   Per \u00a711.3, each worker spawn is logged at INFO by `ManagedWorker::spawn()` (already present: `\"worker spawned\"` with `worker_id` and `device_index`).",
+  "current_plan": "1. **Read current `.github/workflows/ci.yml`** to confirm the existing step structure, job names, and gate ordering. The file has two jobs (`rust-linux` on `ubuntu-latest`, `rust-windows` on `windows-latest`), each with: checkout \u2192 setup Rust toolchain \u2192 format check (linux only) \u2192 lint (mock + real) \u2192 run tests \u2192 compile checks.\n\n2. **Insert \"Setup Python for worker tests\" step** in the `rust-linux` job, placed immediately before the existing \"Run tests\" step. The step runs:\n   ```yaml\n   - name: Setup Python for worker tests\n     run: python3 -m venv .ci-venv && .ci-venv/bin/pip install msgpack pillow\n   ```\n\n3. **Insert \"Setup Python for worker tests\" step** in the `rust-windows` job, placed immediately before the existing \"Run tests\" step. The step runs:\n   ```yaml\n   - name: Setup Python for worker tests\n     run: python -m venv .ci-venv && .ci-venv\\Scripts\\pip install msgpack pillow\n   ```\n\n4. **Update the \"Run tests\" step** in both jobs to include the required environment variables as a step-level `env:` block:\n   ```yaml\n   - name: Run tests\n     run: cargo test --workspace --features mock-hardware\n     env:\n       ANVILML_VENV_PATH: .ci-venv\n       ANVILML_WORKER_MOCK: \"1\"\n   ```\n\n5. **Verify the resulting YAML** is syntactically valid by confirming the file parses correctly (the CI runner will validate on push/PR).",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-06T14:39:48+0200",
-  "plan_approval_message_id": "1512795362379694231",
+  "last_updated": "2026-06-06T15:30:01+0200",
+  "plan_approval_message_id": "1512809723219673158",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512795360605769809",
+  "plan_report_message_id": "1512809721495552031",
   "impl_report_message_id": null
 }
