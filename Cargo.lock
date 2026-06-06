@@ -187,6 +187,10 @@ dependencies = [
  "anvilml-core",
  "anvilml-hardware",
  "anvilml-ipc",
+ "libc",
+ "rmp-serde",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
