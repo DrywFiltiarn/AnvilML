@@ -14,9 +14,13 @@ import msgpack
 if sys.platform == "win32":
     import msvcrt
     import os
-
-    msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
-    msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
+    try:
+        msvcrt.setmode(sys.stdin.fileno(),  os.O_BINARY)
+        msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
+    except (io.UnsupportedOperation, AttributeError):
+        # stdin/stdout are not real file descriptors (e.g. pytest capture).
+        # Binary mode only matters when running as a spawned worker subprocess.
+        pass
 
 
 def read_frame() -> object:
