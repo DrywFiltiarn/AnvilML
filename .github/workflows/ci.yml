@@ -8,20 +8,40 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  RUST_BACKTRACE: short
 
 jobs:
-  rust-linux:
-    runs-on: ubuntu-latest
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            toolchain_components: rustfmt, clippy
+            check_fmt: true
+            python_cmd: python3
+            venv_pip: .ci-venv/bin/pip
+          - os: windows-latest
+            toolchain_components: clippy
+            check_fmt: false
+            python_cmd: python
+            venv_pip: .ci-venv\Scripts\pip
+
     steps:
       - uses: actions/checkout@v6
 
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: rustfmt, clippy
+          components: ${{ matrix.toolchain_components }}
           cache: true
 
       - name: Check formatting
+        if: matrix.check_fmt
         run: cargo fmt --all --check
 
       - name: Mock-hardware lint
@@ -31,40 +51,7 @@ jobs:
         run: cargo clippy --bin anvilml -- -D warnings
 
       - name: Setup Python for worker tests
-        run: python3 -m venv .ci-venv && .ci-venv/bin/pip install msgpack pillow
-
-      - name: Run tests
-        run: cargo test --workspace --features mock-hardware
-        env:
-          ANVILML_VENV_PATH: .ci-venv
-          ANVILML_WORKER_MOCK: "1"
-
-      - name: Mock-hardware compile check
-        run: cargo check --bin anvilml --features mock-hardware
-
-      - name: Real-hardware compile check
-        run: cargo check --bin anvilml
-
-  rust-windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          components: clippy
-          cache: true
-
-      - name: Mock-hardware lint
-        run: cargo clippy --workspace --features mock-hardware -- -D warnings
-
-
-      - name: Real-hardware lint
-        run: cargo clippy --bin anvilml -- -D warnings
-
-      - name: Setup Python for worker tests
-        run: python -m venv .ci-venv && .ci-venv\Scripts\pip install msgpack pillow
+        run: ${{ matrix.python_cmd }} -m venv .ci-venv && ${{ matrix.venv_pip }} install msgpack pillow
 
       - name: Run tests
         run: cargo test --workspace --features mock-hardware
@@ -79,8 +66,10 @@ jobs:
         run: cargo check --bin anvilml
 
   python-worker:
+    name: Python worker (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
@@ -95,4 +84,6 @@ jobs:
         run: pip install msgpack pillow pytest
 
       - name: Run worker tests (mock mode)
-        run: ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v
+        run: python -m pytest worker/tests/ -v
+        env:
+          ANVILML_WORKER_MOCK: "1"
