@@ -240,11 +240,6 @@ impl ManagedWorker {
             }
         }
 
-        // Also send via mpsc channel for subsequent messages.
-        if let Err(e) = self.tx.send(init_msg).await {
-            warn!(error = %e, worker_id = %self.worker_id, "failed to send InitializeHardware via channel");
-        }
-
         // Send handles to the run_loop via oneshot.
         {
             let mut guard = self.ipc_tx.lock().unwrap();
@@ -631,12 +626,6 @@ async fn reader_task(
                 break;
             }
         }
-    }
-
-    // Set status to Dead on exit.
-    {
-        let mut s = status.write().await;
-        *s = WorkerStatus::Dead;
     }
 
     warn!(worker_id = %worker_id, "reader task exiting — worker is Dead");

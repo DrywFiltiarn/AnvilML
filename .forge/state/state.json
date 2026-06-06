@@ -90,16 +90,17 @@
     "P9-B2",
     "P10-A1",
     "P10-A2",
-    "P10-A3"
+    "P10-A3",
+    "P10-A4"
   ],
-  "in_progress": "P10-A4",
+  "in_progress": "P10-B1",
   "plan_approved": true,
-  "current_plan": "1. **Add feature flag** \u2014 In `anvilml-worker/Cargo.toml`, add `test-helpers = []` to the `[features]` section. This is a leaf feature with no dependency forwarding (unlike `mock-hardware`).\n\n2. **Implement `pid_for` on `WorkerPool`** \u2014 Append the method after the existing public methods in `impl WorkerPool`. The implementation:\n   ```rust\n   #[cfg(any(test, feature = \"test-helpers\"))]\n   impl WorkerPool {\n       /// Return the child process PID for the worker with the given ID.\n       ///\n       /// Returns `None` if no worker matches or if the child has not been spawned\n       /// yet (or has already exited). This is a test-only accessor gated behind\n       /// `#[cfg(any(test, feature = \"test-helpers\"))]`.\n       pub async fn pid_for(&self, worker_id: &str) -> Option<u32> {\n           for worker in &self.workers {\n               if worker.worker_id() == worker_id {\n                   let child = worker.child.lock().await;\n                   return child.as_ref().and_then(|c| c.id());\n               }\n           }\n           None\n       }\n   }\n   ```\n   This uses a separate `#[cfg(...)] impl` block so the method is entirely absent from non-test, non-`test-helpers` builds. It follows the existing pattern of iterating by `worker_id()` (identical to `set_busy`, `set_idle`, and `send`).\n\n3. **Add unit test** \u2014 Append a test in `mod tests` within `pool.rs`:\n   - Constructs a pool manually (same pattern as existing `spawn_all_creates_cpu_worker_when_no_gpus` test).\n   - Calls `pid_for(\"worker-0\")` and asserts it returns `None` when no child is stored.\n   - Sets a dummy child via `worker.child.lock().await` to verify the accessor path (or uses `spawn_dummy_child()` from `managed.rs` tests if accessible; alternatively, directly sets the `child` field in the manually-constructed pool).",
+  "current_plan": "1. **Edit `spawn()` \u2014 remove duplicate mpsc send.** In `ManagedWorker::spawn()`, locate the block at lines 243\u2013246:\n   ```rust\n   // Also send via mpsc channel for subsequent messages.\n   if let Err(e) = self.tx.send(init_msg).await {\n       warn!(error = %e, worker_id = %self.worker_id, \"failed to send InitializeHardware via channel\");\n   }\n   ```\n   Delete this entire block. The `InitializeHardware` message has already been written directly to stdin (lines 217\u2013241) and does not need to go through the mpsc channel. All subsequent messages (`Ping`, `Shutdown`, `Execute`, etc.) continue to use the channel normally via `self.tx.send()`.\n\n2. **Edit `reader_task()` \u2014 remove redundant Dead status write.** At the end of `reader_task()` (lines 636\u2013640), delete:\n   ```rust\n   // Set status to Dead on exit.\n   {\n       let mut s = status.write().await;\n       *s = WorkerStatus::Dead;\n   }\n   ```\n   The `WorkerStatusChanged(Dead)` broadcast inside the loop's EOF branch (line ~625) already transitions the status. The post-loop write produces a duplicate broadcast and a redundant lock acquisition with no additional effect.\n\n3. **Bump crate version.** In `crates/anvilml-worker/Cargo.toml`, change:\n   ```toml\n   version = \"0.1.2\"\n   ```\n   to:\n   ```toml\n   version = \"0.1.3\"\n   ```\n\n4. **Verify tests.** Run `cargo test -p anvilml-worker --features mock-hardware` and confirm all 5 existing unit tests pass (`eof_sets_dead`, `keepalive_pings_and_kills_on_timeout`, `respawn_after_death`, plus the two ignored tests). The ignored tests remain `#[ignore]` \u2014 they are not modified.\n\n5. **Verify Windows cross-check.** Run `cargo check --target x86_64-pc-windows-gnu --features mock-hardware` and confirm it exits 0.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-06T20:03:05+0200",
-  "plan_approval_message_id": "1512874361043030078",
+  "last_updated": "2026-06-06T20:35:19+0200",
+  "plan_approval_message_id": "1512886731471323169",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512874359667298395",
+  "plan_report_message_id": "1512886729378365664",
   "impl_report_message_id": null
 }
