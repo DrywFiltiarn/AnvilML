@@ -13,7 +13,7 @@ use anvilml_core::{
     CapabilitySource, DeviceType, GpuDevice, HardwareInfo, InferenceCaps, ServerConfig,
     WorkerStatus,
 };
-use anvilml_ipc::WorkerMessage;
+use anvilml_ipc::{WorkerEvent, WorkerMessage};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
@@ -35,6 +35,9 @@ pub struct WorkerPool {
     device_map: Arc<RwLock<HashMap<u32, usize>>>,
     /// Mutable copy of hardware info — updated on Ready events.
     hardware: Arc<tokio::sync::Mutex<HardwareInfo>>,
+    /// Delay before respawning a dead worker (default: 2_000 ms).
+    #[allow(dead_code)]
+    respawn_delay_ms: std::time::Duration,
 }
 
 impl WorkerPool {
@@ -49,6 +52,13 @@ impl WorkerPool {
 
         // Clone hardware info into an Arc<Mutex<>> for the event listener to update.
         let hardware = Arc::new(tokio::sync::Mutex::new(hw.clone()));
+
+        // Read respawn delay from environment (default: 2000 ms).
+        let respawn_delay_ms = std::env::var("ANVILML_RESPAWN_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(std::time::Duration::from_millis)
+            .unwrap_or(std::time::Duration::from_secs(2));
 
         let mut workers: Vec<Arc<ManagedWorker>> = Vec::with_capacity(hw.gpus.len().max(1));
         let mut device_map: HashMap<u32, usize> = HashMap::new();
@@ -93,6 +103,12 @@ impl WorkerPool {
         let pool_workers = workers.clone();
         let pool_event_tx = event_tx.clone();
         let pool_hardware = hardware.clone();
+        let pool_respawn_delay = respawn_delay_ms;
+
+        // Wrap workers and config in Arc for sharing across respawn tasks.
+        let shared_workers = Arc::new(tokio::sync::RwLock::new(workers.clone()));
+        let shared_cfg = cfg.clone();
+
         spawn(async move {
             debug!("event listener started");
 
@@ -102,6 +118,8 @@ impl WorkerPool {
                 let device_index = worker.device_index();
                 let tx = pool_event_tx.clone();
                 let hw = pool_hardware.clone();
+                let workers_clone = shared_workers.clone();
+                let cfg_clone = shared_cfg.clone();
 
                 spawn(async move {
                     loop {
@@ -113,8 +131,111 @@ impl WorkerPool {
                                     "pool listener received event"
                                 );
 
+                                // Detect WorkerStatusChanged(Dead) and trigger respawn.
+                                if let WorkerEvent::WorkerStatusChanged { status } = &event {
+                                    if *status == WorkerStatus::Dead {
+                                        info!(
+                                            worker_id = %wid,
+                                            device_index = device_index,
+                                            "worker dead — scheduling respawn"
+                                        );
+
+                                        // Clone state needed for respawn task.
+                                        let wid = wid.clone();
+                                        let device_index = device_index;
+                                        let delay = pool_respawn_delay;
+                                        let cfg = cfg_clone.clone();
+                                        let workers_clone = workers_clone.clone();
+                                        let hw = hw.clone();
+
+                                        spawn(async move {
+                                            // Wait for the configured delay.
+                                            tokio::time::sleep(delay).await;
+
+                                            info!(
+                                                worker_id = %wid,
+                                                "respawn delay elapsed — replacing worker"
+                                            );
+
+                                            // Find the worker at this device index.
+                                            let idx = {
+                                                let locked = workers_clone.read().await;
+                                                locked
+                                                    .iter()
+                                                    .position(|w| w.device_index() == device_index)
+                                            };
+
+                                            if let Some(idx) = idx {
+                                                // Get the device info for re-spawning.
+                                                let device = match hw
+                                                    .lock()
+                                                    .await
+                                                    .gpus
+                                                    .iter()
+                                                    .find(|g| g.index == device_index)
+                                                {
+                                                    Some(d) => d.clone(),
+                                                    None => GpuDevice {
+                                                        index: device_index,
+                                                        name: format!("worker-{device_index}"),
+                                                        device_type: DeviceType::Cpu,
+                                                        vram_total_mib: 0,
+                                                        vram_free_mib: 0,
+                                                        driver_version: "respawn".to_string(),
+                                                        pci_vendor_id: 0,
+                                                        pci_device_id: 0,
+                                                        arch: None,
+                                                        caps: InferenceCaps::default(),
+                                                        enumeration_source:
+                                                            anvilml_core::EnumerationSource::Mock,
+                                                        capabilities_source:
+                                                            CapabilitySource::Fallback,
+                                                        db_group_name: None,
+                                                    },
+                                                };
+
+                                                // Create a fresh worker.
+                                                let new_worker = Arc::new(ManagedWorker::new(
+                                                    wid.clone(),
+                                                    device_index,
+                                                ));
+
+                                                // Spawn the new worker.
+                                                if new_worker.spawn(&device, &cfg).await.is_ok() {
+                                                    new_worker.start_keepalive();
+
+                                                    // Replace in pool.
+                                                    {
+                                                        let mut locked =
+                                                            workers_clone.write().await;
+                                                        locked[idx] = new_worker;
+                                                    }
+
+                                                    // Update device_map.
+                                                    // (device_map update deferred — set_busy/set_idle iterate by ID)
+
+                                                    info!(
+                                                        worker_id = %wid,
+                                                        "worker respawned successfully"
+                                                    );
+                                                } else {
+                                                    warn!(
+                                                        worker_id = %wid,
+                                                        "respawn failed — worker not replaced"
+                                                    );
+                                                }
+                                            } else {
+                                                warn!(
+                                                    worker_id = %wid,
+                                                    "could not find worker at device_index={device_index} for respawn"
+                                                );
+                                            }
+                                        });
+                                    }
+                                }
+
                                 // Process Ready events to update hardware info.
-                                if let anvilml_ipc::WorkerEvent::Ready {
+                                if let WorkerEvent::Ready {
                                     arch,
                                     fp16,
                                     bf16,
@@ -166,6 +287,7 @@ impl WorkerPool {
             event_tx,
             device_map: Arc::new(RwLock::new(device_map)),
             hardware,
+            respawn_delay_ms,
         }
     }
 
@@ -261,6 +383,7 @@ fn event_discriminant(event: &anvilml_ipc::WorkerEvent) -> &'static str {
         anvilml_ipc::WorkerEvent::Completed { .. } => "Completed",
         anvilml_ipc::WorkerEvent::Failed { .. } => "Failed",
         anvilml_ipc::WorkerEvent::Cancelled { .. } => "Cancelled",
+        anvilml_ipc::WorkerEvent::WorkerStatusChanged { .. } => "WorkerStatusChanged",
     }
 }
 
@@ -401,6 +524,7 @@ mod tests {
                 map
             })),
             hardware,
+            respawn_delay_ms: std::time::Duration::from_secs(2),
         };
 
         // Verify exactly one worker exists.

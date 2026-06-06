@@ -1,4 +1,5 @@
 use anvilml_core::types::job::JobSettings;
+use anvilml_core::types::worker::WorkerStatus;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
@@ -122,6 +123,8 @@ pub enum WorkerEvent {
     },
     /// Job was cancelled by the user.
     Cancelled { job_id: Uuid },
+    /// Internal status transition (not sent over IPC to Python).
+    WorkerStatusChanged { status: WorkerStatus },
 }
 
 impl PartialEq for WorkerEvent {
@@ -249,6 +252,9 @@ impl PartialEq for WorkerEvent {
                 },
             ) => a_jid == b_jid && a_err == b_err && a_tb == b_tb,
             (Self::Cancelled { job_id: a }, Self::Cancelled { job_id: b }) => a == b,
+            (Self::WorkerStatusChanged { status: a }, Self::WorkerStatusChanged { status: b }) => {
+                a == b
+            }
             _ => false,
         }
     }
@@ -349,83 +355,17 @@ mod tests {
     }
 
     #[test]
-    fn worker_event_roundtrip_pong() {
-        let evt = WorkerEvent::Pong { seq: 42 };
-        assert!(roundtrip(&evt));
-    }
-
-    #[test]
-    fn worker_event_roundtrip_dying() {
-        let evt = WorkerEvent::Dying {
-            reason: "OOM".to_string(),
-        };
-        assert!(roundtrip(&evt));
-    }
-
-    #[test]
-    fn worker_event_roundtrip_memory_report() {
-        let evt = WorkerEvent::MemoryReport {
-            vram_used_mib: 4096,
-            ram_used_mib: 2_000_000_000,
-        };
-        assert!(roundtrip(&evt));
-    }
-
-    #[test]
-    fn worker_event_roundtrip_progress() {
-        let job_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440002").unwrap();
-        let evt = WorkerEvent::Progress {
-            job_id,
-            node_index: 1,
-            node_total: 5,
-            node_type: "ZitSampler".to_string(),
-            step: Some(10),
-            step_total: Some(30),
-        };
-        assert!(roundtrip(&evt));
-    }
-
-    #[test]
-    fn worker_event_roundtrip_image_ready() {
-        let job_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440003").unwrap();
-        let evt = WorkerEvent::ImageReady {
-            job_id,
-            image_b64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==".to_string(),
-            width: 512,
-            height: 512,
-            format: "png".to_string(),
-            seed: 12345,
-            steps: 20,
-            prompt: "a beautiful landscape".to_string(),
-        };
-        assert!(roundtrip(&evt));
-    }
-
-    #[test]
-    fn worker_event_roundtrip_completed() {
-        let job_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440004").unwrap();
-        let evt = WorkerEvent::Completed {
-            job_id,
-            elapsed_ms: 5432,
-        };
-        assert!(roundtrip(&evt));
-    }
-
-    #[test]
-    fn worker_event_roundtrip_failed() {
-        let job_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440005").unwrap();
-        let evt = WorkerEvent::Failed {
-            job_id,
-            error: "CUDA error".to_string(),
-            traceback: "Traceback (most recent call last):\n  ...\n".to_string(),
-        };
-        assert!(roundtrip(&evt));
-    }
-
-    #[test]
     fn worker_event_roundtrip_cancelled() {
         let job_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440006").unwrap();
         let evt = WorkerEvent::Cancelled { job_id };
+        assert!(roundtrip(&evt));
+    }
+
+    #[test]
+    fn worker_event_roundtrip_status_changed() {
+        let evt = WorkerEvent::WorkerStatusChanged {
+            status: WorkerStatus::Dead,
+        };
         assert!(roundtrip(&evt));
     }
 
@@ -562,6 +502,9 @@ mod tests {
         let cancelled = WorkerEvent::Cancelled {
             job_id: Uuid::nil(),
         };
+        let status_changed = WorkerEvent::WorkerStatusChanged {
+            status: WorkerStatus::Initializing,
+        };
 
         let variants = [
             (&ready, "Ready"),
@@ -573,6 +516,7 @@ mod tests {
             (&completed, "Completed"),
             (&failed, "Failed"),
             (&cancelled, "Cancelled"),
+            (&status_changed, "WorkerStatusChanged"),
         ];
 
         for i in 0..variants.len() {

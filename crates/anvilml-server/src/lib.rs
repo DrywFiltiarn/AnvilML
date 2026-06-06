@@ -158,6 +158,10 @@ mod tests {
 
         // Inference caps must be present.
         assert!(parsed["inference_caps"].is_object());
+
+        // Clean up mock env vars to avoid polluting other tests.
+        std::env::remove_var("ANVILML_MOCK_DEVICE_TYPE");
+        std::env::remove_var("ANVILML_MOCK_VRAM_MIB");
     }
 
     #[tokio::test]
