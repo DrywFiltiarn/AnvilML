@@ -7,7 +7,7 @@
 | Milestone group | Worker lifecycle |
 | Depends on phases | 1-9 |
 | Task file | `forge/tasks/tasks_phase010.json` |
-| Tasks | 4 |
+| Tasks | 6 |
 
 ## Overview
 
@@ -23,6 +23,8 @@ Every task in this phase implements **one module or one endpoint** plus its test
 | P10-A2 | `crates/anvilml-worker/src/managed.rs` | anvilml-worker: respawn after death (2s delay) + WorkerStatusChanged events |
 | P10-A3 | `backend/src/main.rs` | anvilml-server: broadcast worker status changes to WS |
 | P10-A4 | `crates/anvilml-worker/src/pool.rs` | anvilml: test-only worker PID accessor for crash-recovery proof |
+| P10-B1 | `crates/anvilml-worker/src/managed.rs` | anvilml-worker: fix double InitializeHardware write causing worker death at startup |
+| P10-B2 | `crates/anvilml-worker/src/managed.rs`, `worker/tests/test_worker_main.py` | anvilml-worker: end-to-end handshake regression test (spawn → Ready → Idle) |
 
 ## Task details
 
@@ -54,6 +56,31 @@ In main.rs / server wiring: subscribe to WorkerPool.subscribe_events(); for each
 
 Add #[cfg(any(test,feature="test-helpers"))] fn pid_for(&self,worker_id:&str)->Option<u32> on WorkerPool returning the child PID. This enables the runnable crash-recovery proof and the integration test in later phases. cargo test --workspace --features mock-hardware exits 0. Runnable proof: ANVILML_WORKER_MOCK=1 cargo run --features mock-hardware; note worker PID from logs; kill <pid>; watch /v1/workers (or /v1/events) show Dead then Respawning then Idle within ~3s; server stays up. Also pass: cargo check --target x86_64-pc-windows-gnu --features mock-hardware.
 
+#### P10-B1: anvilml-worker: fix double InitializeHardware write causing worker death at startup
+
+- **Prereqs:** P10-A4
+- **Tags:** reasoning
+
+`ManagedWorker::spawn()` writes `InitializeHardware` directly to stdin (Unix: fd-dup + synchronous write; Windows: async write + flush), then unconditionally enqueues the same message into the mpsc channel via `self.tx.send(init_msg)`. When `writer_task` drains the channel it writes a second frame to the same pipe. The Python worker receives `InitializeHardware` twice, treats the second as unexpected, and exits — closing its stdout. The Rust reader task sees EOF, sets status to `Dead`, and `spawn()` times out with `"worker did not reach Ready state in time"`, causing a panic in `pool.rs`. This is consistent across Windows and Linux.
+
+Remove the `self.tx.send(init_msg).await` call that follows the direct stdin write in `spawn()`. `InitializeHardware` must be delivered exactly once via the direct path only. All subsequent messages (Ping, Shutdown, Execute, etc.) continue to use the mpsc channel normally.
+
+Also remove the redundant `status.write().await = Dead` statement after the `break` at the bottom of `reader_task`. The `WorkerStatusChanged(Dead)` broadcast emitted inside the loop already transitions the status; the post-loop write produces a duplicate broadcast and a redundant lock acquisition.
+
+`cargo test -p anvilml-worker --features mock-hardware` exits 0. `cargo check --target x86_64-pc-windows-gnu --features mock-hardware` exits 0.
+
+#### P10-B2: anvilml-worker: end-to-end handshake regression test (spawn → Ready → Idle)
+
+- **Prereqs:** P10-B1
+- **Tags:** reasoning
+
+Remove `#[ignore]` from `spawn_ping_pong` and `status_transitions` in `managed.rs`. Both tests must now pass unconditionally under `ANVILML_WORKER_MOCK=1` with `ANVILML_VENV_PATH` set to the CI venv (matching the P9-B1 environment setup).
+
+Add a new Rust test `handshake_completes_once` in `managed.rs`: subscribe to the broadcast channel before calling `spawn()`, call `spawn()`, assert status equals `Idle`, then drain the broadcast channel for 500 ms and assert exactly one `Ready` event was received with no subsequent `Dying` or second `Ready` event. This directly guards against re-introduction of the double-write bug.
+
+Add a new pytest test `test_double_init_exits` in `worker/tests/test_worker_main.py`: send `InitializeHardware` twice in sequence to a reshly spawned worker subprocess; assert the worker sends `Ready` in response to the first, then sends `Dying` (or exits non-zero) in esponse to the second. This ensures the Python side explicitly rejects duplicate initialisation rather than silently accepting it.
+
+`cargo test -p anvilml-worker --features mock-hardware -- handshake` exits 0. `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py -v` exits 0. `cargo check --target x86_64-pc-windows-gnu --features mock-hardware` exits 0.
 
 ## Runnable Proof
 

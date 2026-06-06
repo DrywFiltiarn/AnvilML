@@ -46,5 +46,31 @@
     ],
     "context": "Add #[cfg(any(test,feature=\"test-helpers\"))] fn pid_for(&self,worker_id:&str)->Option<u32> on WorkerPool returning the child PID. This enables the runnable crash-recovery proof and the integration test in later phases. cargo test --workspace --features mock-hardware exits 0. Runnable proof: ANVILML_WORKER_MOCK=1 cargo run --features mock-hardware; note worker PID from logs; kill <pid>; watch /v1/workers (or /v1/events) show Dead then Respawning then Idle within ~3s; server stays up. Also pass: cargo check --target x86_64-pc-windows-gnu --features mock-hardware.",
     "tags": []
-  }
+  },
+  {
+    "id": "P10-B1",
+    "description": "anvilml-worker: fix double InitializeHardware write on Windows/Unix in ManagedWorker::spawn",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": [
+      "P10-A4"
+    ],
+    "context": "Bug: managed.rs spawn() writes InitializeHardware directly to stdin (Unix fd-dup; Windows async write+flush), then unconditionally enqueues the same message into the mpsc channel. When writer_task drains the channel it writes a second frame, causing Python to receive InitializeHardware twice — it exits, closing stdout, triggering EOF → Dead, and spawn() times out with 'worker did not reach Ready state in time'. Fix: remove the `self.tx.send(init_msg).await` call that follows the direct stdin write in spawn(). InitializeHardware must be delivered exactly once, via the direct path only. The subsequent message loop (Ping/Shutdown/etc.) continues to use the mpsc channel normally. Also: remove the redundant second Dead status write in reader_task after the loop — the WorkerStatusChanged(Dead) broadcast inside the loop is sufficient; the duplicate status.write().await after `break` should be removed to prevent double-broadcast. cargo test -p anvilml-worker --features mock-hardware exits 0. cargo check --target x86_64-pc-windows-gnu --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P10-B2",
+    "description": "anvilml-worker: end-to-end handshake regression test (spawn → Ready → Idle)",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": [
+      "P10-B1"
+    ],
+    "context": "Remove #[ignore] from spawn_ping_pong and status_transitions in managed.rs tests — both now run under ANVILML_WORKER_MOCK=1 with ANVILML_VENV_PATH pointing to the CI venv (set via cfg!(test) guard or test env, matching P9-B1 setup). Add a new test `handshake_completes_once` in managed.rs: spawn a ManagedWorker with ANVILML_WORKER_MOCK=1, assert status == Idle after spawn() returns, assert no second InitializeHardware was sent (subscribe before spawn, drain broadcast channel, assert exactly one Ready event received and no duplicate Ready or Dying events within 500ms). Add a new pytest test `test_double_init_exits` in worker/tests/test_worker_main.py: send InitializeHardware twice in sequence, assert the worker sends Ready then Dying (unexpected second Init must not silently succeed). cargo test -p anvilml-worker --features mock-hardware -- handshake exits 0. ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py -v exits 0. cargo check --target x86_64-pc-windows-gnu --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  }  
 ]

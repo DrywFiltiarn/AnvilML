@@ -7,7 +7,7 @@
 | Milestone group | End-to-end generation (mock) |
 | Depends on phases | 1-10 |
 | Task file | `forge/tasks/tasks_phase011.json` |
-| Tasks | 5 |
+| Tasks | 6 |
 
 ## Overview
 
