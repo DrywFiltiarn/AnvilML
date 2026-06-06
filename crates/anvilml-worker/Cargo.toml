@@ -19,3 +19,4 @@ rmp-serde = { workspace = true }
 
 [features]
 mock-hardware = ["anvilml-hardware/mock-hardware"]
+test-helpers = []

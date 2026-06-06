@@ -324,6 +324,21 @@ impl ManagedWorker {
         self.device_index
     }
 
+    /// Return the child process PID if one is stored.
+    ///
+    /// This is a test-only accessor gated behind `#[cfg(any(test, feature = "test-helpers"))]`.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub async fn child_pid(&self) -> Option<u32> {
+        self.child.lock().await.as_ref().and_then(|c| c.id())
+    }
+
+    /// Set the stored child process handle (test-only).
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub async fn set_child_for_test(&self, child: tokio::process::Child) {
+        let mut guard = self.child.lock().await;
+        *guard = Some(child);
+    }
+
     /// Build a `WorkerInfo` from current state.
     pub async fn info(&self) -> WorkerInfo {
         let status = *self.status.read().await;

@@ -371,6 +371,24 @@ impl WorkerPool {
     }
 }
 
+/// Test-only accessors for `WorkerPool`.
+#[cfg(any(test, feature = "test-helpers"))]
+impl WorkerPool {
+    /// Return the child process PID for the worker with the given ID.
+    ///
+    /// Returns `None` if no worker matches or if the child has not been spawned
+    /// yet (or has already exited). This is a test-only accessor gated behind
+    /// `#[cfg(any(test, feature = "test-helpers"))]`.
+    pub async fn pid_for(&self, worker_id: &str) -> Option<u32> {
+        for worker in &self.workers {
+            if worker.worker_id() == worker_id {
+                return worker.child_pid().await;
+            }
+        }
+        None
+    }
+}
+
 /// Get a discriminant name for a WorkerEvent.
 fn event_discriminant(event: &anvilml_ipc::WorkerEvent) -> &'static str {
     match event {
@@ -390,6 +408,7 @@ fn event_discriminant(event: &anvilml_ipc::WorkerEvent) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::process::Command;
 
     /// Pool event listener merges Ready event capabilities into hardware info.
     ///
@@ -565,5 +584,103 @@ mod tests {
         let hw_guard = pool.hardware.lock().await;
         assert_eq!(hw_guard.gpus.len(), 0, "no GPUs in mock hardware");
         assert_eq!(hw_guard.host.cpu_model, "Mock CPU");
+    }
+
+    /// `pid_for` returns `None` for a worker ID that does not exist in the pool.
+    #[tokio::test]
+    async fn pid_for_returns_none_for_missing_worker() {
+        // Build a minimal pool manually (same pattern as spawn_all_creates_cpu_worker_when_no_gpus).
+        let hw = HardwareInfo {
+            host: anvilml_core::HostInfo {
+                os: "Linux".to_string(),
+                cpu_model: "Mock CPU".to_string(),
+                ram_total_mib: 16384,
+                ram_free_mib: 12000,
+            },
+            gpus: vec![],
+            inference_caps: InferenceCaps::default(),
+        };
+
+        let (event_tx, _rx) = broadcast::channel(256);
+        let hardware = Arc::new(tokio::sync::Mutex::new(hw));
+
+        let workers: Vec<Arc<ManagedWorker>> =
+            vec![Arc::new(ManagedWorker::new("worker-0".to_string(), 0))];
+
+        let pool = WorkerPool {
+            workers,
+            event_tx,
+            device_map: Arc::new(RwLock::new({
+                let mut map = HashMap::new();
+                map.insert(0, 0);
+                map
+            })),
+            hardware,
+            respawn_delay_ms: std::time::Duration::from_secs(2),
+        };
+
+        // "worker-0" exists but has no child stored → None.
+        assert!(
+            pool.pid_for("worker-0").await.is_none(),
+            "missing child should yield None"
+        );
+
+        // Non-existent worker ID → None.
+        assert!(
+            pool.pid_for("nonexistent").await.is_none(),
+            "nonexistent worker should yield None"
+        );
+    }
+
+    /// `pid_for` returns the stored child PID when a dummy child is set.
+    #[tokio::test]
+    async fn pid_for_returns_child_pid_when_spawned() {
+        // Build a minimal pool manually.
+        let hw = HardwareInfo {
+            host: anvilml_core::HostInfo {
+                os: "Linux".to_string(),
+                cpu_model: "Mock CPU".to_string(),
+                ram_total_mib: 16384,
+                ram_free_mib: 12000,
+            },
+            gpus: vec![],
+            inference_caps: InferenceCaps::default(),
+        };
+
+        let (event_tx, _rx) = broadcast::channel(256);
+        let hardware = Arc::new(tokio::sync::Mutex::new(hw));
+
+        let workers: Vec<Arc<ManagedWorker>> =
+            vec![Arc::new(ManagedWorker::new("worker-0".to_string(), 0))];
+
+        let pool = WorkerPool {
+            workers,
+            event_tx,
+            device_map: Arc::new(RwLock::new({
+                let mut map = HashMap::new();
+                map.insert(0, 0);
+                map
+            })),
+            hardware,
+            respawn_delay_ms: std::time::Duration::from_secs(2),
+        };
+
+        // Spawn a dummy child and store it in the worker.
+        let dummy = Command::new(if cfg!(windows) { "cmd" } else { "true" })
+            .spawn()
+            .expect("spawn dummy child");
+        let expected_pid = dummy.id().expect("child has pid");
+        pool.workers[0].set_child_for_test(dummy).await;
+
+        // pid_for should return the PID of the stored child.
+        let actual_pid = pool.pid_for("worker-0").await;
+        assert!(
+            actual_pid.is_some(),
+            "pid_for should return Some(pid) when child is stored"
+        );
+        assert_eq!(actual_pid, Some(expected_pid));
+
+        // Non-existent worker → None.
+        assert!(pool.pid_for("nonexistent").await.is_none());
     }
 }
