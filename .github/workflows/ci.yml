@@ -77,3 +77,22 @@ jobs:
 
       - name: Real-hardware compile check
         run: cargo check --bin anvilml
+
+  python-worker:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install msgpack pillow pytest
+
+      - name: Run worker tests (mock mode)
+        run: ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v

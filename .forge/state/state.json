@@ -85,16 +85,17 @@
     "P9-A3",
     "P9-A4",
     "P9-A5",
-    "P9-A6"
+    "P9-A6",
+    "P9-B1"
   ],
-  "in_progress": "P9-B1",
+  "in_progress": "P9-B2",
   "plan_approved": true,
-  "current_plan": "1. **Read current `.github/workflows/ci.yml`** to confirm the existing step structure, job names, and gate ordering. The file has two jobs (`rust-linux` on `ubuntu-latest`, `rust-windows` on `windows-latest`), each with: checkout \u2192 setup Rust toolchain \u2192 format check (linux only) \u2192 lint (mock + real) \u2192 run tests \u2192 compile checks.\n\n2. **Insert \"Setup Python for worker tests\" step** in the `rust-linux` job, placed immediately before the existing \"Run tests\" step. The step runs:\n   ```yaml\n   - name: Setup Python for worker tests\n     run: python3 -m venv .ci-venv && .ci-venv/bin/pip install msgpack pillow\n   ```\n\n3. **Insert \"Setup Python for worker tests\" step** in the `rust-windows` job, placed immediately before the existing \"Run tests\" step. The step runs:\n   ```yaml\n   - name: Setup Python for worker tests\n     run: python -m venv .ci-venv && .ci-venv\\Scripts\\pip install msgpack pillow\n   ```\n\n4. **Update the \"Run tests\" step** in both jobs to include the required environment variables as a step-level `env:` block:\n   ```yaml\n   - name: Run tests\n     run: cargo test --workspace --features mock-hardware\n     env:\n       ANVILML_VENV_PATH: .ci-venv\n       ANVILML_WORKER_MOCK: \"1\"\n   ```\n\n5. **Verify the resulting YAML** is syntactically valid by confirming the file parses correctly (the CI runner will validate on push/PR).",
+  "current_plan": "1. **Read current ci.yml** (already read at `/home/dryw/AnvilML/.github/workflows/ci.yml`). Confirm it has two jobs: `rust-linux` and `rust-windows`. No existing job named `python-worker` exists.\n\n2. **Append the new `python-worker` job** to the end of `.github/workflows/ci.yml`, after the `rust-windows` job. The job will use a matrix strategy with `os: [ubuntu-latest, windows-latest]`.\n\n3. **Job structure** (exact steps):\n   - `actions/checkout@v6` \u2014 check out the repository.\n   - `actions/setup-python@v5` with `python-version: \"3.12\"` \u2014 install a standalone Python 3.12 (no venv needed since we only need msgpack, pillow, pytest).\n   - Run step: `pip install msgpack pillow pytest` \u2014 install the three test dependencies (no torch; mock mode skips the torch import as documented in ANVILML_DESIGN \u00a720.2 and ENVIRONMENT.md \u00a73.6).\n   - Run step: `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` \u2014 run the Python worker test suite in mock mode. The existing tests (`test_ipc.py`, `test_worker_main.py`) use msgpack for framing and spawn `worker_main.py` as a subprocess with `ANVILML_WORKER_MOCK=1`.\n\n4. **Preserve all existing jobs** \u2014 per FORGE_AGENT_RULES \u00a75.5, the two existing Rust CI jobs (`rust-linux`, `rust-windows`) remain untouched. The new job is appended after them.\n\n5. **No version lookups needed** \u2014 all dependency versions (msgpack, pillow, pytest) are already established in the project's `worker/requirements/base.txt` and are used by the existing P9-B1 venv steps. No MCP tool call required.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-06T15:30:01+0200",
-  "plan_approval_message_id": "1512809723219673158",
+  "last_updated": "2026-06-06T15:50:50+0200",
+  "plan_approval_message_id": "1512814775267233832",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512809721495552031",
+  "plan_report_message_id": "1512814773413216340",
   "impl_report_message_id": null
 }
