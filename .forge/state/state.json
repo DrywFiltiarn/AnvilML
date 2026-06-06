@@ -92,16 +92,17 @@
     "P10-A2",
     "P10-A3",
     "P10-A4",
-    "P10-B1"
+    "P10-B1",
+    "P10-B2"
   ],
-  "in_progress": "P10-B2",
+  "in_progress": "P10-B3",
   "plan_approved": true,
-  "current_plan": "1. **Read and modify `crates/anvilml-worker/src/managed.rs`** \u2014 In the `tests` module:\n   - Remove the `#[ignore = \"requires Python worker; set ANVILML_TEST_WORKER_PYTHON to enable\"]` attribute from the `spawn_ping_pong` test (line 701). The test already sets up a mock device and uses the forge venv path. With P10-B1's fix in place, this test will now pass unconditionally under `ANVILML_WORKER_MOCK=1`.\n   - Remove the same `#[ignore]` attribute from the `status_transitions` test (line 786).\n   - Update both tests' `ServerConfig` to read venv path from `ANVILML_VENV_PATH` env var: replace `std::path::PathBuf::from(\"/home/dryw/forge/.venv\")` with `std::env::var(\"ANVILML_VENV_PATH\").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from(\"/home/dryw/forge/.venv\"))`. This matches the P9-B1 environment setup and allows CI to override via env var.\n\n2. **Add `handshake_completes_once` test** in `managed.rs` \u2014 A new `#[tokio::test]` gated by `#[cfg(feature = \"mock-hardware\")]`:\n   - Set `ANVILML_WORKER_MOCK=1` and `ANVILML_PING_INTERVAL_MS=50` / `ANVILML_PONG_TIMEOUT_MS=150` for fast test execution.\n   - Create a `ManagedWorker::new(\"handshake-test\", 0)`.\n   - Build a mock `GpuDevice` (same shape as existing tests).\n   - Create a `ServerConfig` with venv path from env var.\n   - Call `worker.subscribe()` to get a broadcast receiver *before* spawning.\n   - Call `worker.spawn(&device, &cfg).await.expect(\"spawn\")`.\n   - Assert `worker.get_status().await == WorkerStatus::Idle`.\n   - Drain the broadcast channel with a 500ms timeout: collect all events received within that window.\n   - Assert exactly one `WorkerEvent::Ready` was received.\n   - Assert no second `Ready`, no `Dying`, and no `WorkerStatusChanged(Dead)` events during the drain window (this directly guards against double-write).\n\n3. **Add `test_double_init_exits` test** in `worker/tests/test_worker_main.py`:\n   - Use the existing `_spawn_worker()` helper to create a subprocess with `ANVILML_WORKER_MOCK=1`.\n   - Build two InitializeHardware frames using `_make_frame()`.\n   - Write both frames sequentially to `proc.stdin`, then close stdin.\n   - Read all stdout, parse frames via `_parse_frames()`.\n   - Assert the first frame is `Ready` (with correct worker_id, device_index).\n   - Assert the second event is `Dying` with reason `\"unexpected_initialize\"` (or assert the process exited non-zero if Python side already exits on duplicate init \u2014 the current code has `if _type == \"InitializeHardware\" and not ready_sent:` which means the second InitializeHardware will fall through to no handler, so the worker will hang).\n   - Since the current Python worker silently ignores unrecognized message types (the `while True` loop just continues), the test should assert that Ready is sent for the first init, then send a Shutdown to trigger Dying, confirming the worker didn't die from the second InitializeHardware. Alternatively, since the task says \"assert the worker sends Ready then Dying\", we'll send two Initializations, then Shutdown, and verify: one Ready, one Dying{reason: shutdown}, exit 0. The key assertion is that the duplicate init did NOT cause the worker to crash or produce a second Ready \u2014 it was simply ignored (the existing guard `not ready_sent` handles this).\n\n4. **Verify** with:\n   - `cargo test -p anvilml-worker --features mock-hardware -- handshake` (runs new test + filtered subset)\n   - `cargo test -p anvilml-worker --features mock-hardware -- spawn_ping_pong status_transitions` (runs unignored tests)\n   - `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py -v` (runs Python tests including new one)\n   - `cargo check --target x86_64-pc-windows-gnu --features mock-hardware` (cross-check)",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-06T21:16:45+0200",
-  "plan_approval_message_id": "1512893347356999720",
+  "last_updated": "2026-06-06T23:02:48+0200",
+  "plan_approval_message_id": "1512924386846572554",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512893344550883448",
+  "plan_report_message_id": "1512924385013399584",
   "impl_report_message_id": null
 }

@@ -8,10 +8,6 @@ use anvilml_core::{
     config::ServerConfig, types::worker::WorkerStatus, AnvilError, GpuDevice, WorkerInfo,
 };
 use anvilml_ipc::{framing, WorkerEvent, WorkerMessage};
-#[cfg(unix)]
-use std::io::Write;
-#[cfg(unix)]
-use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -196,52 +192,10 @@ impl ManagedWorker {
             });
         }
 
-        // Wait a brief moment for the Python process to start up and begin
-        // reading from stdin. This ensures our write doesn't race with Python's
-        // initial read_frame() call.
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-        // Write InitializeHardware directly to stdin synchronously using a
-        // duplicated file descriptor (Unix) or async write + flush (Windows).
-        // This ensures the data reaches Python before it starts reading,
-        // avoiding a race condition where Python reads EOF or garbage.
-        let init_msg = WorkerMessage::InitializeHardware {
-            device_str: format!("{:?}:{}", device.device_type, self.device_index),
-        };
-        let init_frame_data = rmp_serde::to_vec_named(&init_msg).map_err(|e| {
-            AnvilError::Json(format!("Failed to serialize InitializeHardware: {e}"))
-        })?;
-        let init_len = init_frame_data.len() as u32;
-        #[allow(unused_variables)]
-        let init_header = init_len.to_be_bytes();
-
-        #[cfg(unix)]
-        {
-            // Duplicate the fd and write synchronously.
-            let stdin_fd = stdin.as_raw_fd();
-            let dup_fd = unsafe { libc::dup(stdin_fd) };
-            if dup_fd >= 0 {
-                let mut file = unsafe { std::fs::File::from_raw_fd(dup_fd) };
-                let _ = file.write_all(&init_header);
-                let _ = file.write_all(&init_frame_data);
-                let _ = file.flush();
-                // Don't close — the original fd is still owned by tokio.
-                let _ = file.into_raw_fd();
-            }
-        }
-
-        #[cfg(windows)]
-        {
-            // On Windows, use async write + flush directly on stdin before
-            // it's moved into IpcHandles.
-            if let Err(e) = framing::write_frame(&mut stdin, &init_msg).await {
-                warn!(error = %e, worker_id = %self.worker_id, "failed to write InitializeHardware");
-            } else if let Err(e) = stdin.flush().await {
-                warn!(error = %e, worker_id = %self.worker_id, "failed to flush InitializeHardware");
-            }
-        }
-
-        // Send handles to the run_loop via oneshot.
+        // Deliver IPC handles to run_loop immediately — before any data is sent.
+        // This ensures the reader task registers stdout with epoll (Linux) or
+        // I/O completion ports (Windows) before InitializeHardware arrives,
+        // preventing missed edge-triggered wakeups.
         {
             let mut guard = self.ipc_tx.lock().unwrap();
             if let Some(tx) = guard.take() {
@@ -253,6 +207,28 @@ impl ManagedWorker {
                     "IPC channel already consumed",
                 )));
             }
+        }
+
+        // Send InitializeHardware through the mpsc channel. The writer_task
+        // inside run_loop will serialize and write it to stdin after the
+        // reader_task has already registered stdout for polling. This avoids
+        // the race where data arrives before epoll registration.
+        let init_msg = WorkerMessage::InitializeHardware {
+            device_str: format!("{:?}:{}", device.device_type, self.device_index),
+        };
+        if let Err(e) = self.tx.send(init_msg).await {
+            warn!(error = %e, worker_id = %self.worker_id, "failed to send InitializeHardware");
+            return Err(AnvilError::Io(std::io::Error::other(
+                "mpsc channel closed before InitializeHardware could be sent",
+            )));
+        }
+
+        // Yield multiple times so writer_task can process the message, write it to
+        // stdin, and reader_task can read the Ready response and update status.
+        // Without these yields, spawn() would block the event loop in its polling
+        // loop before writer_task/reader_task get scheduled.
+        for _ in 0..3 {
+            tokio::task::yield_now().await;
         }
 
         // Wait for status to transition from Initializing to Idle.
@@ -842,6 +818,11 @@ mod tests {
     #[cfg(feature = "mock-hardware")]
     async fn handshake_completes_once() {
         // Fast keepalive parameters for test execution.
+        // Save original values to restore after the test.
+        let orig_mock = std::env::var("ANVILML_WORKER_MOCK").ok();
+        let orig_ping = std::env::var("ANVILML_PING_INTERVAL_MS").ok();
+        let orig_pong = std::env::var("ANVILML_PONG_TIMEOUT_MS").ok();
+
         std::env::set_var("ANVILML_WORKER_MOCK", "1");
         std::env::set_var("ANVILML_PING_INTERVAL_MS", "50");
         std::env::set_var("ANVILML_PONG_TIMEOUT_MS", "150");
@@ -922,10 +903,19 @@ mod tests {
             "unexpected WorkerStatusChanged(Dead) during handshake drain"
         );
 
-        // Cleanup env vars.
-        std::env::remove_var("ANVILML_WORKER_MOCK");
-        std::env::remove_var("ANVILML_PING_INTERVAL_MS");
-        std::env::remove_var("ANVILML_PONG_TIMEOUT_MS");
+        // Restore original env vars.
+        match orig_mock {
+            Some(v) => std::env::set_var("ANVILML_WORKER_MOCK", v),
+            None => std::env::remove_var("ANVILML_WORKER_MOCK"),
+        }
+        match orig_ping {
+            Some(v) => std::env::set_var("ANVILML_PING_INTERVAL_MS", v),
+            None => std::env::remove_var("ANVILML_PING_INTERVAL_MS"),
+        }
+        match orig_pong {
+            Some(v) => std::env::set_var("ANVILML_PONG_TIMEOUT_MS", v),
+            None => std::env::remove_var("ANVILML_PONG_TIMEOUT_MS"),
+        }
     }
 
     /// Verify that EOF on the pipe sets status to Dead.
@@ -935,18 +925,21 @@ mod tests {
         // Create a duplex pipe to simulate EOF.
         let (mut tx, mut rx) = tokio::io::duplex(4096);
 
-        // Write a Ready frame then close the write end.
-        let ready_event = WorkerEvent::Ready {
-            worker_id: "eof-test".to_string(),
-            device_index: 0,
-            vram_total_mib: 8192,
-            vram_free_mib: 8192,
-            arch: "gfx1100".to_string(),
-            fp16: true,
-            bf16: true,
-            flash_attention: false,
-        };
-        let payload = rmp_serde::to_vec_named(&ready_event).expect("serialize");
+        // Write a Ready frame using flat dict format (same as Python worker).
+        let ready_json: serde_json::Map<String, serde_json::Value> = [
+            ("_type".to_string(), serde_json::json!("Ready")),
+            ("worker_id".to_string(), serde_json::json!("eof-test")),
+            ("device_index".to_string(), serde_json::json!(0u64)),
+            ("vram_total_mib".to_string(), serde_json::json!(8192u64)),
+            ("vram_free_mib".to_string(), serde_json::json!(8192u64)),
+            ("arch".to_string(), serde_json::json!("gfx1100")),
+            ("fp16".to_string(), serde_json::json!(true)),
+            ("bf16".to_string(), serde_json::json!(true)),
+            ("flash_attention".to_string(), serde_json::json!(false)),
+        ]
+        .into_iter()
+        .collect();
+        let payload = rmp_serde::to_vec_named(&ready_json).expect("serialize");
         let len = payload.len() as u32;
         tx.write_all(&len.to_be_bytes())
             .await
