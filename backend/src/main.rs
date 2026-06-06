@@ -3,11 +3,54 @@ mod shutdown;
 
 use std::sync::Arc;
 
+use tokio::sync::broadcast;
+
+use anvilml_core::types::events::{WorkerStatusChangedEvent, WsEvent};
 use anvilml_core::{load_config, DeviceType, EnumerationSource, HardwareInfo};
+use anvilml_ipc::WorkerEvent;
 use anvilml_server::ws::stats_tick::spawn_system_stats_tick;
 use anvilml_server::{build_router, AppState, EventBroadcaster};
+use chrono::Utc;
 use tracing_subscriber::fmt::layer as fmt_layer;
 use tracing_subscriber::Layer;
+
+/// Spawns a background task that bridges WorkerPool events to the WS broadcaster.
+fn spawn_worker_status_bridge(
+    workers: &anvilml_worker::WorkerPool,
+    broadcaster: &Arc<EventBroadcaster>,
+) {
+    let mut rx = workers.subscribe_events();
+    let bc = Arc::clone(broadcaster);
+
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok((worker_id, event)) => {
+                    if let WorkerEvent::WorkerStatusChanged { status } = event {
+                        tracing::debug!(
+                            worker_id = %worker_id,
+                            status = ?status,
+                            "bridging worker status change to WS"
+                        );
+                        bc.send(WsEvent::WorkerStatusChanged(WorkerStatusChangedEvent {
+                            event: "worker.status".to_string(),
+                            timestamp: Utc::now(),
+                            worker_id,
+                            status,
+                        }));
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::debug!(lagged = n, "worker status bridge dropped events");
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    tracing::warn!("worker status bridge channel closed");
+                    break;
+                }
+            }
+        }
+    });
+}
 
 /// Format a hardware info table to stdout.
 fn print_hardware_table(hw: &HardwareInfo) {
@@ -196,6 +239,9 @@ async fn main() {
     );
 
     let broadcaster = Arc::new(EventBroadcaster::new(cfg.limits.ws_broadcast_capacity));
+
+    // Bridge worker status events to WebSocket clients.
+    spawn_worker_status_bridge(&workers, &broadcaster);
     let state = AppState::new_with_hardware(
         env!("CARGO_PKG_VERSION"),
         hw_info,

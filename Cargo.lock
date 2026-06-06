@@ -286,14 +286,16 @@ dependencies = [
 
 [[package]]
 name = "backend"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
+ "anvilml-ipc",
  "anvilml-registry",
  "anvilml-server",
  "anvilml-worker",
  "axum",
+ "chrono",
  "clap",
  "tokio",
  "toml",

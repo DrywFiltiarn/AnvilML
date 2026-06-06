@@ -88,16 +88,17 @@
     "P9-A6",
     "P9-B1",
     "P9-B2",
-    "P10-A1"
+    "P10-A1",
+    "P10-A2"
   ],
-  "in_progress": "P10-A2",
+  "in_progress": "P10-A3",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "1. **Add imports** in `backend/src/main.rs`:\n   - `anvilml_ipc::WorkerEvent` \u2014 to pattern-match on status changed events\n   - `anvilml_core::types::events::{WsEvent, WorkerStatusChangedEvent}` \u2014 for constructing the broadcast event\n   - `chrono::Utc` \u2014 for timestamp construction\n\n2. **Implement `spawn_worker_status_bridge`** in `backend/src/main.rs`:\n   ```rust\n   /// Spawns a background task that bridges WorkerPool events to the WS broadcaster.\n   fn spawn_worker_status_bridge(\n       workers: &anvilml_worker::WorkerPool,\n       broadcaster: &EventBroadcaster,\n   ) {\n       let mut rx = workers.subscribe_events();\n       let bc = Arc::clone(broadcaster);\n\n       tokio::spawn(async move {\n           loop {\n               match rx.recv().await {\n                   Ok((worker_id, event)) => {\n                       if let WorkerEvent::WorkerStatusChanged { status } = event {\n                           tracing::debug!(\n                               worker_id = %worker_id,\n                               status = ?status,\n                               \"bridging worker status change to WS\"\n                           );\n                           bc.send(WsEvent::WorkerStatusChanged(\n                               WorkerStatusChangedEvent {\n                                   event: \"worker.status\".to_string(),\n                                   timestamp: Utc::now(),\n                                   worker_id,\n                                   status,\n                               },\n                           ));\n                       }\n                   }\n                   Err(broadcast::error::RecvError::Lagged(n)) => {\n                       tracing::debug!(lagged = n, \"worker status bridge dropped events\");\n                   }\n                   Err(broadcast::error::RecvError::Closed) => {\n                       tracing::warn!(\"worker status bridge channel closed\");\n                       break;\n                   }\n               }\n           }\n       });\n   }\n   ```\n\n3. **Wire the bridge into `main()`** after worker pool creation:\n   - After line 196 (`tracing::info!(workers_spawned = ...)`) and before line 208 (`spawn_system_stats_tick`):\n   ```rust\n   // Bridge worker status events to WebSocket clients.\n   if let Some(ref workers) = workers {\n       spawn_worker_status_bridge(workers, &broadcaster);\n   } else {\n       tracing::warn!(\"no worker pool available \u2014 WS worker status bridge not started\");\n   }\n   ```",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-06T17:15:05+0200",
-  "plan_approval_message_id": "1512836832742609139",
+  "last_updated": "2026-06-06T19:01:54+0200",
+  "plan_approval_message_id": "1512863761092837639",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512836830830268508",
+  "plan_report_message_id": "1512863759398342688",
   "impl_report_message_id": null
 }
