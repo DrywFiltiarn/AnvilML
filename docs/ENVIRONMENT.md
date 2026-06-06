@@ -398,3 +398,47 @@ tracing::warn!(path = %entry.path().display(), error = %e,
   unit of work (migration runner, seed loader, worker spawn, job dispatch).
 - Span names must be lowercase snake_case and match the function or subsystem name.
 - Do not instrument tight inner loops or per-frame/per-packet functions.
+
+---
+
+## 10. Crate Version Bump Convention (`FORGE_AGENT_RULES.md §12`)
+
+Every task that modifies source files in a crate must increment that crate's patch version
+per `FORGE_AGENT_RULES.md §12`. This section defines the AnvilML-specific locations.
+
+### Version file locations
+
+| Crate / Package | Manifest file | Version field |
+|----------------|--------------|---------------|
+| `backend` (anvilml binary) | `backend/Cargo.toml` | `[package] version` |
+| `anvilml-core` | `crates/anvilml-core/Cargo.toml` | `[package] version` |
+| `anvilml-hardware` | `crates/anvilml-hardware/Cargo.toml` | `[package] version` |
+| `anvilml-registry` | `crates/anvilml-registry/Cargo.toml` | `[package] version` |
+| `anvilml-ipc` | `crates/anvilml-ipc/Cargo.toml` | `[package] version` |
+| `anvilml-worker` | `crates/anvilml-worker/Cargo.toml` | `[package] version` |
+| `anvilml-scheduler` | `crates/anvilml-scheduler/Cargo.toml` | `[package] version` |
+| `anvilml-server` | `crates/anvilml-server/Cargo.toml` | `[package] version` |
+| `anvilml-openapi` | `crates/anvilml-openapi/Cargo.toml` | `[package] version` |
+
+### Read-only fields — never modify
+
+| Field | Location | Why read-only |
+|-------|----------|---------------|
+| `[workspace.package] version` | root `Cargo.toml` | Product release version — triggers GitHub Release pipeline. Manually controlled only. |
+| Major (`X`) and minor (`Y`) digits | Any crate `Cargo.toml` | Manually controlled. Only `Z` (patch) is agent-writable. |
+
+### Bump procedure
+
+```bash
+# 1. Read the current version for the crate being modified, e.g. anvilml-registry:
+grep '^version' crates/anvilml-registry/Cargo.toml
+# → version = "0.1.4"
+
+# 2. Compute Z+1, write back — only the [package] version line, X.Y unchanged:
+# → version = "0.1.5"
+```
+
+Target only the `version = "X.Y.Z"` line in the `[package]` section. Do not edit
+`Cargo.lock` — cargo regenerates it on the next build. Cross-crate path dependencies
+in this workspace carry no version pins, so no cascade update to sibling `Cargo.toml`
+files is needed.
