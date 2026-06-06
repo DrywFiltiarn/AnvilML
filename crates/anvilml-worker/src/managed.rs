@@ -1159,4 +1159,49 @@ mod tests {
         std::env::remove_var("ANVILML_PONG_TIMEOUT_MS");
         std::env::remove_var("ANVILML_RESPAWN_DELAY_MS");
     }
+
+    /// Canonical regression test: spawn reaches Idle without timing workarounds.
+    ///
+    /// This test validates that the epoll fix (P10-B3) correctly delivers
+    /// InitializeHardware through the mpsc channel after reader_task has
+    /// registered stdout for polling — ensuring no edge-triggered wakeups
+    /// are missed on Linux.
+    ///
+    /// Required: ANVILML_WORKER_MOCK=1 and ANVILML_VENV_PATH must be set.
+    #[tokio::test]
+    #[cfg(feature = "mock-hardware")]
+    async fn spawn_reaches_idle() {
+        std::env::set_var("ANVILML_WORKER_MOCK", "1");
+
+        let worker = ManagedWorker::new("idle-test".to_string(), 0);
+
+        let device = GpuDevice {
+            index: 0,
+            name: "Mock GPU".to_string(),
+            device_type: anvilml_core::DeviceType::Cpu,
+            vram_total_mib: 8192,
+            vram_free_mib: 8192,
+            driver_version: "mock".to_string(),
+            pci_vendor_id: 0,
+            pci_device_id: 0,
+            arch: Some("gfx1100".to_string()),
+            caps: Default::default(),
+            enumeration_source: anvilml_core::EnumerationSource::Mock,
+            capabilities_source: anvilml_core::CapabilitySource::Fallback,
+            db_group_name: None,
+        };
+
+        let cfg = ServerConfig {
+            venv_path: std::env::var("ANVILML_VENV_PATH")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::path::PathBuf::from("/home/dryw/forge/.venv")),
+            ..ServerConfig::default()
+        };
+
+        // spawn() internally sends InitializeHardware, waits for Ready→Idle.
+        worker.spawn(&device, &cfg).await.expect("spawn");
+
+        // Verify status is Idle — no sleep, no timing workaround.
+        assert_eq!(worker.get_status().await, WorkerStatus::Idle);
+    }
 }

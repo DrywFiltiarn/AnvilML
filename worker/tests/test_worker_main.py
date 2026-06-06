@@ -188,8 +188,11 @@ class TestWorkerMain:
 
     def test_double_init_exits(self):
         """Sending two InitializeHardware frames: first produces Ready, second
-        is silently ignored (not a crash). Worker responds to Shutdown with Dying
-        + exit 0. Guards against the double-InitializeHardware write bug."""
+        produces no response event. Worker responds to Shutdown with Dying +
+        exit 0. Guards against re-introduction of the double-InitializeHardware
+        write bug (P10-B1). The Python worker's `ready_sent` guard ensures
+        exactly one Ready is emitted regardless of how many InitializeHardware
+        frames arrive."""
         proc = self._spawn_worker()
 
         try:
