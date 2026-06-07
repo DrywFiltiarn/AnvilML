@@ -1,13 +1,13 @@
 -- migrations/001_jobs.sql
 CREATE TABLE IF NOT EXISTS jobs (
-    id              TEXT PRIMARY KEY,
-    status          TEXT NOT NULL,
-    graph           TEXT NOT NULL,
-    settings        TEXT NOT NULL,
+    id              TEXT    PRIMARY KEY,
+    status          TEXT    NOT NULL,
+    graph           TEXT    NOT NULL,
+    settings        TEXT    NOT NULL,
     device_index    INTEGER,
-    created_at      TEXT NOT NULL,
-    started_at      TEXT,
-    completed_at    TEXT,
+    created_at      INTEGER NOT NULL,
+    started_at      INTEGER,
+    completed_at    INTEGER,
     worker_id       TEXT,
     artifact_count  INTEGER NOT NULL DEFAULT 0,
     error           TEXT
