@@ -1,0 +1,15 @@
+[
+  {
+    "id": "P901-A1",
+    "description": "anvilml-worker: env-var teardown in spawning tests to fix spawn_ping_pong failure",
+    "phase": "901",
+    "project": "anvilml",
+    "prereqs": [
+      "P11-C3"
+    ],
+    "context": "spawn_ping_pong fails consistently with 'worker did not reach Ready state in time' when run after handshake_completes_once under serial_test. Root cause: handshake_completes_once calls set_var for ANVILML_WORKER_MOCK, ANVILML_PING_INTERVAL_MS=50, and ANVILML_PONG_TIMEOUT_MS=150 but never calls remove_var. The leaked ANVILML_PING_INTERVAL_MS=50 causes the next test's ManagedWorker::new() to construct with ping_interval=50ms. The keepalive fires during the Python startup window (~300-500ms on cold CI) and kills the child before Ready is sent, causing the 10s wait_for_ready timeout. spawn_reaches_idle also leaks ANVILML_WORKER_MOCK. Fix: in crates/anvilml-worker/src/managed.rs, add remove_var teardown as the final statements of handshake_completes_once (remove ANVILML_WORKER_MOCK, ANVILML_PING_INTERVAL_MS, ANVILML_PONG_TIMEOUT_MS) and spawn_reaches_idle (remove ANVILML_WORKER_MOCK). status_transitions and spawn_ping_pong call no set_var and need no changes. No production code changes. No new tests. Identical pattern to P11-B1 (anvilml-hardware clear_mock_env teardown). cargo test -p anvilml-worker --features mock-hardware exits 0 with 0 failed on both platforms. cargo check --target x86_64-pc-windows-gnu --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  }
+]

@@ -22,7 +22,7 @@
     "description": "anvilml-scheduler: JobScheduler::submit (validate, persist, enqueue, notify)",
     "phase": "12",
     "project": "anvilml",
-    "prereqs": ["P12-A2"],
+    "prereqs": ["P12-A2", "P901-A1"],
     "context": "Create src/scheduler.rs: JobScheduler{queue,workers,db,broadcaster,notify:Arc<Notify>}. async fn submit(&self,req)->Result<SubmitJobResponse,AnvilError>: validate_graph (Err->InvalidGraph), build Job{id,status:Queued,created_at,...}, insert_job, enqueue, broadcaster.send(JobQueued), notify.notify_one(), return {job_id, queue_position:len}. cargo test -p anvilml-scheduler --features mock-hardware -- submit exits 0: valid job persisted as Queued + JobQueued broadcast.",
     "tags": ["reasoning"]
   },
