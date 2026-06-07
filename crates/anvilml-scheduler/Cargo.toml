@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-scheduler"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 
 [dependencies]
@@ -10,6 +10,8 @@ anvilml-worker = { path = "../anvilml-worker" }
 chrono = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
