@@ -21,6 +21,7 @@ pub fn build_router(state: AppState) -> Router {
 
     Router::new()
         .route("/health", get(handlers::health::health))
+        .route("/v1/jobs", post(handlers::jobs::submit_job))
         .route("/v1/events", get(ws_events))
         .route("/v1/models/rescan", post(handlers::models::rescan_models))
         .route("/v1/models/{id}", get(handlers::models::get_model))

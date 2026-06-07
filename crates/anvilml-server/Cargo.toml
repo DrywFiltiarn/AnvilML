@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-server"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 [dependencies]
@@ -13,13 +13,15 @@ anvilml-worker = { path = "../anvilml-worker" }
 axum = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tracing = { workspace = true }
-chrono = { workspace = true }
-sqlx = { workspace = true, features = ["sqlite", "runtime-tokio"] }
-sysinfo = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
-tower = { workspace = true }
-futures-util = { workspace = true }
+tracing             = { workspace = true }
+chrono              = { workspace = true }
+sqlx                = { workspace = true, features = ["sqlite", "runtime-tokio"] }
+sysinfo             = { workspace = true }
+tokio               = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tower               = { workspace = true }
+futures-util        = { workspace = true }
+utoipa              = { workspace = true }
+uuid                = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 chrono = { workspace = true }

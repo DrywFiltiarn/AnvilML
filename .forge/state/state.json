@@ -98,16 +98,17 @@
     "P10-B4",
     "P11-A1",
     "P11-A2",
-    "P11-A3"
+    "P11-A3",
+    "P11-A4"
   ],
-  "in_progress": "P11-A4",
+  "in_progress": "P11-A5",
   "plan_approved": true,
-  "current_plan": "1. **Read existing `dag.rs`** to confirm current structure: `validate_graph()` currently performs checks a\u2013d (root object, nodes array, duplicate IDs, unknown types, edge references) and returns early on errors. The cycle check will be the final validation step before returning `Ok`.\n\n2. **Add adjacency list construction inside `validate_graph`** \u2014 after building `id_type_map` for edge validation, also build a `HashMap<&str, Vec<&str>>` mapping each node's ID to the IDs of nodes it depends on (i.e., for each input that is an edge ref `{node_id: X}`, add an edge from current node \u2192 X). This captures the dependency direction needed for topo-sort.\n\n3. **Implement Kahn's algorithm** as a helper function or inline block:\n   - Compute in-degree for every node (count how many other nodes reference it as an edge target).\n   - Seed a queue with all nodes having in-degree 0.\n   - Process the queue: for each dequeued node, decrement in-degree of its dependents; add any that reach 0 to the queue.\n   - Track `processed_count`.\n\n4. **Cycle detection**: if `processed_count < total_nodes`, collect all node IDs not yet processed (those still with in-degree > 0) into a sorted list, format as `'cycle_detected: {id1},{id2},...'`, and push to `errors`.\n\n5. **Add tests** in the existing `#[cfg(test)] mod tests` block within `dag.rs`:\n   - `test_cycle_detected_2node`: two nodes referencing each other \u2192 error contains `'cycle_detected'`.\n   - `test_valid_zit_5node_passes`: a full ZiT pipeline with 5 nodes and valid edges \u2192 `Ok(ValidatedGraph)`.\n\n6. **Run `cargo test -p anvilml-scheduler -- dag`** to verify all tests (including pre-existing ones from P11-A2/A3) pass.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-07T11:35:43+0200",
-  "plan_approval_message_id": "1513114039931375637",
+  "last_updated": "2026-06-07T12:24:14+0200",
+  "plan_approval_message_id": "1513120267679830016",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1513114038291267626",
+  "plan_report_message_id": "1513120265607970952",
   "impl_report_message_id": null
 }
