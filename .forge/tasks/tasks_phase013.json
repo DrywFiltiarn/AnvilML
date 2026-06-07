@@ -4,7 +4,7 @@
     "description": "anvilml-scheduler: VramLedger",
     "phase": "13",
     "project": "anvilml",
-    "prereqs": ["P12-A5"],
+    "prereqs": ["P12-A5", "P902-D1"],
     "context": "Create src/ledger.rs: VramLedger{devices:HashMap<u32,(u32 total,u32 used)>}. update(idx,used,total); free_mib(idx)->u32 (0 if unknown); would_fit(idx,req)->bool. init_from(hw:&HardwareInfo). cargo test -p anvilml-scheduler -- ledger exits 0: init, update, would_fit, unknown device returns 0.",
     "tags": []
   },

@@ -1,0 +1,80 @@
+[
+  {
+    "id": "P902-A1",
+    "description": "anvilml-worker: replace serial_test env-var workaround with scoped env isolation",
+    "phase": "902",
+    "project": "anvilml",
+    "prereqs": [
+      "P901-A1"
+    ],
+    "context": "In managed.rs: the four spawning tests (spawn_ping_pong, status_transitions, handshake_completes_once, spawn_reaches_idle) use std::env::set_var(\"ANVILML_WORKER_MOCK\",\"1\") and rely on #[serial_test::serial] to prevent parallel env-var contamination. Replace set_var/remove_var calls in each test body with a temp_env::with_var(\"ANVILML_WORKER_MOCK\",Some(\"1\"), async { ... }) scope (add temp_env to [dev-dependencies]). Remove all four #[serial_test::serial] attributes. Remove serial_test from [dev-dependencies] in anvilml-worker/Cargo.toml. No logic changes to test assertions. cargo test -p anvilml-worker --features mock-hardware exits 0 with all 16 tests passing without ANVILML_WORKER_MOCK set in the ambient shell environment (verify with env -i HOME=$HOME PATH=$PATH cargo test -p anvilml-worker --features mock-hardware).",
+    "tags": [
+      "refactor"
+    ]
+  },
+  {
+    "id": "P902-A2",
+    "description": "anvilml-worker: retrofit mandatory IPC DEBUG log points (managed.rs)",
+    "phase": "902",
+    "project": "anvilml",
+    "prereqs": [
+      "P902-A1"
+    ],
+    "context": "In managed.rs: add tracing::debug!(worker_id = %worker_id, message_type = msg_discriminant(&msg)) in the writer task immediately before each IPC frame is written to stdin. Add tracing::debug!(worker_id = %worker_id, event_type = event_discriminant(&event)) in the reader task immediately after each WorkerEvent is successfully deserialized. msg_discriminant() and event_discriminant() helper fns already exist in this file. These are \u00a711.5 mandatory DEBUG points. No logic changes. cargo test -p anvilml-worker --features mock-hardware exits 0.",
+    "tags": [
+      "refactor"
+    ]
+  },
+  {
+    "id": "P902-A3",
+    "description": "anvilml-worker: retrofit mandatory spawn and status-transition DEBUG log points (pool.rs)",
+    "phase": "902",
+    "project": "anvilml",
+    "prereqs": [
+      "P902-A2"
+    ],
+    "context": "In pool.rs: add tracing::debug!(worker_id = %wid, device_index = device_index) immediately after each ManagedWorker::new() call in spawn_all() (covers both GPU and CPU worker creation paths). Add tracing::debug!(worker_id = %worker_id, from = %old_status, to = %new_status) in set_busy() and set_idle() before the status transition. These are \u00a711.5 mandatory DEBUG points. set_busy and set_idle currently log at INFO \u2014 keep those, the DEBUG calls are additions. No logic changes. cargo test -p anvilml-worker --features mock-hardware exits 0.",
+    "tags": [
+      "refactor"
+    ]
+  },
+  {
+    "id": "P902-B1",
+    "description": "anvilml-scheduler: retrofit mandatory job dispatch and state-transition DEBUG log points (scheduler.rs)",
+    "phase": "902",
+    "project": "anvilml",
+    "prereqs": [
+      "P902-A3"
+    ],
+    "context": "In scheduler.rs: the submit() method has tracing::info!(job_id = %job_id) but is missing the \u00a711.5 mandatory debug points. Add tracing::debug!(job_id = %job_id, status = \"Queued\", \"job status transition\") after insert_job succeeds. The dispatch loop (Phase 13, not yet written) will add job_dispatched and Running transition points \u2014 do not anticipate those here. No logic changes. cargo test -p anvilml-scheduler --features mock-hardware exits 0.",
+    "tags": [
+      "refactor"
+    ]
+  },
+  {
+    "id": "P902-B2",
+    "description": "anvilml-scheduler: retrofit mandatory job-store and queue DEBUG log points (job_store.rs, queue.rs)",
+    "phase": "902",
+    "project": "anvilml",
+    "prereqs": [
+      "P902-B1"
+    ],
+    "context": "In job_store.rs: add tracing::debug!(job_id = %job.id, \"job inserted into DB\") at the end of insert_job(); add tracing::debug!(job_id = %id, status = ?status, \"job status updated in DB\") at the end of update_status(). In queue.rs: add tracing::debug!(job_id = %job.id, queue_len = self.len(), \"job enqueued\") at the end of enqueue(); add tracing::debug!(job_id = %job.id, \"job dequeued\") when pop_next() returns Some. These are \u00a711.5 mandatory DEBUG points. tracing is already a dependency of anvilml-scheduler. No logic changes. cargo test -p anvilml-scheduler --features mock-hardware exits 0.",
+    "tags": [
+      "refactor"
+    ]
+  },
+  {
+    "id": "P902-D1",
+    "description": "anvilml: full workspace stabilisation gate",
+    "phase": "902",
+    "project": "anvilml",
+    "prereqs": [
+      "P902-B2"
+    ],
+    "context": "No source changes. Run and record verbatim output: (1) cargo clippy --workspace --features mock-hardware -- -D warnings; (2) env -i HOME=$HOME PATH=$PATH ANVILML_WORKER_MOCK=1 ANVILML_VENV_PATH=./worker/.venv cargo test --workspace --features mock-hardware; (3) cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu; (4) python -m pytest worker/tests/ -v. All four must exit 0. Write the verbatim outputs as the implementation report body. This task is COMPLETE only when all four exit 0 with zero warnings and zero test failures.",
+    "tags": [
+      "refactor"
+    ]
+  }
+]
