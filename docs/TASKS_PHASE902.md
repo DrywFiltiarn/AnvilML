@@ -9,7 +9,7 @@
 | Status | Draft |
 | Depends on phases | 0–12 (via P901-A1) |
 | Task file | `.forge/tasks/tasks_phase902.json` |
-| Tasks | 8 |
+| Tasks | 9 |
 
 ---
 
@@ -19,15 +19,15 @@ Phase 902 is a retrofit phase inserted between Phase 12 and Phase 13. It resolve
 
 **What the audit found:**
 
-Running `cargo clippy --workspace --features mock-hardware -- -D warnings -W dead_code -W unused_imports -W unused_variables` produced zero warnings and zero errors. All `#[allow(…)]` suppressions in the codebase are load-bearing (held references, cross-platform `mut`, phase-deferred infrastructure). None should be removed. The Python worker has 11 passing tests and no defects. There is no dead code cleanup work in this phase.
+Running `cargo clippy --workspace --features mock-hardware -- -D warnings -W dead_code -W unused_imports -W unused_variables` produced zero warnings and zero errors. All `#[allow(…)]` suppressions in the codebase are load-bearing. The Python worker has 11 passing tests and no defects. There is no dead code cleanup work in this phase.
 
 The actual debt is:
 
-1. **Test isolation** — four spawning tests in `anvilml-worker` use `std::env::set_var` with `#[serial_test::serial]` as a workaround for process-global env-var contamination. `serial_test` serialises all four tests, bottlenecking future worker test suites and masking that the real fix is scoped env isolation.
-2. **Logging gaps** — phases 9–12 added the IPC bridge, worker pool, job store, queue, and scheduler. The §11.5 mandatory DEBUG log points (IPC send/receive, job dispatch, job state transitions) were not added to these subsystems. Phase 900 covered phases 0–8; this phase covers phases 9–12.
-3. **Rule 4.6 formalisation** — the `refactor` tag and its agent-facing rule do not yet exist in `FORGE_AGENT_RULES.md`. Adding this in the same phase that uses it ensures the rule is in place before any future refactor tasks run.
+1. **Runtime bugs** — the respawn loop has two defects: `WorkerPool.workers` (a plain `Vec`) is never updated after respawn so public methods permanently operate on the dead worker; and no event listener is spawned for the replacement worker so its events are unobserved. Additionally, `ipc-probe` bypasses `write_frame` and produces the wrong wire format, failing with `_type field missing`.
+2. **Test isolation** — four spawning tests in `anvilml-worker` use `std::env::set_var` with `#[serial_test::serial]` as a workaround for process-global env-var contamination.
+3. **Logging gaps** — phases 9–12 added the worker pool, IPC bridge, job store, queue, and scheduler. The §11.5 mandatory DEBUG log points were not added to these subsystems.
 
-**Phase 13 dependency:** `P13-A1` currently prereqs `["P901-A1"]`. Before Phase 902 runs, update `tasks_phase013.json` so that `P13-A1` prereqs `["P902-D1"]`. This is a manual change made outside The Forge — it must be committed before The Forge picks up Phase 902.
+**Phase 13 dependency:** `P13-A1` currently prereqs `["P12-A5"]`. Before Phase 902 runs, update `tasks_phase013.json` so that `P13-A1` prereqs `["P902-D1"]`. Commit this manually before The Forge picks up Phase 902.
 
 ---
 
@@ -35,27 +35,21 @@ The actual debt is:
 
 | Group | Subsystem | Tasks | Summary |
 |-------|-----------|-------|---------|
-| A | anvilml-ipc / anvilml-worker | P902-A1 … A5 | ipc-probe fix; pool respawn split-list bug; env isolation fix; IPC DEBUG log points; pool spawn/status DEBUG log points |
-| B | anvilml-scheduler | P902-B1 … B2 | scheduler submit DEBUG point; job-store and queue DEBUG points |
+| A | anvilml-ipc / anvilml-worker | P902-A1, A2a, A2b, A4–A6 | ipc-probe fix; pool workers unification; respawn listener; env isolation fix; IPC DEBUG log points; pool spawn/status DEBUG log points |
+| B | anvilml-scheduler | P902-B1–B2 | scheduler submit DEBUG point; job-store and queue DEBUG points |
 | D | Gate | P902-D1 | Full workspace clean gate — no source changes, verbatim output only |
 
 ---
 
 ## Prerequisites
 
-All tasks in phases 000 through 012 must be complete. `P12-A5` must be pushed. `tasks_phase013.json` must have `P13-A1.prereqs` updated to `["P902-D1"]` before The Forge starts this phase.
-
----
-
-## Interfaces and Contracts
-
-No external contract documents are required by this phase. All changes are internal implementation details (log calls and test scoping). No public API surface changes.
+All tasks in phases 000 through 012 must be complete. `P901-A1` must be complete. `tasks_phase013.json` must have `P13-A1.prereqs` updated to `["P902-D1"]` before The Forge starts this phase.
 
 ---
 
 ## Task Descriptions
 
-### Group A — anvilml-worker
+### Group A — anvilml-ipc / anvilml-worker
 
 #### P902-A1: Fix ipc-probe binary to use write_frame/read_frame correctly
 
@@ -63,52 +57,112 @@ No external contract documents are required by this phase. All changes are inter
 
 The probe binary was written during P8-A4 with the original framing design where `read_frame` used serde's native enum encoding. Later changes to `framing.rs` switched `read_frame` to expect Python's flat dict format (`{"_type": "Pong", ...}`) via `worker_event_from_map()`. The probe was not updated, so it hand-rolls a raw `WorkerEvent::Pong` frame using `rmp_serde::to_vec_named` directly — producing serde native format — which `read_frame` cannot parse, causing `_type field missing or not a string`.
 
-The fix replaces the hand-rolled write side with `write_frame(&mut tx, &WorkerMessage::Ping { seq: 7 }).await?`. `write_frame` calls `serialize_message` internally, which produces the correct flat dict. The read side is already correct. The binary then exercises the full round-trip that the actual Rust↔Python IPC uses.
+Replace the hand-rolled write side with `write_frame(&mut tx, &WorkerMessage::Ping { seq: 7 }).await?`. `write_frame` calls `serialize_message` internally, which produces the correct flat dict. The read side is already correct. No changes to `framing.rs`, `messages.rs`, or any other file.
 
 **Acceptance criterion:** `cargo run -p anvilml-ipc --bin ipc-probe` prints `OK seq=7` and exits 0 on both Linux and Windows.
 
+---
 
-#### P902-A2: Fix WorkerPool respawn -- workers list not updated after respawn
+#### P902-A2a: Unify WorkerPool.workers with shared_workers Arc (pool.rs)
 
-**File:** `crates/anvilml-worker/src/pool.rs`
+**File:** `crates/anvilml-worker/src/pool.rs` only.
 
-After a successful respawn, `WorkerPool::list()`, `acquire_idle()`, `set_busy()`, and `set_idle()` all continue operating on `self.workers` -- a plain `Vec` captured at construction time that is never updated. The respawn task writes the new `ManagedWorker` into `shared_workers` (a separate `Arc<RwLock<Vec>>`), but nothing reads from it. The public pool API therefore always sees the dead worker. The keepalive on that dead worker fires, the pipe write fails with os error 232, pong timeout kills it, respawn is scheduled again, and the cycle repeats.
+`WorkerPool.workers` is a plain `Vec<Arc<ManagedWorker>>` that is never updated after respawn. The respawn task writes the replacement worker into `shared_workers` (a separate `Arc<RwLock<Vec>>`), but all public methods — `list()`, `acquire_idle()`, `set_busy()`, `set_idle()`, `send()`, `pid_for()` — iterate the original stale `Vec`. After the first respawn the pool permanently operates on a dead worker.
 
-A secondary defect: the per-worker event listener task subscribed to the original dead worker's broadcast channel at startup. After respawn it never resubscribes to the new worker, so the new worker's events (including `WorkerStatusChanged(Dead)` on a future crash) are never observed by the pool.
+**Changes:**
 
-**Fix 1 -- unify the worker list:** Change `WorkerPool.workers` from `Vec<Arc<ManagedWorker>>` to `Arc<RwLock<Vec<Arc<ManagedWorker>>>>` -- the same `Arc` that the respawn task already writes into. `spawn_all` constructs one `Arc<RwLock<Vec>>` and stores it in both `WorkerPool.workers` and the respawn closure (no extra clone). Update `list()`, `acquire_idle()`, `set_busy()`, and `set_idle()` to acquire a read lock on `self.workers`.
+1. `WorkerPool` struct field: `workers: Vec<Arc<ManagedWorker>>` → `workers: Arc<RwLock<Vec<Arc<ManagedWorker>>>>`
+2. `spawn_all` construction: `let mut workers: Vec<...> = Vec::with_capacity(...)` → `Arc::new(RwLock::new(Vec::with_capacity(...)))`. Both `push` sites become `workers.write().await.push(worker)`.
+3. Remove `let shared_workers = Arc::new(tokio::sync::RwLock::new(workers.clone()))`. Replace with `let shared_workers = workers.clone()`. Both names now refer to the same `Arc`. The respawn task already uses `shared_workers` correctly — no changes needed inside the respawn closure.
+4. `pool_workers` snapshot: `let pool_workers = workers.clone()` → `let pool_workers = { let l = workers.read().await; l.clone() }`.
+5. All public methods: add `let locked = self.workers.read().await;` and iterate `&*locked`.
+6. Tests constructing `WorkerPool` manually: `workers: vec![...]` → `workers: Arc::new(RwLock::new(vec![...]))`. Direct `pool.workers[0]` accesses: wrap in `{ let l = pool.workers.read().await; l[0].<method>().await }`.
 
-**Fix 2 -- resubscribe event listener after respawn:** In the respawn task, immediately after `locked[idx] = new_worker`, spawn a new per-worker listener task for the replacement worker using the same closure pattern as `spawn_all` (subscribe to new worker's broadcast channel, loop on recv, process Ready/Dead events, forward to pool's event_tx). The old listener task exits naturally when `RecvError::Closed` fires on the dead worker's channel.
+**Acceptance criterion:** `cargo clippy -p anvilml-worker --features mock-hardware -- -D warnings` exits 0. `cargo test -p anvilml-worker --features mock-hardware` exits 0.
 
-No changes to `managed.rs`, `framing.rs`, or any other crate.
+---
 
-**Acceptance criterion:** `cargo run --features mock-hardware`; kill the worker process by PID; `curl http://127.0.0.1:8488/v1/workers` shows `status: "Idle"` within 5 seconds. No second respawn cycle occurs. `cargo test -p anvilml-worker --features mock-hardware` exits 0.
+#### P902-A2b: Spawn event listener for replacement worker after respawn (pool.rs)
 
-#### P902-A3: Replace serial_test env-var workaround with scoped env isolation
+**File:** `crates/anvilml-worker/src/pool.rs` only.
+
+After P902-A2a the respawn task correctly writes the new worker into the shared list, but spawns no event listener for it. The new worker's `Ready` and `Dead` events are unobserved: capabilities are never merged into hardware info, and a subsequent crash is never detected.
+
+Inside the respawn `spawn(async move { ... })` block, immediately after `locked[idx] = new_worker` and before `info!("worker respawned successfully")`, add:
+
+```rust
+let new_worker_for_listener = new_worker.clone();
+let new_wid = wid.clone();
+let new_device_index = device_index;
+let new_hw = hw.clone();
+let new_tx = tx.clone();
+spawn(async move {
+    let mut rx = new_worker_for_listener.subscribe();
+    loop {
+        match rx.recv().await {
+            Ok((_, event)) => {
+                if let WorkerEvent::Ready {
+                    arch, fp16, bf16, flash_attention,
+                    vram_total_mib, vram_free_mib, ..
+                } = &event {
+                    let mut h = new_hw.lock().await;
+                    if let Some(gpu) = h.gpus.iter_mut().find(|g| g.index == new_device_index) {
+                        gpu.arch = Some(arch.clone());
+                        gpu.caps.fp16 = *fp16;
+                        gpu.caps.bf16 = *bf16;
+                        gpu.caps.flash_attention = *flash_attention;
+                        gpu.vram_total_mib = *vram_total_mib;
+                        gpu.vram_free_mib = *vram_free_mib;
+                        gpu.capabilities_source = CapabilitySource::Worker;
+                    }
+                }
+                let _ = new_tx.send((new_wid.clone(), event.clone()));
+            }
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                debug!(lagged = n, worker_id = %new_wid, "dropped events (respawned listener)");
+            }
+            Err(broadcast::error::RecvError::Closed) => {
+                debug!(worker_id = %new_wid, "event channel closed (respawned listener)");
+                break;
+            }
+        }
+    }
+});
+```
+
+Clone `tx` as `new_tx` — `tx` is already captured by the outer per-worker `spawn` closure and used for forwarding later in the same body; cloning avoids a move conflict.
+
+**Acceptance criterion:** `cargo clippy -p anvilml-worker --features mock-hardware -- -D warnings` exits 0. `cargo test -p anvilml-worker --features mock-hardware` exits 0. Manual: `cargo run --features mock-hardware`; kill worker PID; `GET /v1/workers` shows `status: "Idle"` within 5 seconds; no second respawn cycle occurs.
+
+---
+
+#### P902-A4: Replace serial_test env-var workaround with scoped env isolation (managed.rs)
 
 **File:** `crates/anvilml-worker/src/managed.rs`, `crates/anvilml-worker/Cargo.toml`
 
-The four spawning tests (`spawn_ping_pong`, `status_transitions`, `handshake_completes_once`, `spawn_reaches_idle`) call `std::env::set_var("ANVILML_WORKER_MOCK", "1")` to enter mock mode. Because `set_var` is process-global, Cargo's parallel test runner can cause one test to read the env var set by another. P11-C2 applied `#[serial_test::serial]` as a workaround. The correct fix is scoped env mutation using the `temp_env` crate: each test wraps its body in `temp_env::with_var("ANVILML_WORKER_MOCK", Some("1"), async { … })`, making the env change visible only within that closure. The `serial_test` dep and all four `#[serial]` attributes are then removed.
+Four spawning tests (`spawn_ping_pong`, `status_transitions`, `handshake_completes_once`, `spawn_reaches_idle`) call `std::env::set_var("ANVILML_WORKER_MOCK", "1")` and rely on `#[serial_test::serial]` to prevent parallel env-var contamination. Replace each test body with `temp_env::async_with_var("ANVILML_WORKER_MOCK", Some("1"), async { <test body> }).await`. Add `temp_env` to `[dev-dependencies]`. Remove all four `#[serial_test::serial]` attributes. Remove `serial_test` from `[dev-dependencies]`.
 
-**Acceptance criterion:** `env -i HOME=$HOME PATH=$PATH cargo test -p anvilml-worker --features mock-hardware` exits 0 with all 16 tests passing. The `-i` flag clears the ambient environment, proving no test relies on an externally set `ANVILML_WORKER_MOCK`.
+No changes to test assertions.
 
-#### P902-A4: Retrofit mandatory IPC DEBUG log points (managed.rs)
+**Acceptance criterion:** `env -i HOME=$HOME PATH=$PATH cargo test -p anvilml-worker --features mock-hardware` exits 0 with all 16 tests passing.
+
+---
+
+#### P902-A5: Retrofit mandatory IPC DEBUG log points (managed.rs)
 
 **File:** `crates/anvilml-worker/src/managed.rs`
 
-The writer task (which sends `WorkerMessage` frames to the worker stdin) and the reader task (which deserialises `WorkerEvent` frames from stdout) are both missing the §11.5 mandatory IPC DEBUG log points. `msg_discriminant()` and `event_discriminant()` helper functions already exist in the file — the log calls reference them directly.
-
-No logic changes. No new helper functions.
+Add `tracing::debug!(worker_id = %worker_id, message_type = msg_discriminant(&msg))` in the writer task immediately before each IPC frame is written to stdin. Add `tracing::debug!(worker_id = %worker_id, event_type = event_discriminant(&event))` in the reader task immediately after each `WorkerEvent` is successfully deserialized. `msg_discriminant()` and `event_discriminant()` already exist in the file. No logic changes.
 
 **Acceptance criterion:** `cargo test -p anvilml-worker --features mock-hardware` exits 0.
 
-#### P902-A5: Retrofit mandatory spawn and status-transition DEBUG log points (pool.rs)
+---
+
+#### P902-A6: Retrofit mandatory spawn and status-transition DEBUG log points (pool.rs)
 
 **File:** `crates/anvilml-worker/src/pool.rs`
 
-`spawn_all()` creates workers but logs nothing at DEBUG when each worker is created. `set_busy()` and `set_idle()` log at INFO (correct per §11.3) but are missing the DEBUG transition log showing the `from` and `to` status values required by §11.5. Both the GPU worker creation loop and the CPU fallback path need the spawn DEBUG call.
-
-No logic changes. The existing INFO calls in `set_busy` and `set_idle` are not changed.
+Add `tracing::debug!(worker_id = %worker_id, device_index = device_index)` immediately after each `ManagedWorker::new()` call in `spawn_all()` (both GPU loop and CPU fallback paths). Add `tracing::debug!(worker_id = %worker_id, from = %old_status, to = %new_status)` in `set_busy()` and `set_idle()` before each status transition. The existing `info!` calls are unchanged. No logic changes.
 
 **Acceptance criterion:** `cargo test -p anvilml-worker --features mock-hardware` exits 0.
 
@@ -120,19 +174,17 @@ No logic changes. The existing INFO calls in `set_busy` and `set_idle` are not c
 
 **File:** `crates/anvilml-scheduler/src/scheduler.rs`
 
-`submit()` already has `tracing::info!(job_id = %job_id)` and is decorated with `#[tracing::instrument]`, satisfying the §11.3 INFO requirements. It is missing the §11.5 mandatory DEBUG job state-transition point (status transition to Queued). The dispatch loop's Running transition point belongs in Phase 13, not here.
-
-No logic changes.
+`submit()` has `tracing::info!(job_id = %job_id)` but is missing the §11.5 mandatory DEBUG job state-transition point for the Queued transition. Add `tracing::debug!(job_id = %job_id, status = "Queued", "job status transition")` after `insert_job` succeeds. The dispatch loop's Running transition belongs in Phase 13, not here. No logic changes.
 
 **Acceptance criterion:** `cargo test -p anvilml-scheduler --features mock-hardware` exits 0.
+
+---
 
 #### P902-B2: Retrofit mandatory job-store and queue DEBUG log points (job_store.rs, queue.rs)
 
 **Files:** `crates/anvilml-scheduler/src/job_store.rs`, `crates/anvilml-scheduler/src/queue.rs`
 
-`insert_job()` and `update_status()` in `job_store.rs` have no DEBUG log calls. `enqueue()` and `pop_next()` in `queue.rs` have no DEBUG log calls. These are all required by §11.5 (job scheduler: job dispatched, job state transition). `tracing` is already a declared dependency of `anvilml-scheduler` (added in P12-A3).
-
-No logic changes.
+In `job_store.rs`: add `tracing::debug!(job_id = %job.id, "job inserted into DB")` at end of `insert_job()`; add `tracing::debug!(job_id = %id, status = ?status, "job status updated in DB")` at end of `update_status()`. In `queue.rs`: add `tracing::debug!(job_id = %job.id, queue_len = self.len(), "job enqueued")` at end of `enqueue()`; add `tracing::debug!(job_id = %job.id, "job dequeued")` when `pop_next()` returns `Some`. No logic changes.
 
 **Acceptance criterion:** `cargo test -p anvilml-scheduler --features mock-hardware` exits 0.
 
@@ -144,14 +196,13 @@ No logic changes.
 
 **No files modified.**
 
-Runs all four verification commands and records verbatim output as the implementation report. This task exists to produce a single auditable checkpoint before Phase 13 begins. It is the prereq that `P13-A1` chains through.
+Run and record verbatim output:
 
-Commands:
 ```bash
-# 1. Lint — zero warnings required
+# 1. Lint
 cargo clippy --workspace --features mock-hardware -- -D warnings
 
-# 2. Tests — zero failures required, ambient env cleared
+# 2. Tests — ambient env cleared
 env -i HOME=$HOME PATH=$PATH ANVILML_WORKER_MOCK=1 ANVILML_VENV_PATH=./worker/.venv \
   cargo test --workspace --features mock-hardware
 
@@ -162,36 +213,30 @@ cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu
 python -m pytest worker/tests/ -v
 ```
 
-**Acceptance criterion:** All four commands exit 0. Report contains verbatim output of each command.
+All four must exit 0. Write verbatim outputs as the implementation report body. Task is COMPLETE only when all four exit 0.
 
 ---
 
 ## Phase Acceptance Criteria
 
 ```bash
-# Rust lint
 cargo clippy --workspace --features mock-hardware -- -D warnings
-
-# Rust tests — ambient env cleared to prove env isolation
 env -i HOME=$HOME PATH=$PATH ANVILML_WORKER_MOCK=1 ANVILML_VENV_PATH=./worker/.venv \
   cargo test --workspace --features mock-hardware
-
-# Windows cross-check
 cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu
-
-# Python worker
 python -m pytest worker/tests/ -v
 ```
 
-All four must exit 0. Phase is complete when P902-D1 is committed and the above pass locally.
+All four must exit 0.
 
 ---
 
 ## Known Constraints and Gotchas
 
-- **P902-A3: temp_env async usage.** `temp_env::with_var` has both sync and async variants. The tests are `#[tokio::test]` async functions — use `temp_env::async_with_var` (from the `temp_env` crate's `async` feature) or restructure as `tokio::task::spawn_blocking` if the async variant is unavailable. Check the `temp_env` crate docs via `rust-docs` MCP before writing the implementation. If `temp_env` does not support async, the alternative is an inline RAII guard using `std::env::set_var` / `remove_var` in a `Drop` impl — document the choice in the plan report.
-- **P902-A3: `-i` env clear test.** The acceptance criterion uses `env -i`, which is a Unix-only invocation. On Windows CI (which runs under GitHub Actions) the equivalent is not available — the Windows CI job relies on the test suite itself not setting `ANVILML_WORKER_MOCK` in the environment before running. This is acceptable: the fix is verified on Linux locally and on Windows via CI.
-- **P902-A4: writer task location.** The writer task is the `run_loop` tokio task in `managed.rs`. The exact line where the frame is written to stdin is the call site of `framing::write_frame`. The DEBUG log call goes immediately before that write. Do not add it inside `framing::write_frame` itself — that function lives in `anvilml-ipc` and has its own logging scope.
-- **P902-B2: queue_len after enqueue.** Call `self.len()` after the push so the logged count reflects the post-enqueue state.
-- **P902-D1: ANVILML_VENV_PATH for test command.** The path `./worker/.venv` assumes the venv was created in the worker directory by the CI setup. If the local venv lives elsewhere, substitute the correct path. The gate command is documentation of intent — the agent substitutes the actual path from `ENVIRONMENT.md §2`.
-- **P13-A1 prereq must be updated manually** from `["P12-A5"]` to `["P902-D1"]` in `tasks_phase013.json` before The Forge runs Phase 902. This is the human author's responsibility, not the agent's.
+- **P902-A2a: no restructuring.** Make only the six listed changes. Do not rename variables, reorder the closure setup, or refactor `spawn_all` beyond what is specified.
+- **P902-A2b: tx is already in scope.** Clone it as `new_tx` inside the respawn closure — do not introduce a separate `let respawn_event_tx` before the for-loop, which caused E0382 in a previous attempt by being moved in the first iteration and unavailable in subsequent ones.
+- **P902-A4: async variant.** Use `temp_env::async_with_var` (requires the `async` feature flag on `temp_env`). If unavailable, use an inline RAII guard with `set_var`/`remove_var` in a `Drop` impl — document the choice in the plan report.
+- **P902-A4: `-i` env clear test.** Unix-only; Windows CI relies on the test suite not having `ANVILML_WORKER_MOCK` set in the ambient environment.
+- **P902-A6: old_status capture.** `set_busy` and `set_idle` do not currently read the old status before transitioning. Capture it with `let old_status = worker.get_status().await` immediately before `worker.set_status(...)` to provide the `from` field for the DEBUG log.
+- **P902-D1: ANVILML_VENV_PATH.** Substitute the actual venv path from `ENVIRONMENT.md §2` if it differs from `./worker/.venv`.
+- **P13-A1 prereq must be updated manually** from `["P12-A5"]` to `["P902-D1"]` in `tasks_phase013.json` before The Forge runs Phase 902.
