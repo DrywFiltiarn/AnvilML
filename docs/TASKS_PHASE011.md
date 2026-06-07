@@ -7,7 +7,7 @@
 | Milestone group | End-to-end generation (mock) |
 | Depends on phases | 1-10 |
 | Task file | `forge/tasks/tasks_phase011.json` |
-| Tasks | 7 |
+| Tasks | 9 |
 
 ## Overview
 
@@ -27,6 +27,7 @@ Every task in this phase implements **one module or one endpoint** plus its test
 | P11-B1 | `crates/anvilml-hardware/src/mock.rs`, `src/lib.rs` | anvilml-hardware: serial mock test env-var teardown |
 | P11-C1 | `crates/anvilml-worker/src/managed.rs` | anvilml-worker: fix relative venv path causing Windows spawn ERROR_PATH_NOT_FOUND |
 | P11-C2 | `crates/anvilml-worker/Cargo.toml`, `crates/anvilml-worker/src/managed.rs` | anvilml-worker: serialise spawning integration tests to eliminate env-var race on Windows |
+| P11-C3 | `crates/anvilml-worker/src/managed.rs` | anvilml-worker: fix venv path resolution base — use repo root not current_dir |
 
 ## Task details
 
@@ -152,6 +153,27 @@ Apply the same annotation to `status_transitions`, `handshake_completes_once`, a
 
 `cargo test -p anvilml-worker --features mock-hardware` exits 0 with 0 ignored and 0 failed on both platforms. `cargo check --target x86_64-pc-windows-gnu --features mock-hardware` exits 0.
 
+#### P11-C3: anvilml-worker: fix venv path resolution base — use repo root not current_dir
+
+- **Prereqs:** P11-C2
+- **Tags:** reasoning
+
+P11-C1 resolved `cfg.venv_path` against `std::env::current_dir()`. This is incorrect: `cargo test` sets the process CWD to the crate directory (`crates/anvilml-worker/`), not the repo root. The CI setup step creates `.ci-venv` at the repo root, so `current_dir().join(".ci-venv")` resolves to `crates/anvilml-worker/.ci-venv` — a path that does not exist — giving `ENOENT` on Linux (code 2) and `ERROR_PATH_NOT_FOUND` on Windows (code 3).
+
+The correct base is `_repo_root_for_worker()`, which already returns the canonical absolute repo root derived from the compile-time `CARGO_MANIFEST_DIR`. This is stable regardless of invocation context (binary, `cargo test`, direct execution).
+
+In `spawn()`, replace the `current_dir()` call with `_repo_root_for_worker()`:
+
+```rust
+// Replace:
+std::env::current_dir().unwrap_or_default().join(&cfg.venv_path)
+// With:
+_repo_root_for_worker().join(&cfg.venv_path)
+```
+
+Remove the now-unused `std::env::current_dir()` call. The `is_absolute()` guard and the rest of `spawn()` are unchanged.
+
+`cargo test -p anvilml-worker --features mock-hardware` exits 0 on both platforms. `cargo check --target x86_64-pc-windows-gnu --features mock-hardware` exits 0.
 
 ## Runnable Proof
 

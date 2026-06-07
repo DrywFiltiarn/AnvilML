@@ -78,5 +78,18 @@
     "tags": [
       "reasoning"
     ]
-  }  
+  },
+  {
+    "id": "P11-C3",
+    "description": "anvilml-worker: fix venv path resolution base — use repo root not current_dir",
+    "phase": "11",
+    "project": "anvilml",
+    "prereqs": [
+      "P11-C2"
+    ],
+    "context": "P11-C1 resolved cfg.venv_path against std::env::current_dir(). This is wrong: cargo test sets the process CWD to the crate directory (crates/anvilml-worker/), not the repo root. The CI setup step creates .ci-venv at the repo root. So current_dir().join(\".ci-venv\") resolves to crates/anvilml-worker/.ci-venv which does not exist, giving ENOENT (Linux, code 2) and ERROR_PATH_NOT_FOUND (Windows, code 3). Fix: in spawn(), change the resolution base from std::env::current_dir().unwrap_or_default() to _repo_root_for_worker(), which already returns the canonical absolute repo root from compile-time CARGO_MANIFEST_DIR. Corrected block: let abs_venv = if cfg.venv_path.is_absolute() { cfg.venv_path.clone() } else { _repo_root_for_worker().join(&cfg.venv_path) }; let python_path = resolve_python_path(&abs_venv);. Remove the std::env::current_dir() call. No other changes. cargo test -p anvilml-worker --features mock-hardware exits 0 on both platforms. cargo check --target x86_64-pc-windows-gnu --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  }
 ]
