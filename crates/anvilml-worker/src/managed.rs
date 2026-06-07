@@ -695,6 +695,7 @@ mod tests {
     /// Spawn a mock worker, send Ping, receive Pong, then Shutdown.
     #[tokio::test]
     #[cfg(feature = "mock-hardware")]
+    #[serial_test::serial]
     async fn spawn_ping_pong() {
         let worker = ManagedWorker::new("test-worker".to_string(), 0);
 
@@ -781,6 +782,7 @@ mod tests {
     /// Verify status transitions: Initializing → Idle (on Ready) → Dead.
     #[tokio::test]
     #[cfg(feature = "mock-hardware")]
+    #[serial_test::serial]
     async fn status_transitions() {
         let worker = ManagedWorker::new("status-test".to_string(), 0);
 
@@ -826,6 +828,7 @@ mod tests {
     /// - No second Ready, no Dying, no Dead events appear during the drain
     #[tokio::test]
     #[cfg(feature = "mock-hardware")]
+    #[serial_test::serial]
     async fn handshake_completes_once() {
         // Fast keepalive parameters for test execution.
         // Save original values to restore after the test.
@@ -1180,6 +1183,7 @@ mod tests {
     /// Required: ANVILML_WORKER_MOCK=1 and ANVILML_VENV_PATH must be set.
     #[tokio::test]
     #[cfg(feature = "mock-hardware")]
+    #[serial_test::serial]
     async fn spawn_reaches_idle() {
         std::env::set_var("ANVILML_WORKER_MOCK", "1");
 

@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-worker"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 
 [dependencies]
@@ -17,6 +17,7 @@ libc = "0.2"
 [dev-dependencies]
 rmp-serde = { workspace = true }
 serde_json = { workspace = true }
+serial_test = "1"
 
 [features]
 mock-hardware = ["anvilml-hardware/mock-hardware"]
