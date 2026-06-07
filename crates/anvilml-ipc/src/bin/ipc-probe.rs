@@ -1,15 +1,16 @@
 use anvilml_ipc::framing::read_frame;
 use anvilml_ipc::WorkerEvent;
+use serde_json::json;
 use tokio::io::AsyncWriteExt;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut tx, mut rx) = tokio::io::duplex(4096);
 
-    // Write a Pong event frame (the response the Python worker would send).
-    // This proves the framing layer correctly serializes and deserializes frames.
-    let event = WorkerEvent::Pong { seq: 7 };
-    let payload = rmp_serde::to_vec_named(&event)?;
+    // Write a Pong event frame in flat-dict format (the response the Python worker sends).
+    // The `_type` key is the variant discriminator expected by read_frame's deserializer.
+    let pong = json!({ "_type": "Pong", "seq": 7u64 });
+    let payload = rmp_serde::to_vec_named(&pong)?;
     let len = payload.len() as u32;
     tx.write_all(&len.to_be_bytes()).await?;
     tx.write_all(&payload).await?;
