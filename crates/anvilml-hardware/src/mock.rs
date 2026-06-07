@@ -66,6 +66,12 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
+    fn clear_mock_env() {
+        std::env::remove_var("ANVILML_MOCK_DEVICE_TYPE");
+        std::env::remove_var("ANVILML_MOCK_VRAM_MIB");
+        std::env::remove_var("ANVILML_MOCK_GFX_ARCH");
+    }
+
     /// MockDetector with default env vars must return a CPU device.
     #[test]
     #[serial]
@@ -77,6 +83,7 @@ mod tests {
         assert!(matches!(devices[0].device_type, DeviceType::Cpu));
         assert_eq!(devices[0].vram_total_mib, 8192);
         assert_eq!(devices[0].name, "gfx1100");
+        clear_mock_env();
     }
 
     /// MockDetector with ANVILML_MOCK_DEVICE_TYPE=cuda must return a CUDA device.
@@ -88,6 +95,7 @@ mod tests {
         let devices = detector.detect().expect("detect should succeed");
         assert_eq!(devices.len(), 1);
         assert!(matches!(devices[0].device_type, DeviceType::Cuda));
+        clear_mock_env();
     }
 
     /// MockDetector with ANVILML_MOCK_DEVICE_TYPE=rocm must return a ROCm device.
@@ -99,6 +107,7 @@ mod tests {
         let devices = detector.detect().expect("detect should succeed");
         assert_eq!(devices.len(), 1);
         assert!(matches!(devices[0].device_type, DeviceType::Rocm));
+        clear_mock_env();
     }
 
     /// Mock device new fields must have sensible defaults.
@@ -118,5 +127,6 @@ mod tests {
             dev.capabilities_source,
             anvilml_core::CapabilitySource::Fallback
         ));
+        clear_mock_env();
     }
 }

@@ -373,6 +373,13 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "mock-hardware")]
+    fn clear_mock_env() {
+        std::env::remove_var("ANVILML_MOCK_DEVICE_TYPE");
+        std::env::remove_var("ANVILML_MOCK_VRAM_MIB");
+        std::env::remove_var("ANVILML_MOCK_GFX_ARCH");
+    }
+
     /// Vendor ID 0x10DE must map to Cuda.
     #[cfg(not(feature = "mock-hardware"))]
     #[test]
@@ -521,6 +528,7 @@ mod tests {
             info.gpus[0].enumeration_source,
             EnumerationSource::Mock
         ));
+        clear_mock_env();
     }
 
     /// detect_all_devices with mock-hardware feature and ROCm.
@@ -542,6 +550,7 @@ mod tests {
 
         assert_eq!(info.gpus.len(), 1);
         assert!(matches!(info.gpus[0].device_type, DeviceType::Rocm));
+        clear_mock_env();
     }
 
     /// Vulkan detection must not panic even without a GPU.
@@ -731,6 +740,7 @@ mod tests {
             dev.capabilities_source,
             CapabilitySource::Fallback
         ));
+        clear_mock_env();
     }
 
     /// detect_all_devices with mock-hardware returns Mock enumeration source.
@@ -754,6 +764,7 @@ mod tests {
             info.gpus[0].enumeration_source,
             EnumerationSource::Mock
         ));
+        clear_mock_env();
     }
 
     /// detect_all_devices with mock-hardware returns Mock device type.
@@ -774,6 +785,7 @@ mod tests {
             .expect("detect_all_devices should succeed");
 
         assert!(matches!(info.gpus[0].device_type, DeviceType::Rocm));
+        clear_mock_env();
     }
 
     /// detect_all_devices with mock-hardware returns Mock device VRAM.
@@ -795,5 +807,6 @@ mod tests {
             .expect("detect_all_devices should succeed");
 
         assert_eq!(info.gpus[0].vram_total_mib, 32768);
+        clear_mock_env();
     }
 }

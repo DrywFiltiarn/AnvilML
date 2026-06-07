@@ -99,16 +99,17 @@
     "P11-A1",
     "P11-A2",
     "P11-A3",
-    "P11-A4"
+    "P11-A4",
+    "P11-A5"
   ],
-  "in_progress": "P11-A5",
+  "in_progress": "P11-B1",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "1. **Add `clear_mock_env()` to `mock.rs`.** Inside `mod tests` (line 65), after the existing imports and before the first test function, insert:\n   ```rust\n   fn clear_mock_env() {\n       std::env::remove_var(\"ANVILML_MOCK_DEVICE_TYPE\");\n       std::env::remove_var(\"ANVILML_MOCK_VRAM_MIB\");\n       std::env::remove_var(\"ANVILML_MOCK_GFX_ARCH\");\n   }\n   ```\n\n2. **Append `clear_mock_env();` to each of the 4 tests in `mock.rs`.** Each test ends with a closing `}` on its own line. Replace that final `}` with `clear_mock_env();\\n    }`.\n\n3. **Add `clear_mock_env()` to `lib.rs`.** Inside `mod tests` (line 340), after the existing imports and before the first non-mock test (`vendor_map_cuda` at line 378), insert the same function body as in step 1.\n\n4. **Append `clear_mock_env();` to each of the 6 tests in `lib.rs`.** Each test ends with a closing `}` on its own line. Replace that final `}` with `clear_mock_env();\\n    }`.\n\n5. **Verify.** Run:\n   ```bash\n   cargo test -p anvilml-hardware --features mock-hardware\n   ```\n   Confirm all 48 tests pass. Then run 20 consecutive iterations of:\n   ```bash\n   cargo test -p anvilml-hardware --features mock-hardware -- --test-threads=1\n   ```\n   to confirm no ordering-dependent failures remain.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-07T12:24:14+0200",
-  "plan_approval_message_id": "1513120267679830016",
+  "last_updated": "2026-06-07T13:10:31+0200",
+  "plan_approval_message_id": "1513134738951634988",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1513120265607970952",
+  "plan_report_message_id": "1513134737433165829",
   "impl_report_message_id": null
 }
