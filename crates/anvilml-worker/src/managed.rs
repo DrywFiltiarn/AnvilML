@@ -695,6 +695,8 @@ mod tests {
     #[cfg(feature = "mock-hardware")]
     #[serial_test::serial]
     async fn spawn_ping_pong() {
+        std::env::set_var("ANVILML_WORKER_MOCK", "1");
+
         let worker = ManagedWorker::new("test-worker".to_string(), 0);
 
         // Build a mock device.
@@ -775,6 +777,9 @@ mod tests {
             join_timeout.is_ok(),
             "worker did not exit after shutdown in time"
         );
+
+        // Unconditional teardown — prevents env-var leak to subsequent tests.
+        std::env::remove_var("ANVILML_WORKER_MOCK");
     }
 
     /// Verify status transitions: Initializing → Idle (on Ready) → Dead.
@@ -782,6 +787,8 @@ mod tests {
     #[cfg(feature = "mock-hardware")]
     #[serial_test::serial]
     async fn status_transitions() {
+        std::env::set_var("ANVILML_WORKER_MOCK", "1");
+
         let worker = ManagedWorker::new("status-test".to_string(), 0);
 
         let device = GpuDevice {
@@ -815,6 +822,9 @@ mod tests {
 
         // After spawn returns, status should be Idle (Ready was received).
         assert_eq!(worker.get_status().await, WorkerStatus::Idle);
+
+        // Unconditional teardown — prevents env-var leak to subsequent tests.
+        std::env::remove_var("ANVILML_WORKER_MOCK");
     }
 
     /// End-to-end handshake regression test: spawn → exactly one Ready → Idle.
@@ -927,6 +937,11 @@ mod tests {
             Some(v) => std::env::set_var("ANVILML_PONG_TIMEOUT_MS", v),
             None => std::env::remove_var("ANVILML_PONG_TIMEOUT_MS"),
         }
+
+        // Unconditional teardown — prevents env-var leak to subsequent tests.
+        std::env::remove_var("ANVILML_WORKER_MOCK");
+        std::env::remove_var("ANVILML_PING_INTERVAL_MS");
+        std::env::remove_var("ANVILML_PONG_TIMEOUT_MS");
     }
 
     /// Verify that EOF on the pipe sets status to Dead.
@@ -1215,5 +1230,8 @@ mod tests {
 
         // Verify status is Idle — no sleep, no timing workaround.
         assert_eq!(worker.get_status().await, WorkerStatus::Idle);
+
+        // Unconditional teardown — prevents env-var leak to subsequent tests.
+        std::env::remove_var("ANVILML_WORKER_MOCK");
     }
 }

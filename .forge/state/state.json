@@ -105,16 +105,17 @@
     "P11-C1",
     "P11-C2",
     "P11-C3",
-    "P12-A1"
+    "P12-A1",
+    "P12-A2"
   ],
-  "in_progress": "P12-A2",
+  "in_progress": "P901-A1",
   "plan_approved": true,
-  "current_plan": "1. **Read existing `lib.rs`** to confirm current module declarations and re-exports.\n2. **Create `crates/anvilml-scheduler/src/queue.rs`** with:\n   - `use std::collections::VecDeque;` (no new dependencies \u2014 `VecDeque` is in `std`)\n   - `use anvilml_core::types::Job, JobStatus;` (already imported transitively via `anvilml-core`)\n   - `pub struct JobQueue { inner: Mutex<VecDeque<Job>>; }`\n   - `impl JobQueue`:\n     - `fn new() -> Self` \u2014 empty queue\n     - `fn enqueue(&self, job: Job)` \u2014 push_back onto the deque under lock\n     - `fn cancel_queued(&self, id: uuid::Uuid) -> bool` \u2014 acquire lock, iterate deque in order, find first entry whose `Job::id == id` and whose `status == JobStatus::Queued`, set it to `Cancelled`, return `true`; if not found or already non-Queued, return `false`\n     - `fn pop_next(&self) -> Option<Job>` \u2014 acquire lock, iterate deque from front, skip any entry with `status == JobStatus::Cancelled` (remove them from the deque), return the first entry with `status == JobStatus::Queued` (remove it from the deque and return it wrapped in `Some`); if no Queued entry remains, return `None`\n     - `fn len(&self) -> usize` \u2014 acquire lock, return deque.len()\n3. **Register the module** in `lib.rs`: add `pub mod queue;` and `pub use queue::JobQueue;` after existing lines.\n4. **Write tests** inside `queue.rs` under `#[cfg(test)]`:\n   - `test_enqueue_pop_order`: enqueue three jobs, pop three times, verify FIFO order by comparing IDs\n   - `test_cancel_skipped_on_pop`: enqueue three jobs, cancel the middle one by ID, pop twice \u2014 first returns job #1, second returns job #3 (job #2 was removed as Cancelled)\n5. **Verify** with `cargo test -p anvilml-scheduler -- queue` \u2014 must exit 0.",
+  "current_plan": "1. **Open `crates/anvilml-worker/src/managed.rs`** \u2014 locate the `handshake_completes_once` test function (line ~830).\n2. **Add teardown to `handshake_completes_once`** \u2014 after the existing restore block (lines 917\u2013929), append three unconditional `remove_var` calls as the final statements of the test body:\n   ```rust\n   std::env::remove_var(\"ANVILML_WORKER_MOCK\");\n   std::env::remove_var(\"ANVILML_PING_INTERVAL_MS\");\n   std::env::remove_var(\"ANVILML_PONG_TIMEOUT_MS\");\n   ```\n3. **Open `spawn_reaches_idle` test function** \u2014 locate at line ~1185.\n4. **Add teardown to `spawn_reaches_idle`** \u2014 before the closing `}` of the function body, append:\n   ```rust\n   std::env::remove_var(\"ANVILML_WORKER_MOCK\");\n   ```\n\nThis is the identical pattern applied by P11-B1 to `anvilml-hardware`.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-07T15:44:46+0200",
-  "plan_approval_message_id": "1513175605938491403",
+  "last_updated": "2026-06-07T16:16:19+0200",
+  "plan_approval_message_id": "1513184303583072266",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1513175602474258594",
+  "plan_report_message_id": "1513184301217480726",
   "impl_report_message_id": null
 }
