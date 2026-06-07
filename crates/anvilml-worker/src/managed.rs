@@ -126,8 +126,18 @@ impl ManagedWorker {
     /// builds the command with environment variables from
     /// `build_worker_env`, and pipes stdin/stdout for IPC.
     pub async fn spawn(&self, device: &GpuDevice, cfg: &ServerConfig) -> Result<(), AnvilError> {
+        // Resolve venv path to absolute (fixes Windows CreateProcess
+        // ERROR_PATH_NOT_FOUND when child CWD differs from parent CWD).
+        let abs_venv = if cfg.venv_path.is_absolute() {
+            cfg.venv_path.clone()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .join(&cfg.venv_path)
+        };
+
         // Resolve python interpreter path.
-        let python_path = resolve_python_path(&cfg.venv_path);
+        let python_path = resolve_python_path(&abs_venv);
 
         // Build the command.
         let mut cmd = Command::new(&python_path);
