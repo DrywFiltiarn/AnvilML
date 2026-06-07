@@ -131,9 +131,7 @@ impl ManagedWorker {
         let abs_venv = if cfg.venv_path.is_absolute() {
             cfg.venv_path.clone()
         } else {
-            std::env::current_dir()
-                .unwrap_or_default()
-                .join(&cfg.venv_path)
+            _repo_root_for_worker().join(&cfg.venv_path)
         };
 
         // Resolve python interpreter path.

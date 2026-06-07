@@ -102,16 +102,17 @@
     "P11-A4",
     "P11-A5",
     "P11-B1",
-    "P11-C1"
+    "P11-C1",
+    "P11-C2"
   ],
-  "in_progress": "P11-C2",
+  "in_progress": "P11-C3",
   "plan_approved": true,
-  "current_plan": "1. **Add dev-dependency** in `crates/anvilml-worker/Cargo.toml`: add a new line `serial_test = \"1\"` under the `[dev-dependencies]` section. This pins to any 1.x release (verified: serial_test 1.x exists on crates.io with the same `#[serial]` attribute macro API as current versions).\n\n2. **Annotate four tests** in `crates/anvilml-worker/src/managed.rs` \u2014 add `#[serial_test::serial]` between the existing `#[cfg(feature = \"mock-hardware\")]` and `async fn ...` lines for:\n   - `spawn_ping_pong` (line ~698)\n   - `status_transitions` (line ~784)\n   - `handshake_completes_once` (line ~829)\n   - `spawn_reaches_idle` (line ~1183)\n\n   The annotation pattern:\n   ```rust\n   #[tokio::test]\n   #[cfg(feature = \"mock-hardware\")]\n   #[serial_test::serial]\n   async fn spawn_ping_pong() { ... }\n   ```\n\n3. **Verify** by running:\n   - `cargo test -p anvilml-worker --features mock-hardware` \u2014 expects exit 0, 0 ignored, 0 failed\n   - `cargo check --target x86_64-pc-windows-gnu --features mock-hardware` \u2014 expects exit 0",
+  "current_plan": "1. **Read** `crates/anvilml-worker/src/managed.rs` lines 128\u2013140 to confirm the exact current code block:\n   ```rust\n   let abs_venv = if cfg.venv_path.is_absolute() {\n       cfg.venv_path.clone()\n   } else {\n       std::env::current_dir()\n           .unwrap_or_default()\n           .join(&cfg.venv_path)\n   };\n   ```\n\n2. **Replace** the `else` branch base from `std::env::current_dir().unwrap_or_default()` to `_repo_root_for_worker()`:\n   ```rust\n   let abs_venv = if cfg.venv_path.is_absolute() {\n       cfg.venv_path.clone()\n   } else {\n       _repo_root_for_worker().join(&cfg.venv_path)\n   };\n   ```\n   This is a single-line change (removing `.unwrap_or_default()` and replacing the function call). The `is_absolute()` guard and surrounding code remain untouched.\n\n3. **Bump** the crate version: update `crates/anvilml-worker/Cargo.toml` line 3 from `version = \"0.1.8\"` to `version = \"0.1.9\"`.\n\n4. **Verify** with `cargo check -p anvilml-worker --features mock-hardware` and `cargo test -p anvilml-worker --features mock-hardware`. Both must exit 0.\n\n5. **Cross-check** with `cargo check --target x86_64-pc-windows-gnu --features mock-hardware` (per ENVIRONMENT.md \u00a77). Must exit 0.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-07T13:53:58+0200",
-  "plan_approval_message_id": "1513148743841484972",
+  "last_updated": "2026-06-07T14:29:44+0200",
+  "plan_approval_message_id": "1513157126539706439",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1513148742235193426",
+  "plan_report_message_id": "1513157124958453851",
   "impl_report_message_id": null
 }
