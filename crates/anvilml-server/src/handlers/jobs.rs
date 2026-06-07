@@ -6,13 +6,17 @@
 use std::sync::Arc;
 
 use anvilml_core::error::AnvilError;
-use anvilml_core::types::job::{SubmitJobRequest, SubmitJobResponse};
-use anvilml_scheduler::job_store::get_job as scheduler_get_job;
+use anvilml_core::types::job::{JobStatus, SubmitJobRequest, SubmitJobResponse};
+use anvilml_scheduler::job_store::{
+    get_job as scheduler_get_job, list_jobs as scheduler_list_jobs,
+};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::Json,
 };
+use chrono::{DateTime, Utc};
+use serde::Deserialize;
 use serde_json::json;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -141,6 +145,99 @@ pub async fn get_job(
         ),
         Err(e) => {
             tracing::error!(error = %e, get_job = %job_id, "get_job: database query failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_body("internal_error", &e.to_string())),
+            )
+        }
+    }
+}
+
+/// Query parameters for the `GET /v1/jobs` list endpoint.
+#[derive(Debug, Deserialize, Default)]
+pub struct ListJobsQuery {
+    /// Filter by job status (case-insensitive).
+    pub status: Option<String>,
+    /// Maximum number of results (default 100, max 1000).
+    pub limit: Option<u32>,
+    /// Only return jobs created before this ISO 8601 timestamp.
+    pub before: Option<String>,
+}
+
+/// List jobs with optional status, limit, and before-cursor filters.
+///
+/// Returns a JSON array of `Job` objects sorted newest-first.
+#[utoipa::path(
+    get,
+    path = "/v1/jobs",
+    summary = "List jobs with optional filters",
+    params(
+        ("status" = Option<JobStatus>, Query, description = "Filter by job status"),
+        ("limit" = Option<u32>, Query, description = "Maximum number of results (default 100, max 1000)"),
+        ("before" = Option<String>, Query, description = "Only jobs created before this ISO 8601 timestamp")
+    ),
+    responses(
+        (status = 200, description = "Job list", body = Vec<anvilml_core::types::job::Job>),
+        (status = 503, description = "Database not available", body = ErrorInline)
+    )
+)]
+pub async fn list_jobs(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ListJobsQuery>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let pool = match &state.db {
+        Some(p) => p,
+        None => {
+            tracing::error!("list_jobs: database not configured");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(error_body(
+                    "database_not_configured",
+                    "database not available",
+                )),
+            );
+        }
+    };
+
+    // Parse status filter (case-insensitive).
+    let parsed_status = query
+        .status
+        .as_deref()
+        .and_then(|s| match s.to_lowercase().as_str() {
+            "queued" => Some(JobStatus::Queued),
+            "running" => Some(JobStatus::Running),
+            "completed" => Some(JobStatus::Completed),
+            "failed" => Some(JobStatus::Failed),
+            "cancelled" => Some(JobStatus::Cancelled),
+            unknown => {
+                tracing::warn!(
+                    status = unknown,
+                    "list_jobs: unknown status value, ignoring filter"
+                );
+                None
+            }
+        });
+
+    // Parse before cursor (ISO 8601 / RFC 3339).
+    let parsed_before = query.before.as_deref().and_then(|s| {
+        DateTime::<chrono::FixedOffset>::parse_from_rfc3339(s)
+            .ok()
+            .map(|dt| dt.with_timezone(&Utc))
+    });
+    if query.before.is_some() && parsed_before.is_none() {
+        tracing::warn!(before = ?query.before, "list_jobs: invalid before timestamp, ignoring filter");
+    }
+
+    // Compute effective limit: default 100, clamped to [1, 1000].
+    let effective_limit = query.limit.unwrap_or(100).clamp(1, 1000);
+
+    match scheduler_list_jobs(pool, parsed_status, Some(effective_limit), parsed_before).await {
+        Ok(jobs) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(&jobs).expect("job list serialises")),
+        ),
+        Err(e) => {
+            tracing::error!(error = %e, "list_jobs: database query failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(error_body("internal_error", &e.to_string())),
@@ -463,5 +560,183 @@ mod tests {
         let parsed: Value = serde_json::from_str(&body_str).unwrap();
 
         assert_eq!(parsed["error"], "not_found");
+    }
+
+    /// Submit two jobs via POST and verify GET /v1/jobs returns both.
+    #[tokio::test]
+    async fn list_jobs_returns_all_submitted_jobs() {
+        let app = build_test_app().await;
+
+        // Submit first job.
+        let req_body = serde_json::json!({
+            "graph": make_valid_zit_graph(),
+            "settings": {"seed": 1, "steps": 10}
+        });
+        let resp1 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/jobs")
+                    .header("content-type", "application/json")
+                    .body(Full::<Bytes>::from(serde_json::to_vec(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp1.status(), StatusCode::ACCEPTED);
+
+        // Submit second job.
+        let req_body2 = serde_json::json!({
+            "graph": make_valid_zit_graph(),
+            "settings": {"seed": 2, "steps": 15}
+        });
+        let resp2 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/jobs")
+                    .header("content-type", "application/json")
+                    .body(Full::<Bytes>::from(serde_json::to_vec(&req_body2).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp2.status(), StatusCode::ACCEPTED);
+
+        // List all jobs.
+        let list_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/jobs")
+                    .body(Full::<Bytes>::default())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(list_response.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(list_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let parsed: Value = serde_json::from_str(&body_str).unwrap();
+
+        assert!(parsed.is_array(), "response body must be a JSON array");
+        assert_eq!(
+            parsed.as_array().unwrap().len(),
+            2,
+            "must return exactly 2 jobs"
+        );
+    }
+
+    /// GET /v1/jobs?status=queued must filter to only queued jobs.
+    #[tokio::test]
+    async fn list_jobs_filters_by_status() {
+        let app = build_test_app().await;
+
+        // Submit two jobs (both start as Queued).
+        for seed in [10, 20] {
+            let req_body = serde_json::json!({
+                "graph": make_valid_zit_graph(),
+                "settings": {"seed": seed, "steps": 5}
+            });
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/jobs")
+                        .header("content-type", "application/json")
+                        .body(Full::<Bytes>::from(serde_json::to_vec(&req_body).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        }
+
+        // Filter by status=queued (lowercase).
+        let list_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/jobs?status=queued")
+                    .body(Full::<Bytes>::default())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(list_response.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(list_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let parsed: Value = serde_json::from_str(&body_str).unwrap();
+
+        assert!(parsed.is_array());
+        assert_eq!(parsed.as_array().unwrap().len(), 2, "both jobs are Queued");
+    }
+
+    /// GET /v1/jobs?limit=1 must return exactly one job.
+    #[tokio::test]
+    async fn list_jobs_limit_clamps_to_one() {
+        let app = build_test_app().await;
+
+        // Submit two jobs.
+        for seed in [30, 40] {
+            let req_body = serde_json::json!({
+                "graph": make_valid_zit_graph(),
+                "settings": {"seed": seed, "steps": 5}
+            });
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/jobs")
+                        .header("content-type", "application/json")
+                        .body(Full::<Bytes>::from(serde_json::to_vec(&req_body).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        }
+
+        // List with limit=1.
+        let list_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/jobs?limit=1")
+                    .body(Full::<Bytes>::default())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(list_response.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(list_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let parsed: Value = serde_json::from_str(&body_str).unwrap();
+
+        assert!(parsed.is_array());
+        assert_eq!(
+            parsed.as_array().unwrap().len(),
+            1,
+            "limit=1 must return exactly one job"
+        );
     }
 }
