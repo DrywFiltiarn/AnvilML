@@ -94,16 +94,17 @@
     "P10-A4",
     "P10-B1",
     "P10-B2",
-    "P10-B3"
+    "P10-B3",
+    "P10-B4"
   ],
-  "in_progress": "P10-B4",
+  "in_progress": "P11-A1",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "1. **Read current state.** Confirm `crates/anvilml-scheduler/Cargo.toml` already lists `anvilml-core = { path = \"../anvilml-core\" }` (already confirmed). Confirm `src/lib.rs` currently only contains `pub fn stub() {}`.\n\n2. **Write `crates/anvilml-scheduler/src/nodes.rs`.** Define:\n   - `pub const KNOWN_NODE_TYPES: [&str; 9]` with the nine names in this order:\n     `ZitLoadPipeline`, `ZitTextEncode`, `ZitSampler`, `ZitDecode`, `SdxlLoadPipeline`, `SdxlTextEncode`, `SdxlSampler`, `SdxlDecode`, `SaveImage`.\n   - A struct `NodeSlots { pub inputs: &'static [&'static str], pub outputs: &'static [&'static str] }` (or equivalent tuple-based approach) and a `pub const NODE_SLOTS: &[(&&str, NodeSlots)]` array with one entry per node type, using the slot data from ANVILML_DESIGN \u00a714.6:\n\n     | Type | Inputs | Outputs |\n     |------|--------|---------|\n     | ZitLoadPipeline | `[\"model_id\"]` | `[\"pipeline\"]` |\n     | ZitTextEncode | `[\"pipeline\", \"prompt\"]` | `[\"conditioning\"]` |\n     | ZitSampler | `[\"pipeline\", \"conditioning\", \"steps\", \"seed\"]` | `[\"latents\", \"seed\"]` |\n     | ZitDecode | `[\"pipeline\", \"latents\"]` | `[\"image\"]` |\n     | SdxlLoadPipeline | `[\"model_id\"]` | `[\"pipeline\"]` |\n     | SdxlTextEncode | `[\"pipeline\", \"prompt\", \"negative_prompt\"]` | `[\"conditioning\"]` |\n     | SdxlSampler | `[\"pipeline\", \"conditioning\", \"steps\", \"guidance_scale\", \"seed\"]` | `[\"latents\", \"seed\"]` |\n     | SdxlDecode | `[\"pipeline\", \"latents\"]` | `[\"image\"]` |\n     | SaveImage | `[\"image\", \"prompt\", \"seed\", \"steps\"]` | `[]` (empty) |\n\n   - A helper function: `pub fn get_node_slots(type_name: &str) -> Option<&NodeSlots>` that looks up a type in the array.\n\n3. **Wire into `lib.rs`.** Replace the stub with:\n   ```rust\n   pub mod nodes;\n   pub use nodes::{KNOWN_NODE_TYPES, NODE_SLOTS};\n   ```\n\n4. **Add unit tests.** In `nodes.rs`, under `#[cfg(test)]`:\n   - `test_all_nine_types_present` \u2014 asserts length is 9 and iterates to confirm all names are non-empty.\n   - `test_zitsampler_outputs_include_latents_seed` \u2014 calls `get_node_slots(\"ZitSampler\")`, asserts outputs contain `\"latents\"` and `\"seed\"`.\n\n5. **Bump version.** Change `version = \"0.1.0\"` to `version = \"0.1.1\"` in `crates/anvilml-scheduler/Cargo.toml` (patch bump per FORGE_AGENT_RULES \u00a712).\n\n6. **Verify.** Run `cargo test -p anvilml-scheduler -- nodes` and confirm exit 0 with both tests passing.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-07T00:51:18+0200",
-  "plan_approval_message_id": "1512950006108131399",
+  "last_updated": "2026-06-07T09:05:38+0200",
+  "plan_approval_message_id": "1512958811454050458",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1512950004371685469",
+  "plan_report_message_id": "1512958809121886390",
   "impl_report_message_id": null
 }
