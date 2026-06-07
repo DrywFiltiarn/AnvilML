@@ -1,11 +1,37 @@
 [
   {
     "id": "P902-A1",
-    "description": "anvilml-worker: replace serial_test env-var workaround with scoped env isolation",
+    "description": "anvilml-ipc: fix ipc-probe binary to use write_frame/read_frame correctly",
     "phase": "902",
     "project": "anvilml",
     "prereqs": [
       "P901-A1"
+    ],
+    "context": "ipc-probe.rs currently hand-rolls a raw WorkerEvent::Pong frame using rmp_serde::to_vec_named(&event) directly, bypassing write_frame. This produces serde native enum encoding, not the flat dict format (_type key) that read_frame expects, causing the _type field missing error. Fix: replace the hand-rolled write side with write_frame(&mut tx, &WorkerMessage::Ping { seq: 7 }).await? (write_frame calls serialize_message which produces the correct flat dict). Remove the manual payload/header construction and the WorkerEvent import (no longer needed on the write side). The read side (read_frame) is already correct and unchanged. Expected output after fix: cargo run -p anvilml-ipc --bin ipc-probe prints OK seq=7 and exits 0 on both Linux and Windows. No changes to framing.rs, messages.rs, or any other file. cargo test -p anvilml-ipc exits 0.",
+    "tags": [
+      "refactor"
+    ]
+  },
+  {
+    "id": "P902-A2",
+    "description": "anvilml-worker: fix respawn loop \u2014 WorkerPool.workers not updated after respawn",
+    "phase": "902",
+    "project": "anvilml",
+    "prereqs": [
+      "P902-A1"
+    ],
+    "context": "pool.rs has two separate worker lists: WorkerPool.workers (plain Vec, used by list/acquire_idle/set_busy/set_idle) and shared_workers (Arc<RwLock<Vec>>, updated on respawn). After respawn the public methods still reference the dead worker. Fix: change WorkerPool.workers field from Vec<Arc<ManagedWorker>> to Arc<RwLock<Vec<Arc<ManagedWorker>>>> (same Arc as shared_workers). In spawn_all: construct shared_workers first, store the same Arc in both WorkerPool.workers and the event listener closure (no clone needed \u2014 they are the same Arc). Update list(), acquire_idle(), set_busy(), set_idle() to read-lock self.workers. Second bug: after respawn the per-worker event listener task is still subscribed to the dead worker broadcast channel. In the respawn task, after locked[idx] = new_worker: spawn a new per-worker listener task for new_worker using the same pattern as spawn_all (subscribe, loop recv, process Ready/Dead/forward events). The old listener task will break on RecvError::Closed when the dead worker channel closes naturally. No changes to managed.rs, framing.rs, or any other crate. cargo test -p anvilml-worker --features mock-hardware exits 0. Runnable proof: cargo run --features mock-hardware; kill the worker pid; observe /v1/workers shows worker-0 returns to Idle within ~5s on the next poll.",
+    "tags": [
+      "refactor"
+    ]
+  },
+  {
+    "id": "P902-A3",
+    "description": "anvilml-worker: replace serial_test env-var workaround with scoped env isolation",
+    "phase": "902",
+    "project": "anvilml",
+    "prereqs": [
+      "P902-A2"
     ],
     "context": "In managed.rs: the four spawning tests (spawn_ping_pong, status_transitions, handshake_completes_once, spawn_reaches_idle) use std::env::set_var(\"ANVILML_WORKER_MOCK\",\"1\") and rely on #[serial_test::serial] to prevent parallel env-var contamination. Replace set_var/remove_var calls in each test body with a temp_env::with_var(\"ANVILML_WORKER_MOCK\",Some(\"1\"), async { ... }) scope (add temp_env to [dev-dependencies]). Remove all four #[serial_test::serial] attributes. Remove serial_test from [dev-dependencies] in anvilml-worker/Cargo.toml. No logic changes to test assertions. cargo test -p anvilml-worker --features mock-hardware exits 0 with all 16 tests passing without ANVILML_WORKER_MOCK set in the ambient shell environment (verify with env -i HOME=$HOME PATH=$PATH cargo test -p anvilml-worker --features mock-hardware).",
     "tags": [
@@ -13,12 +39,12 @@
     ]
   },
   {
-    "id": "P902-A2",
+    "id": "P902-A4",
     "description": "anvilml-worker: retrofit mandatory IPC DEBUG log points (managed.rs)",
     "phase": "902",
     "project": "anvilml",
     "prereqs": [
-      "P902-A1"
+      "P902-A3"
     ],
     "context": "In managed.rs: add tracing::debug!(worker_id = %worker_id, message_type = msg_discriminant(&msg)) in the writer task immediately before each IPC frame is written to stdin. Add tracing::debug!(worker_id = %worker_id, event_type = event_discriminant(&event)) in the reader task immediately after each WorkerEvent is successfully deserialized. msg_discriminant() and event_discriminant() helper fns already exist in this file. These are \u00a711.5 mandatory DEBUG points. No logic changes. cargo test -p anvilml-worker --features mock-hardware exits 0.",
     "tags": [
@@ -26,12 +52,12 @@
     ]
   },
   {
-    "id": "P902-A3",
+    "id": "P902-A5",
     "description": "anvilml-worker: retrofit mandatory spawn and status-transition DEBUG log points (pool.rs)",
     "phase": "902",
     "project": "anvilml",
     "prereqs": [
-      "P902-A2"
+      "P902-A4"
     ],
     "context": "In pool.rs: add tracing::debug!(worker_id = %wid, device_index = device_index) immediately after each ManagedWorker::new() call in spawn_all() (covers both GPU and CPU worker creation paths). Add tracing::debug!(worker_id = %worker_id, from = %old_status, to = %new_status) in set_busy() and set_idle() before the status transition. These are \u00a711.5 mandatory DEBUG points. set_busy and set_idle currently log at INFO \u2014 keep those, the DEBUG calls are additions. No logic changes. cargo test -p anvilml-worker --features mock-hardware exits 0.",
     "tags": [
@@ -44,7 +70,7 @@
     "phase": "902",
     "project": "anvilml",
     "prereqs": [
-      "P902-A3"
+      "P902-A5"
     ],
     "context": "In scheduler.rs: the submit() method has tracing::info!(job_id = %job_id) but is missing the \u00a711.5 mandatory debug points. Add tracing::debug!(job_id = %job_id, status = \"Queued\", \"job status transition\") after insert_job succeeds. The dispatch loop (Phase 13, not yet written) will add job_dispatched and Running transition points \u2014 do not anticipate those here. No logic changes. cargo test -p anvilml-scheduler --features mock-hardware exits 0.",
     "tags": [

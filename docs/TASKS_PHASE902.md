@@ -9,7 +9,7 @@
 | Status | Draft |
 | Depends on phases | 0–12 (via P901-A1) |
 | Task file | `.forge/tasks/tasks_phase902.json` |
-| Tasks | 6 |
+| Tasks | 8 |
 
 ---
 
@@ -35,7 +35,7 @@ The actual debt is:
 
 | Group | Subsystem | Tasks | Summary |
 |-------|-----------|-------|---------|
-| A | anvilml-worker | P902-A1 … A3 | env isolation fix; IPC DEBUG log points; pool spawn/status DEBUG log points |
+| A | anvilml-ipc / anvilml-worker | P902-A1 … A5 | ipc-probe fix; pool respawn split-list bug; env isolation fix; IPC DEBUG log points; pool spawn/status DEBUG log points |
 | B | anvilml-scheduler | P902-B1 … B2 | scheduler submit DEBUG point; job-store and queue DEBUG points |
 | D | Gate | P902-D1 | Full workspace clean gate — no source changes, verbatim output only |
 
@@ -57,7 +57,34 @@ No external contract documents are required by this phase. All changes are inter
 
 ### Group A — anvilml-worker
 
-#### P902-A1: Replace serial_test env-var workaround with scoped env isolation
+#### P902-A1: Fix ipc-probe binary to use write_frame/read_frame correctly
+
+**File:** `crates/anvilml-ipc/src/bin/ipc-probe.rs`
+
+The probe binary was written during P8-A4 with the original framing design where `read_frame` used serde's native enum encoding. Later changes to `framing.rs` switched `read_frame` to expect Python's flat dict format (`{"_type": "Pong", ...}`) via `worker_event_from_map()`. The probe was not updated, so it hand-rolls a raw `WorkerEvent::Pong` frame using `rmp_serde::to_vec_named` directly — producing serde native format — which `read_frame` cannot parse, causing `_type field missing or not a string`.
+
+The fix replaces the hand-rolled write side with `write_frame(&mut tx, &WorkerMessage::Ping { seq: 7 }).await?`. `write_frame` calls `serialize_message` internally, which produces the correct flat dict. The read side is already correct. The binary then exercises the full round-trip that the actual Rust↔Python IPC uses.
+
+**Acceptance criterion:** `cargo run -p anvilml-ipc --bin ipc-probe` prints `OK seq=7` and exits 0 on both Linux and Windows.
+
+
+#### P902-A2: Fix WorkerPool respawn -- workers list not updated after respawn
+
+**File:** `crates/anvilml-worker/src/pool.rs`
+
+After a successful respawn, `WorkerPool::list()`, `acquire_idle()`, `set_busy()`, and `set_idle()` all continue operating on `self.workers` -- a plain `Vec` captured at construction time that is never updated. The respawn task writes the new `ManagedWorker` into `shared_workers` (a separate `Arc<RwLock<Vec>>`), but nothing reads from it. The public pool API therefore always sees the dead worker. The keepalive on that dead worker fires, the pipe write fails with os error 232, pong timeout kills it, respawn is scheduled again, and the cycle repeats.
+
+A secondary defect: the per-worker event listener task subscribed to the original dead worker's broadcast channel at startup. After respawn it never resubscribes to the new worker, so the new worker's events (including `WorkerStatusChanged(Dead)` on a future crash) are never observed by the pool.
+
+**Fix 1 -- unify the worker list:** Change `WorkerPool.workers` from `Vec<Arc<ManagedWorker>>` to `Arc<RwLock<Vec<Arc<ManagedWorker>>>>` -- the same `Arc` that the respawn task already writes into. `spawn_all` constructs one `Arc<RwLock<Vec>>` and stores it in both `WorkerPool.workers` and the respawn closure (no extra clone). Update `list()`, `acquire_idle()`, `set_busy()`, and `set_idle()` to acquire a read lock on `self.workers`.
+
+**Fix 2 -- resubscribe event listener after respawn:** In the respawn task, immediately after `locked[idx] = new_worker`, spawn a new per-worker listener task for the replacement worker using the same closure pattern as `spawn_all` (subscribe to new worker's broadcast channel, loop on recv, process Ready/Dead events, forward to pool's event_tx). The old listener task exits naturally when `RecvError::Closed` fires on the dead worker's channel.
+
+No changes to `managed.rs`, `framing.rs`, or any other crate.
+
+**Acceptance criterion:** `cargo run --features mock-hardware`; kill the worker process by PID; `curl http://127.0.0.1:8488/v1/workers` shows `status: "Idle"` within 5 seconds. No second respawn cycle occurs. `cargo test -p anvilml-worker --features mock-hardware` exits 0.
+
+#### P902-A3: Replace serial_test env-var workaround with scoped env isolation
 
 **File:** `crates/anvilml-worker/src/managed.rs`, `crates/anvilml-worker/Cargo.toml`
 
@@ -65,7 +92,7 @@ The four spawning tests (`spawn_ping_pong`, `status_transitions`, `handshake_com
 
 **Acceptance criterion:** `env -i HOME=$HOME PATH=$PATH cargo test -p anvilml-worker --features mock-hardware` exits 0 with all 16 tests passing. The `-i` flag clears the ambient environment, proving no test relies on an externally set `ANVILML_WORKER_MOCK`.
 
-#### P902-A2: Retrofit mandatory IPC DEBUG log points (managed.rs)
+#### P902-A4: Retrofit mandatory IPC DEBUG log points (managed.rs)
 
 **File:** `crates/anvilml-worker/src/managed.rs`
 
@@ -75,7 +102,7 @@ No logic changes. No new helper functions.
 
 **Acceptance criterion:** `cargo test -p anvilml-worker --features mock-hardware` exits 0.
 
-#### P902-A3: Retrofit mandatory spawn and status-transition DEBUG log points (pool.rs)
+#### P902-A5: Retrofit mandatory spawn and status-transition DEBUG log points (pool.rs)
 
 **File:** `crates/anvilml-worker/src/pool.rs`
 
@@ -162,9 +189,9 @@ All four must exit 0. Phase is complete when P902-D1 is committed and the above 
 
 ## Known Constraints and Gotchas
 
-- **P902-A1: temp_env async usage.** `temp_env::with_var` has both sync and async variants. The tests are `#[tokio::test]` async functions — use `temp_env::async_with_var` (from the `temp_env` crate's `async` feature) or restructure as `tokio::task::spawn_blocking` if the async variant is unavailable. Check the `temp_env` crate docs via `rust-docs` MCP before writing the implementation. If `temp_env` does not support async, the alternative is an inline RAII guard using `std::env::set_var` / `remove_var` in a `Drop` impl — document the choice in the plan report.
-- **P902-A1: `-i` env clear test.** The acceptance criterion uses `env -i`, which is a Unix-only invocation. On Windows CI (which runs under GitHub Actions) the equivalent is not available — the Windows CI job relies on the test suite itself not setting `ANVILML_WORKER_MOCK` in the environment before running. This is acceptable: the fix is verified on Linux locally and on Windows via CI.
-- **P902-A2: writer task location.** The writer task is the `run_loop` tokio task in `managed.rs`. The exact line where the frame is written to stdin is the call site of `framing::write_frame`. The DEBUG log call goes immediately before that write. Do not add it inside `framing::write_frame` itself — that function lives in `anvilml-ipc` and has its own logging scope.
+- **P902-A3: temp_env async usage.** `temp_env::with_var` has both sync and async variants. The tests are `#[tokio::test]` async functions — use `temp_env::async_with_var` (from the `temp_env` crate's `async` feature) or restructure as `tokio::task::spawn_blocking` if the async variant is unavailable. Check the `temp_env` crate docs via `rust-docs` MCP before writing the implementation. If `temp_env` does not support async, the alternative is an inline RAII guard using `std::env::set_var` / `remove_var` in a `Drop` impl — document the choice in the plan report.
+- **P902-A3: `-i` env clear test.** The acceptance criterion uses `env -i`, which is a Unix-only invocation. On Windows CI (which runs under GitHub Actions) the equivalent is not available — the Windows CI job relies on the test suite itself not setting `ANVILML_WORKER_MOCK` in the environment before running. This is acceptable: the fix is verified on Linux locally and on Windows via CI.
+- **P902-A4: writer task location.** The writer task is the `run_loop` tokio task in `managed.rs`. The exact line where the frame is written to stdin is the call site of `framing::write_frame`. The DEBUG log call goes immediately before that write. Do not add it inside `framing::write_frame` itself — that function lives in `anvilml-ipc` and has its own logging scope.
 - **P902-B2: queue_len after enqueue.** Call `self.len()` after the push so the logged count reflects the post-enqueue state.
 - **P902-D1: ANVILML_VENV_PATH for test command.** The path `./worker/.venv` assumes the venv was created in the worker directory by the CI setup. If the local venv lives elsewhere, substitute the correct path. The gate command is documentation of intent — the agent substitutes the actual path from `ENVIRONMENT.md §2`.
 - **P13-A1 prereq must be updated manually** from `["P12-A5"]` to `["P902-D1"]` in `tasks_phase013.json` before The Forge runs Phase 902. This is the human author's responsibility, not the agent's.
