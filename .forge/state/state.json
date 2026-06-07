@@ -104,16 +104,17 @@
     "P11-B1",
     "P11-C1",
     "P11-C2",
-    "P11-C3"
+    "P11-C3",
+    "P12-A1"
   ],
-  "in_progress": "P12-A1",
+  "in_progress": "P12-A2",
   "plan_approved": true,
-  "current_plan": "1. **Add dependencies** to `crates/anvilml-scheduler/Cargo.toml`:\n   - Add `sqlx = { workspace = true }` (workspace already has features: `sqlite, runtime-tokio, macros, migrate`)\n   - Add `uuid = { workspace = true }` (workspace already has features: `serde, v4`)\n   - Add `chrono = { workspace = true }` (workspace already has features: `serde`)\n   - Add dev-dependencies: `serial_test = { workspace = true }`, `tempfile = { workspace = true }`\n\n2. **Create `src/job_store.rs`** with the four async functions. Each function takes a `&SqlitePool` (from `sqlx::sqlite::SqlitePool`) and uses the `query!` / `query_as!` / `query_file!` macros for compile-time SQL checking. The `Job` struct from `anvilml-core` is mapped to/from the SQLite row:\n   - `graph` and `settings` are stored as TEXT (JSON blobs). Since `serde_json::Value` and `JobSettings` implement `Serialize`/`Deserialize`, use `query_as!` with a helper that serialises these fields, or use `query!` returning a raw row and deserialize manually.\n   - Timestamps: `DateTime<Utc>` \u2192 ISO 8601 string for INSERT; parse back from TEXT on SELECT.\n\n3. **Register the module** in `src/lib.rs`: add `pub mod job_store;` and re-export the four functions.\n\n4. **Write tests** in a `#[cfg(test)]` module at the bottom of `job_store.rs` (adjacent to code, per FORGE_AGENT_RULES \u00a75.4). Each test creates its own isolated in-memory SQLite pool via `SqlitePool::connect(\"sqlite::memory:\")`. Tests use `serial_test::serial` attribute where DB state must not race.\n\n   Test cases:\n   - `test_insert_and_get`: insert a fully-populated Job, get_job by id returns it with matching fields\n   - `test_list_jobs_all`: insert 3 jobs, list_jobs returns all 3 (default limit)\n   - `test_list_jobs_status_filter`: insert mixed-status jobs, list_jobs(status=Some(Queued)) returns only Queued\n   - `test_list_jobs_limit`: insert 5 jobs, list_jobs(limit=2) returns exactly 2\n   - `test_list_jobs_before_cursor`: insert jobs at different timestamps, list_jobs(before=some_ts) excludes later jobs\n   - `test_update_status`: get a Queued job, update_status to Running with error=None, verify status and started_at updated\n\n5. **Verify**: run `cargo test -p anvilml-scheduler --job_store` \u2014 must exit 0.",
+  "current_plan": "1. **Read existing `lib.rs`** to confirm current module declarations and re-exports.\n2. **Create `crates/anvilml-scheduler/src/queue.rs`** with:\n   - `use std::collections::VecDeque;` (no new dependencies \u2014 `VecDeque` is in `std`)\n   - `use anvilml_core::types::Job, JobStatus;` (already imported transitively via `anvilml-core`)\n   - `pub struct JobQueue { inner: Mutex<VecDeque<Job>>; }`\n   - `impl JobQueue`:\n     - `fn new() -> Self` \u2014 empty queue\n     - `fn enqueue(&self, job: Job)` \u2014 push_back onto the deque under lock\n     - `fn cancel_queued(&self, id: uuid::Uuid) -> bool` \u2014 acquire lock, iterate deque in order, find first entry whose `Job::id == id` and whose `status == JobStatus::Queued`, set it to `Cancelled`, return `true`; if not found or already non-Queued, return `false`\n     - `fn pop_next(&self) -> Option<Job>` \u2014 acquire lock, iterate deque from front, skip any entry with `status == JobStatus::Cancelled` (remove them from the deque), return the first entry with `status == JobStatus::Queued` (remove it from the deque and return it wrapped in `Some`); if no Queued entry remains, return `None`\n     - `fn len(&self) -> usize` \u2014 acquire lock, return deque.len()\n3. **Register the module** in `lib.rs`: add `pub mod queue;` and `pub use queue::JobQueue;` after existing lines.\n4. **Write tests** inside `queue.rs` under `#[cfg(test)]`:\n   - `test_enqueue_pop_order`: enqueue three jobs, pop three times, verify FIFO order by comparing IDs\n   - `test_cancel_skipped_on_pop`: enqueue three jobs, cancel the middle one by ID, pop twice \u2014 first returns job #1, second returns job #3 (job #2 was removed as Cancelled)\n5. **Verify** with `cargo test -p anvilml-scheduler -- queue` \u2014 must exit 0.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-07T15:03:47+0200",
-  "plan_approval_message_id": "1513163390833660125",
+  "last_updated": "2026-06-07T15:44:46+0200",
+  "plan_approval_message_id": "1513175605938491403",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1513163388996423771",
+  "plan_report_message_id": "1513175602474258594",
   "impl_report_message_id": null
 }
