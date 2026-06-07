@@ -27,7 +27,7 @@ use tracing::{debug, info, warn};
 /// Ready events.
 pub struct WorkerPool {
     /// Managed workers in this pool.
-    workers: Vec<Arc<ManagedWorker>>,
+    workers: Arc<RwLock<Vec<Arc<ManagedWorker>>>>,
     /// Broadcast channel for pooled events (aggregated from all workers).
     event_tx: broadcast::Sender<(String, anvilml_ipc::WorkerEvent)>,
     /// Maps device_index → worker index in `workers`.
@@ -60,7 +60,8 @@ impl WorkerPool {
             .map(std::time::Duration::from_millis)
             .unwrap_or(std::time::Duration::from_secs(2));
 
-        let mut workers: Vec<Arc<ManagedWorker>> = Vec::with_capacity(hw.gpus.len().max(1));
+        let workers: Arc<RwLock<Vec<Arc<ManagedWorker>>>> =
+            Arc::new(RwLock::new(Vec::with_capacity(hw.gpus.len().max(1))));
         let mut device_map: HashMap<u32, usize> = HashMap::new();
 
         // Create one worker per GPU device.
@@ -68,7 +69,7 @@ impl WorkerPool {
             let worker = Arc::new(ManagedWorker::new(format!("worker-{i}"), i as u32));
             worker.spawn(device, cfg).await.expect("spawn gpu worker");
             worker.start_keepalive();
-            workers.push(worker);
+            workers.write().await.push(worker);
             device_map.insert(i as u32, i);
         }
 
@@ -95,18 +96,21 @@ impl WorkerPool {
                 .await
                 .expect("spawn cpu worker");
             worker.start_keepalive();
-            workers.push(worker);
+            workers.write().await.push(worker);
             device_map.insert(0, 0);
         }
 
         // Clone workers for the event listener (workers is moved into the async closure).
-        let pool_workers = workers.clone();
+        let pool_workers = {
+            let l = workers.read().await;
+            l.clone()
+        };
         let pool_event_tx = event_tx.clone();
         let pool_hardware = hardware.clone();
         let pool_respawn_delay = respawn_delay_ms;
 
         // Wrap workers and config in Arc for sharing across respawn tasks.
-        let shared_workers = Arc::new(tokio::sync::RwLock::new(workers.clone()));
+        let shared_workers = workers.clone();
         let shared_cfg = cfg.clone();
 
         spawn(async move {
@@ -293,8 +297,9 @@ impl WorkerPool {
 
     /// Return current info for all workers.
     pub async fn list(&self) -> Vec<anvilml_core::WorkerInfo> {
-        let mut infos = Vec::with_capacity(self.workers.len());
-        for worker in &self.workers {
+        let locked = self.workers.read().await;
+        let mut infos = Vec::with_capacity(locked.len());
+        for worker in &*locked {
             infos.push(worker.info().await);
         }
         infos
@@ -305,7 +310,8 @@ impl WorkerPool {
     /// If `device_index` is Some, returns the first idle worker at that index.
     /// If None, returns any idle worker. Returns None if no idle worker matches.
     pub async fn acquire_idle(&self, device_index: Option<u32>) -> Option<Arc<ManagedWorker>> {
-        for worker in &self.workers {
+        let locked = self.workers.read().await;
+        for worker in &*locked {
             let status = worker.get_status().await;
             if status != WorkerStatus::Idle {
                 continue;
@@ -322,7 +328,8 @@ impl WorkerPool {
 
     /// Mark a worker as busy with the given job ID.
     pub async fn set_busy(&self, worker_id: &str, _job_id: &str) {
-        for worker in &self.workers {
+        let locked = self.workers.read().await;
+        for worker in &*locked {
             if worker.worker_id() == worker_id {
                 worker.set_status(WorkerStatus::Busy).await;
                 info!(worker_id = %worker_id, job_id = %_job_id, "worker set to busy");
@@ -334,7 +341,8 @@ impl WorkerPool {
 
     /// Mark a worker as idle and clear its current job.
     pub async fn set_idle(&self, worker_id: &str) {
-        for worker in &self.workers {
+        let locked = self.workers.read().await;
+        for worker in &*locked {
             if worker.worker_id() == worker_id {
                 worker.set_status(WorkerStatus::Idle).await;
                 info!(worker_id = %worker_id, "worker set to idle");
@@ -355,7 +363,8 @@ impl WorkerPool {
         worker_id: &str,
         msg: WorkerMessage,
     ) -> Result<(), anvilml_core::AnvilError> {
-        for worker in &self.workers {
+        let locked = self.workers.read().await;
+        for worker in &*locked {
             if worker.worker_id() == worker_id {
                 return worker.send(msg).await;
             }
@@ -380,7 +389,8 @@ impl WorkerPool {
     /// yet (or has already exited). This is a test-only accessor gated behind
     /// `#[cfg(any(test, feature = "test-helpers"))]`.
     pub async fn pid_for(&self, worker_id: &str) -> Option<u32> {
-        for worker in &self.workers {
+        let locked = self.workers.read().await;
+        for worker in &*locked {
             if worker.worker_id() == worker_id {
                 return worker.child_pid().await;
             }
@@ -531,8 +541,8 @@ mod tests {
         let hardware = Arc::new(tokio::sync::Mutex::new(hw.clone()));
 
         // Build pool structure manually (simulating what spawn_all does for the CPU path).
-        let workers: Vec<Arc<ManagedWorker>> =
-            vec![Arc::new(ManagedWorker::new("worker-0".to_string(), 0))];
+        let worker_list = vec![Arc::new(ManagedWorker::new("worker-0".to_string(), 0))];
+        let workers: Arc<RwLock<Vec<Arc<ManagedWorker>>>> = Arc::new(RwLock::new(worker_list));
 
         let pool = WorkerPool {
             workers,
@@ -574,11 +584,17 @@ mod tests {
         // Verify the worker status is Idle.
         // (In production, spawn_all calls ManagedWorker::spawn which transitions
         // to Idle via the Ready event from Python. Here we set it directly.)
-        pool.workers[0].set_status(WorkerStatus::Idle).await;
-        assert!(
-            matches!(pool.workers[0].get_status().await, WorkerStatus::Idle),
-            "worker should be Idle"
-        );
+        {
+            let l = pool.workers.read().await;
+            l[0].set_status(WorkerStatus::Idle).await;
+        }
+        {
+            let l = pool.workers.read().await;
+            assert!(
+                matches!(l[0].get_status().await, WorkerStatus::Idle),
+                "worker should be Idle"
+            );
+        }
 
         // Verify hardware info still has no GPUs (CPU worker doesn't match any GPU index).
         let hw_guard = pool.hardware.lock().await;
@@ -604,8 +620,8 @@ mod tests {
         let (event_tx, _rx) = broadcast::channel(256);
         let hardware = Arc::new(tokio::sync::Mutex::new(hw));
 
-        let workers: Vec<Arc<ManagedWorker>> =
-            vec![Arc::new(ManagedWorker::new("worker-0".to_string(), 0))];
+        let worker_list = vec![Arc::new(ManagedWorker::new("worker-0".to_string(), 0))];
+        let workers: Arc<RwLock<Vec<Arc<ManagedWorker>>>> = Arc::new(RwLock::new(worker_list));
 
         let pool = WorkerPool {
             workers,
@@ -650,8 +666,8 @@ mod tests {
         let (event_tx, _rx) = broadcast::channel(256);
         let hardware = Arc::new(tokio::sync::Mutex::new(hw));
 
-        let workers: Vec<Arc<ManagedWorker>> =
-            vec![Arc::new(ManagedWorker::new("worker-0".to_string(), 0))];
+        let worker_list = vec![Arc::new(ManagedWorker::new("worker-0".to_string(), 0))];
+        let workers: Arc<RwLock<Vec<Arc<ManagedWorker>>>> = Arc::new(RwLock::new(worker_list));
 
         let pool = WorkerPool {
             workers,
@@ -670,7 +686,10 @@ mod tests {
             .spawn()
             .expect("spawn dummy child");
         let expected_pid = dummy.id().expect("child has pid");
-        pool.workers[0].set_child_for_test(dummy).await;
+        {
+            let l = pool.workers.read().await;
+            l[0].set_child_for_test(dummy).await;
+        }
 
         // pid_for should return the PID of the stored child.
         let actual_pid = pool.pid_for("worker-0").await;

@@ -110,16 +110,17 @@
     "P901-A1",
     "P12-A3",
     "P12-A4",
-    "P12-A5"
+    "P12-A5",
+    "P902-A1"
   ],
-  "in_progress": "P902-A1",
+  "in_progress": "P902-A2a",
   "plan_approved": true,
-  "current_plan": "1. **Replace write logic** (current lines 9\u201315):\n   - Remove: `let event = WorkerEvent::Pong { seq: 7 }; let payload = rmp_serde::to_vec_named(&event)?;`\n   - Replace with flat-dict construction that produces the same format as the Python worker:\n     ```rust\n     let pong = serde_json::json!({ \"_type\": \"Pong\", \"seq\": 7u64 });\n     let payload = rmp_serde::to_vec_named(&pong)?;\n     ```\n   - Keep the header length writing (4 bytes big-endian u32) and payload write \u2014 these are framing operations, not message serialization.\n\n2. **Update imports**:\n   - Remove: `use anvilml_ipc::WorkerEvent;` (no longer needed \u2014 the match arm can use full path or we keep it since the match result still needs the type). Actually, `WorkerEvent` IS still needed for the match arm pattern on lines 20\u201321 (`WorkerEvent::Pong { seq: 7 }`). So keep the import.\n   - Add: `use serde_json::json;` (for constructing flat-dict Pong)\n\n3. **Update comment** (lines 9\u201310): adjust to reflect that we're now writing a flat-dict Pong event frame compatible with Python's serialization format.\n\n4. **Bump version**: change `version = \"0.1.1\"` \u2192 `version = \"0.1.2\"` in `crates/anvilml-ipc/Cargo.toml`.\n\nNote: The task description suggests using `write_frame(&mut tx, &WorkerMessage::Ping { seq: 7 })`, but `write_frame` only serializes `WorkerMessage` types (Rust\u2192Python direction), and there is no `WorkerEvent::Ping` variant for the read side to match against. The ACT agent should use the flat-dict Pong event format approach instead, which produces a frame that `read_frame()` can correctly deserialize as `WorkerEvent::Pong { seq: 7 }`.",
+  "current_plan": "Six numbered steps, each implementing one change listed in the task spec. All within `crates/anvilml-worker/src/pool.rs`.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-07T22:14:49+0200",
-  "plan_approval_message_id": "1513273599472042166",
+  "last_updated": "2026-06-07T23:34:52+0200",
+  "plan_approval_message_id": "1513291568512110665",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1513273597710438523",
+  "plan_report_message_id": "1513291566620610560",
   "impl_report_message_id": null
 }
