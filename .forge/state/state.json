@@ -103,16 +103,17 @@
     "P11-A5",
     "P11-B1",
     "P11-C1",
-    "P11-C2"
+    "P11-C2",
+    "P11-C3"
   ],
-  "in_progress": "P11-C3",
+  "in_progress": "P12-A1",
   "plan_approved": true,
-  "current_plan": "1. **Read** `crates/anvilml-worker/src/managed.rs` lines 128\u2013140 to confirm the exact current code block:\n   ```rust\n   let abs_venv = if cfg.venv_path.is_absolute() {\n       cfg.venv_path.clone()\n   } else {\n       std::env::current_dir()\n           .unwrap_or_default()\n           .join(&cfg.venv_path)\n   };\n   ```\n\n2. **Replace** the `else` branch base from `std::env::current_dir().unwrap_or_default()` to `_repo_root_for_worker()`:\n   ```rust\n   let abs_venv = if cfg.venv_path.is_absolute() {\n       cfg.venv_path.clone()\n   } else {\n       _repo_root_for_worker().join(&cfg.venv_path)\n   };\n   ```\n   This is a single-line change (removing `.unwrap_or_default()` and replacing the function call). The `is_absolute()` guard and surrounding code remain untouched.\n\n3. **Bump** the crate version: update `crates/anvilml-worker/Cargo.toml` line 3 from `version = \"0.1.8\"` to `version = \"0.1.9\"`.\n\n4. **Verify** with `cargo check -p anvilml-worker --features mock-hardware` and `cargo test -p anvilml-worker --features mock-hardware`. Both must exit 0.\n\n5. **Cross-check** with `cargo check --target x86_64-pc-windows-gnu --features mock-hardware` (per ENVIRONMENT.md \u00a77). Must exit 0.",
+  "current_plan": "1. **Add dependencies** to `crates/anvilml-scheduler/Cargo.toml`:\n   - Add `sqlx = { workspace = true }` (workspace already has features: `sqlite, runtime-tokio, macros, migrate`)\n   - Add `uuid = { workspace = true }` (workspace already has features: `serde, v4`)\n   - Add `chrono = { workspace = true }` (workspace already has features: `serde`)\n   - Add dev-dependencies: `serial_test = { workspace = true }`, `tempfile = { workspace = true }`\n\n2. **Create `src/job_store.rs`** with the four async functions. Each function takes a `&SqlitePool` (from `sqlx::sqlite::SqlitePool`) and uses the `query!` / `query_as!` / `query_file!` macros for compile-time SQL checking. The `Job` struct from `anvilml-core` is mapped to/from the SQLite row:\n   - `graph` and `settings` are stored as TEXT (JSON blobs). Since `serde_json::Value` and `JobSettings` implement `Serialize`/`Deserialize`, use `query_as!` with a helper that serialises these fields, or use `query!` returning a raw row and deserialize manually.\n   - Timestamps: `DateTime<Utc>` \u2192 ISO 8601 string for INSERT; parse back from TEXT on SELECT.\n\n3. **Register the module** in `src/lib.rs`: add `pub mod job_store;` and re-export the four functions.\n\n4. **Write tests** in a `#[cfg(test)]` module at the bottom of `job_store.rs` (adjacent to code, per FORGE_AGENT_RULES \u00a75.4). Each test creates its own isolated in-memory SQLite pool via `SqlitePool::connect(\"sqlite::memory:\")`. Tests use `serial_test::serial` attribute where DB state must not race.\n\n   Test cases:\n   - `test_insert_and_get`: insert a fully-populated Job, get_job by id returns it with matching fields\n   - `test_list_jobs_all`: insert 3 jobs, list_jobs returns all 3 (default limit)\n   - `test_list_jobs_status_filter`: insert mixed-status jobs, list_jobs(status=Some(Queued)) returns only Queued\n   - `test_list_jobs_limit`: insert 5 jobs, list_jobs(limit=2) returns exactly 2\n   - `test_list_jobs_before_cursor`: insert jobs at different timestamps, list_jobs(before=some_ts) excludes later jobs\n   - `test_update_status`: get a Queued job, update_status to Running with error=None, verify status and started_at updated\n\n5. **Verify**: run `cargo test -p anvilml-scheduler --job_store` \u2014 must exit 0.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-07T14:29:44+0200",
-  "plan_approval_message_id": "1513157126539706439",
+  "last_updated": "2026-06-07T15:03:47+0200",
+  "plan_approval_message_id": "1513163390833660125",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1513157124958453851",
+  "plan_report_message_id": "1513163388996423771",
   "impl_report_message_id": null
 }

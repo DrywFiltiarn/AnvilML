@@ -1,13 +1,21 @@
 [package]
 name = "anvilml-scheduler"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 
 [dependencies]
 anvilml-core = { path = "../anvilml-core" }
 anvilml-registry = { path = "../anvilml-registry" }
 anvilml-worker = { path = "../anvilml-worker" }
+chrono = { workspace = true }
 serde_json = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+serial_test = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [features]
 mock-hardware = ["anvilml-worker/mock-hardware"]
