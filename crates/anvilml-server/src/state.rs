@@ -2,6 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use anvilml_core::{config::ModelDirConfig, EnvReport, HardwareInfo};
 use anvilml_registry::ModelRegistry;
+use anvilml_scheduler::JobScheduler;
 use anvilml_worker::WorkerPool;
 use sqlx::SqlitePool;
 use std::time::Instant;
@@ -28,6 +29,8 @@ pub struct AppState {
     pub broadcaster: Arc<EventBroadcaster>,
     /// Worker pool — spawned after hardware detection at startup.
     pub workers: Option<Arc<WorkerPool>>,
+    /// Job scheduler — orchestrates job submission and dispatch coordination.
+    pub scheduler: Option<Arc<JobScheduler>>,
 }
 
 impl AppState {
@@ -44,6 +47,7 @@ impl AppState {
         model_dirs: Option<Vec<ModelDirConfig>>,
         broadcaster: Arc<EventBroadcaster>,
         workers: Option<Arc<WorkerPool>>,
+        scheduler: Option<Arc<JobScheduler>>,
     ) -> Self {
         let registry = match (registry, &db) {
             (Some(r), _) => r,
@@ -78,11 +82,13 @@ impl AppState {
             model_dirs: model_dirs.unwrap_or_default(),
             broadcaster,
             workers,
+            scheduler,
         }
     }
 
     /// Create a new `AppState` with the given version string, pre-detected
     /// hardware information, and optional SQLite connection pool.
+    #[expect(clippy::too_many_arguments)]
     pub fn new_with_hardware(
         version: impl Into<String>,
         hardware: HardwareInfo,
@@ -91,6 +97,7 @@ impl AppState {
         model_dirs: Option<Vec<ModelDirConfig>>,
         broadcaster: Arc<EventBroadcaster>,
         workers: Option<Arc<WorkerPool>>,
+        scheduler: Option<Arc<JobScheduler>>,
     ) -> Self {
         let registry = match (registry, &db) {
             (Some(r), _) => r,
@@ -116,6 +123,7 @@ impl AppState {
             model_dirs: model_dirs.unwrap_or_default(),
             broadcaster,
             workers,
+            scheduler,
         }
     }
 
@@ -152,6 +160,7 @@ impl Clone for AppState {
             model_dirs: self.model_dirs.clone(),
             broadcaster: Arc::clone(&self.broadcaster),
             workers: self.workers.clone(),
+            scheduler: self.scheduler.clone(),
         }
     }
 }

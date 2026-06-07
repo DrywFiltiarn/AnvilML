@@ -1,6 +1,6 @@
 [package]
 name = "backend"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 
 [[bin]]
@@ -12,6 +12,7 @@ anvilml-core = { path = "../crates/anvilml-core" }
 anvilml-ipc = { path = "../crates/anvilml-ipc" }
 anvilml-hardware = { path = "../crates/anvilml-hardware" }
 anvilml-registry = { path = "../crates/anvilml-registry" }
+anvilml-scheduler = { path = "../crates/anvilml-scheduler" }
 anvilml-server = { path = "../crates/anvilml-server" }
 anvilml-worker = { path = "../crates/anvilml-worker" }
 chrono = { workspace = true }

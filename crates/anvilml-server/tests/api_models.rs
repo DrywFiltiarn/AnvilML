@@ -53,6 +53,7 @@ async fn build_test_app_state(model_dir: PathBuf, db_path: PathBuf) -> AppState 
         Some(dirs),
         broadcaster,
         None,
+        None,
     )
 }
 

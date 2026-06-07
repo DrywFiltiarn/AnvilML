@@ -22,6 +22,7 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(handlers::health::health))
         .route("/v1/jobs", post(handlers::jobs::submit_job))
+        .route("/v1/jobs/{id}", get(handlers::jobs::get_job))
         .route("/v1/events", get(ws_events))
         .route("/v1/models/rescan", post(handlers::models::rescan_models))
         .route("/v1/models/{id}", get(handlers::models::get_model))
@@ -47,7 +48,7 @@ mod tests {
     #[tokio::test]
     async fn health_returns_200() {
         let broadcaster = Arc::new(EventBroadcaster::new(16));
-        let state = AppState::new("0.1.0", None, None, None, broadcaster, None);
+        let state = AppState::new("0.1.0", None, None, None, broadcaster, None, None);
         let app = build_router(state);
 
         let response = app
@@ -76,7 +77,7 @@ mod tests {
     #[tokio::test]
     async fn env_returns_200_with_stub_report() {
         let broadcaster = Arc::new(EventBroadcaster::new(16));
-        let state = AppState::new("0.1.0", None, None, None, broadcaster, None);
+        let state = AppState::new("0.1.0", None, None, None, broadcaster, None, None);
         let app = build_router(state);
 
         let response = app
@@ -118,8 +119,16 @@ mod tests {
                 .expect("detect_all_devices should succeed");
 
         let broadcaster = Arc::new(EventBroadcaster::new(16));
-        let state =
-            AppState::new_with_hardware("0.1.0", hw_info, None, None, None, broadcaster, None);
+        let state = AppState::new_with_hardware(
+            "0.1.0",
+            hw_info,
+            None,
+            None,
+            None,
+            broadcaster,
+            None,
+            None,
+        );
         let app = build_router(state);
 
         let response = app
@@ -176,7 +185,7 @@ mod tests {
             .expect("open db must succeed");
         let registry = std::sync::Arc::new(anvilml_registry::ModelRegistry::new(pool));
         let broadcaster = Arc::new(EventBroadcaster::new(16));
-        let state = AppState::new("0.1.0", None, Some(registry), None, broadcaster, None);
+        let state = AppState::new("0.1.0", None, Some(registry), None, broadcaster, None, None);
         let app = build_router(state);
 
         let response = app
@@ -204,7 +213,7 @@ mod tests {
     #[tokio::test]
     async fn rescan_returns_202() {
         let broadcaster = Arc::new(EventBroadcaster::new(16));
-        let state = AppState::new("0.1.0", None, None, None, broadcaster, None);
+        let state = AppState::new("0.1.0", None, None, None, broadcaster, None, None);
         let app = build_router(state);
 
         let response = app
@@ -238,7 +247,7 @@ mod tests {
     async fn workers_endpoint_returns_200() {
         let broadcaster = Arc::new(EventBroadcaster::new(16));
         // No WorkerPool — handler should return 503 with empty array.
-        let state = AppState::new("0.1.0", None, None, None, broadcaster, None);
+        let state = AppState::new("0.1.0", None, None, None, broadcaster, None, None);
         let app = build_router(state);
 
         let response = app
