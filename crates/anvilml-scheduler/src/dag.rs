@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+
 use serde_json::Value;
 
-use super::nodes::KNOWN_NODE_TYPES;
+use super::nodes::{get_node_slots, KNOWN_NODE_TYPES};
 
 /// A zero-cost newtype proving that a graph value passed validation.
 #[derive(Debug, Clone)]
@@ -61,12 +63,57 @@ pub fn validate_graph(v: &Value) -> Result<ValidatedGraph, Vec<String>> {
         }
     }
 
-    // d. If any errors were collected, return Err(errors).
+    // d. Edge-reference validation: check that each node's inputs reference
+    //    valid nodes and valid output slots on those nodes.
+    let mut id_type_map: HashMap<&str, &str> = HashMap::new();
+    for node in nodes {
+        if let Value::Object(obj) = node {
+            if let (Some(Value::String(id)), Some(Value::String(t))) =
+                (obj.get("id"), obj.get("type"))
+            {
+                id_type_map.insert(id.as_str(), t.as_str());
+            }
+        }
+    }
+
+    for node in nodes {
+        if let Value::Object(obj) = node {
+            if let Some(inputs_val) = obj.get("inputs") {
+                if let Some(inputs_obj) = inputs_val.as_object() {
+                    for (_slot_name, input_value) in inputs_obj {
+                        // If input is an object with node_id + output_slot keys, it's an edge ref.
+                        if let (Some(Value::String(ref_node_id)), Some(Value::String(ref_slot))) =
+                            (input_value.get("node_id"), input_value.get("output_slot"))
+                        {
+                            // Check 1: does the referenced node exist?
+                            if !id_type_map.contains_key(ref_node_id.as_str()) {
+                                errors.push(format!("unknown_node_ref: {}", ref_node_id));
+                                continue; // skip slot check — node doesn't exist
+                            }
+
+                            // Check 2: does that node's type declare this output slot?
+                            let ref_type = id_type_map[ref_node_id.as_str()];
+                            if let Some(slots) = get_node_slots(ref_type) {
+                                if !slots.outputs.contains(&ref_slot.as_str()) {
+                                    errors.push(format!(
+                                        "unknown_output_slot: {}.{}",
+                                        ref_node_id, ref_slot
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // e. If any errors were collected, return Err(errors).
     if !errors.is_empty() {
         return Err(errors);
     }
 
-    // e. Otherwise return Ok(ValidatedGraph(v.clone())).
+    // f. Otherwise return Ok(ValidatedGraph(v.clone())).
     Ok(ValidatedGraph(v.clone()))
 }
 
@@ -113,6 +160,91 @@ mod tests {
             "nodes": [
                 { "id": "load", "type": "ZitLoadPipeline" },
                 { "id": "encode", "type": "ZitTextEncode" }
+            ]
+        });
+        let result = validate_graph(&graph);
+        assert!(
+            result.is_ok(),
+            "expected Ok, got Err: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_unknown_node_ref() {
+        // Graph with two nodes where one references a non-existent node ID.
+        let graph = serde_json::json!({
+            "nodes": [
+                {
+                    "id": "load",
+                    "type": "ZitLoadPipeline"
+                },
+                {
+                    "id": "encode",
+                    "type": "ZitTextEncode",
+                    "inputs": {
+                        "pipeline": { "node_id": "ghost_node", "output_slot": "pipeline" }
+                    }
+                }
+            ]
+        });
+        let result = validate_graph(&graph);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|e| e == "unknown_node_ref: ghost_node"),
+            "expected 'unknown_node_ref: ghost_node' in errors, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_unknown_output_slot() {
+        // Graph where output slot doesn't exist on the referenced type.
+        // ZitLoadPipeline only outputs "pipeline", not "latents".
+        let graph = serde_json::json!({
+            "nodes": [
+                {
+                    "id": "load",
+                    "type": "ZitLoadPipeline"
+                },
+                {
+                    "id": "sample",
+                    "type": "ZitSampler",
+                    "inputs": {
+                        "pipeline": { "node_id": "load", "output_slot": "latents" }
+                    }
+                }
+            ]
+        });
+        let result = validate_graph(&graph);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e == "unknown_output_slot: load.latents"),
+            "expected 'unknown_output_slot: load.latents' in errors, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_valid_edge_references() {
+        // Valid ZiT 2-node graph (ZitLoadPipeline → ZitTextEncode).
+        // ZitLoadPipeline outputs "pipeline", and ZitTextEncode's "pipeline" input
+        // correctly references that output.
+        let graph = serde_json::json!({
+            "nodes": [
+                {
+                    "id": "load",
+                    "type": "ZitLoadPipeline"
+                },
+                {
+                    "id": "encode",
+                    "type": "ZitTextEncode",
+                    "inputs": {
+                        "pipeline": { "node_id": "load", "output_slot": "pipeline" }
+                    }
+                }
             ]
         });
         let result = validate_graph(&graph);
