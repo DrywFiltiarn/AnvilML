@@ -181,10 +181,17 @@ Submit a bad graph and a good graph; confirm 422 vs 202.
 
 ```bash
 cargo run --features mock-hardware
-# bad graph: unknown node type
+# Bad graph — unknown node type → expect 422
 curl -s -X POST http://127.0.0.1:8488/v1/jobs \
   -H 'content-type: application/json' \
-  -d '{"graph":{"nodes":[{"id":"n0","type":"NopeNode","inputs":{}}]},"settings":{"seed":-1,"steps":8,"guidance_scale":0.0,"width":1024,"height":1024}}'
+  -d '{"graph":{"nodes":[{"id":"n0","type":"NopeNode","inputs":{}}]},"settings":{"seed":-1,"steps":8,"guidance_scale":7.5,"width":1024,"height":1024}}' \
+  | python -m json.tool
+
+# Valid ZiT 5-node graph → expect 202 with job_id
+curl -s -X POST http://127.0.0.1:8488/v1/jobs \
+  -H 'content-type: application/json' \
+  -d @valid_zit_job.json \
+  | python -m json.tool
 ```
 
 Expected: 422 with body `{"error":"invalid_graph","message":"unknown_node_type: NopeNode", ...}`. A valid two-node ZiT graph (ZitLoadPipeline -> ... -> SaveImage) returns 202. Phase done when invalid graphs are rejected with 422 listing the specific problems and `cargo test -p anvilml-scheduler -- dag` is green.

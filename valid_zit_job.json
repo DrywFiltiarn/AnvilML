@@ -1,0 +1,53 @@
+{
+  "graph": {
+    "nodes": [
+      {
+        "id": "load",
+        "type": "ZitLoadPipeline"
+      },
+      {
+        "id": "encode",
+        "type": "ZitTextEncode",
+        "inputs": {
+          "pipeline": { "node_id": "load", "output_slot": "pipeline" },
+          "prompt": "a red fox in a snowy forest"
+        }
+      },
+      {
+        "id": "sampler",
+        "type": "ZitSampler",
+        "inputs": {
+          "pipeline": { "node_id": "load", "output_slot": "pipeline" },
+          "conditioning": { "node_id": "encode", "output_slot": "conditioning" },
+          "steps": 8,
+          "seed": 42
+        }
+      },
+      {
+        "id": "decode",
+        "type": "ZitDecode",
+        "inputs": {
+          "pipeline": { "node_id": "load", "output_slot": "pipeline" },
+          "latents": { "node_id": "sampler", "output_slot": "latents" }
+        }
+      },
+      {
+        "id": "save",
+        "type": "SaveImage",
+        "inputs": {
+          "image": { "node_id": "decode", "output_slot": "image" },
+          "prompt": "a red fox in a snowy forest",
+          "seed": 42,
+          "steps": 8
+        }
+      }
+    ]
+  },
+  "settings": {
+    "seed": 42,
+    "steps": 8,
+    "guidance_scale": 7.5,
+    "width": 1024,
+    "height": 1024
+  }
+}
