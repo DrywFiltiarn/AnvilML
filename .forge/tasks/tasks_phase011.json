@@ -52,5 +52,31 @@
     "prereqs": ["P11-A1"],
     "context": "In crates/anvilml-hardware/src/mock.rs and src/lib.rs, add a private fn clear_mock_env() that calls std::env::remove_var for ANVILML_MOCK_DEVICE_TYPE, ANVILML_MOCK_VRAM_MIB, and ANVILML_MOCK_GFX_ARCH. Call clear_mock_env() as the last statement of every #[serial] test in both files that sets any of these vars (mock_detect_default_cpu, mock_detect_cuda, mock_detect_rocm, mock_device_new_fields in mock.rs; detect_all_devices_mock_cuda, detect_all_devices_mock_rocm, detect_all_devices_mock_vram, detect_all_devices_mock_device_type, detect_all_devices_mock_enum_source, mock_device_new_fields_in_detect_all in lib.rs). Do not add set_var calls for vars a test does not itself set. cargo test -p anvilml-hardware --features mock-hardware exits 0 with 48 tests passing across 20 consecutive runs (no ordering-dependent failures).",
     "tags": []
+  },
+  {
+    "id": "P11-C1",
+    "description": "anvilml-worker: fix relative venv path causing Windows spawn ERROR_PATH_NOT_FOUND",
+    "phase": "11",
+    "project": "anvilml",
+    "prereqs": [
+      "P10-B4"
+    ],
+    "context": "spawn() sets .current_dir(_repo_root_for_worker()) on the child Command. On Windows, CreateProcess resolves a relative executable path against the child's CWD, not the parent's. ANVILML_VENV_PATH='.ci-venv' (CI) and default_venv_path='./venv' are both relative; when _repo_root_for_worker() differs from the test runner's CWD, the python path resolves to a non-existent location and CreateProcess returns ERROR_PATH_NOT_FOUND (os code 3). Fix: in spawn(), after reading cfg.venv_path, resolve it to an absolute path before calling resolve_python_path: let abs_venv = if cfg.venv_path.is_absolute() { cfg.venv_path.clone() } else { std::env::current_dir().unwrap_or_default().join(&cfg.venv_path) }; then pass &abs_venv to resolve_python_path. cargo test -p anvilml-worker --features mock-hardware exits 0 on both platforms. cargo check --target x86_64-pc-windows-gnu --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P11-C2",
+    "description": "anvilml-worker: serialise spawning integration tests to eliminate env-var race on Windows",
+    "phase": "11",
+    "project": "anvilml",
+    "prereqs": [
+      "P11-C1"
+    ],
+    "context": "The four spawning integration tests (spawn_ping_pong, status_transitions, handshake_completes_once, spawn_reaches_idle) call std::env::set_var which is process-global. cargo test runs tests in parallel OS threads by default; on Windows the races cause cross-test contamination visible as wrong test names appearing in each other's backtraces. Fix: add serial_test = \"1\" to [dev-dependencies] in crates/anvilml-worker/Cargo.toml (workspace = false, plain version string). Annotate all four tests with #[serial] from serial_test::serial. Do not change any test logic. cargo test -p anvilml-worker --features mock-hardware exits 0 with 0 ignored and 0 failed. cargo check --target x86_64-pc-windows-gnu --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
   }  
 ]

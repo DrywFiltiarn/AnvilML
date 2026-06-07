@@ -7,7 +7,7 @@
 | Milestone group | End-to-end generation (mock) |
 | Depends on phases | 1-10 |
 | Task file | `forge/tasks/tasks_phase011.json` |
-| Tasks | 6 |
+| Tasks | 7 |
 
 ## Overview
 
@@ -25,6 +25,8 @@ Every task in this phase implements **one module or one endpoint** plus its test
 | P11-A4 | `crates/anvilml-scheduler/src/dag.rs` | anvilml-scheduler: dag.rs cycle detection (Kahn) |
 | P11-A5 | `crates/anvilml-server/src/handlers/jobs.rs` | anvilml-server: POST /v1/jobs validating graph (422 on invalid) |
 | P11-B1 | `crates/anvilml-hardware/src/mock.rs`, `src/lib.rs` | anvilml-hardware: serial mock test env-var teardown |
+| P11-C1 | `crates/anvilml-worker/src/managed.rs` | anvilml-worker: fix relative venv path causing Windows spawn ERROR_PATH_NOT_FOUND |
+| P11-C2 | `crates/anvilml-worker/Cargo.toml`, `crates/anvilml-worker/src/managed.rs` | anvilml-worker: serialise spawning integration tests to eliminate env-var race on Windows |
 
 ## Task details
 
@@ -106,6 +108,50 @@ Acceptance: `cargo test -p anvilml-hardware --features mock-hardware` exits 0
 with all 48 tests passing. The fix must hold across 20 consecutive runs with
 `cargo test ... -- --test-threads=1` to verify no ordering-dependent failure
 remains.
+
+
+#### P11-C1: anvilml-worker: fix relative venv path causing Windows spawn ERROR_PATH_NOT_FOUND
+
+- **Prereqs:** P10-B4
+- **Tags:** reasoning
+
+`spawn()` sets `.current_dir(_repo_root_for_worker())` on the child `Command`. On Windows, `CreateProcess` resolves a relative executable path against the *child's* working directory, not the parent process CWD. `ANVILML_VENV_PATH=.ci-venv` (CI) and `default_venv_path() = "./venv"` (default) are both relative paths. When `_repo_root_for_worker()` — which is built from the compile-time `CARGO_MANIFEST_DIR` — differs from the runtime CWD, the relative venv path resolves to a non-existent location and `CreateProcess` returns `ERROR_PATH_NOT_FOUND` (os error code 3).
+
+In `spawn()`, immediately after reading `cfg.venv_path`, resolve it to an absolute path before passing it to `resolve_python_path`:
+
+```rust
+let abs_venv = if cfg.venv_path.is_absolute() {
+    cfg.venv_path.clone()
+} else {
+    std::env::current_dir().unwrap_or_default().join(&cfg.venv_path)
+};
+let python_path = resolve_python_path(&abs_venv);
+```
+
+No other changes. `resolve_python_path`, `_repo_root_for_worker`, and the test logic are all unchanged.
+
+`cargo test -p anvilml-worker --features mock-hardware` exits 0 on both platforms. `cargo check --target x86_64-pc-windows-gnu --features mock-hardware` exits 0.
+
+#### P11-C2: anvilml-worker: serialise spawning integration tests to eliminate env-var race on Windows
+
+- **Prereqs:** P11-C1
+- **Tags:** reasoning
+
+The four spawning integration tests (`spawn_ping_pong`, `status_transitions`, `handshake_completes_once`, `spawn_reaches_idle`) call `std::env::set_var("ANVILML_WORKER_MOCK", "1")` which mutates process-global state. Cargo's test harness runs tests in parallel OS threads by default. On Windows this causes cross-test env-var contamination: a thread executing `ManagedWorker::new()` or `spawn()` in test A reads env vars mutated by test B mid-flight. This manifests as the wrong test name appearing in another test's backtrace and as intermittent `PATH_NOT_FOUND` or handshake timeout failures.
+
+Add `serial_test = "1"` to `[dev-dependencies]` in `crates/anvilml-worker/Cargo.toml`. Annotate all four spawning tests with `#[serial_test::serial]`:
+
+```rust
+#[tokio::test]
+#[cfg(feature = "mock-hardware")]
+#[serial_test::serial]
+async fn spawn_ping_pong() { ... }
+```
+
+Apply the same annotation to `status_transitions`, `handshake_completes_once`, and `spawn_reaches_idle`. No test logic changes. The non-spawning tests (`eof_sets_dead`, `keepalive_pings_and_kills_on_timeout`, `respawn_after_death`) do not use `set_var` for mock-mode and do not need `#[serial]`.
+
+`cargo test -p anvilml-worker --features mock-hardware` exits 0 with 0 ignored and 0 failed on both platforms. `cargo check --target x86_64-pc-windows-gnu --features mock-hardware` exits 0.
+
 
 ## Runnable Proof
 
