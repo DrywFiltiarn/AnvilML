@@ -65,19 +65,26 @@ pub fn validate_graph(v: &Value) -> Result<ValidatedGraph, Vec<String>> {
 
     // d. Edge-reference validation: check that each node's inputs reference
     //    valid nodes and valid output slots on those nodes.
-    let mut id_type_map: HashMap<&str, &str> = HashMap::new();
+    //    Also build an adjacency list for cycle detection.
+    let mut id_type_map: HashMap<String, String> = HashMap::new();
     for node in nodes {
         if let Value::Object(obj) = node {
             if let (Some(Value::String(id)), Some(Value::String(t))) =
                 (obj.get("id"), obj.get("type"))
             {
-                id_type_map.insert(id.as_str(), t.as_str());
+                id_type_map.insert(id.to_string(), t.to_string());
             }
         }
     }
 
+    // Build adjacency list for cycle detection: edge from node → dependency
+    // (node depends on the referenced node's output).
+    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
     for node in nodes {
         if let Value::Object(obj) = node {
+            if let Some(Value::String(node_id)) = obj.get("id") {
+                adj.entry(node_id.to_string()).or_default();
+            }
             if let Some(inputs_val) = obj.get("inputs") {
                 if let Some(inputs_obj) = inputs_val.as_object() {
                     for (_slot_name, input_value) in inputs_obj {
@@ -92,7 +99,7 @@ pub fn validate_graph(v: &Value) -> Result<ValidatedGraph, Vec<String>> {
                             }
 
                             // Check 2: does that node's type declare this output slot?
-                            let ref_type = id_type_map[ref_node_id.as_str()];
+                            let ref_type = &id_type_map[ref_node_id.as_str()];
                             if let Some(slots) = get_node_slots(ref_type) {
                                 if !slots.outputs.contains(&ref_slot.as_str()) {
                                     errors.push(format!(
@@ -101,6 +108,14 @@ pub fn validate_graph(v: &Value) -> Result<ValidatedGraph, Vec<String>> {
                                     ));
                                 }
                             }
+
+                            // Build adjacency edge: current node depends on ref_node_id.
+                            let cur_id = node
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            adj.entry(cur_id).or_default().push(ref_node_id.to_string());
                         }
                     }
                 }
@@ -113,7 +128,62 @@ pub fn validate_graph(v: &Value) -> Result<ValidatedGraph, Vec<String>> {
         return Err(errors);
     }
 
-    // f. Otherwise return Ok(ValidatedGraph(v.clone())).
+    // f. Cycle detection via Kahn's algorithm.
+    let total_nodes = adj.len();
+    if total_nodes > 0 {
+        // Compute in-degree: for each node, count how many other nodes point to it.
+        let mut in_degree: HashMap<String, usize> = HashMap::new();
+        for id in adj.keys() {
+            in_degree.insert(id.clone(), 0);
+        }
+        for edges in adj.values() {
+            for dep in edges {
+                *in_degree.entry(dep.clone()).or_insert(0) += 1;
+            }
+        }
+
+        // Seed queue with nodes having in-degree 0.
+        let mut queue: Vec<String> = in_degree
+            .iter()
+            .filter(|(_k, v)| **v == 0)
+            .map(|(k, _)| k.clone())
+            .collect();
+        queue.sort();
+
+        let mut processed_count: usize = 0;
+        while let Some(node) = queue.pop() {
+            processed_count += 1;
+            // Decrement in-degree of all nodes that depend on this node.
+            if let Some(deps) = adj.get(&node) {
+                for dep in deps {
+                    if let Some(deg) = in_degree.get_mut(dep) {
+                        *deg -= 1;
+                        if *deg == 0 {
+                            queue.push(dep.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // If not all nodes were processed, a cycle exists.
+        if processed_count < total_nodes {
+            let mut sorted_ids: Vec<String> = in_degree
+                .iter()
+                .filter(|(_k, v)| **v > 0)
+                .map(|(k, _)| k.clone())
+                .collect();
+            sorted_ids.sort();
+            let ids_str = sorted_ids.join(",");
+            errors.push(format!("cycle_detected: {ids_str}"));
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    // g. Otherwise return Ok(ValidatedGraph(v.clone())).
     Ok(ValidatedGraph(v.clone()))
 }
 
@@ -243,6 +313,87 @@ mod tests {
                     "type": "ZitTextEncode",
                     "inputs": {
                         "pipeline": { "node_id": "load", "output_slot": "pipeline" }
+                    }
+                }
+            ]
+        });
+        let result = validate_graph(&graph);
+        assert!(
+            result.is_ok(),
+            "expected Ok, got Err: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_cycle_detected_2node() {
+        // Two nodes referencing each other → cycle.
+        // A's input references B's output, B's input references A's output.
+        let graph = serde_json::json!({
+            "nodes": [
+                {
+                    "id": "a",
+                    "type": "ZitLoadPipeline",
+                    "inputs": {
+                        "model_id": { "node_id": "b", "output_slot": "pipeline" }
+                    }
+                },
+                {
+                    "id": "b",
+                    "type": "ZitLoadPipeline",
+                    "inputs": {
+                        "model_id": { "node_id": "a", "output_slot": "pipeline" }
+                    }
+                }
+            ]
+        });
+        let result = validate_graph(&graph);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("cycle_detected")),
+            "expected 'cycle_detected' in errors, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_valid_zit_5node_passes() {
+        // Full ZiT pipeline: ZitLoadPipeline → ZitTextEncode → ZitSampler →
+        // ZitDecode → SaveImage. All edges valid, no cycles.
+        let graph = serde_json::json!({
+            "nodes": [
+                {
+                    "id": "load",
+                    "type": "ZitLoadPipeline"
+                },
+                {
+                    "id": "encode",
+                    "type": "ZitTextEncode",
+                    "inputs": {
+                        "pipeline": { "node_id": "load", "output_slot": "pipeline" }
+                    }
+                },
+                {
+                    "id": "sampler",
+                    "type": "ZitSampler",
+                    "inputs": {
+                        "pipeline": { "node_id": "load", "output_slot": "pipeline" },
+                        "conditioning": { "node_id": "encode", "output_slot": "conditioning" }
+                    }
+                },
+                {
+                    "id": "decode",
+                    "type": "ZitDecode",
+                    "inputs": {
+                        "pipeline": { "node_id": "load", "output_slot": "pipeline" },
+                        "latents": { "node_id": "sampler", "output_slot": "latents" }
+                    }
+                },
+                {
+                    "id": "save",
+                    "type": "SaveImage",
+                    "inputs": {
+                        "image": { "node_id": "decode", "output_slot": "image" }
                     }
                 }
             ]
