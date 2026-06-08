@@ -1,0 +1,59 @@
+[
+  {
+    "id": "P903-A1",
+    "description": "anvilml-worker: add ANVILML_IPC_SOCKET to build_worker_env",
+    "phase": "903",
+    "project": "anvilml",
+    "prereqs": [
+      "P902-D1"
+    ],
+    "context": "In crates/anvilml-worker/src/env.rs add ipc_socket_path:&str param to build_worker_env. Insert ANVILML_IPC_SOCKET into the returned map. Update the single call site in crates/anvilml-worker/src/managed.rs to pass the socket path (use an empty string placeholder for now \u2014 the real value is wired in P903-A2). Update all tests in env.rs that call build_worker_env to pass an empty string as the new argument. cargo test -p anvilml-worker --features mock-hardware exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P903-A2",
+    "description": "anvilml-worker: replace stdin/stdout IPC transport with Unix socket / Windows named pipe",
+    "phase": "903",
+    "project": "anvilml",
+    "prereqs": [
+      "P903-A1"
+    ],
+    "context": "In crates/anvilml-worker/src/managed.rs replace IpcHandles{stdin,stdout} with IpcHandles{reader,writer} (interprocess OwnedRead/WriteHalf). Add ipc_socket_path:String to ManagedWorker. spawn(): build socket path, mkdir parent, bind LocalSocketListener, set ANVILML_IPC_SOCKET via build_worker_env, accept, split, deliver via ipc_tx. Set Command stdin to Stdio::null; keep stderr drain. writer_task/reader_task take OwnedWrite/ReadHalf; framing unchanged. Path convention and Windows pattern in TASKS_PHASE903.md \u00a7A2. cargo clippy -p anvilml-worker --features mock-hardware -- -D warnings exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P903-A3",
+    "description": "worker: replace stdin/stdout IPC with socket in ipc.py",
+    "phase": "903",
+    "project": "anvilml",
+    "prereqs": [
+      "P903-A2"
+    ],
+    "context": "In worker/ipc.py replace sys.stdin.buffer/sys.stdout.buffer with a socket fd. Read ANVILML_IPC_SOCKET env var; open as binary connection (AF_UNIX on Linux/macOS, named pipe CreateFile on Windows). Update read_frame/write_frame to use socket.recv/send instead of stdin/stdout. Remove msvcrt.setmode guard entirely. In worker/tests/test_ipc.py remove windows_binary_mode_guard test; add socketpair round-trip test for read_frame/write_frame. See TASKS_PHASE903.md \u00a7A3 for exact Python socket open pattern per platform. pytest worker/tests/ -v exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P903-A4",
+    "description": "anvilml-ipc: verify ipc-probe still passes after transport change",
+    "phase": "903",
+    "project": "anvilml",
+    "prereqs": [
+      "P903-A3"
+    ],
+    "context": "In crates/anvilml-ipc/src/bin/ipc-probe.rs the in-process tokio::io::duplex test is transport-agnostic and requires no changes. Confirm cargo run -p anvilml-ipc --bin ipc-probe prints OK seq=7 and exits 0. If the binary currently uses the wrong write path (hand-rolled rmp_serde instead of write_frame) fix it per P902-A1 \u2014 that fix may already be applied. No framing changes. No new logic. Acceptance: cargo run -p anvilml-ipc --bin ipc-probe exits 0 printing OK seq=7.",
+    "tags": []
+  },
+  {
+    "id": "P903-C1",
+    "description": "gate: full workspace clean gate after IPC transport rework",
+    "phase": "903",
+    "project": "anvilml",
+    "prereqs": [
+      "P903-A4"
+    ],
+    "context": "No source changes. Run and record verbatim output: (1) cargo clippy --workspace --features mock-hardware -- -D warnings; (2) env -i HOME=$HOME PATH=$PATH ANVILML_WORKER_MOCK=1 ANVILML_VENV_PATH=./worker/.venv cargo test --workspace --features mock-hardware; (3) cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu; (4) python -m pytest worker/tests/ -v. All four must exit 0. Task is COMPLETE only when all four exit 0. Write verbatim outputs as the implementation report body.",
+    "tags": []
+  }
+]
