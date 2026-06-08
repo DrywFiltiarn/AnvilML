@@ -115,16 +115,17 @@
     "P902-A2a",
     "P902-A2b",
     "P902-A4",
-    "P902-A5"
+    "P902-A5",
+    "P902-A6"
   ],
-  "in_progress": "P902-A6",
+  "in_progress": "P902-B1",
   "plan_approved": true,
-  "current_plan": "1. **GPU spawn DEBUG point** (pool.rs, line 287): After `let worker = Arc::new(ManagedWorker::new(format!(\"worker-{i}\"), i as u32));`, add:\n   ```rust\n   tracing::debug!(worker_id = %format!(\"worker-{i}\"), device_index = i, \"spawned worker\");\n   ```\n\n2. **CPU spawn DEBUG point** (pool.rs, line 327): After `let worker = Arc::new(ManagedWorker::new(\"worker-0\".to_string(), 0));`, add:\n   ```rust\n   tracing::debug!(worker_id = \"worker-0\", device_index = 0u32, \"spawned worker\");\n   ```\n\n3. **set_busy DEBUG point** (pool.rs, line 400): Before `worker.set_status(WorkerStatus::Busy).await;`, capture old status and log:\n   ```rust\n   let old_status = worker.get_status().await;\n   tracing::debug!(worker_id = %worker_id, from = ?old_status, to = \"Busy\", \"status transition\");\n   ```\n\n4. **set_idle DEBUG point** (pool.rs, line 413): Before `worker.set_status(WorkerStatus::Idle).await;`, capture old status and log:\n   ```rust\n   let old_status = worker.get_status().await;\n   tracing::debug!(worker_id = %worker_id, from = ?old_status, to = \"Idle\", \"status transition\");\n   ```\n\n5. **Version bump**: Read `crates/anvilml-worker/Cargo.toml` current version (`0.1.13`), update to `0.1.14`.\n\n6. **Verification**: Run `cargo test -p anvilml-worker --features mock-hardware` \u2014 must exit 0.",
+  "current_plan": "1. **Read** `crates/anvilml-scheduler/src/scheduler.rs` and locate the `submit()` method (line 59).\n2. **Insert** the following line immediately after line 83 (`insert_job(...)` call), before the existing `tracing::info!` on line 85:\n\n   ```rust\n   tracing::debug!(job_id = %job_id, status = \"Queued\", \"job status transition\");\n   ```\n\n   The resulting sequence in `submit()` will be:\n   - Line ~83: `insert_job(&self.db, &job).await.map_err(...)?;`\n   - Line ~84: `tracing::debug!(job_id = %job_id, status = \"Queued\", \"job status transition\");` \u2190 new\n   - Line ~85: `tracing::info!(job_id = %job_id, \"job submitted and persisted as Queued\");`\n\n3. **Bump** the `anvilml-scheduler` crate version in `crates/anvilml-scheduler/Cargo.toml` from `0.1.7` to `0.1.8` (only the patch digit).\n4. **Verify** that no public signatures changed: `grep -n \"^pub \" crates/anvilml-scheduler/src/scheduler.rs`.\n5. **Run** acceptance criterion: `cargo test -p anvilml-scheduler --features mock-hardware` \u2014 must exit 0.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-08T18:48:16+0200",
-  "plan_approval_message_id": "1513585147738460170",
+  "last_updated": "2026-06-08T19:05:06+0200",
+  "plan_approval_message_id": "1513589562285363200",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1513585146111070290",
+  "plan_report_message_id": "1513589560880267385",
   "impl_report_message_id": null
 }

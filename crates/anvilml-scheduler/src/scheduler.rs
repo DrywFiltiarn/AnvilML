@@ -82,6 +82,8 @@ impl JobScheduler {
             .await
             .map_err(|e| AnvilError::DbError(format!("failed to insert job: {e}")))?;
 
+        tracing::debug!(job_id = %job_id, status = "Queued", "job status transition");
+
         tracing::info!(job_id = %job_id, "job submitted and persisted as Queued");
 
         // 4. Enqueue in the in-memory queue.
