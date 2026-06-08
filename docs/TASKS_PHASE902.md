@@ -9,7 +9,7 @@
 | Status | Draft |
 | Depends on phases | 0–12 (via P901-A1) |
 | Task file | `.forge/tasks/tasks_phase902.json` |
-| Tasks | 9 |
+| Tasks | 10 |
 
 ---
 
@@ -36,7 +36,7 @@ The actual debt is:
 | Group | Subsystem | Tasks | Summary |
 |-------|-----------|-------|---------|
 | A | anvilml-ipc / anvilml-worker | P902-A1, A2a, A2b, A4–A6 | ipc-probe fix; pool workers unification; respawn listener; env isolation fix; IPC DEBUG log points; pool spawn/status DEBUG log points |
-| B | anvilml-scheduler | P902-B1–B2 | scheduler submit DEBUG point; job-store and queue DEBUG points |
+| B | anvilml-scheduler / anvilml-server | P902-B1–B3 | scheduler submit DEBUG point; job-store and queue DEBUG points; TraceLayer request/response middleware |
 | D | Gate | P902-D1 | Full workspace clean gate — no source changes, verbatim output only |
 
 ---
@@ -200,13 +200,33 @@ In `job_store.rs`: add `tracing::debug!(job_id = %job.id, "job inserted into DB"
 
 ---
 
+#### P902-B3: Add TraceLayer request/response DEBUG logging middleware (anvilml-server)
+
+**Files:** `Cargo.toml` (workspace), `crates/anvilml-server/Cargo.toml`, `crates/anvilml-server/src/lib.rs`
+
+`ANVILML_DESIGN.md §10.2` specifies `TraceLayer` as the first middleware in the stack, but it was never implemented. All endpoints currently emit no structured request/response log points. This task adds `tower-http`'s `TraceLayer` to the router, which automatically emits a `DEBUG` span on every incoming request (method, URI) and a `DEBUG` event on every outgoing response (status code, latency) via `tracing` — covering all 10 routes with zero handler changes.
+
+**Three changes only:**
+
+1. **Workspace `Cargo.toml`**: add `tower-http = { version = "0.6", features = ["trace"] }` to `[workspace.dependencies]`.
+
+2. **`crates/anvilml-server/Cargo.toml`**: add `tower-http = { workspace = true }` to `[dependencies]`.
+
+3. **`crates/anvilml-server/src/lib.rs`**: add `use tower_http::trace::TraceLayer;` to imports. In `build_router()`, append `.layer(TraceLayer::new_for_http())` to the router chain, immediately after `.with_state(state_arc)`.
+
+No changes to any file in `handlers/`. No new handler files.
+
+**Acceptance criterion:** `cargo test -p anvilml-server --features mock-hardware` exits 0. `cargo clippy -p anvilml-server --features mock-hardware -- -D warnings` exits 0. Running `RUST_LOG=debug cargo run --features mock-hardware` and sending `GET /health` produces a DEBUG log line containing the request method and URI and a second DEBUG log line containing the response status.
+
+---
+
 ### Group D — Gate
 
 #### P902-D1: Full workspace stabilisation gate
 
 **No files modified.**
 
-Run and record verbatim output:
+Prereqs: P902-B3. Run and record verbatim output:
 
 ```bash
 # 1. Lint
@@ -249,4 +269,5 @@ All four must exit 0.
 - **P902-A4: `-i` env clear test.** Unix-only; Windows CI relies on the test suite not having `ANVILML_WORKER_MOCK` set in the ambient environment.
 - **P902-A6: old_status capture.** `set_busy` and `set_idle` do not currently read the old status before transitioning. Capture it with `let old_status = worker.get_status().await` immediately before `worker.set_status(...)` to provide the `from` field for the DEBUG log.
 - **P902-D1: ANVILML_VENV_PATH.** Substitute the actual venv path from `ENVIRONMENT.md §2` if it differs from `./worker/.venv`.
+- **P902-B3: tower-http version.** Use `"0.6"` — this is the version compatible with axum `"0.8"` (both depend on tower `"0.5"`). Do not use `"0.5"` or earlier.
 - **P13-A1 prereq must be updated manually** from `["P12-A5"]` to `["P902-D1"]` in `tasks_phase013.json` before The Forge runs Phase 902.

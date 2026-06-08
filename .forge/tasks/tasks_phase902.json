@@ -104,12 +104,25 @@
     ]
   },
   {
+    "id": "P902-B3",
+    "description": "anvilml-server: add TraceLayer request/response DEBUG logging middleware",
+    "phase": "902",
+    "project": "anvilml",
+    "prereqs": [
+      "P902-B2"
+    ],
+    "context": "anvilml-server only. ANVILML_DESIGN.md \u00a710.2 specifies TraceLayer as first middleware but it was never added. (1) Add tower-http to workspace Cargo.toml: tower-http={version=\"0.6\",features=[\"trace\"]}. (2) Add tower-http to anvilml-server/Cargo.toml dependencies. (3) In build_router() in lib.rs, append .layer(TraceLayer::new_for_http()) after .with_state(state_arc). TraceLayer emits DEBUG on_request (method, uri) and on_response (status, latency). No changes to any handler file. cargo test -p anvilml-server --features mock-hardware exits 0.",
+    "tags": [
+      "refactor"
+    ]
+  },
+  {
     "id": "P902-D1",
     "description": "anvilml: full workspace stabilisation gate",
     "phase": "902",
     "project": "anvilml",
     "prereqs": [
-      "P902-B2"
+      "P902-B3"
     ],
     "context": "No source changes. Run and record verbatim output: (1) cargo clippy --workspace --features mock-hardware -- -D warnings; (2) env -i HOME=$HOME PATH=$PATH ANVILML_WORKER_MOCK=1 ANVILML_VENV_PATH=./worker/.venv cargo test --workspace --features mock-hardware; (3) cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu; (4) python -m pytest worker/tests/ -v. All four must exit 0. Write the verbatim outputs as the implementation report body. This task is COMPLETE only when all four exit 0 with zero warnings and zero test failures.",
     "tags": [
