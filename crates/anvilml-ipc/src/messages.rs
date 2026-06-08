@@ -84,6 +84,8 @@ pub enum WorkerEvent {
         bf16: bool,
         flash_attention: bool,
     },
+    /// Keepalive ping response (mirrors WorkerMessage::Ping for framing tests).
+    Ping { seq: u64 },
     /// Keepalive pong response.
     Pong { seq: u64 },
     /// Worker is dying; includes a reason.
@@ -161,6 +163,7 @@ impl PartialEq for WorkerEvent {
                     && a_bf16 == b_bf16
                     && a_fa == b_fa
             }
+            (Self::Ping { seq: a }, Self::Ping { seq: b }) => a == b,
             (Self::Pong { seq: a }, Self::Pong { seq: b }) => a == b,
             (Self::Dying { reason: a }, Self::Dying { reason: b }) => a == b,
             (
@@ -464,6 +467,7 @@ mod tests {
             bf16: false,
             flash_attention: false,
         };
+        let ping = WorkerEvent::Ping { seq: 0 };
         let pong = WorkerEvent::Pong { seq: 0 };
         let dying = WorkerEvent::Dying {
             reason: String::new(),
@@ -508,6 +512,7 @@ mod tests {
 
         let variants = [
             (&ready, "Ready"),
+            (&ping, "Ping"),
             (&pong, "Pong"),
             (&dying, "Dying"),
             (&memory, "MemoryReport"),

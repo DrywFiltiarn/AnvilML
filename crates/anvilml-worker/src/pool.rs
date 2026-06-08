@@ -493,6 +493,7 @@ impl WorkerPool {
 fn event_discriminant(event: &anvilml_ipc::WorkerEvent) -> &'static str {
     match event {
         anvilml_ipc::WorkerEvent::Ready { .. } => "Ready",
+        anvilml_ipc::WorkerEvent::Ping { .. } => "Ping",
         anvilml_ipc::WorkerEvent::Pong { .. } => "Pong",
         anvilml_ipc::WorkerEvent::Dying { .. } => "Dying",
         anvilml_ipc::WorkerEvent::MemoryReport { .. } => "MemoryReport",

@@ -754,6 +754,7 @@ fn msg_discriminant(msg: &WorkerMessage) -> &'static str {
 fn event_discriminant(event: &WorkerEvent) -> &'static str {
     match event {
         WorkerEvent::Ready { .. } => "Ready",
+        WorkerEvent::Ping { .. } => "Ping",
         WorkerEvent::Pong { .. } => "Pong",
         WorkerEvent::Dying { .. } => "Dying",
         WorkerEvent::MemoryReport { .. } => "MemoryReport",

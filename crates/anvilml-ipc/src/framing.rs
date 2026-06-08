@@ -197,6 +197,12 @@ fn worker_event_from_map(map: &serde_json::Map<String, JsonValue>) -> Result<Wor
                 .and_then(|v| v.as_bool())
                 .ok_or("flash_attention missing")?,
         }),
+        "Ping" => Ok(WorkerEvent::Ping {
+            seq: map
+                .get("seq")
+                .and_then(|v| v.as_u64())
+                .ok_or("seq missing")?,
+        }),
         "Pong" => Ok(WorkerEvent::Pong {
             seq: map
                 .get("seq")
