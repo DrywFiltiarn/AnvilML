@@ -1,6 +1,6 @@
 """AnvilML Python worker entry point.
 
-Implements a blocking stdin/stdout message loop over the IPC framing
+Implements a blocking socket message loop over the IPC framing
 protocol defined in ``worker.ipc``.  Supports mock mode (no torch
 dependency) via ``ANVILML_WORKER_MOCK=1``.
 
@@ -154,6 +154,13 @@ def main() -> None:
 
     import worker.ipc as ipc  # noqa: E402 (after argparse so it can parse)
 
+    # Connect to the IPC socket provided by the Rust supervisor.
+    # Falls back to stdin/stdout if ANVILML_IPC_SOCKET is unset
+    # (e.g. during testing).
+    socket_path = os.environ.get("ANVILML_IPC_SOCKET")
+    if socket_path is not None:
+        ipc.connect(socket_path)
+
     # Start the background memory-report thread.
     t = threading.Thread(
         target=_memory_report_thread,
@@ -202,7 +209,6 @@ def main() -> None:
 
         if _type == "Shutdown":
             ipc.write_frame({"_type": "Dying", "reason": "shutdown"})
-            sys.stdout.buffer.flush()
             _shutdown_event.set()
             t.join(timeout=2)
             sys.exit(0)

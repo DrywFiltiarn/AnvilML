@@ -1,17 +1,23 @@
 """Tests for :mod:`worker.ipc` framing protocol."""
 
-import io
-import re
+import socket
+import struct
 import sys
 from unittest import mock
 
+import msgpack
 import pytest
 
 import worker.ipc as ipc
 
 
+def _monkeypatch_sock(sock: socket.socket) -> mock.MagicMock:
+    """Monkeypatch ``ipc._sock`` and return the patch for cleanup."""
+    return mock.patch.object(ipc, "_sock", sock)
+
+
 class TestReadFrame:
-    """Tests for :func:`worker.ipc.read_frame`."""
+    """Tests for :func:`worker.ipc.read_frame` and :func:`worker.ipc.write_frame`."""
 
     def test_write_read_roundtrip(self) -> None:
         """write_frame + read_frame preserves data correctly."""
@@ -21,98 +27,146 @@ class TestReadFrame:
             "meta": {"node": "zit", "seed": 42},
         }
 
-        buf = io.BytesIO()
-        stdout_mock = mock.MagicMock()
-        stdout_mock.buffer = buf
-
-        stdin_mock = mock.MagicMock()
-        stdin_mock.buffer = buf
-
-        with mock.patch.object(sys, "stdout", stdout_mock):
-            with mock.patch.object(sys, "stdin", stdin_mock):
-                ipc.write_frame(payload)
-
-        # Reset buffer position so read_frame reads from the start.
-        buf.seek(0)
-
-        with mock.patch.object(sys, "stdin", stdin_mock):
-            result = ipc.read_frame()
-
-        assert result == payload
+        sock_a, sock_b = socket.socketpair()
+        try:
+            with _monkeypatch_sock(sock_a):
+                # Data written to sock_b is readable from sock_a.
+                # Data written to sock_a is readable from sock_b.
+                # So: write to sock_b → read_frame reads from sock_a → gets payload.
+                sock_b.sendall(
+                    struct.pack(">I", len(msgpack.packb(payload)))
+                    + msgpack.packb(payload, use_bin_type=True)
+                )
+                result = ipc.read_frame()
+                assert result == payload
+        finally:
+            sock_a.close()
+            sock_b.close()
 
     def test_roundtrip_with_bytes(self) -> None:
         """Roundtrip preserves raw bytes payloads."""
         payload = {"image": b"\x89PNG\r\n\x1a\n"}
 
-        buf = io.BytesIO()
-        stdout_mock = mock.MagicMock()
-        stdout_mock.buffer = buf
-
-        stdin_mock = mock.MagicMock()
-        stdin_mock.buffer = buf
-
-        with mock.patch.object(sys, "stdout", stdout_mock):
-            ipc.write_frame(payload)
-
-        buf.seek(0)
-
-        with mock.patch.object(sys, "stdin", stdin_mock):
-            result = ipc.read_frame()
-
-        assert result == payload
+        sock_a, sock_b = socket.socketpair()
+        try:
+            with _monkeypatch_sock(sock_a):
+                sock_b.sendall(
+                    struct.pack(">I", len(msgpack.packb(payload)))
+                    + msgpack.packb(payload, use_bin_type=True)
+                )
+                result = ipc.read_frame()
+                assert result == payload
+        finally:
+            sock_a.close()
+            sock_b.close()
 
     def test_roundtrip_empty_dict(self) -> None:
         """Roundtrip works with an empty dict."""
         payload: dict = {}
 
-        buf = io.BytesIO()
-        stdout_mock = mock.MagicMock()
-        stdout_mock.buffer = buf
-
-        stdin_mock = mock.MagicMock()
-        stdin_mock.buffer = buf
-
-        with mock.patch.object(sys, "stdout", stdout_mock):
-            ipc.write_frame(payload)
-
-        buf.seek(0)
-
-        with mock.patch.object(sys, "stdin", stdin_mock):
-            result = ipc.read_frame()
-
-        assert result == payload
+        sock_a, sock_b = socket.socketpair()
+        try:
+            with _monkeypatch_sock(sock_a):
+                sock_b.sendall(
+                    struct.pack(">I", len(msgpack.packb(payload)))
+                    + msgpack.packb(payload, use_bin_type=True)
+                )
+                result = ipc.read_frame()
+                assert result == payload
+        finally:
+            sock_a.close()
+            sock_b.close()
 
 
-class TestWindowsGuard:
-    """Tests for the Windows binary-stdio guard."""
+class TestSocketRoundtrip:
+    """Tests that exercise real socket I/O via socketpair."""
 
-    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only guard")
-    def test_windows_binary_mode_guard_present(self) -> None:
-        """msvcrt.setmode is called with os.O_BINARY on stdin and stdout."""
-        source = ipc.__file__
-        with open(source, encoding="utf-8") as f:
-            text = f.read()
+    def test_socketpair_roundtrip(self) -> None:
+        """write_frame + read_frame round-trip over a real socket pair."""
+        payload = {
+            "_type": "Ready",
+            "worker_id": "worker-0",
+            "device_index": 0,
+            "vram_total_mib": 8192,
+            "vram_free_mib": 8192,
+            "arch": "gfx1100",
+            "fp16": True,
+            "bf16": True,
+            "flash_attention": False,
+        }
 
-        # Check that the guard pattern exists in the source.
-        pattern = r"msvcrt\.setmode\s*\(\s*sys\.stdin\.fileno\(\)\s*,\s*os\.O_BINARY\s*\)"
-        assert re.search(pattern, text), "stdin binary-mode guard not found"
+        sock_a, sock_b = socket.socketpair()
+        try:
+            with _monkeypatch_sock(sock_a):
+                # write_frame writes to sock_a; test reads from sock_b.
+                ipc.write_frame(payload)
+                # Read the frame from sock_b.
+                length_bytes = b""
+                while len(length_bytes) < 4:
+                    chunk = sock_b.recv(4 - len(length_bytes))
+                    if not chunk:
+                        raise EOFError("read_frame: unexpected end of input")
+                    length_bytes += chunk
+                length = struct.unpack(">I", length_bytes)[0]
+                payload_bytes = b""
+                while len(payload_bytes) < length:
+                    chunk = sock_b.recv(length - len(payload_bytes))
+                    if not chunk:
+                        raise EOFError(
+                            f"expected {length} bytes, got EOF after "
+                            f"{len(payload_bytes)}"
+                        )
+                    payload_bytes += chunk
+                result = msgpack.unpackb(payload_bytes, raw=False)
+                assert result == payload
+        finally:
+            sock_a.close()
+            sock_b.close()
 
-        pattern_stdout = (
-            r"msvcrt\.setmode\s*\(\s*sys\.stdout\.fileno\(\)\s*,\s*os\.O_BINARY\s*\)"
-        )
-        assert re.search(pattern_stdout, text), "stdout binary-mode guard not found"
+    def test_full_bidirectional_roundtrip(self) -> None:
+        """Server sends message, worker reads and responds."""
+        server_msg = {"_type": "Ping", "seq": 42}
+        worker_response = {"_type": "Pong", "seq": 42}
 
-    def test_guard_code_exists_in_source(self) -> None:
-        """The msvcrt.setmode pattern exists regardless of platform.
+        sock_a, sock_b = socket.socketpair()
+        try:
+            with _monkeypatch_sock(sock_a):
+                # Server writes to sock_b; worker reads from sock_a.
+                sock_b.sendall(
+                    struct.pack(">I", len(msgpack.packb(server_msg)))
+                    + msgpack.packb(server_msg, use_bin_type=True)
+                )
+                # Worker reads.
+                result = ipc.read_frame()
+                assert result == server_msg
+                # Worker writes response to sock_a; server reads from sock_b.
+                ipc.write_frame(worker_response)
+                length_bytes = b""
+                while len(length_bytes) < 4:
+                    chunk = sock_b.recv(4 - len(length_bytes))
+                    if not chunk:
+                        raise EOFError("server: unexpected end of input")
+                    length_bytes += chunk
+                length = struct.unpack(">I", length_bytes)[0]
+                payload_bytes = b""
+                while len(payload_bytes) < length:
+                    chunk = sock_b.recv(length - len(payload_bytes))
+                    if not chunk:
+                        raise EOFError("server: unexpected end of input")
+                    payload_bytes += chunk
+                response = msgpack.unpackb(payload_bytes, raw=False)
+                assert response == worker_response
+        finally:
+            sock_a.close()
+            sock_b.close()
 
-        This variant runs on all platforms to ensure the guard cannot be
-        accidentally removed during development.
-        """
-        source = ipc.__file__
-        with open(source, encoding="utf-8") as f:
-            text = f.read()
-
-        # The guard should reference msvcrt.setmode in the source.
-        assert "msvcrt.setmode" in text, (
-            "Windows binary-mode guard (msvcrt.setmode) not found in ipc.py"
-        )
+    def test_read_frame_eof(self) -> None:
+        """read_frame raises EOFError when the other end is closed."""
+        sock_a, sock_b = socket.socketpair()
+        try:
+            sock_b.close()  # Close the other end → sock_a.recv returns b""
+            with _monkeypatch_sock(sock_a):
+                with pytest.raises(EOFError, match="read_frame"):
+                    ipc.read_frame()
+        finally:
+            sock_a.close()
