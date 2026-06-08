@@ -2,7 +2,7 @@
 ///
 /// Produces a `HashMap<String, String>` of environment variables to inject into each
 /// worker child process, covering device isolation, ROCm performance flags, threading
-/// control, worker identity, and mock-mode propagation.
+/// control, worker identity, mock-mode propagation, and the IPC socket path.
 use anvilml_core::{DeviceType, GpuDevice, ServerConfig};
 use std::collections::HashMap;
 
@@ -14,7 +14,12 @@ use std::collections::HashMap;
 /// - Threading control variables (OpenMP, MKL, OpenBLAS, vecLib, AnvilML)
 /// - Worker identity variables
 /// - Mock-mode propagation from the parent environment
-pub fn build_worker_env(device: &GpuDevice, cfg: &ServerConfig) -> HashMap<String, String> {
+/// - IPC socket path (`ANVILML_IPC_SOCKET`)
+pub fn build_worker_env(
+    device: &GpuDevice,
+    cfg: &ServerConfig,
+    ipc_socket_path: &str,
+) -> HashMap<String, String> {
     let mut env = HashMap::new();
 
     // ── Device-specific isolation vars ────────────────────────────────
@@ -68,6 +73,12 @@ pub fn build_worker_env(device: &GpuDevice, cfg: &ServerConfig) -> HashMap<Strin
     if let Ok(mock_val) = std::env::var("ANVILML_WORKER_MOCK") {
         env.insert("ANVILML_WORKER_MOCK".to_string(), mock_val);
     }
+
+    // ── IPC socket path ──────────────────────────────────────────────
+    env.insert(
+        "ANVILML_IPC_SOCKET".to_string(),
+        ipc_socket_path.to_string(),
+    );
 
     env
 }
@@ -144,7 +155,7 @@ mod tests {
     fn test_build_env_cuda() {
         let device = mock_cuda_device(0);
         let cfg = ServerConfig::default();
-        let env = build_worker_env(&device, &cfg);
+        let env = build_worker_env(&device, &cfg, "");
 
         // Device isolation
         assert_eq!(
@@ -194,7 +205,7 @@ mod tests {
     fn test_build_env_rocm_linux_hsa() {
         let device = mock_rocm_device(0);
         let cfg = default_config(); // use_hipblaslt=true, hsa_override_gfx_version=Some("10.3.0")
-        let env = build_worker_env(&device, &cfg);
+        let env = build_worker_env(&device, &cfg, "");
 
         // Device isolation
         assert_eq!(
@@ -241,7 +252,7 @@ mod tests {
             },
             ..ServerConfig::default()
         };
-        let env = build_worker_env(&device, &cfg);
+        let env = build_worker_env(&device, &cfg, "");
 
         // Device isolation
         assert_eq!(
@@ -282,7 +293,7 @@ mod tests {
     fn test_build_env_cpu() {
         let device = mock_cpu_device();
         let cfg = ServerConfig::default();
-        let env = build_worker_env(&device, &cfg);
+        let env = build_worker_env(&device, &cfg, "");
 
         // No device isolation variable for CPU
         assert!(!env.contains_key("CUDA_VISIBLE_DEVICES"),);
@@ -328,7 +339,7 @@ mod tests {
         let device = mock_cuda_device(0);
         let cfg = ServerConfig::default();
 
-        let env = build_worker_env(&device, &cfg);
+        let env = build_worker_env(&device, &cfg, "");
 
         assert_eq!(
             env.get("ANVILML_WORKER_MOCK").map(|v| v.as_str()),
@@ -338,5 +349,18 @@ mod tests {
 
         // Clean up: unset the var so other tests are not affected.
         std::env::remove_var("ANVILML_WORKER_MOCK");
+    }
+
+    #[test]
+    fn test_build_env_ipc_socket_path() {
+        let device = mock_cuda_device(0);
+        let cfg = ServerConfig::default();
+        let env = build_worker_env(&device, &cfg, "/tmp/anvilml-12345/worker-0.sock");
+
+        assert_eq!(
+            env.get("ANVILML_IPC_SOCKET").map(|v| v.as_str()),
+            Some("/tmp/anvilml-12345/worker-0.sock"),
+            "ANVILML_IPC_SOCKET must be set to the passed path",
+        );
     }
 }

@@ -119,16 +119,17 @@
     "P902-A6",
     "P902-B1",
     "P902-B2",
-    "P902-B3"
+    "P902-B3",
+    "P902-D1"
   ],
-  "in_progress": "P902-D1",
+  "in_progress": "P903-A1",
   "plan_approved": true,
-  "current_plan": "1. **Gate 1 \u2014 Clippy lint:** Run `cargo clippy --workspace --features mock-hardware -- -D warnings` and capture full stdout/stderr. Verify exit code is 0 and no warning lines appear.\n\n2. **Gate 2 \u2014 Rust test suite:** Run `env -i HOME=$HOME PATH=$PATH ANVILML_WORKER_MOCK=1 ANVILML_VENV_PATH=./worker/.venv cargo test --workspace --features mock-hardware` and capture full stdout/stderr. Verify exit code is 0 and no test failures appear. The `env -i` clears the ambient environment to ensure tests are not dependent on external variables beyond those explicitly set.\n\n3. **Gate 3 \u2014 Windows cross-check:** Run `cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu` and capture full stdout/stderr. Verify exit code is 0. This exercises the `#[cfg(windows)]` code paths via cross-compilation from Linux.\n\n4. **Gate 4 \u2014 Python worker tests:** Run `python -m pytest worker/tests/ -v` and capture full stdout/stderr. Verify exit code is 0 and no test failures appear.\n\n5. **Report assembly:** Write the implementation report with all four verbatim outputs as the body content. The task is COMPLETE only when all four commands exit 0.",
+  "current_plan": "1. **Modify `crates/anvilml-worker/src/env.rs`:**\n   - Change the function signature from\n     `pub fn build_worker_env(device: &GpuDevice, cfg: &ServerConfig)` to\n     `pub fn build_worker_env(device: &GpuDevice, cfg: &ServerConfig, ipc_socket_path: &str)`\n   - After all existing env var inserts (after the mock-mode propagation block, before\n     `env`), insert one line:\n     ```rust\n     env.insert(\n         \"ANVILML_IPC_SOCKET\".to_string(),\n         ipc_socket_path.to_string(),\n     );\n     ```\n   - Update the doc comment to mention `ANVILML_IPC_SOCKET` in the returned map.\n\n2. **Update all five existing tests in `env.rs`:**\n   - `test_build_env_cuda` (line ~147): change `build_worker_env(&device, &cfg)` to\n     `build_worker_env(&device, &cfg, \"\")`\n   - `test_build_env_rocm_linux_hsa` (line ~197): same change\n   - `test_build_env_rocm_windows_no_hsa` (line ~244): same change\n   - `test_build_env_cpu` (line ~285): same change\n   - `test_build_env_mock_propagation` (line ~331): same change\n\n3. **Add one new test in `env.rs`:**\n   - Name: `test_build_env_ipc_socket_path`\n   - Creates a CUDA device and default config, calls\n     `build_worker_env(&device, &cfg, \"/tmp/anvilml-12345/worker-0.sock\")`\n   - Asserts `env.get(\"ANVILML_IPC_SOCKET\")` equals\n     `Some(\"/tmp/anvilml-12345/worker-0.sock\")`\n\n4. **Update call site in `crates/anvilml-worker/src/managed.rs`:**\n   - Line 157: change `envs(build_worker_env(device, cfg))` to\n     `envs(build_worker_env(device, cfg, \"\"))`\n\n5. **Bump crate version:**\n   - `crates/anvilml-worker/Cargo.toml`: change `version = \"0.1.14\"` to\n     `version = \"0.1.15\"` (patch bump per FORGE_AGENT_RULES \u00a712)\n\n6. **Verify:** run `cargo test -p anvilml-worker --features mock-hardware` and confirm\n   exit 0.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-08T20:48:13+0200",
-  "plan_approval_message_id": "1513613184655822908",
+  "last_updated": "2026-06-08T21:47:06+0200",
+  "plan_approval_message_id": "1513629724247593041",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1513613182675980419",
+  "plan_report_message_id": "1513629721743855646",
   "impl_report_message_id": null
 }

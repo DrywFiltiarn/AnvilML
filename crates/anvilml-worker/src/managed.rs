@@ -154,7 +154,7 @@ impl ManagedWorker {
             .arg("--device-index")
             .arg(self.device_index.to_string())
             .current_dir(_repo_root_for_worker())
-            .envs(build_worker_env(device, cfg))
+            .envs(build_worker_env(device, cfg, ""))
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
