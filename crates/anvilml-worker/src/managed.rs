@@ -9,6 +9,7 @@ use anvilml_core::{
 };
 use anvilml_ipc::{framing, WorkerEvent, WorkerMessage};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
@@ -56,6 +57,13 @@ pub struct ManagedWorker {
     /// Delay before respawning a dead worker (default: 2_000 ms).
     #[allow(dead_code)]
     respawn_delay_ms: std::time::Duration,
+    /// Monotonically increasing generation counter.
+    ///
+    /// Incremented each time a new keepalive is started. Pong-timeout tasks
+    /// capture the generation at the moment they are spawned and only broadcast
+    /// `Dead` when the counter still matches, preventing stale timeouts from a
+    /// previous lifecycle from triggering a spurious death after respawn.
+    generation: Arc<AtomicU64>,
 }
 
 impl ManagedWorker {
@@ -117,6 +125,7 @@ impl ManagedWorker {
             ping_interval,
             pong_timeout,
             respawn_delay_ms,
+            generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -334,13 +343,25 @@ impl ManagedWorker {
 
     /// Start the keepalive watchdog task.
     ///
-    /// Spawns an async task that sends `Ping{seq}` messages at regular intervals
-    /// over the IPC channel and force-kills the child process if a matching `Pong{seq}`
-    /// is not received within the configured pong timeout.
+    /// Increments the internal generation counter so that any pong-timeout tasks
+    /// spawned by a *previous* keepalive invocation are silently invalidated: they
+    /// will observe a generation mismatch and skip the `Dead` broadcast.
+    ///
+    /// Returns the [`JoinHandle`] for the keepalive loop. The caller **must** store
+    /// this handle and `abort()` it before replacing or respawning the worker, so
+    /// that no further pings are sent on the stale channel and no new pong-timeout
+    /// tasks are created.
+    ///
+    /// Sends `Ping{seq}` messages at the configured interval and force-kills the
+    /// child process if a matching `Pong{seq}` is not received within `pong_timeout`.
     ///
     /// This method must be called after `spawn()` returns, when the worker is
     /// in the `Idle` state and the child handle is stored.
-    pub fn start_keepalive(&self) {
+    pub fn start_keepalive(&self) -> JoinHandle<()> {
+        // Advance generation so any pong-timeout tasks from the previous keepalive
+        // (which may still be in-flight) observe a mismatch and do nothing.
+        let current_gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+
         let ping_interval = self.ping_interval;
         let pong_timeout = self.pong_timeout;
         let worker_id = self.worker_id.clone();
@@ -348,9 +369,10 @@ impl ManagedWorker {
         let status = self.status.clone();
         let event_tx = self.event_tx.clone();
         let child = self.child.clone();
+        let generation = self.generation.clone();
 
         tokio::spawn(async move {
-            debug!(worker_id = %worker_id, "keepalive task started");
+            debug!(worker_id = %worker_id, generation = current_gen, "keepalive task started");
 
             let mut interval = tokio::time::interval(ping_interval);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -358,10 +380,24 @@ impl ManagedWorker {
 
             loop {
                 interval.tick().await;
+
+                // If the generation has advanced (worker was replaced), stop immediately.
+                if generation.load(Ordering::SeqCst) != current_gen {
+                    debug!(worker_id = %worker_id, generation = current_gen, "keepalive: generation superseded, exiting");
+                    break;
+                }
+
                 let seq = next_seq;
                 next_seq += 1;
 
                 debug!(worker_id = %worker_id, seq = seq, "sending ping");
+
+                // Subscribe BEFORE sending the Ping. broadcast::subscribe() only
+                // receives messages sent after the subscribe call, so subscribing
+                // first guarantees the Pong cannot arrive and be broadcast before
+                // the timeout task is listening — preventing a missed-wakeup that
+                // would cause a healthy worker to be killed on pong timeout.
+                let pong_rx = event_tx.subscribe();
 
                 // Send Ping message. If channel is closed, worker is dead — exit.
                 if tx.send(WorkerMessage::Ping { seq }).await.is_err() {
@@ -374,8 +410,10 @@ impl ManagedWorker {
                 let child_handle = child.clone();
                 let status_clone = status.clone();
                 let ev_tx = event_tx.clone();
+                let gen_clone = generation.clone();
                 tokio::spawn(async move {
-                    let mut rx = ev_tx.subscribe();
+                    // Use the receiver created before the Ping was sent — never subscribe here.
+                    let mut rx = pong_rx;
                     let pong_received = tokio::time::timeout(pong_timeout, async {
                         loop {
                             match rx.recv().await {
@@ -396,6 +434,19 @@ impl ManagedWorker {
                             debug!(worker_id = %pw_id, seq = seq, "received pong");
                         }
                         _ => {
+                            // Guard: only act if this timeout belongs to the current generation.
+                            // A stale timeout from a previous keepalive must not kill or declare
+                            // dead a worker that has since been replaced.
+                            if gen_clone.load(Ordering::SeqCst) != current_gen {
+                                debug!(
+                                    worker_id = %pw_id,
+                                    seq = seq,
+                                    generation = current_gen,
+                                    "pong timeout discarded — generation superseded"
+                                );
+                                return;
+                            }
+
                             warn!(worker_id = %pw_id, seq = seq, "pong timeout — killing worker");
                             // Force-kill the child process.
                             if let Some(mut ch) = child_handle.lock().await.take() {
@@ -419,8 +470,8 @@ impl ManagedWorker {
                 });
             }
 
-            debug!(worker_id = %worker_id, "keepalive task exiting");
-        });
+            debug!(worker_id = %worker_id, generation = current_gen, "keepalive task exiting");
+        })
     }
 
     /// Inject mock IPC handles for testing without spawning a real Python process.
