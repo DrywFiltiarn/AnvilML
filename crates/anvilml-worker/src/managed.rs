@@ -744,138 +744,132 @@ mod tests {
     /// Spawn a mock worker, send Ping, receive Pong, then Shutdown.
     #[tokio::test]
     #[cfg(feature = "mock-hardware")]
-    #[serial_test::serial]
     async fn spawn_ping_pong() {
-        std::env::set_var("ANVILML_WORKER_MOCK", "1");
+        temp_env::async_with_vars([("ANVILML_WORKER_MOCK", Some("1"))], async {
+            let worker = ManagedWorker::new("test-worker".to_string(), 0);
 
-        let worker = ManagedWorker::new("test-worker".to_string(), 0);
+            // Build a mock device.
+            let device = GpuDevice {
+                index: 0,
+                name: "Mock GPU".to_string(),
+                device_type: anvilml_core::DeviceType::Cpu,
+                vram_total_mib: 8192,
+                vram_free_mib: 8192,
+                driver_version: "mock".to_string(),
+                pci_vendor_id: 0,
+                pci_device_id: 0,
+                arch: Some("gfx1100".to_string()),
+                caps: Default::default(),
+                enumeration_source: anvilml_core::EnumerationSource::Mock,
+                capabilities_source: anvilml_core::CapabilitySource::Fallback,
+                db_group_name: None,
+            };
 
-        // Build a mock device.
-        let device = GpuDevice {
-            index: 0,
-            name: "Mock GPU".to_string(),
-            device_type: anvilml_core::DeviceType::Cpu,
-            vram_total_mib: 8192,
-            vram_free_mib: 8192,
-            driver_version: "mock".to_string(),
-            pci_vendor_id: 0,
-            pci_device_id: 0,
-            arch: Some("gfx1100".to_string()),
-            caps: Default::default(),
-            enumeration_source: anvilml_core::EnumerationSource::Mock,
-            capabilities_source: anvilml_core::CapabilitySource::Fallback,
-            db_group_name: None,
-        };
+            // Use the system python3 directly for tests.
+            let cfg = ServerConfig {
+                venv_path: std::env::var("ANVILML_VENV_PATH")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|_| std::path::PathBuf::from("/home/dryw/forge/.venv")),
+                ..ServerConfig::default()
+            };
 
-        // Use the system python3 directly for tests.
-        let cfg = ServerConfig {
-            venv_path: std::env::var("ANVILML_VENV_PATH")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| std::path::PathBuf::from("/home/dryw/forge/.venv")),
-            ..ServerConfig::default()
-        };
+            // Spawn the worker process (waits for Ready internally).
+            worker.spawn(&device, &cfg).await.expect("spawn");
 
-        // Spawn the worker process (waits for Ready internally).
-        worker.spawn(&device, &cfg).await.expect("spawn");
+            // Subscribe to events.
+            let mut rx = worker.subscribe();
 
-        // Subscribe to events.
-        let mut rx = worker.subscribe();
+            // Send Ping.
+            worker
+                .send(WorkerMessage::Ping { seq: 1 })
+                .await
+                .expect("send ping");
 
-        // Send Ping.
-        worker
-            .send(WorkerMessage::Ping { seq: 1 })
-            .await
-            .expect("send ping");
+            // Wait for Pong.
+            let pong_timeout = timeout(Duration::from_secs(5), async {
+                loop {
+                    match rx.recv().await {
+                        Ok((_, WorkerEvent::Pong { seq })) => {
+                            assert_eq!(seq, 1);
+                            break;
+                        }
+                        Ok(_) => continue,
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            debug!(lagged = n, "dropped events");
+                        }
+                        Err(broadcast::error::RecvError::Closed) => panic!("event channel closed"),
+                    }
+                }
+            })
+            .await;
 
-        // Wait for Pong.
-        let pong_timeout = timeout(Duration::from_secs(5), async {
-            loop {
-                match rx.recv().await {
-                    Ok((_, WorkerEvent::Pong { seq })) => {
-                        assert_eq!(seq, 1);
+            assert!(pong_timeout.is_ok(), "did not receive Pong in time");
+
+            // Send Shutdown.
+            worker
+                .send(WorkerMessage::Shutdown)
+                .await
+                .expect("send shutdown");
+
+            // Wait for the handle to complete.
+            let join_timeout = timeout(Duration::from_secs(10), async {
+                loop {
+                    if worker.get_status().await == WorkerStatus::Dead {
                         break;
                     }
-                    Ok(_) => continue,
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        debug!(lagged = n, "dropped events");
-                    }
-                    Err(broadcast::error::RecvError::Closed) => panic!("event channel closed"),
+                    tokio::time::sleep(Duration::from_millis(100)).await;
                 }
-            }
+            })
+            .await;
+
+            assert!(
+                join_timeout.is_ok(),
+                "worker did not exit after shutdown in time"
+            );
         })
         .await;
-
-        assert!(pong_timeout.is_ok(), "did not receive Pong in time");
-
-        // Send Shutdown.
-        worker
-            .send(WorkerMessage::Shutdown)
-            .await
-            .expect("send shutdown");
-
-        // Wait for the handle to complete.
-        let join_timeout = timeout(Duration::from_secs(10), async {
-            loop {
-                if worker.get_status().await == WorkerStatus::Dead {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        })
-        .await;
-
-        assert!(
-            join_timeout.is_ok(),
-            "worker did not exit after shutdown in time"
-        );
-
-        // Unconditional teardown — prevents env-var leak to subsequent tests.
-        std::env::remove_var("ANVILML_WORKER_MOCK");
     }
 
     /// Verify status transitions: Initializing → Idle (on Ready) → Dead.
     #[tokio::test]
     #[cfg(feature = "mock-hardware")]
-    #[serial_test::serial]
     async fn status_transitions() {
-        std::env::set_var("ANVILML_WORKER_MOCK", "1");
+        temp_env::async_with_vars([("ANVILML_WORKER_MOCK", Some("1"))], async {
+            let worker = ManagedWorker::new("status-test".to_string(), 0);
 
-        let worker = ManagedWorker::new("status-test".to_string(), 0);
+            let device = GpuDevice {
+                index: 0,
+                name: "Mock GPU".to_string(),
+                device_type: anvilml_core::DeviceType::Cpu,
+                vram_total_mib: 8192,
+                vram_free_mib: 8192,
+                driver_version: "mock".to_string(),
+                pci_vendor_id: 0,
+                pci_device_id: 0,
+                arch: Some("gfx1100".to_string()),
+                caps: Default::default(),
+                enumeration_source: anvilml_core::EnumerationSource::Mock,
+                capabilities_source: anvilml_core::CapabilitySource::Fallback,
+                db_group_name: None,
+            };
 
-        let device = GpuDevice {
-            index: 0,
-            name: "Mock GPU".to_string(),
-            device_type: anvilml_core::DeviceType::Cpu,
-            vram_total_mib: 8192,
-            vram_free_mib: 8192,
-            driver_version: "mock".to_string(),
-            pci_vendor_id: 0,
-            pci_device_id: 0,
-            arch: Some("gfx1100".to_string()),
-            caps: Default::default(),
-            enumeration_source: anvilml_core::EnumerationSource::Mock,
-            capabilities_source: anvilml_core::CapabilitySource::Fallback,
-            db_group_name: None,
-        };
+            let cfg = ServerConfig {
+                venv_path: std::env::var("ANVILML_VENV_PATH")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|_| std::path::PathBuf::from("/home/dryw/forge/.venv")),
+                ..ServerConfig::default()
+            };
 
-        let cfg = ServerConfig {
-            venv_path: std::env::var("ANVILML_VENV_PATH")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| std::path::PathBuf::from("/home/dryw/forge/.venv")),
-            ..ServerConfig::default()
-        };
+            // Status should start as Initializing.
+            assert_eq!(worker.get_status().await, WorkerStatus::Initializing);
 
-        // Status should start as Initializing.
-        assert_eq!(worker.get_status().await, WorkerStatus::Initializing);
+            // Spawn triggers InitializeHardware → Ready, which sets status to Idle.
+            worker.spawn(&device, &cfg).await.expect("spawn");
 
-        // Spawn triggers InitializeHardware → Ready, which sets status to Idle.
-        worker.spawn(&device, &cfg).await.expect("spawn");
-
-        // After spawn returns, status should be Idle (Ready was received).
-        assert_eq!(worker.get_status().await, WorkerStatus::Idle);
-
-        // Unconditional teardown — prevents env-var leak to subsequent tests.
-        std::env::remove_var("ANVILML_WORKER_MOCK");
+            // After spawn returns, status should be Idle (Ready was received).
+            assert_eq!(worker.get_status().await, WorkerStatus::Idle);
+        })
+        .await;
     }
 
     /// End-to-end handshake regression test: spawn → exactly one Ready → Idle.
@@ -887,112 +881,94 @@ mod tests {
     /// - No second Ready, no Dying, no Dead events appear during the drain
     #[tokio::test]
     #[cfg(feature = "mock-hardware")]
-    #[serial_test::serial]
     async fn handshake_completes_once() {
-        // Fast keepalive parameters for test execution.
-        // Save original values to restore after the test.
-        let orig_mock = std::env::var("ANVILML_WORKER_MOCK").ok();
-        let orig_ping = std::env::var("ANVILML_PING_INTERVAL_MS").ok();
-        let orig_pong = std::env::var("ANVILML_PONG_TIMEOUT_MS").ok();
+        temp_env::async_with_vars(
+            [
+                ("ANVILML_WORKER_MOCK", Some("1")),
+                ("ANVILML_PING_INTERVAL_MS", Some("50")),
+                ("ANVILML_PONG_TIMEOUT_MS", Some("150")),
+            ],
+            async {
+                let worker = ManagedWorker::new("handshake-test".to_string(), 0);
 
-        std::env::set_var("ANVILML_WORKER_MOCK", "1");
-        std::env::set_var("ANVILML_PING_INTERVAL_MS", "50");
-        std::env::set_var("ANVILML_PONG_TIMEOUT_MS", "150");
+                // Build a mock device (same shape as existing tests).
+                let device = GpuDevice {
+                    index: 0,
+                    name: "Mock GPU".to_string(),
+                    device_type: anvilml_core::DeviceType::Cpu,
+                    vram_total_mib: 8192,
+                    vram_free_mib: 8192,
+                    driver_version: "mock".to_string(),
+                    pci_vendor_id: 0,
+                    pci_device_id: 0,
+                    arch: Some("gfx1100".to_string()),
+                    caps: Default::default(),
+                    enumeration_source: anvilml_core::EnumerationSource::Mock,
+                    capabilities_source: anvilml_core::CapabilitySource::Fallback,
+                    db_group_name: None,
+                };
 
-        let worker = ManagedWorker::new("handshake-test".to_string(), 0);
+                let cfg = ServerConfig {
+                    venv_path: std::env::var("ANVILML_VENV_PATH")
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|_| std::path::PathBuf::from("/home/dryw/forge/.venv")),
+                    ..ServerConfig::default()
+                };
 
-        // Build a mock device (same shape as existing tests).
-        let device = GpuDevice {
-            index: 0,
-            name: "Mock GPU".to_string(),
-            device_type: anvilml_core::DeviceType::Cpu,
-            vram_total_mib: 8192,
-            vram_free_mib: 8192,
-            driver_version: "mock".to_string(),
-            pci_vendor_id: 0,
-            pci_device_id: 0,
-            arch: Some("gfx1100".to_string()),
-            caps: Default::default(),
-            enumeration_source: anvilml_core::EnumerationSource::Mock,
-            capabilities_source: anvilml_core::CapabilitySource::Fallback,
-            db_group_name: None,
-        };
+                // Subscribe to broadcast channel *before* spawning.
+                let mut rx = worker.subscribe();
 
-        let cfg = ServerConfig {
-            venv_path: std::env::var("ANVILML_VENV_PATH")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| std::path::PathBuf::from("/home/dryw/forge/.venv")),
-            ..ServerConfig::default()
-        };
+                // Spawn the worker (writes InitializeHardware internally, waits for Ready).
+                worker.spawn(&device, &cfg).await.expect("spawn");
 
-        // Subscribe to broadcast channel *before* spawning.
-        let mut rx = worker.subscribe();
+                // Assert status is Idle after spawn completes.
+                assert_eq!(worker.get_status().await, WorkerStatus::Idle);
 
-        // Spawn the worker (writes InitializeHardware internally, waits for Ready).
-        worker.spawn(&device, &cfg).await.expect("spawn");
+                // Drain broadcast channel with 500ms timeout: collect all events within window.
+                let drain_timeout = tokio::time::Duration::from_millis(500);
+                let start = std::time::Instant::now();
+                let mut ready_count = 0u32;
+                let mut had_dying = false;
+                let mut had_dead = false;
 
-        // Assert status is Idle after spawn completes.
-        assert_eq!(worker.get_status().await, WorkerStatus::Idle);
-
-        // Drain broadcast channel with 500ms timeout: collect all events within window.
-        let drain_timeout = tokio::time::Duration::from_millis(500);
-        let start = std::time::Instant::now();
-        let mut ready_count = 0u32;
-        let mut had_dying = false;
-        let mut had_dead = false;
-
-        while start.elapsed() < drain_timeout {
-            match tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await {
-                Ok(Ok((_, event))) => match &event {
-                    WorkerEvent::Ready { .. } => ready_count += 1,
-                    WorkerEvent::Dying { .. } => had_dying = true,
-                    WorkerEvent::WorkerStatusChanged { status }
-                        if *status == WorkerStatus::Dead =>
+                while start.elapsed() < drain_timeout {
+                    match tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
+                        .await
                     {
-                        had_dead = true
+                        Ok(Ok((_, event))) => match &event {
+                            WorkerEvent::Ready { .. } => ready_count += 1,
+                            WorkerEvent::Dying { .. } => had_dying = true,
+                            WorkerEvent::WorkerStatusChanged { status }
+                                if *status == WorkerStatus::Dead =>
+                            {
+                                had_dead = true
+                            }
+                            _ => {} // Pong, etc. are expected — ignore.
+                        },
+                        Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+                        Ok(Err(broadcast::error::RecvError::Closed)) => break,
+                        Err(_) => {
+                            // No event within 100ms — drain window is effectively over.
+                            break;
+                        }
                     }
-                    _ => {} // Pong, etc. are expected — ignore.
-                },
-                Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
-                Ok(Err(broadcast::error::RecvError::Closed)) => break,
-                Err(_) => {
-                    // No event within 100ms — drain window is effectively over.
-                    break;
                 }
-            }
-        }
 
-        // Exactly one Ready event must have been received.
-        assert_eq!(
-            ready_count, 1,
-            "expected exactly one Ready event, got {ready_count}"
-        );
+                // Exactly one Ready event must have been received.
+                assert_eq!(
+                    ready_count, 1,
+                    "expected exactly one Ready event, got {ready_count}"
+                );
 
-        // No second Ready, no Dying, no Dead during the drain window.
-        assert!(!had_dying, "unexpected Dying event during handshake drain");
-        assert!(
-            !had_dead,
-            "unexpected WorkerStatusChanged(Dead) during handshake drain"
-        );
-
-        // Restore original env vars.
-        match orig_mock {
-            Some(v) => std::env::set_var("ANVILML_WORKER_MOCK", v),
-            None => std::env::remove_var("ANVILML_WORKER_MOCK"),
-        }
-        match orig_ping {
-            Some(v) => std::env::set_var("ANVILML_PING_INTERVAL_MS", v),
-            None => std::env::remove_var("ANVILML_PING_INTERVAL_MS"),
-        }
-        match orig_pong {
-            Some(v) => std::env::set_var("ANVILML_PONG_TIMEOUT_MS", v),
-            None => std::env::remove_var("ANVILML_PONG_TIMEOUT_MS"),
-        }
-
-        // Unconditional teardown — prevents env-var leak to subsequent tests.
-        std::env::remove_var("ANVILML_WORKER_MOCK");
-        std::env::remove_var("ANVILML_PING_INTERVAL_MS");
-        std::env::remove_var("ANVILML_PONG_TIMEOUT_MS");
+                // No second Ready, no Dying, no Dead during the drain window.
+                assert!(!had_dying, "unexpected Dying event during handshake drain");
+                assert!(
+                    !had_dead,
+                    "unexpected WorkerStatusChanged(Dead) during handshake drain"
+                );
+            },
+        )
+        .await;
     }
 
     /// Verify that EOF on the pipe sets status to Dead.
@@ -1247,42 +1223,39 @@ mod tests {
     /// Required: ANVILML_WORKER_MOCK=1 and ANVILML_VENV_PATH must be set.
     #[tokio::test]
     #[cfg(feature = "mock-hardware")]
-    #[serial_test::serial]
     async fn spawn_reaches_idle() {
-        std::env::set_var("ANVILML_WORKER_MOCK", "1");
+        temp_env::async_with_vars([("ANVILML_WORKER_MOCK", Some("1"))], async {
+            let worker = ManagedWorker::new("idle-test".to_string(), 0);
 
-        let worker = ManagedWorker::new("idle-test".to_string(), 0);
+            let device = GpuDevice {
+                index: 0,
+                name: "Mock GPU".to_string(),
+                device_type: anvilml_core::DeviceType::Cpu,
+                vram_total_mib: 8192,
+                vram_free_mib: 8192,
+                driver_version: "mock".to_string(),
+                pci_vendor_id: 0,
+                pci_device_id: 0,
+                arch: Some("gfx1100".to_string()),
+                caps: Default::default(),
+                enumeration_source: anvilml_core::EnumerationSource::Mock,
+                capabilities_source: anvilml_core::CapabilitySource::Fallback,
+                db_group_name: None,
+            };
 
-        let device = GpuDevice {
-            index: 0,
-            name: "Mock GPU".to_string(),
-            device_type: anvilml_core::DeviceType::Cpu,
-            vram_total_mib: 8192,
-            vram_free_mib: 8192,
-            driver_version: "mock".to_string(),
-            pci_vendor_id: 0,
-            pci_device_id: 0,
-            arch: Some("gfx1100".to_string()),
-            caps: Default::default(),
-            enumeration_source: anvilml_core::EnumerationSource::Mock,
-            capabilities_source: anvilml_core::CapabilitySource::Fallback,
-            db_group_name: None,
-        };
+            let cfg = ServerConfig {
+                venv_path: std::env::var("ANVILML_VENV_PATH")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|_| std::path::PathBuf::from("/home/dryw/forge/.venv")),
+                ..ServerConfig::default()
+            };
 
-        let cfg = ServerConfig {
-            venv_path: std::env::var("ANVILML_VENV_PATH")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| std::path::PathBuf::from("/home/dryw/forge/.venv")),
-            ..ServerConfig::default()
-        };
+            // spawn() internally sends InitializeHardware, waits for Ready→Idle.
+            worker.spawn(&device, &cfg).await.expect("spawn");
 
-        // spawn() internally sends InitializeHardware, waits for Ready→Idle.
-        worker.spawn(&device, &cfg).await.expect("spawn");
-
-        // Verify status is Idle — no sleep, no timing workaround.
-        assert_eq!(worker.get_status().await, WorkerStatus::Idle);
-
-        // Unconditional teardown — prevents env-var leak to subsequent tests.
-        std::env::remove_var("ANVILML_WORKER_MOCK");
+            // Verify status is Idle — no sleep, no timing workaround.
+            assert_eq!(worker.get_status().await, WorkerStatus::Idle);
+        })
+        .await;
     }
 }
