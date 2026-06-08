@@ -147,6 +147,7 @@ worker child process. Do not set these manually.
 |----------------------------|---------------------------------------------------|
 | `ANVILML_WORKER_ID`        | Logical worker identifier (`worker-{index}`)      |
 | `ANVILML_DEVICE_INDEX`     | GPU device index this worker owns                 |
+| `ANVILML_IPC_SOCKET`       | Unix domain socket path (Linux/macOS) or Windows named pipe path. Worker must connect to this path at startup before processing any IPC frames. Format: `{tmp}/anvilml-{pid}/worker-{index}.sock` on Unix; `\\.\pipe\anvilml-worker-{index}-{pid}` on Windows. |
 | `ANVILML_NUM_THREADS`      | Intra-op thread count (from `num_threads`)        |
 | `ANVILML_NUM_INTEROP_THREADS` | Inter-op thread count (from `num_interop_threads`) |
 | `ANVILML_WORKER_MOCK`      | Propagated to the child when set on the server (mock mode) |

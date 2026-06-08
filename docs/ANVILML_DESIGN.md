@@ -98,7 +98,7 @@ The backend is a first-class citizen on **Linux and Windows**; macOS runs CPU-on
 | NVIDIA / CUDA worker | ✓ | ✓ | ✗ | Enumerated via Vulkan (driver-bundled); no CUDA SDK / `nvidia-smi` needed (§5). |
 | AMD / ROCm worker | ✓ | ✓ | ✗ | **MVP-mandatory on both OSes** (§5). Windows uses AMD's *PyTorch on Windows* package (ROCm ≥ 7.2) on supported Radeon RX 7000/9000-series + select Ryzen AI parts. DirectML still deferred (§25). |
 | CPU worker | ✓ | ✓ | ✓ | Always available fallback. |
-| IPC over stdio | ✓ | ✓ | ✓ | Windows requires binary-mode stdio (§7.1). |
+| IPC transport | Unix domain socket | Windows named pipe | Unix domain socket | Path passed via `ANVILML_IPC_SOCKET` (§7). |
 | venv provisioning script | `.sh` | `.ps1` | `.sh` | §21.4; Windows uses `py -3.12`. |
 | Graceful shutdown | `SIGINT`/`SIGTERM` | Ctrl-C / `ctrl_close` / `ctrl_shutdown` | as Unix | §16.3. |
 | Orphan-worker cleanup on hard kill | `PR_SET_PDEATHSIG` | Job Object | best-effort | §22.4. |
@@ -134,7 +134,7 @@ anvilml/
     anvilml-openapi/            (build-time binary: generates openapi.json)
   worker/
     worker_main.py              (entry point invoked by Rust)
-    ipc.py                      (stdin/stdout framing + msgpack)
+    ipc.py                      (Unix socket / Windows named pipe framing + msgpack)
     executor.py                 (graph topo-sort + node execution loop)
     pipeline_cache.py           (in-worker LRU model/pipeline cache)
     defaults.py                 (centralised, tunable per-model defaults)
@@ -317,6 +317,7 @@ ws_broadcast_capacity = 256
 | `ANVILML_WORKER_MOCK` | Python worker stub mode (§14.5) | unset |
 | `ANVILML_WORKER_ID` | injected per worker | `worker-{index}` |
 | `ANVILML_DEVICE_INDEX` | injected per worker | device index |
+| `ANVILML_IPC_SOCKET` | injected per worker — Unix socket path or Windows named pipe path; worker connects on startup | generated at spawn |
 | `ANVILML_MOCK_DEVICE_TYPE` | `mock-hardware` device type | `cpu` |
 | `ANVILML_MOCK_VRAM_MIB` | `mock-hardware` VRAM | `8192` |
 | `ANVILML_MOCK_GFX_ARCH` | `mock-hardware` gfx string | `gfx1100` |
@@ -641,7 +642,13 @@ To repair a broken venv without restarting the server: delete and recreate the v
 
 ## 7. IPC Protocol (`anvilml-ipc`)
 
-Communication uses the worker's **stdin/stdout** pipes. stderr is captured to `{worker_log_dir}/worker-{device_index}.log` (rotated at 10 MiB, 3 retained). Using the standard pipes (rather than TCP/UDS) avoids per-platform socket handling and port allocation; the worker is a pure child process.
+Communication uses a **Unix domain socket** (Linux/macOS) or **Windows named pipe**. The supervisor creates the socket before spawning the worker and passes its path via the `ANVILML_IPC_SOCKET` environment variable; the worker connects on startup. stderr is captured to `{worker_log_dir}/worker-{device_index}.log` (rotated at 10 MiB, 3 retained).
+
+**Socket path convention:**
+- Linux/macOS: `{std::env::temp_dir()}/anvilml-{supervisor_pid}/worker-{device_index}.sock`
+- Windows: `\\.\pipe\anvilml-worker-{device_index}-{supervisor_pid}`
+
+The supervisor creates the socket directory before spawning the child and removes it on clean shutdown. On restart after an unclean exit the directory is recreated, overwriting any stale socket.
 
 ### 7.1 Framing
 
@@ -651,18 +658,7 @@ Communication uses the worker's **stdin/stdout** pipes. stderr is captured to `{
 
 Maximum payload: `limits.max_ipc_payload_mib` (default 64 MiB). A frame exceeding the limit, or a deserialization failure, causes an immediate worker kill + respawn (it indicates a desynced stream). The reader enforces the cap **before** allocating the buffer.
 
-**Windows binary-stdio requirement (critical).** Because frames are raw binary msgpack carried over stdout/stdin, the Python worker **must** put its standard streams into binary mode on Windows before the first frame, or the C runtime will translate every `0x0A` byte to `0x0D 0x0A` and corrupt the stream:
-
-```python
-# worker/ipc.py — at module import, before any read/write
-import sys
-if sys.platform == "win32":
-    import msvcrt, os
-    msvcrt.setmode(sys.stdin.fileno(),  os.O_BINARY)
-    msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
-```
-
-All worker I/O uses `sys.stdin.buffer` / `sys.stdout.buffer` (never the text wrappers), and `sys.stdout.buffer.flush()` is called after every frame. The Rust side reads/writes the child's pipe handles as raw bytes and performs no translation, so no Rust-side change is needed. On both platforms the framing reader must **read-fully** (loop until the 4-byte header and then the full N-byte payload are received), because pipe reads — especially on Windows — may return fewer bytes than requested.
+Frames are raw binary msgpack carried over the IPC socket. On both platforms the framing reader must **read-fully** (loop until the 4-byte header and then the full N-byte payload are received), because socket reads may return fewer bytes than requested.
 
 ### 7.2 Messages (Rust → Python)
 
@@ -1419,8 +1415,8 @@ The single normative reference for every OS-divergent detail. Each item is also 
 | :-- | :-- | :-- | :-- |
 | venv interpreter | `{venv}/bin/python3` | `{venv}\Scripts\python.exe` | §6 |
 | venv creation | `python3.12 -m venv` | `py -3.12 -m venv` | §21.4 |
-| IPC stdio mode | binary by default | **must** set `O_BINARY` on stdin/stdout | §7.1 |
-| Pipe partial reads | read-fully loop | read-fully loop (more frequent) | §7.1 |
+| IPC transport | Unix domain socket (`AF_UNIX`) | Windows named pipe (`\\.\pipe\...`) | §7 |
+| IPC socket partial reads | read-fully loop | read-fully loop | §7.1 |
 | Shutdown signal | `ctrl_c` + `SIGTERM` | `ctrl_c` + `ctrl_close`/`ctrl_shutdown` | §16.3 |
 | Force-kill child | `Child::kill()` (`SIGKILL`) | `Child::kill()` (`TerminateProcess`) | §8.5, §16.3 |
 | Device visibility env | `CUDA_/HIP_VISIBLE_DEVICES` | identical | §8.3 |
