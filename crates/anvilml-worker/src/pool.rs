@@ -151,6 +151,7 @@ impl WorkerPool {
                                         let cfg = cfg_clone.clone();
                                         let workers_clone = workers_clone.clone();
                                         let hw = hw.clone();
+                                        let tx = tx.clone();
 
                                         spawn(async move {
                                             // Wait for the configured delay.
@@ -208,12 +209,82 @@ impl WorkerPool {
                                                 if new_worker.spawn(&device, &cfg).await.is_ok() {
                                                     new_worker.start_keepalive();
 
+                                                    // Clone before move into pool — new_worker is moved
+                                                    // into locked[idx] and cannot be used after that line.
+                                                    let new_worker_for_listener =
+                                                        new_worker.clone();
+
                                                     // Replace in pool.
                                                     {
                                                         let mut locked =
                                                             workers_clone.write().await;
                                                         locked[idx] = new_worker;
                                                     }
+
+                                                    // Spawn an event listener for the replacement worker.
+                                                    let new_wid = wid.clone();
+                                                    let new_device_index = device_index;
+                                                    // Use hw and tx — these are the correctly scoped
+                                                    // clones already captured by the respawn closure.
+                                                    // hardware and event_tx are out of scope here
+                                                    // (moved into the WorkerPool struct at spawn_all return).
+                                                    let new_hw = hw.clone();
+                                                    let new_tx = tx.clone();
+
+                                                    spawn(async move {
+                                                        let mut rx =
+                                                            new_worker_for_listener.subscribe();
+
+                                                        loop {
+                                                            match rx.recv().await {
+                                                                Ok((_, event)) => {
+                                                                    debug!(
+                                                                        worker_id = %new_wid,
+                                                                        event_type = ?event_discriminant(&event),
+                                                                        "respawn listener received event"
+                                                                    );
+
+                                                                    if let anvilml_ipc::WorkerEvent::Ready {
+                                                                        arch,
+                                                                        fp16,
+                                                                        bf16,
+                                                                        flash_attention,
+                                                                        vram_total_mib,
+                                                                        vram_free_mib,
+                                                                        ..
+                                                                    } = &event
+                                                                    {
+                                                                        let mut h = new_hw.lock().await;
+                                                                        if let Some(gpu) =
+                                                                            h.gpus.iter_mut().find(|g| g.index == new_device_index)
+                                                                        {
+                                                                            gpu.arch = Some(arch.clone());
+                                                                            gpu.caps.fp16 = *fp16;
+                                                                            gpu.caps.bf16 = *bf16;
+                                                                            gpu.caps.flash_attention = *flash_attention;
+                                                                            gpu.vram_total_mib = *vram_total_mib;
+                                                                            gpu.vram_free_mib = *vram_free_mib;
+                                                                            gpu.capabilities_source = CapabilitySource::Worker;
+                                                                            info!(
+                                                                                worker_id = %new_wid,
+                                                                                device_index = new_device_index,
+                                                                                "respawn: worker ready — capabilities merged"
+                                                                            );
+                                                                        }
+                                                                    }
+
+                                                                    let _ = new_tx.send((new_wid.clone(), event.clone()));
+                                                                }
+                                                                Err(broadcast::error::RecvError::Lagged(n)) => {
+                                                                    debug!(lagged = n, worker_id = %new_wid, "respawn listener dropped events");
+                                                                }
+                                                                Err(broadcast::error::RecvError::Closed) => {
+                                                                    debug!(worker_id = %new_wid, "respawn listener channel closed");
+                                                                    break;
+                                                                }
+                                                            }
+                                                        }
+                                                    });
 
                                                     // Update device_map.
                                                     // (device_map update deferred — set_busy/set_idle iterate by ID)
