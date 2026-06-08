@@ -118,16 +118,17 @@
     "P902-A5",
     "P902-A6",
     "P902-B1",
-    "P902-B2"
+    "P902-B2",
+    "P902-B3"
   ],
-  "in_progress": "P902-B3",
+  "in_progress": "P902-D1",
   "plan_approved": true,
-  "current_plan": "1. **Workspace dependency declaration.** In root `Cargo.toml`, add a single line under `[workspace.dependencies]`:\n   ```toml\n   tower-http = { version = \"0.6\", features = [\"trace\"] }\n   ```\n   This makes the crate available to all workspace members via `{ workspace = true }`. The `\"trace\"` feature is the only one needed \u2014 it provides `TraceLayer` and its configuration types.\n\n2. **Server crate dependency.** In `crates/anvilml-server/Cargo.toml`, add a single line under `[dependencies]`:\n   ```toml\n   tower-http = { workspace = true }\n   ```\n   This follows the project's established convention of declaring all dependencies through the workspace manifest.\n\n3. **Router layer insertion.** In `crates/anvilml-server/src/lib.rs`:\n   - Add `use tower_http::trace::TraceLayer;` to the existing imports (after `use axum::{...}`).\n   - In `build_router()`, change the router chain from:\n     ```rust\n     Router::new()\n         .route(...)\n         ...\n         .with_state(state_arc)\n     ```\n     to:\n     ```rust\n     Router::new()\n         .route(...)\n         ...\n         .with_state(state_arc)\n         .layer(TraceLayer::new_for_http())\n     ```\n   - The `TraceLayer` is placed outermost (last in the chain), so it wraps all request processing. This matches the design spec's \"outermost first\" ordering.\n\n4. **Version bump.** Increment `anvilml-server` version from `\"0.1.3\"` to `\"0.1.4\"` in `crates/anvilml-server/Cargo.toml`. Source files are modified, so a patch bump is required per ENVIRONMENT.md \u00a710.\n\n5. **Verify compilation and tests.** Run `cargo test -p anvilml-server --features mock-hardware` to confirm all existing tests pass with the new layer in place. TraceLayer adds only logging instrumentation; it does not modify request/response bodies or status codes, so functional behavior is unchanged.",
+  "current_plan": "1. **Gate 1 \u2014 Clippy lint:** Run `cargo clippy --workspace --features mock-hardware -- -D warnings` and capture full stdout/stderr. Verify exit code is 0 and no warning lines appear.\n\n2. **Gate 2 \u2014 Rust test suite:** Run `env -i HOME=$HOME PATH=$PATH ANVILML_WORKER_MOCK=1 ANVILML_VENV_PATH=./worker/.venv cargo test --workspace --features mock-hardware` and capture full stdout/stderr. Verify exit code is 0 and no test failures appear. The `env -i` clears the ambient environment to ensure tests are not dependent on external variables beyond those explicitly set.\n\n3. **Gate 3 \u2014 Windows cross-check:** Run `cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu` and capture full stdout/stderr. Verify exit code is 0. This exercises the `#[cfg(windows)]` code paths via cross-compilation from Linux.\n\n4. **Gate 4 \u2014 Python worker tests:** Run `python -m pytest worker/tests/ -v` and capture full stdout/stderr. Verify exit code is 0 and no test failures appear.\n\n5. **Report assembly:** Write the implementation report with all four verbatim outputs as the body content. The task is COMPLETE only when all four commands exit 0.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-08T20:20:58+0200",
-  "plan_approval_message_id": "1513608178489888778",
+  "last_updated": "2026-06-08T20:48:13+0200",
+  "plan_approval_message_id": "1513613184655822908",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1513608176371630243",
+  "plan_report_message_id": "1513613182675980419",
   "impl_report_message_id": null
 }
