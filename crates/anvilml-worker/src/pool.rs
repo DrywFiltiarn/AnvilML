@@ -285,6 +285,11 @@ impl WorkerPool {
         // Create one worker per GPU device.
         for (i, device) in hw.gpus.iter().enumerate() {
             let worker = Arc::new(ManagedWorker::new(format!("worker-{i}"), i as u32));
+            tracing::debug!(
+                worker_id = %format!("worker-{i}"),
+                device_index = i,
+                "spawned worker"
+            );
             worker.spawn(device, cfg).await.expect("spawn gpu worker");
 
             let ka_handle = worker.start_keepalive();
@@ -325,6 +330,11 @@ impl WorkerPool {
                 db_group_name: None,
             };
             let worker = Arc::new(ManagedWorker::new("worker-0".to_string(), 0));
+            tracing::debug!(
+                worker_id = "worker-0",
+                device_index = 0u32,
+                "spawned worker"
+            );
             worker
                 .spawn(&synthetic, cfg)
                 .await
@@ -397,6 +407,13 @@ impl WorkerPool {
         let locked = self.workers.read().await;
         for worker in &*locked {
             if worker.worker_id() == worker_id {
+                let old_status = worker.get_status().await;
+                tracing::debug!(
+                    worker_id = %worker_id,
+                    from = ?old_status,
+                    to = "Busy",
+                    "status transition"
+                );
                 worker.set_status(WorkerStatus::Busy).await;
                 info!(worker_id = %worker_id, job_id = %_job_id, "worker set to busy");
                 return;
@@ -410,6 +427,13 @@ impl WorkerPool {
         let locked = self.workers.read().await;
         for worker in &*locked {
             if worker.worker_id() == worker_id {
+                let old_status = worker.get_status().await;
+                tracing::debug!(
+                    worker_id = %worker_id,
+                    from = ?old_status,
+                    to = "Idle",
+                    "status transition"
+                );
                 worker.set_status(WorkerStatus::Idle).await;
                 info!(worker_id = %worker_id, "worker set to idle");
                 return;

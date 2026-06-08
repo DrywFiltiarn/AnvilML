@@ -114,16 +114,17 @@
     "P902-A1",
     "P902-A2a",
     "P902-A2b",
-    "P902-A4"
+    "P902-A4",
+    "P902-A5"
   ],
-  "in_progress": "P902-A5",
+  "in_progress": "P902-A6",
   "plan_approved": true,
-  "current_plan": "1. **Inspect the current `writer_task` function** (lines ~596\u2013623 of `managed.rs`) to locate the point where `framing::write_frame(&mut stdin, &msg).await` is called.\n2. **Verify a `tracing::debug!` call exists immediately before that write.** The current code already has:\n   ```rust\n   debug!(\n       worker_id = %worker_id,\n       message_type = ?msg_discriminant(&msg),\n       \"writing frame to worker\"\n   );\n   ```\n   This satisfies the \u00a711.5 requirement. The only difference from the task spec is `?` instead of `%` for the `message_type` field \u2014 since `msg_discriminant()` returns `&'static str`, both produce identical output. No change needed.\n3. **Inspect the current `reader_task` function** (lines ~626\u2013668 of `managed.rs`) to locate the point after `framing::read_frame(&mut stdout, max_mib).await` returns `Ok(event)`.\n4. **Verify a `tracing::debug!` call exists immediately after successful deserialization.** The current code already has:\n   ```rust\n   debug!(\n       worker_id = %worker_id,\n       event_type = ?event_discriminant(&event),\n       \"received event from worker\"\n   );\n   ```\n   This satisfies the \u00a711.5 requirement. Same `?` vs `%` note as above \u2014 no change needed.\n5. **Run acceptance test:** `cargo test -p anvilml-worker --features mock-hardware` must exit 0.",
+  "current_plan": "1. **GPU spawn DEBUG point** (pool.rs, line 287): After `let worker = Arc::new(ManagedWorker::new(format!(\"worker-{i}\"), i as u32));`, add:\n   ```rust\n   tracing::debug!(worker_id = %format!(\"worker-{i}\"), device_index = i, \"spawned worker\");\n   ```\n\n2. **CPU spawn DEBUG point** (pool.rs, line 327): After `let worker = Arc::new(ManagedWorker::new(\"worker-0\".to_string(), 0));`, add:\n   ```rust\n   tracing::debug!(worker_id = \"worker-0\", device_index = 0u32, \"spawned worker\");\n   ```\n\n3. **set_busy DEBUG point** (pool.rs, line 400): Before `worker.set_status(WorkerStatus::Busy).await;`, capture old status and log:\n   ```rust\n   let old_status = worker.get_status().await;\n   tracing::debug!(worker_id = %worker_id, from = ?old_status, to = \"Busy\", \"status transition\");\n   ```\n\n4. **set_idle DEBUG point** (pool.rs, line 413): Before `worker.set_status(WorkerStatus::Idle).await;`, capture old status and log:\n   ```rust\n   let old_status = worker.get_status().await;\n   tracing::debug!(worker_id = %worker_id, from = ?old_status, to = \"Idle\", \"status transition\");\n   ```\n\n5. **Version bump**: Read `crates/anvilml-worker/Cargo.toml` current version (`0.1.13`), update to `0.1.14`.\n\n6. **Verification**: Run `cargo test -p anvilml-worker --features mock-hardware` \u2014 must exit 0.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-08T18:29:56+0200",
-  "plan_approval_message_id": "1513580445176959237",
+  "last_updated": "2026-06-08T18:48:16+0200",
+  "plan_approval_message_id": "1513585147738460170",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1513580443684044820",
+  "plan_report_message_id": "1513585146111070290",
   "impl_report_message_id": null
 }
