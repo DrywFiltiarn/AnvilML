@@ -9,7 +9,11 @@ use anvilml_core::{
 };
 use anvilml_ipc::{framing, WorkerEvent, WorkerMessage};
 use interprocess::local_socket::tokio::prelude::*;
-use interprocess::local_socket::{GenericFilePath, ListenerOptions, ToFsName};
+#[cfg(any(unix, test))]
+use interprocess::local_socket::GenericFilePath;
+use interprocess::local_socket::{ListenerOptions, ToFsName};
+#[cfg(windows)]
+use interprocess::os::windows::local_socket::NamedPipe;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -197,9 +201,7 @@ impl ManagedWorker {
         }
 
         // Bind the local socket listener.
-        let name = socket_path
-            .to_fs_name::<GenericFilePath>()
-            .map_err(AnvilError::Io)?;
+        let name = to_socket_name(&socket_path).map_err(AnvilError::Io)?;
         let listener = ListenerOptions::new()
             .name(name)
             .create_tokio()
@@ -803,6 +805,23 @@ fn build_socket_path(device_index: u32, worker_id: String) -> std::path::PathBuf
     }
 }
 
+/// Convert a socket path to an `interprocess` local socket name.
+///
+/// On Unix, socket paths are filesystem paths and use `GenericFilePath`.
+/// On Windows, socket paths are named pipes and use `GenericNamespaced`.
+fn to_socket_name(
+    path: &std::path::Path,
+) -> Result<interprocess::local_socket::Name<'_>, std::io::Error> {
+    #[cfg(unix)]
+    {
+        path.to_fs_name::<GenericFilePath>()
+    }
+    #[cfg(windows)]
+    {
+        path.to_fs_name::<NamedPipe>()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1182,10 +1201,7 @@ mod tests {
             let _ = tokio::fs::create_dir_all(dir).await;
         }
 
-        let name = socket_path
-            .clone()
-            .to_fs_name::<GenericFilePath>()
-            .expect("convert socket path to name");
+        let name = to_socket_name(&socket_path).expect("convert socket path to name");
         let listener = ListenerOptions::new()
             .name(name)
             .create_tokio()
@@ -1202,9 +1218,7 @@ mod tests {
                 tokio::time::timeout(
                     Duration::from_secs(5),
                     LocalSocketStream::connect(
-                        socket_path
-                            .to_fs_name::<GenericFilePath>()
-                            .expect("convert to name"),
+                        to_socket_name(&socket_path).expect("convert to name"),
                     ),
                 )
                 .await
@@ -1290,10 +1304,7 @@ mod tests {
             let _ = tokio::fs::create_dir_all(dir).await;
         }
 
-        let name2 = socket_path2
-            .clone()
-            .to_fs_name::<GenericFilePath>()
-            .expect("convert socket path to name");
+        let name2 = to_socket_name(&socket_path2).expect("convert socket path to name");
         let listener2 = ListenerOptions::new()
             .name(name2)
             .create_tokio()
@@ -1310,9 +1321,7 @@ mod tests {
                 tokio::time::timeout(
                     Duration::from_secs(5),
                     LocalSocketStream::connect(
-                        socket_path2
-                            .to_fs_name::<GenericFilePath>()
-                            .expect("convert to name"),
+                        to_socket_name(&socket_path2).expect("convert to name"),
                     ),
                 )
                 .await
