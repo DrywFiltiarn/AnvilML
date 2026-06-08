@@ -9,7 +9,7 @@
 | Status | Draft |
 | Depends on phases | 0–12 (via P902-D1) |
 | Task file | `.forge/tasks/tasks_phase903.json` |
-| Tasks | 5 |
+| Tasks | 7 |
 
 ---
 
@@ -93,7 +93,7 @@ helper. The agent must resolve the exact `interprocess` API at implementation ti
 
 | Group | Subsystem | Tasks | Summary |
 |-------|-----------|-------|---------|
-| A | anvilml-worker / worker | P903-A1 – A4 | env var injection; Rust transport replacement; Python transport replacement; ipc-probe gate |
+| A | anvilml-worker / worker | P903-A1, A2, A3, A3x, A4, A5 | env var injection; Rust transport replacement; Python transport replacement; Windows name-type fix; ipc-probe gate; ignored test reactivation |
 | C | Gate | P903-C1 | Full workspace clean gate |
 
 ---
@@ -250,6 +250,55 @@ read it back via `read_frame` on the other end, assert the payload round-trips c
 
 ---
 
+#### P903-A3x: Fix GenericFilePath/GenericNamespaced Windows name-type error
+
+**File:** `crates/anvilml-worker/src/managed.rs`
+
+**Prereqs:** P903-A3
+
+**Root cause.** `build_socket_path()` returns a Windows named pipe path
+(`\\.\pipe\anvilml-worker-...`) on Windows. The production `spawn()` method and the
+`respawn_after_death` test both call `.to_fs_name::<GenericFilePath>()` on this path.
+`GenericFilePath` maps to Unix file-system socket paths; it explicitly rejects
+`\\.\pipe\...` paths, producing `"not a named pipe path"`. The correct name type for
+Windows named pipes is `GenericNamespaced`.
+
+**Fix.** Introduce a private `to_socket_name` helper that is cfg-gated:
+
+```rust
+#[cfg(unix)]
+fn to_socket_name(
+    path: &std::path::Path,
+) -> std::io::Result<interprocess::local_socket::Name<'_>> {
+    use interprocess::local_socket::traits::ToFsName;
+    use interprocess::local_socket::GenericFilePath;
+    path.to_fs_name::<GenericFilePath>()
+}
+
+#[cfg(windows)]
+fn to_socket_name(
+    path: &std::path::Path,
+) -> std::io::Result<interprocess::local_socket::Name<'_>> {
+    use interprocess::local_socket::traits::ToNsName;
+    use interprocess::local_socket::GenericNamespaced;
+    path.to_ns_name::<GenericNamespaced>()
+}
+```
+
+Replace every `path.to_fs_name::<GenericFilePath>()` call that operates on a
+`build_socket_path()` result with `to_socket_name(&path)?`. Affected sites:
+
+- `spawn()` — the `listener` bind call
+- `respawn_after_death` test — `socket_path` bind and connect, `socket_path2` bind and connect
+
+No changes to any other logic, fields, or files.
+
+**Acceptance criterion:** `cargo test -p anvilml-worker --features mock-hardware` exits 0
+on Linux. `cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu`
+exits 0.
+
+---
+
 #### P903-A4: Verify ipc-probe after transport change
 
 **File:** `crates/anvilml-ipc/src/bin/ipc-probe.rs`
@@ -263,6 +312,32 @@ If P902-A1 has not yet been applied (probe still hand-rolls `rmp_serde` instead 
 
 **Acceptance criterion:** `cargo run -p anvilml-ipc --bin ipc-probe` prints `OK seq=7`
 and exits 0.
+
+---
+
+#### P903-A5: Reactivate four ignored integration tests
+
+**File:** `crates/anvilml-worker/src/managed.rs`
+
+Remove the `#[ignore]` attribute from the following four tests:
+
+- `spawn_ping_pong`
+- `status_transitions`
+- `handshake_completes_once`
+- `spawn_reaches_idle`
+
+These tests were ignored during P903-A2 pending the Python worker socket implementation
+in P903-A3. With P903-A3 complete the workers can connect to the socket, and all four
+tests must pass without modification to their assertions.
+
+If any test has a doc comment referencing the P903-A3 pending state (e.g. `/// Ignored
+until P903-A3 updates the Python worker to connect to the socket.`), remove or update
+that comment to reflect that the test is now active.
+
+No changes to test logic, assertions, or any other file.
+
+**Acceptance criterion:** `cargo test -p anvilml-worker --features mock-hardware` exits 0
+with all four tests listed as `ok` (not `ignored`).
 
 ---
 
@@ -391,7 +466,9 @@ All four must exit 0.
   `ipc-probe.rs` before writing any code.
 
 - **P13-A1 prereq must be updated manually** from `["P902-D1"]` to `["P903-C1"]` in
-  `tasks_phase013.json` before The Forge runs Phase 903.
+  `tasks_phase013.json` before The Forge runs Phase 903. P903-C1 now prereqs both
+  P903-A4 and P903-A5, so the gate does not close until all four ignored tests are
+  reactivated and passing.
 
 - **No shared memory data channel in this phase.** The socket transport is the control
   channel. A separate shared memory channel for high-bandwidth data (latent preview frames)

@@ -35,14 +35,36 @@
     "tags": []
   },
   {
-    "id": "P903-A4",
-    "description": "anvilml-ipc: verify ipc-probe still passes after transport change",
+    "id": "P903-A3x",
+    "description": "anvilml-worker: fix GenericFilePath/GenericNamespaced Windows name-type error in spawn and test",
     "phase": "903",
     "project": "anvilml",
     "prereqs": [
       "P903-A3"
     ],
+    "context": "In crates/anvilml-worker/src/managed.rs fix all to_fs_name::<GenericFilePath>() call sites that handle Windows named pipe paths. GenericFilePath is wrong for named pipes; use GenericNamespaced on Windows. Add cfg-gated helper: #[cfg(unix)] use GenericFilePath, #[cfg(windows)] use GenericNamespaced. Affected: spawn() bind site and respawn_after_death test (socket_path and socket_path2 bind+connect). Exact before/after in TASKS_PHASE903.md \u00a7A3x. cargo test -p anvilml-worker --features mock-hardware exits 0. cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P903-A4",
+    "description": "anvilml-ipc: verify ipc-probe still passes after transport change",
+    "phase": "903",
+    "project": "anvilml",
+    "prereqs": [
+      "P903-A3x"
+    ],
     "context": "In crates/anvilml-ipc/src/bin/ipc-probe.rs the in-process tokio::io::duplex test is transport-agnostic and requires no changes. Confirm cargo run -p anvilml-ipc --bin ipc-probe prints OK seq=7 and exits 0. If the binary currently uses the wrong write path (hand-rolled rmp_serde instead of write_frame) fix it per P902-A1 \u2014 that fix may already be applied. No framing changes. No new logic. Acceptance: cargo run -p anvilml-ipc --bin ipc-probe exits 0 printing OK seq=7.",
+    "tags": []
+  },
+  {
+    "id": "P903-A5",
+    "description": "anvilml-worker: reactivate four ignored integration tests after Python socket implementation",
+    "phase": "903",
+    "project": "anvilml",
+    "prereqs": [
+      "P903-A3x"
+    ],
+    "context": "In crates/anvilml-worker/src/managed.rs remove the #[ignore] attribute from tests: spawn_ping_pong, status_transitions, handshake_completes_once, spawn_reaches_idle. These were ignored pending P903-A3 Python socket implementation. Update the ignore message (if present as a doc comment) to remove the P903-A3 pending note. No other changes. cargo test -p anvilml-worker --features mock-hardware exits 0 with all four tests listed as ok (not ignored).",
     "tags": []
   },
   {
@@ -51,6 +73,7 @@
     "phase": "903",
     "project": "anvilml",
     "prereqs": [
+      "P903-A5",
       "P903-A4"
     ],
     "context": "No source changes. Run and record verbatim output: (1) cargo clippy --workspace --features mock-hardware -- -D warnings; (2) env -i HOME=$HOME PATH=$PATH ANVILML_WORKER_MOCK=1 ANVILML_VENV_PATH=./worker/.venv cargo test --workspace --features mock-hardware; (3) cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu; (4) python -m pytest worker/tests/ -v. All four must exit 0. Task is COMPLETE only when all four exit 0. Write verbatim outputs as the implementation report body.",
