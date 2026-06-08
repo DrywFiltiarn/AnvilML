@@ -113,16 +113,17 @@
     "P12-A5",
     "P902-A1",
     "P902-A2a",
-    "P902-A2b"
+    "P902-A2b",
+    "P902-A4"
   ],
-  "in_progress": "P902-A4",
+  "in_progress": "P902-A5",
   "plan_approved": true,
-  "current_plan": "1. **Add `temp-env` dev-dependency.** In `crates/anvilml-worker/Cargo.toml`, add `temp-env = { version = \"0.3\", features = [\"async_closure\"] }` under `[dev-dependencies]`. The `async_closure` feature is required to expose the `async_with_vars` function (see dependency verification below).\n\n2. **Remove `serial_test` dev-dependency.** Delete the line `serial_test = \"1\"` from `[dev-dependencies]` in `crates/anvilml-worker/Cargo.toml`. Note: `serial_test` is also listed in the workspace root `[workspace.dependencies]` at version `3.5.0`, but that does not affect this crate since it uses a direct local override `\"1\"`.\n\n3. **Bump crate version.** Change `version = \"0.1.12\"` to `version = \"0.1.13\"` in the `[package]` section of `crates/anvilml-worker/Cargo.toml`.\n\n4. **Refactor `spawn_ping_pong` test.** Remove the `#[serial_test::serial]` attribute. Remove `std::env::set_var(\"ANVILML_WORKER_MOCK\", \"1\")` from the top of the body and `std::env::remove_var(\"ANVILML_WORKER_MOCK\")` from the teardown. Wrap the entire async function body with:\n   ```rust\n   temp_env::async_with_vars(\n       [(\"ANVILML_WORKER_MOCK\", Some(\"1\"))],\n       async { <existing test body> },\n   )\n   .await;\n   ```\n\n5. **Refactor `status_transitions` test.** Same pattern as step 4.\n\n6. **Refactor `handshake_completes_once` test.** Remove the `#[serial_test::serial]` attribute. Remove the entire save/restore block for the three env vars and the teardown block at the bottom. Wrap the body with:\n   ```rust\n   temp_env::async_with_vars(\n       [\n           (\"ANVILML_WORKER_MOCK\", Some(\"1\")),\n           (\"ANVILML_PING_INTERVAL_MS\", Some(\"50\")),\n           (\"ANVILML_PONG_TIMEOUT_MS\", Some(\"150\")),\n       ],\n       async { <existing test body> },\n   )\n   .await;\n   ```\n\n7. **Refactor `spawn_reaches_idle` test.** Same pattern as step 4.\n\n8. **Verify.** Run `cargo clippy -p anvilml-worker --features mock-hardware -- -D warnings` and `cargo test -p anvilml-worker --features mock-hardware`. Then run `env -i HOME=$HOME PATH=$PATH cargo test -p anvilml-worker --features mock-hardware` to confirm ambient env isolation.",
+  "current_plan": "1. **Inspect the current `writer_task` function** (lines ~596\u2013623 of `managed.rs`) to locate the point where `framing::write_frame(&mut stdin, &msg).await` is called.\n2. **Verify a `tracing::debug!` call exists immediately before that write.** The current code already has:\n   ```rust\n   debug!(\n       worker_id = %worker_id,\n       message_type = ?msg_discriminant(&msg),\n       \"writing frame to worker\"\n   );\n   ```\n   This satisfies the \u00a711.5 requirement. The only difference from the task spec is `?` instead of `%` for the `message_type` field \u2014 since `msg_discriminant()` returns `&'static str`, both produce identical output. No change needed.\n3. **Inspect the current `reader_task` function** (lines ~626\u2013668 of `managed.rs`) to locate the point after `framing::read_frame(&mut stdout, max_mib).await` returns `Ok(event)`.\n4. **Verify a `tracing::debug!` call exists immediately after successful deserialization.** The current code already has:\n   ```rust\n   debug!(\n       worker_id = %worker_id,\n       event_type = ?event_discriminant(&event),\n       \"received event from worker\"\n   );\n   ```\n   This satisfies the \u00a711.5 requirement. Same `?` vs `%` note as above \u2014 no change needed.\n5. **Run acceptance test:** `cargo test -p anvilml-worker --features mock-hardware` must exit 0.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-08T17:42:57+0200",
-  "plan_approval_message_id": "1513559242705997956",
+  "last_updated": "2026-06-08T18:29:56+0200",
+  "plan_approval_message_id": "1513580445176959237",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1513559240688795860",
+  "plan_report_message_id": "1513580443684044820",
   "impl_report_message_id": null
 }
