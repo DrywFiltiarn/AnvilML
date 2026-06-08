@@ -29,7 +29,9 @@ impl JobQueue {
     /// Enqueue a job at the back of the queue.
     pub fn enqueue(&self, job: Job) {
         let mut inner = self.inner.lock().expect("JobQueue mutex poisoned");
+        let job_id = job.id;
         inner.push_back(job);
+        tracing::debug!(job_id = %job_id, queue_len = inner.len(), "job enqueued");
     }
 
     /// Cancel a queued job identified by `id`.
@@ -73,10 +75,13 @@ impl JobQueue {
         }
 
         // Find and return the first queued entry.
-        inner
-            .iter()
-            .position(|j| j.status == JobStatus::Queued)
-            .map(|pos| inner.remove(pos).expect("position found"))
+        if let Some(pos) = inner.iter().position(|j| j.status == JobStatus::Queued) {
+            let removed_job = inner.remove(pos).expect("position found");
+            tracing::debug!(job_id = %removed_job.id, "job dequeued");
+            Some(removed_job)
+        } else {
+            None
+        }
     }
 
     /// Return the total number of entries in the queue (including cancelled).

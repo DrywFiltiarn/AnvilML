@@ -124,6 +124,8 @@ pub async fn insert_job(pool: &SqlitePool, job: &Job) -> Result<Uuid, sqlx::Erro
     .execute(pool)
     .await?;
 
+    tracing::debug!(job_id = %job.id, "job inserted into DB");
+
     Ok(job.id)
 }
 
@@ -204,6 +206,8 @@ pub async fn update_status(
     .bind(id.to_string())
     .execute(pool)
     .await?;
+
+    tracing::debug!(job_id = %id, status = ?new_status, "job status updated in DB");
 
     Ok(rows_affected.rows_affected() > 0)
 }

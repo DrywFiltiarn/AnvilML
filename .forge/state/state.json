@@ -116,16 +116,17 @@
     "P902-A2b",
     "P902-A4",
     "P902-A5",
-    "P902-A6"
+    "P902-A6",
+    "P902-B1"
   ],
-  "in_progress": "P902-B1",
+  "in_progress": "P902-B2",
   "plan_approved": true,
-  "current_plan": "1. **Read** `crates/anvilml-scheduler/src/scheduler.rs` and locate the `submit()` method (line 59).\n2. **Insert** the following line immediately after line 83 (`insert_job(...)` call), before the existing `tracing::info!` on line 85:\n\n   ```rust\n   tracing::debug!(job_id = %job_id, status = \"Queued\", \"job status transition\");\n   ```\n\n   The resulting sequence in `submit()` will be:\n   - Line ~83: `insert_job(&self.db, &job).await.map_err(...)?;`\n   - Line ~84: `tracing::debug!(job_id = %job_id, status = \"Queued\", \"job status transition\");` \u2190 new\n   - Line ~85: `tracing::info!(job_id = %job_id, \"job submitted and persisted as Queued\");`\n\n3. **Bump** the `anvilml-scheduler` crate version in `crates/anvilml-scheduler/Cargo.toml` from `0.1.7` to `0.1.8` (only the patch digit).\n4. **Verify** that no public signatures changed: `grep -n \"^pub \" crates/anvilml-scheduler/src/scheduler.rs`.\n5. **Run** acceptance criterion: `cargo test -p anvilml-scheduler --features mock-hardware` \u2014 must exit 0.",
+  "current_plan": "1. **job_store.rs \u2014 `insert_job()`**: After the `.execute(pool).await?;` line and before `Ok(job.id)`, insert:\n   ```rust\n   tracing::debug!(job_id = %job.id, \"job inserted into DB\");\n   ```\n\n2. **job_store.rs \u2014 `update_status()`**: After `Ok(rows_affected.rows_affected() > 0)` is computed (before the `Ok(...)` return), insert:\n   ```rust\n   tracing::debug!(job_id = %id, status = ?new_status, \"job status updated in DB\");\n   ```\n\n3. **queue.rs \u2014 `enqueue()`**: After `inner.push_back(job);`, insert:\n   ```rust\n   tracing::debug!(job_id = %job.id, queue_len = self.len(), \"job enqueued\");\n   ```\n\n4. **queue.rs \u2014 `pop_next()`**: In the `.map(...)` closure on the last line, after removing the job from the deque, insert:\n   ```rust\n   tracing::debug!(job_id = %removed_job.id, \"job dequeued\");\n   ```\n   Since the current code does `inner.iter().position(...).map(|pos| inner.remove(pos).expect(\"position found\"))`, we need to restructure slightly: bind the result of `remove` to a variable first, log, then return it. The restructuring is minimal and preserves the exact same behavior \u2014 just extracting the returned `Job` into a local binding so its `.id` can be logged before returning.\n\n5. **Version bump**: Read current version `0.1.8` from `crates/anvilml-scheduler/Cargo.toml`, write `0.1.9`.\n\n6. **Verification**: Run `cargo test -p anvilml-scheduler --features mock-hardware` \u2014 must exit 0.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-08T19:05:06+0200",
-  "plan_approval_message_id": "1513589562285363200",
+  "last_updated": "2026-06-08T19:41:46+0200",
+  "plan_approval_message_id": "1513598476976525453",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1513589560880267385",
+  "plan_report_message_id": "1513598473952432209",
   "impl_report_message_id": null
 }
