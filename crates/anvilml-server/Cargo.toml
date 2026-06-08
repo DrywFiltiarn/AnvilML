@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-server"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 
 [dependencies]
@@ -19,6 +19,7 @@ sqlx                = { workspace = true, features = ["sqlite", "runtime-tokio"]
 sysinfo             = { workspace = true }
 tokio               = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 tower               = { workspace = true }
+tower-http          = { workspace = true }
 futures-util        = { workspace = true }
 utoipa              = { workspace = true }
 uuid                = { workspace = true, features = ["serde"] }

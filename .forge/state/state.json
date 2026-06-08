@@ -117,16 +117,17 @@
     "P902-A4",
     "P902-A5",
     "P902-A6",
-    "P902-B1"
+    "P902-B1",
+    "P902-B2"
   ],
-  "in_progress": "P902-B2",
+  "in_progress": "P902-B3",
   "plan_approved": true,
-  "current_plan": "1. **job_store.rs \u2014 `insert_job()`**: After the `.execute(pool).await?;` line and before `Ok(job.id)`, insert:\n   ```rust\n   tracing::debug!(job_id = %job.id, \"job inserted into DB\");\n   ```\n\n2. **job_store.rs \u2014 `update_status()`**: After `Ok(rows_affected.rows_affected() > 0)` is computed (before the `Ok(...)` return), insert:\n   ```rust\n   tracing::debug!(job_id = %id, status = ?new_status, \"job status updated in DB\");\n   ```\n\n3. **queue.rs \u2014 `enqueue()`**: After `inner.push_back(job);`, insert:\n   ```rust\n   tracing::debug!(job_id = %job.id, queue_len = self.len(), \"job enqueued\");\n   ```\n\n4. **queue.rs \u2014 `pop_next()`**: In the `.map(...)` closure on the last line, after removing the job from the deque, insert:\n   ```rust\n   tracing::debug!(job_id = %removed_job.id, \"job dequeued\");\n   ```\n   Since the current code does `inner.iter().position(...).map(|pos| inner.remove(pos).expect(\"position found\"))`, we need to restructure slightly: bind the result of `remove` to a variable first, log, then return it. The restructuring is minimal and preserves the exact same behavior \u2014 just extracting the returned `Job` into a local binding so its `.id` can be logged before returning.\n\n5. **Version bump**: Read current version `0.1.8` from `crates/anvilml-scheduler/Cargo.toml`, write `0.1.9`.\n\n6. **Verification**: Run `cargo test -p anvilml-scheduler --features mock-hardware` \u2014 must exit 0.",
+  "current_plan": "1. **Workspace dependency declaration.** In root `Cargo.toml`, add a single line under `[workspace.dependencies]`:\n   ```toml\n   tower-http = { version = \"0.6\", features = [\"trace\"] }\n   ```\n   This makes the crate available to all workspace members via `{ workspace = true }`. The `\"trace\"` feature is the only one needed \u2014 it provides `TraceLayer` and its configuration types.\n\n2. **Server crate dependency.** In `crates/anvilml-server/Cargo.toml`, add a single line under `[dependencies]`:\n   ```toml\n   tower-http = { workspace = true }\n   ```\n   This follows the project's established convention of declaring all dependencies through the workspace manifest.\n\n3. **Router layer insertion.** In `crates/anvilml-server/src/lib.rs`:\n   - Add `use tower_http::trace::TraceLayer;` to the existing imports (after `use axum::{...}`).\n   - In `build_router()`, change the router chain from:\n     ```rust\n     Router::new()\n         .route(...)\n         ...\n         .with_state(state_arc)\n     ```\n     to:\n     ```rust\n     Router::new()\n         .route(...)\n         ...\n         .with_state(state_arc)\n         .layer(TraceLayer::new_for_http())\n     ```\n   - The `TraceLayer` is placed outermost (last in the chain), so it wraps all request processing. This matches the design spec's \"outermost first\" ordering.\n\n4. **Version bump.** Increment `anvilml-server` version from `\"0.1.3\"` to `\"0.1.4\"` in `crates/anvilml-server/Cargo.toml`. Source files are modified, so a patch bump is required per ENVIRONMENT.md \u00a710.\n\n5. **Verify compilation and tests.** Run `cargo test -p anvilml-server --features mock-hardware` to confirm all existing tests pass with the new layer in place. TraceLayer adds only logging instrumentation; it does not modify request/response bodies or status codes, so functional behavior is unchanged.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-08T19:41:46+0200",
-  "plan_approval_message_id": "1513598476976525453",
+  "last_updated": "2026-06-08T20:20:58+0200",
+  "plan_approval_message_id": "1513608178489888778",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1513598473952432209",
+  "plan_report_message_id": "1513608176371630243",
   "impl_report_message_id": null
 }

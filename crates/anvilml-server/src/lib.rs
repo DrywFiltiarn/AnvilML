@@ -10,6 +10,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use tower_http::trace::TraceLayer;
 
 pub use state::AppState;
 
@@ -34,6 +35,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/system", get(handlers::system::get_system))
         .route("/v1/workers", get(handlers::workers::list_workers))
         .with_state(state_arc)
+        .layer(TraceLayer::new_for_http())
 }
 
 #[cfg(test)]
