@@ -33,7 +33,7 @@
     "prereqs": [
       "P902-A2a"
     ],
-    "context": "pool.rs only. After P902-A2a the respawn task writes new_worker into the list but spawns no listener \u2014 new worker events unobserved. After locked[idx]=new_worker, before info!(respawned), spawn listener: subscribe via new_worker.subscribe(), loop recv, merge Ready caps into hw, forward via tx (in scope), break on Closed. See TASKS_PHASE902.md \u00a7P902-A2b for full closure body. cargo clippy -p anvilml-worker --features mock-hardware -- -D warnings exits 0. cargo test -p anvilml-worker --features mock-hardware exits 0. Kill worker; GET /v1/workers -> Idle within 5s.",
+    "context": "pool.rs only (P902-A2a committed). tx is NOT in respawn closure captures (only wid,device_index,delay,cfg,workers_clone,hw). (1) Per-worker loop body: add let respawn_tx=tx.clone(); respawn spawn captures: add let tx=respawn_tx; (2) Before {locked[idx]=new_worker}: let new_nw=new_worker.clone(); (3) After write-lock: spawn listener on new_nw.subscribe(), new_hw=hw.clone(), new_tx=tx.clone(). Full listener body in TASKS_PHASE902.md \u00a7P902-A2b. cargo clippy -p anvilml-worker --features mock-hardware -- -D warnings exits 0. cargo test -p anvilml-worker --features mock-hardware exits 0.",
     "tags": [
       "refactor"
     ]

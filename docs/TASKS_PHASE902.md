@@ -84,14 +84,23 @@ Replace the hand-rolled write side with `write_frame(&mut tx, &WorkerMessage::Pi
 
 #### P902-A2b: Spawn event listener for replacement worker after respawn (pool.rs)
 
-**File:** `crates/anvilml-worker/src/pool.rs` only.
+**File:** `crates/anvilml-worker/src/pool.rs` only. Starting from the P902-A2a output.
 
-After P902-A2a the respawn task correctly writes the new worker into the shared list, but spawns no event listener for it. The new worker's `Ready` and `Dead` events are unobserved: capabilities are never merged into hardware info, and a subsequent crash is never detected.
+Inside the respawn `spawn(async move { ... })` block the variables in scope are `wid`, `device_index`, `hw` (which is `pool_hardware.clone()` captured earlier), `tx` (which is `pool_event_tx.clone()` captured earlier), `workers_clone`, `cfg`. The names `hardware` and `event_tx` are **not** in scope — they were moved into the outer per-worker listener closure. Using them will produce E0382.
 
-Inside the respawn `spawn(async move { ... })` block, immediately after `locked[idx] = new_worker` and before `info!("worker respawned successfully")`, add:
+**Two changes:**
+
+**(1)** Immediately before the write-lock block `{ let mut locked = workers_clone.write().await; locked[idx] = new_worker; }`, add:
 
 ```rust
 let new_worker_for_listener = new_worker.clone();
+```
+
+This clone must precede the move of `new_worker` into `locked[idx]`. After `locked[idx] = new_worker`, `new_worker` is moved and cannot be used.
+
+**(2)** Immediately after the write-lock block, before `info!("worker respawned successfully")`, add:
+
+```rust
 let new_wid = wid.clone();
 let new_device_index = device_index;
 let new_hw = hw.clone();
@@ -114,15 +123,20 @@ spawn(async move {
                         gpu.vram_total_mib = *vram_total_mib;
                         gpu.vram_free_mib = *vram_free_mib;
                         gpu.capabilities_source = CapabilitySource::Worker;
+                        info!(
+                            worker_id = %new_wid,
+                            device_index = new_device_index,
+                            "respawn: worker ready — capabilities merged"
+                        );
                     }
                 }
                 let _ = new_tx.send((new_wid.clone(), event.clone()));
             }
             Err(broadcast::error::RecvError::Lagged(n)) => {
-                debug!(lagged = n, worker_id = %new_wid, "dropped events (respawned listener)");
+                debug!(lagged = n, worker_id = %new_wid, "respawn listener dropped events");
             }
             Err(broadcast::error::RecvError::Closed) => {
-                debug!(worker_id = %new_wid, "event channel closed (respawned listener)");
+                debug!(worker_id = %new_wid, "respawn listener channel closed");
                 break;
             }
         }
@@ -130,11 +144,7 @@ spawn(async move {
 });
 ```
 
-Clone `tx` as `new_tx` — `tx` is already captured by the outer per-worker `spawn` closure and used for forwarding later in the same body; cloning avoids a move conflict.
-
-**Acceptance criterion:** `cargo clippy -p anvilml-worker --features mock-hardware -- -D warnings` exits 0. `cargo test -p anvilml-worker --features mock-hardware` exits 0. Manual: `cargo run --features mock-hardware`; kill worker PID; `GET /v1/workers` shows `status: "Idle"` within 5 seconds; no second respawn cycle occurs.
-
----
+**Acceptance criterion:** `cargo clippy -p anvilml-worker --features mock-hardware -- -D warnings` exits 0. `cargo test -p anvilml-worker --features mock-hardware` exits 0. Manual: `cargo run --features mock-hardware`; kill worker PID; `GET /v1/workers` shows `status: "Idle"` within 5 seconds; no second respawn cycle.
 
 #### P902-A4: Replace serial_test env-var workaround with scoped env isolation (managed.rs)
 
