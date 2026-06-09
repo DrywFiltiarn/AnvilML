@@ -787,17 +787,25 @@ fn _repo_root_for_worker() -> std::path::PathBuf {
 
 /// Build the IPC socket path for a worker.
 ///
-/// On Unix: `{temp_dir}/anvilml-{pid}/worker-{index}.sock`
-/// On Windows: `\\.\pipe\anvilml-worker-{index}-{pid}`
+/// On Unix: `{temp_dir}/anvilml-{pid}/worker-{index}-{uid}.sock`
+/// On Windows: `\\.\pipe\anvilml-worker-{worker_id}-{index}-{pid}-{uid}`
+///
+/// A process-global atomic counter (`uid`) is appended to every path so that
+/// each call produces a name that has never been used before in this process.
+/// This prevents `CreateNamedPipe` / `bind` conflicts when a prior instance's
+/// handles have not yet been fully released by the OS (common on Windows after
+/// a worker death and respawn cycle).
 fn build_socket_path(device_index: u32, worker_id: String) -> std::path::PathBuf {
+    static PIPE_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let uid = PIPE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
     if cfg!(windows) {
         std::path::PathBuf::from(format!(
-            r"\\.\pipe\anvilml-worker-{worker_id}-{device_index}-{pid}"
+            r"\\.\pipe\anvilml-worker-{worker_id}-{device_index}-{pid}-{uid}"
         ))
     } else {
         let dir = std::env::temp_dir().join(format!("anvilml-{pid}"));
-        dir.join(format!("worker-{device_index}.sock"))
+        dir.join(format!("worker-{device_index}-{uid}.sock"))
     }
 }
 

@@ -182,8 +182,8 @@ fn spawn_listener(
                                 let new_worker =
                                     Arc::new(ManagedWorker::new(wid.clone(), device_index));
 
-                                if new_worker.spawn(&device, &cfg).await.is_err() {
-                                    warn!(worker_id = %wid, "respawn failed — worker not replaced");
+                                if let Err(e) = new_worker.spawn(&device, &cfg).await {
+                                    warn!(worker_id = %wid, error = %e, "respawn failed — worker not replaced");
                                     return;
                                 }
 
