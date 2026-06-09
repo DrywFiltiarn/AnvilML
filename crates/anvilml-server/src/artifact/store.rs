@@ -159,6 +159,20 @@ impl ArtifactStore {
             created_at: now,
         })
     }
+
+    /// Return the on-disk path where the artifact with the given hash is stored.
+    ///
+    /// Constructs `{artifact_dir}/{hash[0..2]}/{hash}.png` using the same
+    /// two-char prefix sharding scheme as [`save()`].
+    ///
+    /// This method does **not** check whether the file exists — callers should
+    /// verify existence (e.g. via `fs::metadata`) before serving.
+    pub async fn get_path(&self, hash: &str) -> Result<PathBuf, ArtifactError> {
+        let prefix_dir = self.artifact_dir.join(&hash[..2]);
+        let file_path = prefix_dir.join(format!("{hash}.png"));
+        tracing::debug!(hash = %hash, path = %file_path.display(), "resolved artifact path");
+        Ok(file_path)
+    }
 }
 
 #[async_trait::async_trait]

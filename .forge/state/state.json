@@ -135,16 +135,17 @@
     "P13-A5",
     "P13-A6",
     "P14-A1",
-    "P14-A2"
+    "P14-A2",
+    "P14-A3"
   ],
-  "in_progress": "P14-A3",
+  "in_progress": "P14-A4",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "1. **Add `get_path` to `ArtifactStore`** (`crates/anvilml-server/src/artifact/store.rs`):\n   - Implement `pub async fn get_path(&self, hash: &str) -> Result<PathBuf, ArtifactError>`\n   - Constructs `{artifact_dir}/{hash[0..2]}/{hash}.png` using the same prefix-sharding logic as `save()`\n   - Returns `Ok(path)` unconditionally (the caller checks existence) or returns an Io error if the path is invalid\n   - This mirrors the file path construction in `save()` (line 118\u2013122 of store.rs)\n\n2. **Create `handlers/artifacts.rs`** (`crates/anvilml-server/src/handlers/artifacts.rs`):\n   - Define `serve_artifact` async function with signature matching axum's `Handler`:\n     ```rust\n     pub async fn serve_artifact(\n         State(state): State<App>,\n         Path(hash): Path<String>,\n     ) -> Result<impl IntoResponse, AppError>\n     ```\n   - Call `state.artifact_store.get_path(&hash).await`\n   - If `Err` (Io error for missing file): return 404 JSON error `{\"error\":\"artifact_not_found\",\"message\":\"artifact not found\"}`\n   - On `Ok(path)`: use `axum::response::File` or `tower_http::services::ServeFile` to stream the file\n   - Set response headers:\n     - `Content-Type: image/png`\n     - `Cache-Control: public, immutable, max-age=31536000`\n     - `ETag: \"{hash}\"` (with surrounding quotes as per HTTP spec)\n\n3. **Wire the route in `lib.rs`**:\n   - Add `.route(\"/v1/artifacts/{hash}\", get(handlers::artifacts::serve_artifact))` to the router chain\n   - Place it after existing `/v1/*` routes but before the frontend catch-all (if any)\n\n4. **Update module exports**:\n   - `artifact/mod.rs`: add `pub use store::ArtifactStore;` (already present) \u2014 no change needed\n   - `handlers/mod.rs`: add `pub mod artifacts;`\n\n5. **Add tests**:\n   - Unit test in `handlers/artifacts.rs` (or inline in a `tests` module):\n     - Test 404 when artifact file doesn't exist\n     - Test 200 with correct headers when artifact file exists\n   - Integration test in `crates/anvilml-server/tests/api_artifact_serve.rs`:\n     - Save an artifact using `ArtifactStore::save()` (reuse `MINIMAL_PNG_B64` from existing test)\n     - GET `/v1/artifacts/{hash}` and verify status 200, Content-Type, Cache-Control, ETag\n     - GET `/v1/artifacts/nonexistent` and verify status 404\n\n6. **Dependency check**:\n   - `tower-http` is already in `Cargo.toml` with `cors` feature. Need to add `fs` feature for `ServeFile`.\n   - Check workspace Cargo.toml for existing `tower-http` features.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-09T19:09:36+0200",
-  "plan_approval_message_id": "1513948936401064107",
+  "last_updated": "2026-06-10T00:32:52+0200",
+  "plan_approval_message_id": "1514031554819788814",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1513948933620105326",
+  "plan_report_message_id": "1514031553431474296",
   "impl_report_message_id": null
 }
