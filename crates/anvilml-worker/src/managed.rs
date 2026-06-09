@@ -557,16 +557,12 @@ impl ManagedWorker {
     #[allow(dead_code)]
     fn reset_ipc_tx(&mut self) {
         let (ipc_tx, ipc_rx) = oneshot::channel::<IpcHandles>();
+        let (tx, rx) = mpsc::channel(64);
 
-        // Create a new mpsc channel for the fresh run_loop.
-        let (_tx, rx) = mpsc::channel(64);
-
-        // Spawn the run_loop with the new receiver — the old one has been consumed.
         let worker_id = self.worker_id.clone();
         let status = self.status.clone();
         let event_tx = self.event_tx.clone();
 
-        // Replace the channel sender so the old receiver is dropped.
         let new_handle = spawn(Self::run_loop(
             worker_id.clone(),
             rx,
@@ -575,9 +571,8 @@ impl ManagedWorker {
             ipc_rx,
         ));
 
-        // Store the new oneshot sender.
+        self.tx = tx;
         *self.ipc_tx.lock().unwrap() = Some(ipc_tx);
-        // Update the handle reference.
         self.handle = new_handle;
     }
 
