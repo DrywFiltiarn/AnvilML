@@ -187,6 +187,13 @@ impl ManagedWorker {
             }
         }
 
+        // Windows: remove the child from the parent's console process group so
+        // that CTRL_C_EVENT is not broadcast to the worker process.
+        #[cfg(windows)]
+        {
+            cmd.creation_flags(0x0000_0200); // CREATE_NEW_PROCESS_GROUP
+        }
+
         // Create parent directory for Unix socket (Windows named pipe path
         // doesn't require a parent directory).
         #[cfg(unix)]

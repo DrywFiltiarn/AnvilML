@@ -284,4 +284,12 @@ async fn main() {
     let _ = axum::serve(listener, router)
         .with_graceful_shutdown(shutdown::shutdown_signal())
         .await;
+
+    // Worker drain (P18-A4) is not yet implemented. Force-exit so the
+    // tokio runtime does not hang on live background tasks (keepalive,
+    // scheduler, system-stats). The worker child process is terminated
+    // by the OS when this process exits because CREATE_NEW_PROCESS_GROUP
+    // is set and the named pipe is closed.
+    tracing::info!("HTTP server drained, exiting");
+    std::process::exit(0);        
 }
