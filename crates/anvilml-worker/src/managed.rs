@@ -9,7 +9,7 @@ use anvilml_core::{
 };
 use anvilml_ipc::{framing, WorkerEvent, WorkerMessage};
 use interprocess::local_socket::tokio::prelude::*;
-#[cfg(any(unix, test))]
+#[cfg(unix)]
 use interprocess::local_socket::GenericFilePath;
 use interprocess::local_socket::{ListenerOptions, ToFsName};
 #[cfg(windows)]
