@@ -46,7 +46,6 @@ def connect(path: str) -> None:
         GENERIC_READ = 0x80000000
         GENERIC_WRITE = 0x40000000
         OPEN_EXISTING = 3
-        FILE_FLAG_OVERLAPPED = 0x40000000
 
         handle = ctypes.windll.kernel32.CreateFileW(
             path,
@@ -54,7 +53,7 @@ def connect(path: str) -> None:
             0,
             None,
             OPEN_EXISTING,
-            FILE_FLAG_OVERLAPPED,
+            0,
             None,
         )
         if handle == -1:
