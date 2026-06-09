@@ -165,7 +165,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-server"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
@@ -174,15 +174,19 @@ dependencies = [
  "anvilml-scheduler",
  "anvilml-worker",
  "axum",
+ "base64",
  "bytes",
  "chrono",
  "futures-util",
+ "hex",
  "http-body-util",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "sqlx",
  "sysinfo",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite 0.24.0",
  "tower",

@@ -1,3 +1,4 @@
+pub mod artifact;
 mod handlers;
 mod state;
 pub mod ws;

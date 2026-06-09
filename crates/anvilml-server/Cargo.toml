@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-server"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 
 [dependencies]
@@ -9,23 +9,30 @@ anvilml-hardware = { path = "../anvilml-hardware" }
 anvilml-ipc = { path = "../anvilml-ipc" }
 anvilml-registry = { path = "../anvilml-registry" }
 anvilml-scheduler = { path = "../anvilml-scheduler" }
-anvilml-worker = { path = "../anvilml-worker" }
+anvilml-worker = { path = "../anvilml-worker", features = ["test-helpers"] }
 axum = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+futures-util = { workspace = true }
+hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tracing             = { workspace = true }
-chrono              = { workspace = true }
-sqlx                = { workspace = true, features = ["sqlite", "runtime-tokio"] }
-sysinfo             = { workspace = true }
-tokio               = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
-tower               = { workspace = true }
-tower-http          = { workspace = true }
-futures-util        = { workspace = true }
-utoipa              = { workspace = true }
-uuid                = { workspace = true, features = ["serde"] }
+sha2 = { workspace = true }
+sqlx = { workspace = true, features = ["sqlite", "runtime-tokio"] }
+sysinfo = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time", "fs"] }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+utoipa = { workspace = true }
+uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
+base64 = { workspace = true }
 chrono = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
 tempfile = { workspace = true }
 tokio-tungstenite = { workspace = true }
 http-body-util = { workspace = true }
