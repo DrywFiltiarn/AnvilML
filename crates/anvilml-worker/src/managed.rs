@@ -877,7 +877,7 @@ mod tests {
     }
 
     /// Spawn a mock worker, send Ping, receive Pong, then Shutdown.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[cfg(feature = "mock-hardware")]
     async fn spawn_ping_pong() {
         temp_env::async_with_vars([("ANVILML_WORKER_MOCK", Some("1"))], async {
@@ -964,7 +964,7 @@ mod tests {
     }
 
     /// Verify status transitions: Initializing → Idle (on Ready) → Dead.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[cfg(feature = "mock-hardware")]
     async fn status_transitions() {
         temp_env::async_with_vars([("ANVILML_WORKER_MOCK", Some("1"))], async {
@@ -1011,7 +1011,7 @@ mod tests {
     /// - Exactly one `Ready` event is received in a 500ms drain window
     /// - No second Ready, no Dying, no Dead events appear during the drain
     ///
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[cfg(feature = "mock-hardware")]
     async fn handshake_completes_once() {
         temp_env::async_with_vars(
@@ -1418,7 +1418,7 @@ mod tests {
     ///
     /// Required: ANVILML_WORKER_MOCK=1 and ANVILML_VENV_PATH must be set.
     ///
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[cfg(feature = "mock-hardware")]
     async fn spawn_reaches_idle() {
         temp_env::async_with_vars([("ANVILML_WORKER_MOCK", Some("1"))], async {
