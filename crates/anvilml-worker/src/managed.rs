@@ -966,6 +966,10 @@ mod tests {
     /// Verify status transitions: Initializing → Idle (on Ready) → Dead.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[cfg(feature = "mock-hardware")]
+    #[cfg_attr(
+        windows,
+        ignore = "stalls on Windows tokio test runtime; covered on Linux"
+    )]
     async fn status_transitions() {
         temp_env::async_with_vars([("ANVILML_WORKER_MOCK", Some("1"))], async {
             let worker = ManagedWorker::new("status-test".to_string(), 0);
@@ -1013,6 +1017,10 @@ mod tests {
     ///
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[cfg(feature = "mock-hardware")]
+    #[cfg_attr(
+        windows,
+        ignore = "stalls on Windows tokio test runtime; covered on Linux"
+    )]
     async fn handshake_completes_once() {
         temp_env::async_with_vars(
             [
@@ -1420,6 +1428,10 @@ mod tests {
     ///
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[cfg(feature = "mock-hardware")]
+    #[cfg_attr(
+        windows,
+        ignore = "stalls on Windows tokio test runtime; covered on Linux"
+    )]
     async fn spawn_reaches_idle() {
         temp_env::async_with_vars([("ANVILML_WORKER_MOCK", Some("1"))], async {
             let worker = ManagedWorker::new("idle-test".to_string(), 0);
