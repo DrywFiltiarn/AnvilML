@@ -846,16 +846,26 @@ mod tests {
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| std::path::PathBuf::from("/home/dryw/forge/.venv"));
 
-        let python = if cfg!(windows) {
-            venv_path.join("Scripts").join("python.exe")
+        // Resolve relative paths the same way spawn() does — against the repo root
+        // derived from CARGO_MANIFEST_DIR. This ensures that a relative path like
+        // `.ci-venv` set by CI (working dir = repo root) resolves correctly even
+        // though `cargo test` runs with cwd = crates/anvilml-worker/.
+        let abs_venv = if venv_path.is_absolute() {
+            venv_path.clone()
         } else {
-            venv_path.join("bin").join("python3")
+            _repo_root_for_worker().join(&venv_path)
+        };
+
+        let python = if cfg!(windows) {
+            abs_venv.join("Scripts").join("python.exe")
+        } else {
+            abs_venv.join("bin").join("python3")
         };
 
         if !python.exists() {
             eprintln!(
                 "SKIP: Python interpreter not found at {} \
-                 (set ANVILML_VENV_PATH to run this test)",
+                (set ANVILML_VENV_PATH to run this test)",
                 python.display()
             );
             return None;
