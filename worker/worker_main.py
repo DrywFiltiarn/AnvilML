@@ -10,12 +10,15 @@ Rust  -> Python (WorkerMessage):
     InitializeHardware{device_str}
     Ping{seq}
     MemoryQuery
+    Execute{job_id, graph, settings, device_index}
     Shutdown
 
 Python -> Rust (WorkerEvent):
     Ready{worker_id, device_index, vram_total_mib, vram_free_mib, arch, fp16, bf16, flash_attention}
     Pong{seq}
     MemoryReport{vram_used_mib, ram_used_mib}
+    Progress{job_id, node_index, node_total, node_type}
+    Completed{job_id, elapsed_ms}
     Dying{reason}
 
 A background daemon thread emits ``MemoryReport`` every 10 seconds.
@@ -23,6 +26,7 @@ A background daemon thread emits ``MemoryReport`` every 10 seconds.
 
 import os
 import sys
+import time
 
 # Ensure the parent directory (repo root) is on sys.path so that
 # ``worker.ipc`` can be imported regardless of how this script is
@@ -109,6 +113,45 @@ def _probe_hardware():
         "bf16": bool(getattr(props, "major", 0) >= 8),  # Ampere+ supports bf16.
         "flash_attention": False,  # Requires explicit torch compile flag.
     }
+
+
+# ── Mock executor ──────────────────────────────────────────────────────────────
+
+
+def _execute_mock(
+    job_id: str | int,
+    graph: dict,
+    settings: dict,
+    device_index: int,
+) -> None:
+    """Execute a graph in mock mode: emit Progress per node, then Completed.
+
+    Iterates ``graph['nodes']`` in the order given (no topological sort —
+    the DAG is validated by the server).  For each node a ``Progress``
+    event is emitted; after all nodes a single ``Completed`` event is
+    emitted with the total elapsed time in milliseconds.
+    """
+    import worker.ipc as ipc  # noqa: E402
+
+    nodes = graph.get("nodes", [])
+    start_time = time.monotonic()
+
+    for i, node in enumerate(nodes):
+        node_type = node.get("type", "unknown")
+        ipc.write_frame({
+            "_type": "Progress",
+            "job_id": job_id,
+            "node_index": i,
+            "node_total": len(nodes),
+            "node_type": node_type,
+        })
+
+    elapsed_ms = int((time.monotonic() - start_time) * 1000)
+    ipc.write_frame({
+        "_type": "Completed",
+        "job_id": job_id,
+        "elapsed_ms": elapsed_ms,
+    })
 
 
 # ── Background MemoryReport thread ─────────────────────────────────────────────
@@ -205,6 +248,14 @@ def main() -> None:
                 "vram_used_mib": 0,
                 "ram_used_mib": 0,
             })
+            continue
+
+        if _type == "Execute":
+            job_id = msg.get("job_id", "")
+            graph = msg.get("graph", {})
+            settings = msg.get("settings", {})
+            device_index = msg.get("device_index", args.device_index)
+            _execute_mock(job_id, graph, settings, device_index)
             continue
 
         if _type == "Shutdown":

@@ -231,3 +231,72 @@ class TestWorkerMain:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+
+    def test_execute_progress_completed(self):
+        """Execute{job_id, graph, settings, device_index} triggers N Progress
+        events followed by a single Completed event."""
+        proc = self._spawn_worker()
+
+        try:
+            # Build a mock graph with 3 nodes.
+            nodes = [
+                {"type": "LoadModel"},
+                {"type": "Inference"},
+                {"type": "SaveOutput"},
+            ]
+            execute_msg = {
+                "_type": "Execute",
+                "job_id": "exec-test-1",
+                "graph": {"nodes": nodes},
+                "settings": {},
+                "device_index": 0,
+            }
+
+            frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            frames += _make_frame(execute_msg)
+            frames += _make_frame({"_type": "Shutdown"})
+            proc.stdin.write(frames)
+            proc.stdin.close()
+
+            stdout_data = proc.stdout.read(4096)
+            proc.wait(timeout=5)
+
+            parsed = self._parse_frames(stdout_data)
+
+            # Exactly one Ready event with correct worker_id.
+            ready_events = [f for f in parsed if f["_type"] == "Ready"]
+            assert len(ready_events) == 1, (
+                f"expected exactly one Ready, got {len(ready_events)}"
+            )
+            assert ready_events[0]["worker_id"] == "test-0"
+
+            # N Progress events (N = number of nodes).
+            progress_events = [f for f in parsed if f["_type"] == "Progress"]
+            assert len(progress_events) == len(nodes), (
+                f"expected {len(nodes)} Progress events, got {len(progress_events)}"
+            )
+            for i, node in enumerate(nodes):
+                pe = progress_events[i]
+                assert pe["job_id"] == "exec-test-1"
+                assert pe["node_index"] == i
+                assert pe["node_total"] == len(nodes)
+                assert pe["node_type"] == node["type"]
+
+            # Exactly one Completed event.
+            completed_events = [f for f in parsed if f["_type"] == "Completed"]
+            assert len(completed_events) == 1, (
+                f"expected exactly one Completed, got {len(completed_events)}"
+            )
+            completed = completed_events[0]
+            assert completed["job_id"] == "exec-test-1"
+            assert completed["elapsed_ms"] >= 0
+
+            # Exactly one Dying event, exit code 0.
+            dying_events = [f for f in parsed if f["_type"] == "Dying"]
+            assert len(dying_events) == 1
+            assert dying_events[0]["reason"] == "shutdown"
+            assert proc.returncode == 0
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
