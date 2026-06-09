@@ -835,6 +835,38 @@ mod tests {
     // Re-export rmp_serde for test serialization.
     use rmp_serde;
 
+    /// Returns a `ServerConfig` with the venv path resolved from `ANVILML_VENV_PATH`,
+    /// or `None` if the resulting Python interpreter does not exist on disk.
+    ///
+    /// Call at the top of any test that spawns a real Python worker. If `None` is
+    /// returned the test should return immediately — this prevents the 60-second
+    /// accept/status-poll stall that occurs on CI runners where no venv is present.
+    fn venv_cfg_or_skip() -> Option<ServerConfig> {
+        let venv_path = std::env::var("ANVILML_VENV_PATH")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("/home/dryw/forge/.venv"));
+
+        let python = if cfg!(windows) {
+            venv_path.join("Scripts").join("python.exe")
+        } else {
+            venv_path.join("bin").join("python3")
+        };
+
+        if !python.exists() {
+            eprintln!(
+                "SKIP: Python interpreter not found at {} \
+                 (set ANVILML_VENV_PATH to run this test)",
+                python.display()
+            );
+            return None;
+        }
+
+        Some(ServerConfig {
+            venv_path,
+            ..ServerConfig::default()
+        })
+    }
+
     /// Spawn a mock worker, send Ping, receive Pong, then Shutdown.
     #[tokio::test]
     #[cfg(feature = "mock-hardware")]
@@ -860,11 +892,9 @@ mod tests {
             };
 
             // Use the system python3 directly for tests.
-            let cfg = ServerConfig {
-                venv_path: std::env::var("ANVILML_VENV_PATH")
-                    .map(std::path::PathBuf::from)
-                    .unwrap_or_else(|_| std::path::PathBuf::from("/home/dryw/forge/.venv")),
-                ..ServerConfig::default()
+            let cfg = match venv_cfg_or_skip() {
+                Some(c) => c,
+                None => return,
             };
 
             // Spawn the worker process (waits for Ready internally).
@@ -947,11 +977,9 @@ mod tests {
                 db_group_name: None,
             };
 
-            let cfg = ServerConfig {
-                venv_path: std::env::var("ANVILML_VENV_PATH")
-                    .map(std::path::PathBuf::from)
-                    .unwrap_or_else(|_| std::path::PathBuf::from("/home/dryw/forge/.venv")),
-                ..ServerConfig::default()
+            let cfg = match venv_cfg_or_skip() {
+                Some(c) => c,
+                None => return,
             };
 
             // Status should start as Initializing.
@@ -1003,11 +1031,9 @@ mod tests {
                     db_group_name: None,
                 };
 
-                let cfg = ServerConfig {
-                    venv_path: std::env::var("ANVILML_VENV_PATH")
-                        .map(std::path::PathBuf::from)
-                        .unwrap_or_else(|_| std::path::PathBuf::from("/home/dryw/forge/.venv")),
-                    ..ServerConfig::default()
+                let cfg = match venv_cfg_or_skip() {
+                    Some(c) => c,
+                    None => return,
                 };
 
                 // Subscribe to broadcast channel *before* spawning.
@@ -1384,11 +1410,9 @@ mod tests {
                 db_group_name: None,
             };
 
-            let cfg = ServerConfig {
-                venv_path: std::env::var("ANVILML_VENV_PATH")
-                    .map(std::path::PathBuf::from)
-                    .unwrap_or_else(|_| std::path::PathBuf::from("/home/dryw/forge/.venv")),
-                ..ServerConfig::default()
+            let cfg = match venv_cfg_or_skip() {
+                Some(c) => c,
+                None => return,
             };
 
             // spawn() internally sends InitializeHardware, waits for Ready→Idle.
