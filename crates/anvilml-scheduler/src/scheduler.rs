@@ -227,7 +227,9 @@ impl<A: ArtifactSave + Clone + 'static> JobScheduler<A> {
                         }
                     }
                     _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
-                        tracing::debug!("dispatch loop: timeout, checking queue");
+                        if !queue.is_empty() {
+                            tracing::debug!("dispatch loop: timeout, checking queue");
+                        }
                     }
                 }
 
