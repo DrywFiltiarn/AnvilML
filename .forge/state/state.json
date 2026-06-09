@@ -134,16 +134,17 @@
     "P13-A4",
     "P13-A5",
     "P13-A6",
-    "P14-A1"
+    "P14-A1",
+    "P14-A2"
   ],
-  "in_progress": "P14-A2",
+  "in_progress": "P14-A3",
   "plan_approved": true,
-  "current_plan": "1. **Resolve dependency versions** using `rust-docs`:\n   - `sha2` = 0.11 (already in workspace) \u2014 API: `sha2::{Sha256, Digest}`, `Sha256::digest(bytes)` returns `[u8; 32]`\n   - `hex` = 0.4.3 (already in workspace) \u2014 API: `hex::encode(hash_bytes)` returns `String`\n   - `base64` = 0.22.1 (new) \u2014 API: `base64::prelude::BASE64_STANDARD.decode(b64_str)` returns `Result<Vec<u8>, DecodeError>`\n   - `tokio/fs` feature already available via workspace `tokio` (features: `full`)\n\n2. **Update `anvilml-server/Cargo.toml`**:\n   - Add `base64 = { workspace = true }` to `[dependencies]` (add `base64 = \"0.22\"` to workspace `[workspace.dependencies]` in root `Cargo.toml`)\n   - Add `tokio = { workspace = true, features = [\"macros\", \"rt-multi-thread\", \"sync\", \"time\", \"fs\"] }` to include the `fs` feature for async file I/O\n\n3. **Create `crates/anvilml-server/src/artifact/mod.rs`**:\n   - `pub mod store;`\n   - Re-export `ArtifactStore` from `store`\n\n4. **Create `crates/anvilml-server/src/artifact/store.rs`**:\n   - Define `ArtifactMeta` struct matching the design spec (\u00a74.2, \u00a713) with fields: `hash`, `job_id`, `width`, `height`, `format`, `seed`, `steps`, `prompt`, `created_at`\n   - Define `ArtifactStoreInput` struct for the `meta_input` parameter carrying `width`, `height`, `seed`, `steps`, `prompt`\n   - Implement `ArtifactStore::new(artifact_dir, db)`\n   - Implement `ArtifactStore::save(job_id, image_b64, meta_input)`:\n     - Decode base64 \u2192 bytes\n     - Compute SHA-256 \u2192 hex hash string\n     - `tokio::fs::create_dir_all` for prefix dir\n     - `tokio::fs::write` for PNG file\n     - `sqlx::query` INSERT into `artifacts` table\n     - `sqlx::query` UPDATE `jobs` SET `artifact_count = artifact_count + 1` WHERE `id = ?`\n     - Return constructed `ArtifactMeta`\n   - Add `#[tracing::instrument]` on `save` with DEBUG logging of hash computation and file path\n\n5. **Create test file `crates/anvilml-server/tests/api_artifact_save.rs`**:\n   - Use `tempfile::TempDir` for artifact directory (auto-cleanup)\n   - Use `anvilml_registry::open_in_memory()` for SQLite pool with migrations\n   - Insert a test job row: `INSERT INTO jobs (id, status, graph, settings, artifact_count) VALUES (?, 'Queued', '{}', '{}', 0)`\n   - Generate a minimal base64-encoded PNG (1x1 pixel) for the test input\n   - Call `store.save(job_id, b64_png, meta_input)`\n   - Assert: file exists at `{tmp_dir}/{hash[0..2]}/{hash}.png`\n   - Assert: `SELECT COUNT(*) FROM artifacts` returns 1\n   - Assert: `SELECT artifact_count FROM jobs WHERE id = ?` returns 1",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-09T18:06:37+0200",
-  "plan_approval_message_id": "1513934750950363257",
+  "last_updated": "2026-06-09T19:09:36+0200",
+  "plan_approval_message_id": "1513948936401064107",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1513934747934392341",
+  "plan_report_message_id": "1513948933620105326",
   "impl_report_message_id": null
 }

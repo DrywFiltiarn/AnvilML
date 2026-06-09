@@ -46,6 +46,39 @@ impl Default for ArtifactMeta {
     }
 }
 
+/// Input metadata carried into [`ArtifactSave::save`].
+#[derive(Debug, Clone)]
+pub struct ArtifactSaveInput {
+    /// Image width in pixels.
+    pub width: i64,
+    /// Image height in pixels.
+    pub height: i64,
+    /// Generation seed.
+    pub seed: i64,
+    /// Number of diffusion steps.
+    pub steps: i64,
+    /// Generation prompt text.
+    pub prompt: String,
+}
+
+/// Trait for saving an artifact produced by a generation job.
+///
+/// Implemented by `ArtifactStore` in `anvilml-server`. Placed here to avoid
+/// a circular dependency: `anvilml-scheduler` → `anvilml-server` would create
+/// a cycle since `anvilml-server` already depends on `anvilml-scheduler`.
+#[async_trait::async_trait]
+pub trait ArtifactSave: Send + Sync {
+    /// Decode, hash, persist, and record a single artifact.
+    ///
+    /// Returns the artifact hash on success.
+    async fn save(
+        &self,
+        job_id: &str,
+        image_b64: &str,
+        meta: ArtifactSaveInput,
+    ) -> Result<String, String>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

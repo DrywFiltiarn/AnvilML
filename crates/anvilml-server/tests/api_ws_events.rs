@@ -7,7 +7,7 @@ use anvilml_core::types::events::{SystemStatsEvent, WsEvent};
 use axum::Router;
 use futures_util::StreamExt;
 
-use anvilml_server::{build_router, AppState, EventBroadcaster};
+use anvilml_server::{build_router, App, EventBroadcaster};
 
 /// Bind the axum app on a random port (127.0.0.1:0), connect a tungstenite WS
 /// client to `/v1/events`, broadcast a `SystemStatsEvent` via the broadcaster,
@@ -15,8 +15,21 @@ use anvilml_server::{build_router, AppState, EventBroadcaster};
 /// text containing `"event":"system.stats"`.
 #[tokio::test]
 async fn ws_connect_broadcast_receive() {
+    let artifact_store = anvilml_server::artifact::store::ArtifactStore::new(
+        tempfile::tempdir().unwrap().keep(),
+        anvilml_registry::open_in_memory().await.unwrap(),
+    );
     let broadcaster = Arc::new(EventBroadcaster::new(16));
-    let state = AppState::new("0.1.0", None, None, None, broadcaster.clone(), None, None);
+    let state = App::new(
+        "0.1.0",
+        None,
+        None,
+        None,
+        broadcaster.clone(),
+        None,
+        None,
+        artifact_store,
+    );
     let app: Router = build_router(state);
 
     // Bind the server on a random port.

@@ -7,7 +7,7 @@ use anvilml_core::WorkerInfo;
 ///
 /// Returns a JSON array of `WorkerInfo` objects, one per worker in the pool.
 pub async fn list_workers(
-    State(state): State<Arc<crate::state::AppState>>,
+    State(state): State<Arc<crate::App>>,
 ) -> (StatusCode, Json<Vec<WorkerInfo>>) {
     match &state.workers {
         Some(pool) => {

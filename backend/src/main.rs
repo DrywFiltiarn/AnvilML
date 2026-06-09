@@ -9,8 +9,9 @@ use anvilml_core::types::events::{WorkerStatusChangedEvent, WsEvent};
 use anvilml_core::{load_config, DeviceType, EnumerationSource, HardwareInfo};
 use anvilml_ipc::WorkerEvent;
 use anvilml_scheduler::{JobQueue, JobScheduler};
+use anvilml_server::artifact::store::ArtifactStore;
 use anvilml_server::ws::stats_tick::spawn_system_stats_tick;
-use anvilml_server::{build_router, AppState, EventBroadcaster};
+use anvilml_server::{build_router, App, EventBroadcaster};
 use chrono::Utc;
 use tracing_subscriber::fmt::layer as fmt_layer;
 use tracing_subscriber::Layer;
@@ -250,6 +251,9 @@ async fn main() {
     // Wrap the worker pool in Arc for sharing with the scheduler.
     let workers = Arc::new(workers);
 
+    // Construct the artifact store.
+    let artifact_store = ArtifactStore::new(cfg.artifact_dir.clone(), db.clone());
+
     // Construct the job scheduler and wire it into AppState.
     let ledger = Arc::new(tokio::sync::Mutex::new(anvilml_scheduler::VramLedger::new()));
     let scheduler = Arc::new(JobScheduler::new(
@@ -259,9 +263,10 @@ async fn main() {
         scheduler_broadcaster,
         ledger,
         cfg.gpu_selection.default_device.clone(),
+        artifact_store.clone(),
     ));
 
-    let state = AppState::new_with_hardware(
+    let state = App::new_with_hardware(
         env!("CARGO_PKG_VERSION"),
         hw_info,
         Some(db),
@@ -270,6 +275,7 @@ async fn main() {
         broadcaster,
         Some(workers.clone()),
         Some(scheduler.clone()),
+        artifact_store,
     );
     spawn_system_stats_tick(state.clone());
     let _dispatch_handle = scheduler.start_dispatch_loop();

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::{extract::State, http::StatusCode, response::Json};
 use serde::Serialize;
 
-use crate::state::AppState;
+use crate::App;
 
 #[derive(Serialize)]
 pub struct HealthResponse {
@@ -16,7 +16,7 @@ pub struct HealthResponse {
 ///
 /// Returns HTTP 200 with a JSON body containing the application status,
 /// version, and uptime in seconds since start.
-pub async fn health(State(state): State<Arc<AppState>>) -> (StatusCode, Json<HealthResponse>) {
+pub async fn health(State(state): State<Arc<App>>) -> (StatusCode, Json<HealthResponse>) {
     (
         StatusCode::OK,
         Json(HealthResponse {

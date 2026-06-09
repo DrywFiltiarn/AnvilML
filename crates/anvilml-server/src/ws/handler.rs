@@ -9,7 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 use std::time::Duration;
 use tracing::error;
 
-use crate::AppState;
+use crate::App;
 
 /// WebSocket handler for the `/v1/events` endpoint.
 ///
@@ -17,13 +17,13 @@ use crate::AppState;
 /// [`EventBroadcaster`], and forwards each event as a JSON text frame.
 pub async fn ws_events(
     upgrade: WebSocketUpgrade,
-    State(state): State<std::sync::Arc<AppState>>,
+    State(state): State<std::sync::Arc<App>>,
 ) -> impl IntoResponse {
     let state = (*state).clone();
     upgrade.on_upgrade(move |stream| handle_connection(stream, state))
 }
 
-async fn handle_connection(stream: WebSocket, state: AppState) {
+async fn handle_connection(stream: WebSocket, state: App) {
     let mut rx = state.broadcaster.subscribe();
 
     let (mut ws_tx, mut ws_rx) = stream.split();

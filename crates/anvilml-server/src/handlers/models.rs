@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anvilml_core::ModelKind;
 
-use crate::state::AppState;
+use crate::App;
 
 /// Query parameters for the models list endpoint.
 #[derive(Debug, Deserialize)]
@@ -18,7 +18,7 @@ pub struct ModelsListQuery {
 /// Returns a JSON array of all scanned model metadata, optionally filtered
 /// by `kind`. Delegates to `registry.list(kind)` from the application state.
 pub async fn list_models(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<App>>,
     Query(query): Query<ModelsListQuery>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     match state.registry.list(query.kind).await {
@@ -42,7 +42,7 @@ pub async fn list_models(
 /// Returns 200 with the model on success, or 404 with an error JSON body
 /// when no model with the given ID exists.
 pub async fn get_model(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<App>>,
     Path(id): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     match state.registry.get(&id).await {
@@ -72,9 +72,7 @@ pub async fn get_model(
 /// Triggers a background model directory rescan. The handler returns 202
 /// Accepted immediately; the actual scanning work is performed by a spawned
 /// tokio task.
-pub async fn rescan_models(
-    State(state): State<Arc<AppState>>,
-) -> (StatusCode, Json<RescanResponse>) {
+pub async fn rescan_models(State(state): State<Arc<App>>) -> (StatusCode, Json<RescanResponse>) {
     let dirs = state.model_dirs.clone();
     let registry = Arc::clone(&state.registry);
 

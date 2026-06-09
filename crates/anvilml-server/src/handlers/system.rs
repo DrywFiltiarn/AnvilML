@@ -9,9 +9,7 @@ use anvilml_core::{EnvReport, HardwareInfo};
 /// Returns a stubbed `EnvReport` JSON object. The stub values (`python_path=""`,
 /// `preflight_ok=false`, `reason="not_checked"`) are placeholders that will be
 /// replaced by real preflight logic in Phase 18.
-pub async fn get_env(
-    State(state): State<Arc<crate::state::AppState>>,
-) -> (StatusCode, Json<EnvReport>) {
+pub async fn get_env(State(state): State<Arc<crate::App>>) -> (StatusCode, Json<EnvReport>) {
     let report = state.env_report();
     (StatusCode::OK, Json(report))
 }
@@ -19,9 +17,7 @@ pub async fn get_env(
 /// GET /v1/system handler.
 ///
 /// Returns the hardware detection result collected at server startup.
-pub async fn get_system(
-    State(state): State<Arc<crate::state::AppState>>,
-) -> (StatusCode, Json<HardwareInfo>) {
+pub async fn get_system(State(state): State<Arc<crate::App>>) -> (StatusCode, Json<HardwareInfo>) {
     let info = state.hardware();
     (StatusCode::OK, Json(info))
 }

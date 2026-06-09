@@ -7,8 +7,9 @@
 use std::sync::Arc;
 
 use anvilml_core::error::AnvilError;
+use anvilml_core::types::artifact::{ArtifactSave, ArtifactSaveInput};
 use anvilml_core::types::events::{
-    JobCompletedEvent, JobFailedEvent, JobQueuedEvent, JobStartedEvent, WsEvent,
+    JobCompletedEvent, JobFailedEvent, JobImageReadyEvent, JobQueuedEvent, JobStartedEvent, WsEvent,
 };
 use anvilml_core::types::job::{Job, JobStatus, SubmitJobRequest, SubmitJobResponse};
 use anvilml_ipc::{WorkerEvent, WorkerMessage};
@@ -30,9 +31,9 @@ use crate::queue::JobQueue;
 ///
 /// Holds the in-memory queue, database pool, a broadcast sender for WebSocket events,
 /// a `Notify` handle that the dispatch loop waits on, the worker pool for IPC and
-/// status management, the VRAM ledger for worker selection, and the default device
-/// mode (e.g. `"auto"` or `"cpu"`).
-pub struct JobScheduler {
+/// status management, the VRAM ledger for worker selection, the default device
+/// mode (e.g. `"auto"` or `"cpu"`), and an artifact store for persisting generated images.
+pub struct JobScheduler<A: ArtifactSave + Clone + 'static> {
     /// In-memory FIFO queue of jobs awaiting dispatch.
     queue: Arc<JobQueue>,
     /// Worker pool for IPC, status management, and event subscription.
@@ -47,9 +48,11 @@ pub struct JobScheduler {
     ledger: Arc<tokio::sync::Mutex<VramLedger>>,
     /// Default device mode: `"auto"` or `"cpu"`.
     default_device: String,
+    /// Artifact store for persisting generated images.
+    artifact_store: A,
 }
 
-impl JobScheduler {
+impl<A: ArtifactSave + Clone + 'static> JobScheduler<A> {
     /// Create a new `JobScheduler`.
     pub fn new(
         queue: JobQueue,
@@ -58,6 +61,7 @@ impl JobScheduler {
         broadcaster: broadcast::Sender<WsEvent>,
         ledger: Arc<tokio::sync::Mutex<VramLedger>>,
         default_device: String,
+        artifact_store: A,
     ) -> Self {
         Self {
             queue: Arc::new(queue),
@@ -67,6 +71,7 @@ impl JobScheduler {
             dispatch_notify: Arc::new(Notify::new()),
             ledger,
             default_device,
+            artifact_store,
         }
     }
 
@@ -140,9 +145,9 @@ impl JobScheduler {
     /// worker. The loop repeats until no further dispatch is possible, then waits
     /// on both the `Notify` and worker events.
     ///
-    /// Worker events for `Completed` and `Failed` are handled by transitioning
-    /// the job to its terminal status, setting the worker idle, and broadcasting
-    /// the appropriate WebSocket event.
+    /// Worker events for `Completed`, `Failed`, and `ImageReady` are handled by
+    /// transitioning the job to its terminal status (or persisting the artifact),
+    /// setting the worker idle, and broadcasting the appropriate WebSocket event.
     ///
     /// Returns a [`JoinHandle`] for the dispatch loop task.
     #[tracing::instrument(skip(self), fields(default_device = %self.default_device))]
@@ -154,6 +159,7 @@ impl JobScheduler {
         let broadcaster = self.broadcaster.clone();
         let ledger = self.ledger.clone();
         let default_device = self.default_device.clone();
+        let artifact_store = self.artifact_store.clone();
 
         tokio::spawn(async move {
             tracing::info!("dispatch loop started");
@@ -180,7 +186,35 @@ impl JobScheduler {
                                         handle_failed(&db, &workers, &broadcaster, &notify, *job_id, error.clone(), now).await;
                                         notify.notify_one();
                                     }
-                                    _ => {} // Progress, ImageReady, etc. — not handled here
+                                    WorkerEvent::ImageReady {
+                                        job_id,
+                                        image_b64,
+                                        width,
+                                        height,
+                                        format: _,
+                                        seed,
+                                        steps,
+                                        prompt,
+                                    } => {
+                                        let now = Utc::now();
+                                        handle_image_ready(
+                                            &artifact_store,
+                                            &db,
+                                            &broadcaster,
+                                            &notify,
+                                            *job_id,
+                                            image_b64,
+                                            *width,
+                                            *height,
+                                            *seed,
+                                            *steps as i64,
+                                            prompt,
+                                            now,
+                                        )
+                                        .await;
+                                        notify.notify_one();
+                                    }
+                                    _ => {} // Progress, etc. — not handled here
                                 }
                             }
                             Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -429,6 +463,68 @@ async fn handle_failed(
     notify.notify_one();
 }
 
+/// Handle a `WorkerEvent::ImageReady` event: persist the artifact via
+/// the artifact store, then broadcast a `JobImageReady` WebSocket event
+/// containing metadata only (no image bytes).
+#[expect(clippy::too_many_arguments)]
+async fn handle_image_ready<A: ArtifactSave>(
+    artifact_store: &A,
+    db: &sqlx::SqlitePool,
+    broadcaster: &broadcast::Sender<WsEvent>,
+    _notify: &Arc<Notify>,
+    job_id: Uuid,
+    image_b64: &str,
+    width: u32,
+    height: u32,
+    seed: i64,
+    steps: i64,
+    prompt: &str,
+    now: DateTime<Utc>,
+) {
+    // Re-read job status from DB to confirm it's still Running.
+    let job = get_job(db, job_id).await.ok().flatten();
+    let Some(job) = job else {
+        tracing::debug!(job_id = %job_id, "image_ready: job not found, ignoring");
+        return;
+    };
+    if !matches!(job.status, JobStatus::Running) {
+        tracing::debug!(job_id = %job_id, status = ?job.status, "image_ready: job already terminal, ignoring");
+        return;
+    }
+
+    // Save the artifact.
+    let meta = ArtifactSaveInput {
+        width: width as i64,
+        height: height as i64,
+        seed,
+        steps,
+        prompt: prompt.to_string(),
+    };
+    let result = artifact_store
+        .save(&job_id.to_string(), image_b64, meta)
+        .await;
+
+    match result {
+        Ok(hash) => {
+            tracing::info!(job_id = %job_id, artifact_hash = %hash, "image saved to artifact store");
+
+            // Broadcast JobImageReady event (metadata only, no image bytes).
+            let _ = broadcaster.send(WsEvent::JobImageReady(JobImageReadyEvent {
+                event: "job.image_ready".to_string(),
+                timestamp: now,
+                job_id,
+                artifact_hash: hash,
+                width,
+                height,
+                seed,
+            }));
+        }
+        Err(e) => {
+            tracing::warn!(job_id = %job_id, error = %e, "artifact save failed");
+        }
+    }
+}
+
 /// Get a discriminant name for a WorkerEvent.
 fn event_discriminant(event: &anvilml_ipc::WorkerEvent) -> &'static str {
     match event {
@@ -503,8 +599,24 @@ mod tests {
         })
     }
 
+    /// A no-op artifact store for tests that don't exercise image saving.
+    #[derive(Clone)]
+    struct NoopArtifactStore;
+
+    #[async_trait::async_trait]
+    impl ArtifactSave for NoopArtifactStore {
+        async fn save(
+            &self,
+            _job_id: &str,
+            _image_b64: &str,
+            _meta: ArtifactSaveInput,
+        ) -> Result<String, String> {
+            Ok(String::new())
+        }
+    }
+
     /// Helper: create a JobScheduler with fresh components.
-    async fn make_scheduler(pool: SqlitePool) -> JobScheduler {
+    async fn make_scheduler(pool: SqlitePool) -> JobScheduler<NoopArtifactStore> {
         let queue = JobQueue::new();
         let (broadcaster, _rx) = broadcast::channel(16);
 
@@ -515,6 +627,7 @@ mod tests {
             broadcaster,
             Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
             "auto".to_string(),
+            NoopArtifactStore,
         )
     }
 
@@ -602,6 +715,7 @@ mod tests {
             broadcaster,
             Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
             "auto".to_string(),
+            NoopArtifactStore,
         );
 
         let req = SubmitJobRequest {
@@ -700,6 +814,7 @@ mod tests {
             broadcaster,
             ledger.clone(),
             "auto".to_string(),
+            NoopArtifactStore,
         );
 
         // Start the dispatch loop.
@@ -770,6 +885,7 @@ mod tests {
             broadcaster,
             ledger,
             "auto".to_string(),
+            NoopArtifactStore,
         );
 
         let dispatch_handle = scheduler.start_dispatch_loop();
@@ -1197,5 +1313,151 @@ mod tests {
 
         let result = select_worker(&job, &workers, &ledger, "cpu");
         assert_eq!(result, None);
+    }
+
+    // ── ImageReady handler test ──────────────────────────────────────────────
+
+    /// A `MockArtifactStore` that records the save calls it receives.
+    #[derive(Clone)]
+    struct MockArtifactStore {
+        saved: Arc<tokio::sync::Mutex<Vec<(String, String)>>>,
+    }
+
+    impl MockArtifactStore {
+        fn new() -> Self {
+            Self {
+                saved: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            }
+        }
+
+        async fn get_saved(&self) -> Vec<(String, String)> {
+            self.saved.lock().await.clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ArtifactSave for MockArtifactStore {
+        async fn save(
+            &self,
+            job_id: &str,
+            _image_b64: &str,
+            _meta: ArtifactSaveInput,
+        ) -> Result<String, String> {
+            let hash = format!("mock-{job_id}");
+            self.saved
+                .lock()
+                .await
+                .push((job_id.to_string(), hash.clone()));
+            Ok(hash)
+        }
+    }
+
+    /// ImageReady event triggers artifact save and broadcasts JobImageReady with correct fields.
+    #[serial]
+    #[tokio::test]
+    async fn test_image_ready_broadcasts_event() {
+        use anvilml_worker::ManagedWorker;
+
+        // Build a minimal WorkerPool with one idle worker.
+        let worker = Arc::new(ManagedWorker::new("worker-0".to_string(), 0));
+        worker.set_status(WorkerStatus::Idle).await;
+
+        let pool = Arc::new(WorkerPool::new_test_pool_with_workers(vec![worker.clone()]));
+        let ledger = Arc::new(tokio::sync::Mutex::new(VramLedger::new()));
+        let (broadcaster, mut rx) = broadcast::channel(16);
+        let mock_store = MockArtifactStore::new();
+
+        let scheduler = JobScheduler::new(
+            JobQueue::new(),
+            pool.clone(),
+            setup_pool().await,
+            broadcaster,
+            ledger,
+            "auto".to_string(),
+            mock_store.clone(),
+        );
+
+        let dispatch_handle = scheduler.start_dispatch_loop();
+
+        // Submit a job — triggers dispatch loop.
+        let req = SubmitJobRequest {
+            graph: valid_zit_graph(),
+            settings: JobSettings::default(),
+        };
+        let resp = scheduler.submit(req).await.expect("submit succeeded");
+
+        // Wait for dispatch to move job to Running.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Verify job is Running.
+        let db_job = get_job(&scheduler.db, resp.job_id)
+            .await
+            .expect("get from DB succeeded")
+            .expect("job exists");
+        assert_eq!(
+            db_job.status,
+            JobStatus::Running,
+            "job should be Running after dispatch"
+        );
+
+        // Inject ImageReady event via pool test helper.
+        pool.publish_event(
+            "worker-0".to_string(),
+            WorkerEvent::ImageReady {
+                job_id: resp.job_id,
+                image_b64: "iVBORw0KGgoAAAANSUhEUg==".to_string(), // minimal valid-ish base64
+                width: 512,
+                height: 512,
+                format: "png".to_string(),
+                seed: 42,
+                steps: 30,
+                prompt: "test prompt".to_string(),
+            },
+        );
+
+        // Wait for event handler to process.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // 1. Verify mock store received the save call.
+        let saved = mock_store.get_saved().await;
+        assert_eq!(
+            saved.len(),
+            1,
+            "mock store should have received one save call"
+        );
+        assert_eq!(saved[0].0, resp.job_id.to_string());
+        assert!(saved[0].1.starts_with("mock-"));
+
+        // 2. Verify JobImageReady was broadcast with correct fields.
+        // Drain any preceding JobQueued/JobStarted events from the submit + dispatch.
+        loop {
+            let event = rx.recv().await.expect("received broadcast event");
+            match &event {
+                WsEvent::JobQueued(_) | WsEvent::JobStarted(_) => continue,
+                WsEvent::JobImageReady(jire) => {
+                    assert_eq!(jire.job_id, resp.job_id);
+                    assert_eq!(jire.event, "job.image_ready");
+                    assert_eq!(jire.width, 512);
+                    assert_eq!(jire.height, 512);
+                    assert_eq!(jire.seed, 42);
+                    assert_eq!(jire.artifact_hash, saved[0].1);
+                    break;
+                }
+                other => panic!("expected WsEvent::JobImageReady, got {:?}", other),
+            }
+        }
+
+        // 3. Verify job status is still Running (ImageReady does not change status).
+        let db_job = get_job(&scheduler.db, resp.job_id)
+            .await
+            .expect("get from DB succeeded")
+            .expect("job exists");
+        assert_eq!(
+            db_job.status,
+            JobStatus::Running,
+            "job should still be Running after image_ready"
+        );
+
+        dispatch_handle.abort();
     }
 }

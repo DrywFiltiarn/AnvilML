@@ -21,7 +21,7 @@ use serde_json::json;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use crate::state::AppState;
+use crate::App;
 
 /// Error response body for graph validation failures.
 #[derive(Debug, ToSchema)]
@@ -60,7 +60,7 @@ fn error_body(code: &str, message: &str) -> serde_json::Value {
     )
 )]
 pub async fn submit_job(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<App>>,
     Json(req): Json<SubmitJobRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let scheduler = match &state.scheduler {
@@ -115,7 +115,7 @@ pub async fn submit_job(
     )
 )]
 pub async fn get_job(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<App>>,
     Path(job_id): Path<Uuid>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let pool = match &state.db {
@@ -182,7 +182,7 @@ pub struct ListJobsQuery {
     )
 )]
 pub async fn list_jobs(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<App>>,
     Query(query): Query<ListJobsQuery>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let pool = match &state.db {
@@ -263,7 +263,7 @@ mod tests {
     use tokio::sync::broadcast;
     use tower::ServiceExt;
 
-    use crate::{build_router, AppState, EventBroadcaster};
+    use crate::{build_router, App, EventBroadcaster};
     use uuid::Uuid;
 
     fn make_valid_zit_graph() -> Value {
@@ -347,7 +347,7 @@ mod tests {
         pool
     }
 
-    /// Build a test `AppState` with a real `JobScheduler` backed by an in-memory DB.
+    /// Build a test `App` with a real `JobScheduler` backed by an in-memory DB.
     async fn build_test_app() -> Router {
         use anvilml_scheduler::{JobQueue, VramLedger};
         use anvilml_worker::WorkerPool;
@@ -356,6 +356,11 @@ mod tests {
         let (broadcaster, _rx) = broadcast::channel::<WsEvent>(16);
         let workers = Arc::new(WorkerPool::new_test_pool());
 
+        let artifact_store = crate::artifact::store::ArtifactStore::new(
+            tempfile::tempdir().unwrap().keep(),
+            pool.clone(),
+        );
+
         let scheduler = Arc::new(JobScheduler::new(
             JobQueue::new(),
             workers,
@@ -363,10 +368,11 @@ mod tests {
             broadcaster,
             Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
             "auto".to_string(),
+            artifact_store.clone(),
         ));
 
         let broadcaster_ws = Arc::new(EventBroadcaster::new(16));
-        let state = AppState::new(
+        let state = App::new(
             "0.1.0",
             Some(pool),
             None,
@@ -374,6 +380,7 @@ mod tests {
             broadcaster_ws,
             None,
             Some(scheduler),
+            artifact_store,
         );
         build_router(state)
     }

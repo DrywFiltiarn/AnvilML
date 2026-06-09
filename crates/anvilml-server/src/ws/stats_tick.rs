@@ -12,7 +12,7 @@ use chrono::Utc;
 use tokio::task::JoinHandle;
 use tokio::time::{interval, Duration};
 
-use crate::state::AppState;
+use crate::App;
 
 /// Spawn a background task that broadcasts system stats every 5 seconds.
 ///
@@ -21,7 +21,7 @@ use crate::state::AppState;
 ///
 /// Returns a `JoinHandle` — dropping it cancels the task gracefully
 /// (the interval loop yields on cancellation via `interval.tick().await`).
-pub fn spawn_system_stats_tick(state: AppState) -> JoinHandle<()> {
+pub fn spawn_system_stats_tick(state: App) -> JoinHandle<()> {
     let broadcaster = Arc::clone(&state.broadcaster);
 
     tokio::spawn(async move {
@@ -119,7 +119,10 @@ mod tests {
             inference_caps: InferenceCaps::default(),
         };
 
-        let state = AppState::new_with_hardware(
+        let pool = anvilml_registry::open_in_memory().await.unwrap();
+        let artifact_store =
+            crate::artifact::store::ArtifactStore::new(tempfile::tempdir().unwrap().keep(), pool);
+        let state = App::new_with_hardware(
             "test",
             hardware,
             None,
@@ -128,6 +131,7 @@ mod tests {
             Arc::clone(&broadcaster),
             None,
             None,
+            artifact_store,
         );
 
         // Spawn the tick task.

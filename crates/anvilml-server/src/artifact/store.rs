@@ -7,6 +7,7 @@
 
 use std::path::PathBuf;
 
+use anvilml_core::types::artifact::{ArtifactSave, ArtifactSaveInput};
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine as _;
 use chrono::Utc;
@@ -72,6 +73,7 @@ pub enum ArtifactError {
 ///
 /// Stores decoded PNG images under `{artifact_dir}/{hash[0..2]}/{hash}.png`
 /// and records metadata in the SQLite registry.
+#[derive(Clone)]
 pub struct ArtifactStore {
     artifact_dir: PathBuf,
     db: SqlitePool,
@@ -156,5 +158,28 @@ impl ArtifactStore {
             prompt: meta_input.prompt,
             created_at: now,
         })
+    }
+}
+
+#[async_trait::async_trait]
+impl ArtifactSave for ArtifactStore {
+    async fn save(
+        &self,
+        job_id: &str,
+        image_b64: &str,
+        meta: ArtifactSaveInput,
+    ) -> Result<String, String> {
+        let meta_input = ArtifactStoreInput {
+            width: meta.width,
+            height: meta.height,
+            seed: meta.seed,
+            steps: meta.steps,
+            prompt: meta.prompt,
+        };
+        let artifact = self
+            .save(job_id, image_b64, meta_input)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(artifact.hash)
     }
 }

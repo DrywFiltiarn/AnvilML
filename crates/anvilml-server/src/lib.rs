@@ -15,10 +15,17 @@ use tower_http::trace::TraceLayer;
 
 pub use state::AppState;
 
+use crate::artifact::store::ArtifactStore;
 use crate::ws::handler::ws_events;
 
+/// Concrete application state type used in `main.rs`.
+///
+/// `AppState<ArtifactStore>` — the artifact store is passed through the
+/// scheduler for image persistence on `ImageReady` events.
+pub type App = AppState<ArtifactStore>;
+
 /// Build the application `Router` with all routes wired up.
-pub fn build_router(state: AppState) -> Router {
+pub fn build_router(state: App) -> Router {
     let state_arc = Arc::new(state);
 
     Router::new()
@@ -49,12 +56,29 @@ mod tests {
     use serde_json::Value;
     use tower::ServiceExt;
 
-    use crate::{build_router, AppState, EventBroadcaster};
+    use crate::{build_router, App, EventBroadcaster};
+
+    /// Create a minimal `App` for testing (no scheduler, no workers, no artifact store).
+    async fn make_test_app(version: &str, broadcaster: Arc<EventBroadcaster>) -> App {
+        let db = anvilml_registry::open_in_memory().await.unwrap();
+        let artifact_store =
+            crate::artifact::store::ArtifactStore::new(tempfile::tempdir().unwrap().keep(), db);
+        App::new(
+            version,
+            None,
+            None,
+            None,
+            broadcaster,
+            None,
+            None,
+            artifact_store,
+        )
+    }
 
     #[tokio::test]
     async fn health_returns_200() {
         let broadcaster = Arc::new(EventBroadcaster::new(16));
-        let state = AppState::new("0.1.0", None, None, None, broadcaster, None, None);
+        let state = make_test_app("0.1.0", broadcaster).await;
         let app = build_router(state);
 
         let response = app
@@ -83,7 +107,7 @@ mod tests {
     #[tokio::test]
     async fn env_returns_200_with_stub_report() {
         let broadcaster = Arc::new(EventBroadcaster::new(16));
-        let state = AppState::new("0.1.0", None, None, None, broadcaster, None, None);
+        let state = make_test_app("0.1.0", broadcaster).await;
         let app = build_router(state);
 
         let response = app
@@ -124,8 +148,12 @@ mod tests {
                 .await
                 .expect("detect_all_devices should succeed");
 
+        let artifact_store = crate::artifact::store::ArtifactStore::new(
+            tempfile::tempdir().unwrap().keep(),
+            pool.clone(),
+        );
         let broadcaster = Arc::new(EventBroadcaster::new(16));
-        let state = AppState::new_with_hardware(
+        let state = App::new_with_hardware(
             "0.1.0",
             hw_info,
             None,
@@ -134,6 +162,7 @@ mod tests {
             broadcaster,
             None,
             None,
+            artifact_store,
         );
         let app = build_router(state);
 
@@ -189,9 +218,20 @@ mod tests {
         let pool = anvilml_registry::db::open(&db_path)
             .await
             .expect("open db must succeed");
-        let registry = std::sync::Arc::new(anvilml_registry::ModelRegistry::new(pool));
+        let registry = std::sync::Arc::new(anvilml_registry::ModelRegistry::new(pool.clone()));
+        let artifact_store =
+            crate::artifact::store::ArtifactStore::new(tempfile::tempdir().unwrap().keep(), pool);
         let broadcaster = Arc::new(EventBroadcaster::new(16));
-        let state = AppState::new("0.1.0", None, Some(registry), None, broadcaster, None, None);
+        let state = App::new(
+            "0.1.0",
+            None,
+            Some(registry),
+            None,
+            broadcaster,
+            None,
+            None,
+            artifact_store,
+        );
         let app = build_router(state);
 
         let response = app
@@ -219,7 +259,7 @@ mod tests {
     #[tokio::test]
     async fn rescan_returns_202() {
         let broadcaster = Arc::new(EventBroadcaster::new(16));
-        let state = AppState::new("0.1.0", None, None, None, broadcaster, None, None);
+        let state = make_test_app("0.1.0", broadcaster).await;
         let app = build_router(state);
 
         let response = app
@@ -253,7 +293,7 @@ mod tests {
     async fn workers_endpoint_returns_200() {
         let broadcaster = Arc::new(EventBroadcaster::new(16));
         // No WorkerPool — handler should return 503 with empty array.
-        let state = AppState::new("0.1.0", None, None, None, broadcaster, None, None);
+        let state = make_test_app("0.1.0", broadcaster).await;
         let app = build_router(state);
 
         let response = app

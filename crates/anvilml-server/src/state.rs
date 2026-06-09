@@ -1,5 +1,6 @@
 use std::sync::{Arc, RwLock};
 
+use anvilml_core::types::artifact::ArtifactSave;
 use anvilml_core::{config::ModelDirConfig, EnvReport, HardwareInfo};
 use anvilml_registry::ModelRegistry;
 use anvilml_scheduler::JobScheduler;
@@ -10,7 +11,7 @@ use std::time::Instant;
 use crate::ws::broadcaster::EventBroadcaster;
 
 /// Application state shared across all request handlers.
-pub struct AppState {
+pub struct AppState<A: ArtifactSave + Clone + 'static> {
     /// The time at which the application started.
     start_time: Instant,
     /// The application version string.
@@ -30,16 +31,19 @@ pub struct AppState {
     /// Worker pool — spawned after hardware detection at startup.
     pub workers: Option<Arc<WorkerPool>>,
     /// Job scheduler — orchestrates job submission and dispatch coordination.
-    pub scheduler: Option<Arc<JobScheduler>>,
+    pub scheduler: Option<Arc<JobScheduler<A>>>,
+    /// Artifact store for persisting generated images.
+    pub artifact_store: A,
 }
 
-impl AppState {
+impl<A: ArtifactSave + Clone + 'static> AppState<A> {
     /// Create a new `AppState` with the given version string and optional
     /// SQLite connection pool.
     ///
     /// The hardware field is initialised with an empty `HardwareInfo`.
     /// Use [`Self::new_with_hardware`] for production use where hardware
     /// has been detected at startup.
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         version: impl Into<String>,
         db: Option<SqlitePool>,
@@ -47,7 +51,8 @@ impl AppState {
         model_dirs: Option<Vec<ModelDirConfig>>,
         broadcaster: Arc<EventBroadcaster>,
         workers: Option<Arc<WorkerPool>>,
-        scheduler: Option<Arc<JobScheduler>>,
+        scheduler: Option<Arc<JobScheduler<A>>>,
+        artifact_store: A,
     ) -> Self {
         let registry = match (registry, &db) {
             (Some(r), _) => r,
@@ -83,6 +88,7 @@ impl AppState {
             broadcaster,
             workers,
             scheduler,
+            artifact_store,
         }
     }
 
@@ -97,7 +103,8 @@ impl AppState {
         model_dirs: Option<Vec<ModelDirConfig>>,
         broadcaster: Arc<EventBroadcaster>,
         workers: Option<Arc<WorkerPool>>,
-        scheduler: Option<Arc<JobScheduler>>,
+        scheduler: Option<Arc<JobScheduler<A>>>,
+        artifact_store: A,
     ) -> Self {
         let registry = match (registry, &db) {
             (Some(r), _) => r,
@@ -124,6 +131,7 @@ impl AppState {
             broadcaster,
             workers,
             scheduler,
+            artifact_store,
         }
     }
 
@@ -148,7 +156,7 @@ impl AppState {
     }
 }
 
-impl Clone for AppState {
+impl<A: ArtifactSave + Clone + 'static> Clone for AppState<A> {
     fn clone(&self) -> Self {
         Self {
             start_time: self.start_time,
@@ -161,6 +169,7 @@ impl Clone for AppState {
             broadcaster: Arc::clone(&self.broadcaster),
             workers: self.workers.clone(),
             scheduler: self.scheduler.clone(),
+            artifact_store: self.artifact_store.clone(),
         }
     }
 }

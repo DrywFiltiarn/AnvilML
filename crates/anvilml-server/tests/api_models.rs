@@ -13,7 +13,7 @@ use http_body_util::Full;
 use serde_json::Value;
 use tower::ServiceExt;
 
-use anvilml_server::{build_router, AppState, EventBroadcaster};
+use anvilml_server::{build_router, App, EventBroadcaster};
 
 /// Create a unique temporary directory structure for testing model scanning.
 ///
@@ -30,10 +30,10 @@ fn setup_test_env() -> (TempDir, PathBuf, PathBuf) {
     (tmp, diffusion_dir, db_path)
 }
 
-/// Build an `AppState` with a fresh registry backed by a file-based SQLite
+/// Build an `App` with a fresh registry backed by a file-based SQLite
 /// database that has been initialized with migrations, and the given model
 /// directory configured for rescan.
-async fn build_test_app_state(model_dir: PathBuf, db_path: PathBuf) -> AppState {
+async fn build_test_app_state(model_dir: PathBuf, db_path: PathBuf) -> App {
     let pool = anvilml_registry::open(&db_path)
         .await
         .expect("open db must succeed");
@@ -45,8 +45,12 @@ async fn build_test_app_state(model_dir: PathBuf, db_path: PathBuf) -> AppState 
     }];
     registry.rescan(&dirs).await.expect("rescan must succeed");
 
+    let artifact_store = anvilml_server::artifact::store::ArtifactStore::new(
+        tempfile::tempdir().unwrap().keep(),
+        pool.clone(),
+    );
     let broadcaster = Arc::new(EventBroadcaster::new(16));
-    AppState::new(
+    App::new(
         "0.1.0",
         Some(pool),
         Some(registry),
@@ -54,6 +58,7 @@ async fn build_test_app_state(model_dir: PathBuf, db_path: PathBuf) -> AppState 
         broadcaster,
         None,
         None,
+        artifact_store,
     )
 }
 

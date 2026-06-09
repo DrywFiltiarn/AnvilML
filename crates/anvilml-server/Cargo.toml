@@ -10,6 +10,7 @@ anvilml-ipc = { path = "../anvilml-ipc" }
 anvilml-registry = { path = "../anvilml-registry" }
 anvilml-scheduler = { path = "../anvilml-scheduler" }
 anvilml-worker = { path = "../anvilml-worker", features = ["test-helpers"] }
+async-trait = "0.1"
 axum = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
