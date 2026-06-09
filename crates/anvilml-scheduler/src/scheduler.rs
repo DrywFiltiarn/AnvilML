@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::dag::validate_graph;
 use crate::job_store::insert_job;
+use crate::ledger::VramLedger;
 use crate::queue::JobQueue;
 
 /// Central job scheduler.
@@ -113,6 +114,59 @@ impl JobScheduler {
     }
 }
 
+/// Select the best idle worker for a job.
+///
+/// Implements three selection modes:
+/// 1. **Force-CPU** — when `default_device == "cpu"`, only the worker whose
+///    `device_name` is `"CPU"` is considered.
+/// 2. **User-specified** — when `job.settings.device_preference` is `Some(n)`,
+///    the worker at index `n` is selected if it is `Idle`.
+/// 3. **Auto** — all `Idle` workers are ranked by `free_mib` descending,
+///    ties broken by `device_index` ascending, and the top-ranked worker
+///    is returned.
+///
+/// Returns `None` when no suitable worker is found.
+pub fn select_worker(
+    job: &Job,
+    workers: &[anvilml_core::types::worker::WorkerInfo],
+    ledger: &VramLedger,
+    default_device: &str,
+) -> Option<usize> {
+    // 1. Force-CPU mode: only consider the CPU worker.
+    if default_device == "cpu" {
+        return workers.iter().position(|w| {
+            w.device_name == "CPU" && w.status == anvilml_core::types::worker::WorkerStatus::Idle
+        });
+    }
+
+    // 2. Device preference: user-specified index.
+    if let Some(n) = job.settings.device_preference {
+        let n = n as usize;
+        if n < workers.len() && workers[n].status == anvilml_core::types::worker::WorkerStatus::Idle
+        {
+            return Some(n);
+        }
+        return None;
+    }
+
+    // 3. Auto mode: rank idle workers by free_mib desc, then device_index asc.
+    let mut idle_workers: Vec<(usize, &anvilml_core::types::worker::WorkerInfo)> = workers
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| w.status == anvilml_core::types::worker::WorkerStatus::Idle)
+        .collect();
+
+    idle_workers.sort_by(|a, b| {
+        let free_a = ledger.free_mib(a.1.device_index);
+        let free_b = ledger.free_mib(b.1.device_index);
+        free_b
+            .cmp(&free_a)
+            .then_with(|| a.1.device_index.cmp(&b.1.device_index))
+    });
+
+    idle_workers.into_iter().next().map(|(idx, _)| idx)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -122,6 +176,7 @@ mod tests {
 
     use crate::job_store::get_job;
     use anvilml_core::types::job::JobSettings;
+    use anvilml_core::types::worker::{WorkerInfo, WorkerStatus};
     use sqlx::SqlitePool;
 
     /// Create an in-memory SQLite pool and initialise the `jobs` table.
@@ -325,5 +380,374 @@ mod tests {
             db_job.settings.device_preference,
             custom_settings.device_preference
         );
+    }
+
+    // ── select_worker tests ─────────────────────────────────────────────────
+
+    /// `select_worker` with `device_preference = Some(0)` returns index 0
+    /// when the worker at index 0 is Idle.
+    #[serial]
+    #[tokio::test]
+    async fn test_select_preference_idle() {
+        let job = Job {
+            id: Uuid::new_v4(),
+            status: JobStatus::Queued,
+            graph: serde_json::json!({"nodes": [], "edges": []}),
+            settings: JobSettings {
+                device_preference: Some(0),
+                ..JobSettings::default()
+            },
+            device_index: None,
+            created_at: Utc::now(),
+            started_at: None,
+            completed_at: None,
+            worker_id: None,
+            artifact_count: 0,
+            error: None,
+        };
+        let workers = vec![
+            WorkerInfo {
+                worker_id: "worker-0".to_string(),
+                device_index: 0,
+                device_name: "GPU 0".to_string(),
+                status: WorkerStatus::Idle,
+                current_job_id: None,
+                vram_used_mib: 0,
+            },
+            WorkerInfo {
+                worker_id: "worker-1".to_string(),
+                device_index: 1,
+                device_name: "GPU 1".to_string(),
+                status: WorkerStatus::Idle,
+                current_job_id: None,
+                vram_used_mib: 0,
+            },
+        ];
+        let ledger = VramLedger::new();
+
+        let result = select_worker(&job, &workers, &ledger, "auto");
+        assert_eq!(result, Some(0));
+    }
+
+    /// `select_worker` with `device_preference = Some(0)` returns `None`
+    /// when the worker at index 0 is Busy.
+    #[serial]
+    #[tokio::test]
+    async fn test_select_preference_busy() {
+        let job = Job {
+            id: Uuid::new_v4(),
+            status: JobStatus::Queued,
+            graph: serde_json::json!({"nodes": [], "edges": []}),
+            settings: JobSettings {
+                device_preference: Some(0),
+                ..JobSettings::default()
+            },
+            device_index: None,
+            created_at: Utc::now(),
+            started_at: None,
+            completed_at: None,
+            worker_id: None,
+            artifact_count: 0,
+            error: None,
+        };
+        let workers = vec![
+            WorkerInfo {
+                worker_id: "worker-0".to_string(),
+                device_index: 0,
+                device_name: "GPU 0".to_string(),
+                status: WorkerStatus::Busy,
+                current_job_id: None,
+                vram_used_mib: 0,
+            },
+            WorkerInfo {
+                worker_id: "worker-1".to_string(),
+                device_index: 1,
+                device_name: "GPU 1".to_string(),
+                status: WorkerStatus::Idle,
+                current_job_id: None,
+                vram_used_mib: 0,
+            },
+        ];
+        let ledger = VramLedger::new();
+
+        let result = select_worker(&job, &workers, &ledger, "auto");
+        assert_eq!(result, None);
+    }
+
+    /// `select_worker` with `device_preference = Some(99)` returns `None`
+    /// when no worker exists at that index.
+    #[serial]
+    #[tokio::test]
+    async fn test_select_preference_not_found() {
+        let job = Job {
+            id: Uuid::new_v4(),
+            status: JobStatus::Queued,
+            graph: serde_json::json!({"nodes": [], "edges": []}),
+            settings: JobSettings {
+                device_preference: Some(99),
+                ..JobSettings::default()
+            },
+            device_index: None,
+            created_at: Utc::now(),
+            started_at: None,
+            completed_at: None,
+            worker_id: None,
+            artifact_count: 0,
+            error: None,
+        };
+        let workers = vec![WorkerInfo {
+            worker_id: "worker-0".to_string(),
+            device_index: 0,
+            device_name: "GPU 0".to_string(),
+            status: WorkerStatus::Idle,
+            current_job_id: None,
+            vram_used_mib: 0,
+        }];
+        let ledger = VramLedger::new();
+
+        let result = select_worker(&job, &workers, &ledger, "auto");
+        assert_eq!(result, None);
+    }
+
+    /// Auto mode returns the only idle worker when there is exactly one.
+    #[serial]
+    #[tokio::test]
+    async fn test_select_auto_single_idle() {
+        let job = Job {
+            id: Uuid::new_v4(),
+            status: JobStatus::Queued,
+            graph: serde_json::json!({"nodes": [], "edges": []}),
+            settings: JobSettings::default(),
+            device_index: None,
+            created_at: Utc::now(),
+            started_at: None,
+            completed_at: None,
+            worker_id: None,
+            artifact_count: 0,
+            error: None,
+        };
+        let workers = vec![
+            WorkerInfo {
+                worker_id: "worker-0".to_string(),
+                device_index: 0,
+                device_name: "GPU 0".to_string(),
+                status: WorkerStatus::Busy,
+                current_job_id: None,
+                vram_used_mib: 0,
+            },
+            WorkerInfo {
+                worker_id: "worker-1".to_string(),
+                device_index: 1,
+                device_name: "GPU 1".to_string(),
+                status: WorkerStatus::Idle,
+                current_job_id: None,
+                vram_used_mib: 0,
+            },
+        ];
+        let ledger = VramLedger::new();
+
+        let result = select_worker(&job, &workers, &ledger, "auto");
+        assert_eq!(result, Some(1));
+    }
+
+    /// Auto mode picks the worker with the highest `free_mib` from the ledger.
+    #[serial]
+    #[tokio::test]
+    async fn test_select_auto_ranked_by_free_mib() {
+        let job = Job {
+            id: Uuid::new_v4(),
+            status: JobStatus::Queued,
+            graph: serde_json::json!({"nodes": [], "edges": []}),
+            settings: JobSettings::default(),
+            device_index: None,
+            created_at: Utc::now(),
+            started_at: None,
+            completed_at: None,
+            worker_id: None,
+            artifact_count: 0,
+            error: None,
+        };
+        let workers = vec![
+            WorkerInfo {
+                worker_id: "worker-0".to_string(),
+                device_index: 0,
+                device_name: "GPU 0".to_string(),
+                status: WorkerStatus::Idle,
+                current_job_id: None,
+                vram_used_mib: 0,
+            },
+            WorkerInfo {
+                worker_id: "worker-1".to_string(),
+                device_index: 1,
+                device_name: "GPU 1".to_string(),
+                status: WorkerStatus::Idle,
+                current_job_id: None,
+                vram_used_mib: 0,
+            },
+        ];
+        let mut ledger = VramLedger::new();
+        ledger.update(0, 6000, 8192); // free = 2192
+        ledger.update(1, 2000, 8192); // free = 6192
+
+        let result = select_worker(&job, &workers, &ledger, "auto");
+        // Worker 1 has more free VRAM.
+        assert_eq!(result, Some(1));
+    }
+
+    /// Auto mode breaks free_mib ties by `device_index` ascending.
+    #[serial]
+    #[tokio::test]
+    async fn test_select_auto_tie_break_device_index() {
+        let job = Job {
+            id: Uuid::new_v4(),
+            status: JobStatus::Queued,
+            graph: serde_json::json!({"nodes": [], "edges": []}),
+            settings: JobSettings::default(),
+            device_index: None,
+            created_at: Utc::now(),
+            started_at: None,
+            completed_at: None,
+            worker_id: None,
+            artifact_count: 0,
+            error: None,
+        };
+        let workers = vec![
+            WorkerInfo {
+                worker_id: "worker-0".to_string(),
+                device_index: 0,
+                device_name: "GPU 0".to_string(),
+                status: WorkerStatus::Idle,
+                current_job_id: None,
+                vram_used_mib: 0,
+            },
+            WorkerInfo {
+                worker_id: "worker-1".to_string(),
+                device_index: 1,
+                device_name: "GPU 1".to_string(),
+                status: WorkerStatus::Idle,
+                current_job_id: None,
+                vram_used_mib: 0,
+            },
+        ];
+        let mut ledger = VramLedger::new();
+        ledger.update(0, 4000, 8192); // free = 4192
+        ledger.update(1, 4000, 8192); // free = 4192
+
+        let result = select_worker(&job, &workers, &ledger, "auto");
+        // Same free_mib — lower device_index wins.
+        assert_eq!(result, Some(0));
+    }
+
+    /// Auto mode returns `None` when all workers are Busy.
+    #[serial]
+    #[tokio::test]
+    async fn test_select_auto_all_busy() {
+        let job = Job {
+            id: Uuid::new_v4(),
+            status: JobStatus::Queued,
+            graph: serde_json::json!({"nodes": [], "edges": []}),
+            settings: JobSettings::default(),
+            device_index: None,
+            created_at: Utc::now(),
+            started_at: None,
+            completed_at: None,
+            worker_id: None,
+            artifact_count: 0,
+            error: None,
+        };
+        let workers = vec![
+            WorkerInfo {
+                worker_id: "worker-0".to_string(),
+                device_index: 0,
+                device_name: "GPU 0".to_string(),
+                status: WorkerStatus::Busy,
+                current_job_id: None,
+                vram_used_mib: 0,
+            },
+            WorkerInfo {
+                worker_id: "worker-1".to_string(),
+                device_index: 1,
+                device_name: "GPU 1".to_string(),
+                status: WorkerStatus::Busy,
+                current_job_id: None,
+                vram_used_mib: 0,
+            },
+        ];
+        let ledger = VramLedger::new();
+
+        let result = select_worker(&job, &workers, &ledger, "auto");
+        assert_eq!(result, None);
+    }
+
+    /// Force-CPU mode (`default_device == "cpu"`) picks the CPU worker.
+    #[serial]
+    #[tokio::test]
+    async fn test_select_cpu() {
+        let job = Job {
+            id: Uuid::new_v4(),
+            status: JobStatus::Queued,
+            graph: serde_json::json!({"nodes": [], "edges": []}),
+            settings: JobSettings::default(),
+            device_index: None,
+            created_at: Utc::now(),
+            started_at: None,
+            completed_at: None,
+            worker_id: None,
+            artifact_count: 0,
+            error: None,
+        };
+        let workers = vec![
+            WorkerInfo {
+                worker_id: "worker-0".to_string(),
+                device_index: 0,
+                device_name: "GPU 0".to_string(),
+                status: WorkerStatus::Idle,
+                current_job_id: None,
+                vram_used_mib: 0,
+            },
+            WorkerInfo {
+                worker_id: "worker-cpu".to_string(),
+                device_index: 99,
+                device_name: "CPU".to_string(),
+                status: WorkerStatus::Idle,
+                current_job_id: None,
+                vram_used_mib: 0,
+            },
+        ];
+        let ledger = VramLedger::new();
+
+        let result = select_worker(&job, &workers, &ledger, "cpu");
+        assert_eq!(result, Some(1));
+    }
+
+    /// Force-CPU mode returns `None` when no CPU worker exists.
+    #[serial]
+    #[tokio::test]
+    async fn test_select_cpu_not_available() {
+        let job = Job {
+            id: Uuid::new_v4(),
+            status: JobStatus::Queued,
+            graph: serde_json::json!({"nodes": [], "edges": []}),
+            settings: JobSettings::default(),
+            device_index: None,
+            created_at: Utc::now(),
+            started_at: None,
+            completed_at: None,
+            worker_id: None,
+            artifact_count: 0,
+            error: None,
+        };
+        let workers = vec![WorkerInfo {
+            worker_id: "worker-0".to_string(),
+            device_index: 0,
+            device_name: "GPU 0".to_string(),
+            status: WorkerStatus::Idle,
+            current_job_id: None,
+            vram_used_mib: 0,
+        }];
+        let ledger = VramLedger::new();
+
+        let result = select_worker(&job, &workers, &ledger, "cpu");
+        assert_eq!(result, None);
     }
 }
