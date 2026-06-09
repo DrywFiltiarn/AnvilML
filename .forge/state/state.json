@@ -126,16 +126,17 @@
     "P903-A3",
     "P903-A3x",
     "P903-A4",
-    "P903-A5"
+    "P903-A5",
+    "P903-C1"
   ],
-  "in_progress": "P903-C1",
+  "in_progress": "P13-A1",
   "plan_approved": true,
-  "current_plan": "1. **Gate 1 \u2014 Lint (clippy):** Run `cargo clippy --workspace --features mock-hardware -- -D warnings`. This checks all workspace crates for clippy warnings treated as errors. Expected: exit 0, no warnings.\n\n2. **Gate 2 \u2014 Full test suite (Rust):** Run `env -i HOME=$HOME PATH=$PATH ANVILML_WORKER_MOCK=1 ANVILML_VENV_PATH=./worker/.venv cargo test --workspace --features mock-hardware`. The `env -i` clears the environment, then sets only `HOME`, `PATH`, `ANVILML_WORKER_MOCK=1` (enables Python worker stub mode), and `ANVILML_VENV_PATH` (points to the venv for worker subprocess tests). Expected: exit 0, all tests pass.\n\n3. **Gate 3 \u2014 Windows cross-check:** Run `cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu`. This cross-compiles the entire workspace for Windows (GNU target) exercising `#[cfg(windows)]` code paths that the native Linux mock-hardware build never touches. Expected: exit 0, no errors.\n\n4. **Gate 4 \u2014 Python worker tests:** Run `python -m pytest worker/tests/ -v`. This runs the Python-side pytest suite covering the IPC transport, node execution, and worker tests. Expected: exit 0, all tests pass.\n\n5. **Record verbatim output** of all four commands in the implementation report body. If any command exits non-zero, the task is BLOCKED \u2014 record the failure and stop.",
+  "current_plan": "1. **Read** `crates/anvilml-core/src/types/hardware.rs` to confirm `GpuDevice` field names (`index`, `vram_total_mib`, `vram_free_mib`) and `HardwareInfo` shape (`gpus: Vec<GpuDevice>`). Already confirmed.\n\n2. **Create** `crates/anvilml-scheduler/src/ledger.rs`:\n   - Import `std::collections::HashMap`, `anvilml_core::types::hardware::HardwareInfo`, `tracing`.\n   - Define `pub struct VramLedger { devices: HashMap<u32, (u32, u32)> }` where tuple elements are `(total_mib, used_mib)`.\n   - Implement `VramLedger::new()` returning empty ledger.\n   - Implement `VramLedger::update(&mut self, device_index, used_mib, total_mib)` \u2014 inserts or replaces the entry, with a DEBUG log call recording the update.\n   - Implement `VramLedger::free_mib(&self, device_index) -> u32` \u2014 lookup, return `total - used` if present, `0` if absent.\n   - Implement `VramLedger::would_fit(&self, device_index, required_mib) -> bool` \u2014 delegate to `free_mib` and compare.\n   - Implement `VramLedger::init_from(&mut self, hw: &HardwareInfo)` \u2014 iterate `hw.gpus`, call `update` for each with `total = vram_total_mib`, `used = total - vram_free_mib`.\n   - Add `#[cfg(test)]` module with tests:\n     - `test_init_from`: create `HardwareInfo` with 2 GPUs, build ledger via `init_from`, assert entries exist with correct total/used.\n     - `test_update`: start empty, update device 0, assert `free_mib(0)` returns expected.\n     - `test_would_fit_true`: set up ledger with 8192 total, 4096 used; `would_fit(0, 3000)` is `true`.\n     - `test_would_fit_false`: same setup; `would_fit(0, 5000)` is `false`.\n     - `test_free_mib_unknown_device`: ledger empty; `free_mib(99)` returns `0`.\n\n3. **Edit** `crates/anvilml-scheduler/src/lib.rs`:\n   - Add `pub mod ledger;` alongside existing modules.\n   - Add `pub use ledger::VramLedger;` to re-export the struct.\n\n4. **Bump** `crates/anvilml-scheduler/Cargo.toml` patch version: `0.1.9` \u2192 `0.1.10`.\n\n5. **Verify**: run `cargo test -p anvilml-scheduler -- ledger` \u2014 must exit 0.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-09T08:46:17+0200",
-  "plan_approval_message_id": "1513794057309261845",
+  "last_updated": "2026-06-09T09:26:52+0200",
+  "plan_approval_message_id": "1513805362820677632",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1513794054981292042",
+  "plan_report_message_id": "1513805359687663656",
   "impl_report_message_id": null
 }
