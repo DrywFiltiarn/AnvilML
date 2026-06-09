@@ -124,16 +124,17 @@
     "P903-A1",
     "P903-A2",
     "P903-A3",
-    "P903-A3x"
+    "P903-A3x",
+    "P903-A4"
   ],
-  "in_progress": "P903-A4",
+  "in_progress": "P903-A5",
   "plan_approved": true,
-  "current_plan": "1. **Inspect current state.** Read `crates/anvilml-ipc/src/bin/ipc-probe.rs` to check whether it already uses `write_frame` (P902-A1 applied) or still hand-rolls `rmp_serde` serialization (P902-A1 not applied).\n\n2. **Apply fix if needed.** If the probe still uses the old pattern:\n   - Add `use anvilml_ipc::WorkerMessage;` to the imports.\n   - Add `use anvilml_ipc::framing::write_frame;` to the imports.\n   - Replace the four lines of manual serialization (lines 12\u201316 in the current file):\n     ```rust\n     // BEFORE:\n     let pong = json!({ \"_type\": \"Pong\", \"seq\": 7u64 });\n     let payload = rmp_serde::to_vec_named(&pong)?;\n     let len = payload.len() as u32;\n     tx.write_all(&len.to_be_bytes()).await?;\n     tx.write_all(&payload).await?;\n\n     // AFTER:\n     write_frame(&mut tx, &WorkerMessage::Ping { seq: 7 }).await?;\n     ```\n   - Remove the now-unused `use serde_json::json;` import.\n   - Remove the now-unused `use tokio::io::AsyncWriteExt;` import (only needed for `write_all`; `write_frame` handles its own writes).\n\n3. **Verify compilation.** Run `cargo check -p anvilml-ipc --bin ipc-probe` to confirm the fix compiles.\n\n4. **Verify execution.** Run `cargo run -p anvilml-ipc --bin ipc-probe` and confirm:\n   - Stdout contains `OK seq=7`\n   - Exit code is 0",
+  "current_plan": "1. **Read** `crates/anvilml-worker/src/managed.rs` to confirm the exact text of the `#[ignore]` attributes and their preceding doc comments for all four target tests.\n2. **Remove** the `#[ignore = \"requires P903-A3: Python worker socket connection\"]` attribute line from each of the four tests.\n3. **Remove** the doc comment line `/// Ignored until P903-A3 updates the Python worker to connect to the socket.` that immediately precedes each `#[ignore]` attribute in the four tests.\n4. **Bump** the `version` field in `crates/anvilml-worker/Cargo.toml` from `0.1.17` to `0.1.18`.\n5. **Verify** with `cargo test -p anvilml-worker --features mock-hardware` that all four tests now run (not ignored) and pass, and the overall test exit code is 0.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-09T01:23:13+0200",
-  "plan_approval_message_id": "1513684140346572861",
+  "last_updated": "2026-06-09T08:06:51+0200",
+  "plan_approval_message_id": "1513779167290720419",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1513684138450882704",
+  "plan_report_message_id": "1513779165407477781",
   "impl_report_message_id": null
 }

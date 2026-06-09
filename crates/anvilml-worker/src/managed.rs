@@ -833,11 +833,8 @@ mod tests {
     use rmp_serde;
 
     /// Spawn a mock worker, send Ping, receive Pong, then Shutdown.
-    ///
-    /// Ignored until P903-A3 updates the Python worker to connect to the socket.
     #[tokio::test]
     #[cfg(feature = "mock-hardware")]
-    #[ignore = "requires P903-A3: Python worker socket connection"]
     async fn spawn_ping_pong() {
         temp_env::async_with_vars([("ANVILML_WORKER_MOCK", Some("1"))], async {
             let worker = ManagedWorker::new("test-worker".to_string(), 0);
@@ -925,11 +922,8 @@ mod tests {
     }
 
     /// Verify status transitions: Initializing → Idle (on Ready) → Dead.
-    ///
-    /// Ignored until P903-A3 updates the Python worker to connect to the socket.
     #[tokio::test]
     #[cfg(feature = "mock-hardware")]
-    #[ignore = "requires P903-A3: Python worker socket connection"]
     async fn status_transitions() {
         temp_env::async_with_vars([("ANVILML_WORKER_MOCK", Some("1"))], async {
             let worker = ManagedWorker::new("status-test".to_string(), 0);
@@ -977,10 +971,8 @@ mod tests {
     /// - Exactly one `Ready` event is received in a 500ms drain window
     /// - No second Ready, no Dying, no Dead events appear during the drain
     ///
-    /// Ignored until P903-A3 updates the Python worker to connect to the socket.
     #[tokio::test]
     #[cfg(feature = "mock-hardware")]
-    #[ignore = "requires P903-A3: Python worker socket connection"]
     async fn handshake_completes_once() {
         temp_env::async_with_vars(
             [
@@ -1367,10 +1359,8 @@ mod tests {
     ///
     /// Required: ANVILML_WORKER_MOCK=1 and ANVILML_VENV_PATH must be set.
     ///
-    /// Ignored until P903-A3 updates the Python worker to connect to the socket.
     #[tokio::test]
     #[cfg(feature = "mock-hardware")]
-    #[ignore = "requires P903-A3: Python worker socket connection"]
     async fn spawn_reaches_idle() {
         temp_env::async_with_vars([("ANVILML_WORKER_MOCK", Some("1"))], async {
             let worker = ManagedWorker::new("idle-test".to_string(), 0);
