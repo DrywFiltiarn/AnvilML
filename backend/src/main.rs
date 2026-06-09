@@ -291,5 +291,5 @@ async fn main() {
     // by the OS when this process exits because CREATE_NEW_PROCESS_GROUP
     // is set and the named pipe is closed.
     tracing::info!("HTTP server drained, exiting");
-    std::process::exit(0);        
+    std::process::exit(0);
 }

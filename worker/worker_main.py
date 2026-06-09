@@ -37,6 +37,8 @@ if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
 
 import argparse
+import base64
+import random
 import threading
 
 # ── Thread environment setup (§14.1 of ANVILML_DESIGN.md) ─────────────────────
@@ -118,6 +120,17 @@ def _probe_hardware():
 # ── Mock executor ──────────────────────────────────────────────────────────────
 
 
+def _generate_black_png() -> bytes:
+    """Create a 64x64 black RGB PNG and return raw PNG bytes."""
+    from io import BytesIO
+    from PIL import Image
+
+    img = Image.new("RGB", (64, 64), (0, 0, 0))
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def _execute_mock(
     job_id: str | int,
     graph: dict,
@@ -128,8 +141,9 @@ def _execute_mock(
 
     Iterates ``graph['nodes']`` in the order given (no topological sort —
     the DAG is validated by the server).  For each node a ``Progress``
-    event is emitted; after all nodes a single ``Completed`` event is
-    emitted with the total elapsed time in milliseconds.
+    event is emitted; for ``SaveImage`` nodes an ``ImageReady`` event is
+    also emitted.  After all nodes a single ``Completed`` event is emitted
+    with the total elapsed time in milliseconds.
     """
     import worker.ipc as ipc  # noqa: E402
 
@@ -145,6 +159,36 @@ def _execute_mock(
             "node_total": len(nodes),
             "node_type": node_type,
         })
+
+        if node_type == "SaveImage":
+            inputs = node.get("inputs", {})
+
+            # Resolve prompt — default empty string.
+            prompt = inputs.get("prompt", "")
+
+            # Resolve seed — from node inputs, fallback to settings, then -1.
+            seed = inputs.get("seed", settings.get("seed", -1))
+            if seed == -1:
+                seed = random.randint(0, 2**63 - 1)
+
+            # Resolve steps — from node inputs, fallback to settings, then 1.
+            steps = inputs.get("steps", settings.get("steps", 1))
+
+            # Generate black PNG and base64-encode.
+            png_bytes = _generate_black_png()
+            image_b64 = base64.b64encode(png_bytes).decode("ascii")
+
+            ipc.write_frame({
+                "_type": "ImageReady",
+                "job_id": job_id,
+                "image_b64": image_b64,
+                "width": 64,
+                "height": 64,
+                "format": "png",
+                "seed": seed,
+                "steps": steps,
+                "prompt": prompt,
+            })
 
     elapsed_ms = int((time.monotonic() - start_time) * 1000)
     ipc.write_frame({

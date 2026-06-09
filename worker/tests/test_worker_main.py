@@ -300,3 +300,198 @@ class TestWorkerMain:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+
+    def test_execute_saveimage_imageready(self):
+        """Execute with a graph containing a SaveImage node → verify ImageReady
+        event emitted with correct fields (width=64, height=64, format='png',
+        valid base64 image_b64, resolved seed, steps, prompt), followed by
+        Completed."""
+        proc = self._spawn_worker()
+
+        try:
+            nodes = [
+                {"type": "LoadModel"},
+                {"type": "SaveImage"},
+                {"type": "Inference"},
+            ]
+            execute_msg = {
+                "_type": "Execute",
+                "job_id": "exec-test-si-1",
+                "graph": {"nodes": nodes},
+                "settings": {},
+                "device_index": 0,
+            }
+
+            frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            frames += _make_frame(execute_msg)
+            frames += _make_frame({"_type": "Shutdown"})
+            proc.stdin.write(frames)
+            proc.stdin.close()
+
+            stdout_data = proc.stdout.read(4096)
+            proc.wait(timeout=5)
+
+            parsed = self._parse_frames(stdout_data)
+
+            # Exactly one Ready event.
+            ready_events = [f for f in parsed if f["_type"] == "Ready"]
+            assert len(ready_events) == 1
+
+            # N Progress events (N = number of nodes).
+            progress_events = [f for f in parsed if f["_type"] == "Progress"]
+            assert len(progress_events) == len(nodes)
+
+            # Exactly one ImageReady event.
+            imageready_events = [f for f in parsed if f["_type"] == "ImageReady"]
+            assert len(imageready_events) == 1, (
+                f"expected exactly one ImageReady, got {len(imageready_events)}"
+            )
+            ir = imageready_events[0]
+            assert ir["job_id"] == "exec-test-si-1"
+            assert ir["width"] == 64
+            assert ir["height"] == 64
+            assert ir["format"] == "png"
+            assert isinstance(ir["image_b64"], str) and len(ir["image_b64"]) > 0
+            assert ir["seed"] >= 0
+            assert ir["steps"] == 1
+            assert ir["prompt"] == ""
+
+            # Exactly one Completed event.
+            completed_events = [f for f in parsed if f["_type"] == "Completed"]
+            assert len(completed_events) == 1
+            assert completed_events[0]["job_id"] == "exec-test-si-1"
+
+            # Exactly one Dying event, exit code 0.
+            dying_events = [f for f in parsed if f["_type"] == "Dying"]
+            assert len(dying_events) == 1
+            assert proc.returncode == 0
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_execute_saveimage_seed_resolution(self):
+        """Execute with SaveImage node having seed=-1 → verify ImageReady seed
+        is a valid random int in range [0, 2^63-1]."""
+        proc = self._spawn_worker()
+
+        try:
+            nodes = [{"type": "SaveImage"}]
+            execute_msg = {
+                "_type": "Execute",
+                "job_id": "exec-test-si-2",
+                "graph": {"nodes": nodes},
+                "settings": {},
+                "device_index": 0,
+            }
+
+            frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            frames += _make_frame(execute_msg)
+            frames += _make_frame({"_type": "Shutdown"})
+            proc.stdin.write(frames)
+            proc.stdin.close()
+
+            stdout_data = proc.stdout.read(4096)
+            proc.wait(timeout=5)
+
+            parsed = self._parse_frames(stdout_data)
+
+            imageready_events = [f for f in parsed if f["_type"] == "ImageReady"]
+            assert len(imageready_events) == 1
+            ir = imageready_events[0]
+            assert 0 <= ir["seed"] <= 2**63 - 1
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_execute_saveimage_inputs_resolved(self):
+        """Execute with SaveImage node having explicit prompt/seed/steps
+        inputs → verify ImageReady fields match node inputs."""
+        proc = self._spawn_worker()
+
+        try:
+            nodes = [
+                {
+                    "type": "SaveImage",
+                    "inputs": {
+                        "prompt": "test prompt text",
+                        "seed": 12345,
+                        "steps": 20,
+                    },
+                }
+            ]
+            execute_msg = {
+                "_type": "Execute",
+                "job_id": "exec-test-si-3",
+                "graph": {"nodes": nodes},
+                "settings": {},
+                "device_index": 0,
+            }
+
+            frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            frames += _make_frame(execute_msg)
+            frames += _make_frame({"_type": "Shutdown"})
+            proc.stdin.write(frames)
+            proc.stdin.close()
+
+            stdout_data = proc.stdout.read(4096)
+            proc.wait(timeout=5)
+
+            parsed = self._parse_frames(stdout_data)
+
+            imageready_events = [f for f in parsed if f["_type"] == "ImageReady"]
+            assert len(imageready_events) == 1
+            ir = imageready_events[0]
+            assert ir["prompt"] == "test prompt text"
+            assert ir["seed"] == 12345
+            assert ir["steps"] == 20
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_execute_no_saveimage_no_imageready(self):
+        """Execute with a graph that has no SaveImage node → verify NO
+        ImageReady event emitted, only Progress + Completed."""
+        proc = self._spawn_worker()
+
+        try:
+            nodes = [
+                {"type": "LoadModel"},
+                {"type": "Inference"},
+                {"type": "SaveOutput"},
+            ]
+            execute_msg = {
+                "_type": "Execute",
+                "job_id": "exec-test-si-4",
+                "graph": {"nodes": nodes},
+                "settings": {},
+                "device_index": 0,
+            }
+
+            frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            frames += _make_frame(execute_msg)
+            frames += _make_frame({"_type": "Shutdown"})
+            proc.stdin.write(frames)
+            proc.stdin.close()
+
+            stdout_data = proc.stdout.read(4096)
+            proc.wait(timeout=5)
+
+            parsed = self._parse_frames(stdout_data)
+
+            imageready_events = [f for f in parsed if f["_type"] == "ImageReady"]
+            assert len(imageready_events) == 0, (
+                f"expected no ImageReady events, got {len(imageready_events)}"
+            )
+
+            progress_events = [f for f in parsed if f["_type"] == "Progress"]
+            assert len(progress_events) == len(nodes)
+
+            completed_events = [f for f in parsed if f["_type"] == "Completed"]
+            assert len(completed_events) == 1
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
