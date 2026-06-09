@@ -125,16 +125,17 @@
     "P903-A2",
     "P903-A3",
     "P903-A3x",
-    "P903-A4"
+    "P903-A4",
+    "P903-A5"
   ],
-  "in_progress": "P903-A5",
+  "in_progress": "P903-C1",
   "plan_approved": true,
-  "current_plan": "1. **Read** `crates/anvilml-worker/src/managed.rs` to confirm the exact text of the `#[ignore]` attributes and their preceding doc comments for all four target tests.\n2. **Remove** the `#[ignore = \"requires P903-A3: Python worker socket connection\"]` attribute line from each of the four tests.\n3. **Remove** the doc comment line `/// Ignored until P903-A3 updates the Python worker to connect to the socket.` that immediately precedes each `#[ignore]` attribute in the four tests.\n4. **Bump** the `version` field in `crates/anvilml-worker/Cargo.toml` from `0.1.17` to `0.1.18`.\n5. **Verify** with `cargo test -p anvilml-worker --features mock-hardware` that all four tests now run (not ignored) and pass, and the overall test exit code is 0.",
+  "current_plan": "1. **Gate 1 \u2014 Lint (clippy):** Run `cargo clippy --workspace --features mock-hardware -- -D warnings`. This checks all workspace crates for clippy warnings treated as errors. Expected: exit 0, no warnings.\n\n2. **Gate 2 \u2014 Full test suite (Rust):** Run `env -i HOME=$HOME PATH=$PATH ANVILML_WORKER_MOCK=1 ANVILML_VENV_PATH=./worker/.venv cargo test --workspace --features mock-hardware`. The `env -i` clears the environment, then sets only `HOME`, `PATH`, `ANVILML_WORKER_MOCK=1` (enables Python worker stub mode), and `ANVILML_VENV_PATH` (points to the venv for worker subprocess tests). Expected: exit 0, all tests pass.\n\n3. **Gate 3 \u2014 Windows cross-check:** Run `cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu`. This cross-compiles the entire workspace for Windows (GNU target) exercising `#[cfg(windows)]` code paths that the native Linux mock-hardware build never touches. Expected: exit 0, no errors.\n\n4. **Gate 4 \u2014 Python worker tests:** Run `python -m pytest worker/tests/ -v`. This runs the Python-side pytest suite covering the IPC transport, node execution, and worker tests. Expected: exit 0, all tests pass.\n\n5. **Record verbatim output** of all four commands in the implementation report body. If any command exits non-zero, the task is BLOCKED \u2014 record the failure and stop.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-09T08:06:51+0200",
-  "plan_approval_message_id": "1513779167290720419",
+  "last_updated": "2026-06-09T08:46:17+0200",
+  "plan_approval_message_id": "1513794057309261845",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1513779165407477781",
+  "plan_report_message_id": "1513794054981292042",
   "impl_report_message_id": null
 }
