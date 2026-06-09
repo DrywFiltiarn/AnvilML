@@ -269,9 +269,10 @@ async fn main() {
         Some(cfg.model_dirs.clone()),
         broadcaster,
         Some(workers.clone()),
-        Some(scheduler),
+        Some(scheduler.clone()),
     );
     spawn_system_stats_tick(state.clone());
+    let _dispatch_handle = scheduler.start_dispatch_loop();
     let router = build_router(state);
 
     let bind_addr = format!("{}:{}", cfg.host, cfg.port);
