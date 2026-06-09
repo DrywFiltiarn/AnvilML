@@ -261,7 +261,6 @@ mod tests {
     use serde_json::Value;
     use sqlx::SqlitePool;
     use tokio::sync::broadcast;
-    use tokio::sync::Notify;
     use tower::ServiceExt;
 
     use crate::{build_router, AppState, EventBroadcaster};
@@ -350,17 +349,20 @@ mod tests {
 
     /// Build a test `AppState` with a real `JobScheduler` backed by an in-memory DB.
     async fn build_test_app() -> Router {
+        use anvilml_scheduler::{JobQueue, VramLedger};
+        use anvilml_worker::WorkerPool;
+
         let pool = setup_pool().await;
         let (broadcaster, _rx) = broadcast::channel::<WsEvent>(16);
-        let notify = Arc::new(Notify::new());
-        let workers: Arc<Vec<anvilml_core::types::worker::WorkerInfo>> = Arc::new(vec![]);
+        let workers = Arc::new(WorkerPool::new_test_pool());
 
         let scheduler = Arc::new(JobScheduler::new(
             JobQueue::new(),
             workers,
             pool.clone(),
             broadcaster,
-            notify,
+            Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
+            "auto".to_string(),
         ));
 
         let broadcaster_ws = Arc::new(EventBroadcaster::new(16));

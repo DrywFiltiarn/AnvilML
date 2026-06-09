@@ -487,6 +487,48 @@ impl WorkerPool {
         }
         None
     }
+
+    /// Create a minimal `WorkerPool` with no workers, for tests in other crates.
+    ///
+    /// This constructor is intended for test scenarios where a `WorkerPool` is
+    /// needed but no real workers should be spawned. Workers can be added
+    /// manually to the internal list before the pool is used.
+    pub fn new_test_pool() -> Self {
+        Self::new_test_pool_with_workers(Vec::new())
+    }
+
+    /// Create a `WorkerPool` with the given pre-configured workers, for tests
+    /// in other crates.
+    ///
+    /// The caller is responsible for ensuring the worker IDs and device indices
+    /// are consistent. Workers should be in the desired initial status
+    /// (typically `Idle`) before the pool is used.
+    pub fn new_test_pool_with_workers(workers: Vec<Arc<ManagedWorker>>) -> Self {
+        let (event_tx, _rx) = broadcast::channel(256);
+        let hardware = Arc::new(tokio::sync::Mutex::new(HardwareInfo {
+            host: anvilml_core::HostInfo {
+                os: "test".to_string(),
+                cpu_model: "test".to_string(),
+                ram_total_mib: 0,
+                ram_free_mib: 0,
+            },
+            gpus: vec![],
+            inference_caps: anvilml_core::InferenceCaps::default(),
+        }));
+        let mut device_map = HashMap::new();
+        for (i, w) in workers.iter().enumerate() {
+            device_map.insert(w.device_index(), i);
+        }
+        WorkerPool {
+            workers: Arc::new(RwLock::new(workers)),
+            event_tx,
+            device_map: Arc::new(RwLock::new(device_map)),
+            hardware,
+            respawn_delay_ms: std::time::Duration::from_secs(2),
+            listener_handles: Arc::new(RwLock::new(HashMap::new())),
+            keepalive_handles: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
 }
 
 /// Get a discriminant name for a WorkerEvent.

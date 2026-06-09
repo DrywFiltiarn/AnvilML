@@ -128,16 +128,17 @@
     "P903-A4",
     "P903-A5",
     "P903-C1",
-    "P13-A1"
+    "P13-A1",
+    "P13-A2"
   ],
-  "in_progress": "P13-A2",
+  "in_progress": "P13-A3",
   "plan_approved": true,
-  "current_plan": "1. **Add the `select_worker` function** to the end of `scheduler.rs`, after the `JobScheduler` impl block and before the existing `mod tests` block. The function is free-standing (not a method on `JobScheduler`) since it is a pure algorithm with no side effects.\n\n2. **Implementation logic:**\n   ```\n   fn select_worker(job: &Job, workers: &[WorkerInfo], ledger: &VramLedger, default_device: &str) -> Option<usize> {\n       // 1. If default_device == \"cpu\", find and return the CPU worker index if Idle.\n       // 2. Otherwise, determine device_preference from job.settings.\n       // 3. If Some(n): find worker at index n, return Some(n) if Idle, else None.\n       // 4. If None (auto): filter idle workers, sort by free_mib desc then device_index asc, return index of top.\n   }\n   ```\n   - For auto mode, `free_mib` is looked up via `ledger.free_mib(worker.device_index)`.\n   - Workers not in the ledger get `free_mib == 0` (per existing ledger semantics).\n   - The function returns a `usize` index into the `workers` slice.\n\n3. **Add unit tests** \u2014 each test constructs a minimal set of `WorkerInfo` values and a `VramLedger`, calls `select_worker`, and asserts the returned index (or `None`). Tests use `serial_test::serial` to avoid any shared state issues (though `select_worker` is pure, this follows the existing pattern in `scheduler.rs`).\n\n4. **Bump crate version** \u2014 change `version = \"0.1.10\"` to `version = \"0.1.11\"` in `crates/anvilml-scheduler/Cargo.toml`.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-09T09:47:02+0200",
-  "plan_approval_message_id": "1513811419462762516",
+  "last_updated": "2026-06-09T10:19:12+0200",
+  "plan_approval_message_id": "1513818408733642820",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1513811417789104298",
+  "plan_report_message_id": "1513818407139676194",
   "impl_report_message_id": null
 }

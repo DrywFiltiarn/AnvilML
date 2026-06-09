@@ -1,55 +1,69 @@
 //! JobScheduler — central orchestrator for job submission and dispatch coordination.
 //!
-//! Wraps the in-memory queue, database pool, event broadcaster, and a `Notify` handle
-//! used by the (future) dispatch loop to wake on new submissions.
+//! Wraps the in-memory queue, database pool, event broadcaster, a `Notify` handle
+//! used by the dispatch loop to wake on new submissions, and a `WorkerPool` for
+//! worker management and IPC.
 
 use std::sync::Arc;
 
 use anvilml_core::error::AnvilError;
-use anvilml_core::types::events::{JobQueuedEvent, WsEvent};
+use anvilml_core::types::events::{JobQueuedEvent, JobStartedEvent, WsEvent};
 use anvilml_core::types::job::{Job, JobStatus, SubmitJobRequest, SubmitJobResponse};
+use anvilml_ipc::WorkerMessage;
+use anvilml_worker::WorkerPool;
 use chrono::Utc;
 use tokio::sync::broadcast;
 use tokio::sync::Notify;
+use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::dag::validate_graph;
 use crate::job_store::insert_job;
+use crate::job_store::update_status;
 use crate::ledger::VramLedger;
 use crate::queue::JobQueue;
 
 /// Central job scheduler.
 ///
 /// Holds the in-memory queue, database pool, a broadcast sender for WebSocket events,
-/// and a `Notify` handle that the dispatch loop waits on.
+/// a `Notify` handle that the dispatch loop waits on, the worker pool for IPC and
+/// status management, the VRAM ledger for worker selection, and the default device
+/// mode (e.g. `"auto"` or `"cpu"`).
 pub struct JobScheduler {
     /// In-memory FIFO queue of jobs awaiting dispatch.
-    queue: JobQueue,
-    /// List of available workers (read-only snapshot; populated by server).
-    _workers: Arc<Vec<anvilml_core::types::worker::WorkerInfo>>,
+    queue: Arc<JobQueue>,
+    /// Worker pool for IPC, status management, and event subscription.
+    workers: Arc<WorkerPool>,
     /// SQLite connection pool for job persistence.
     db: sqlx::SqlitePool,
     /// Broadcaster for WebSocket events (e.g. `job.queued`).
     broadcaster: broadcast::Sender<WsEvent>,
-    /// Notifies the dispatch loop when a new job is submitted.
-    notify: Arc<Notify>,
+    /// Notify for dispatch loop wake-up.
+    dispatch_notify: Arc<Notify>,
+    /// VRAM ledger for worker selection ranking.
+    ledger: Arc<tokio::sync::Mutex<VramLedger>>,
+    /// Default device mode: `"auto"` or `"cpu"`.
+    default_device: String,
 }
 
 impl JobScheduler {
     /// Create a new `JobScheduler`.
     pub fn new(
         queue: JobQueue,
-        workers: Arc<Vec<anvilml_core::types::worker::WorkerInfo>>,
+        workers: Arc<WorkerPool>,
         db: sqlx::SqlitePool,
         broadcaster: broadcast::Sender<WsEvent>,
-        notify: Arc<Notify>,
+        ledger: Arc<tokio::sync::Mutex<VramLedger>>,
+        default_device: String,
     ) -> Self {
         Self {
-            queue,
-            _workers: workers,
+            queue: Arc::new(queue),
+            workers,
             db,
             broadcaster,
-            notify,
+            dispatch_notify: Arc::new(Notify::new()),
+            ledger,
+            default_device,
         }
     }
 
@@ -99,7 +113,7 @@ impl JobScheduler {
         let _ = self.broadcaster.send(queued_event);
 
         // 6. Notify the dispatch loop.
-        self.notify.notify_one();
+        self.dispatch_notify.notify_one();
 
         // 7. Return response with queue position (1-based).
         Ok(SubmitJobResponse {
@@ -111,6 +125,123 @@ impl JobScheduler {
     /// Return a reference to the in-memory queue length.
     pub fn queued_count(&self) -> usize {
         self.queue.len()
+    }
+
+    /// Start the background dispatch loop.
+    ///
+    /// The loop subscribes to `WorkerPool::subscribe_events()` for worker events
+    /// and wakes on the `Notify` handle when a new job is submitted. On each wake
+    /// it pops the next queued job, selects an idle worker, updates the job status
+    /// to Running in the database, marks the worker busy, broadcasts a
+    /// `JobStarted` WebSocket event, and sends an `Execute` IPC message to the
+    /// worker. The loop repeats until no further dispatch is possible, then waits
+    /// on both the `Notify` and worker events.
+    ///
+    /// Returns a [`JoinHandle`] for the dispatch loop task.
+    #[tracing::instrument(skip(self), fields(default_device = %self.default_device))]
+    pub fn start_dispatch_loop(&self) -> JoinHandle<()> {
+        let notify = self.dispatch_notify.clone();
+        let workers = self.workers.clone();
+        let queue = self.queue.clone();
+        let db = self.db.clone();
+        let broadcaster = self.broadcaster.clone();
+        let ledger = self.ledger.clone();
+        let default_device = self.default_device.clone();
+
+        tokio::spawn(async move {
+            tracing::info!("dispatch loop started");
+
+            loop {
+                // Wait for a trigger: new job notification.
+                // Use a short timeout so we periodically check even without
+                // a notification (handles the case where notify is missed).
+                let notified =
+                    tokio::time::timeout(std::time::Duration::from_millis(100), notify.notified())
+                        .await;
+
+                if notified.is_err() {
+                    // Timeout — no notification received, just check the queue.
+                    tracing::debug!("dispatch loop: timeout, checking queue");
+                } else {
+                    tracing::debug!("dispatch loop: job submitted notification");
+                }
+
+                // Try to dispatch as many queued jobs as possible.
+                while let Some(job) = queue.pop_next() {
+                    let job_id = job.id;
+
+                    // Get worker list and select an idle worker.
+                    let worker_infos = workers.list().await;
+                    let ledger_guard = ledger.lock().await;
+                    let worker_idx =
+                        select_worker(&job, &worker_infos, &ledger_guard, &default_device);
+
+                    let Some(idx) = worker_idx else {
+                        // No suitable worker — push job back and exit dispatch cycle.
+                        queue.enqueue(job);
+                        break;
+                    };
+
+                    let worker_info = &worker_infos[idx];
+                    let worker_id = worker_info.worker_id.clone();
+                    let device_index = worker_info.device_index;
+
+                    drop(ledger_guard);
+
+                    // Update job status to Running in the database.
+                    let now = Utc::now();
+                    let updated = update_status(&db, job_id, JobStatus::Running, Some(now))
+                        .await
+                        .unwrap_or(false);
+
+                    if !updated {
+                        tracing::warn!(
+                            job_id = %job_id,
+                            worker_id = %worker_id,
+                            "dispatch: failed to update job status to Running"
+                        );
+                        queue.enqueue(job);
+                        continue;
+                    }
+
+                    // Mark worker as busy.
+                    workers.set_busy(&worker_id, &job_id.to_string()).await;
+
+                    // Broadcast JobStarted event.
+                    let started_event = WsEvent::JobStarted(JobStartedEvent {
+                        event: "job.started".to_string(),
+                        timestamp: now,
+                        job_id,
+                    });
+                    let _ = broadcaster.send(started_event);
+
+                    // Send Execute IPC message to the worker.
+                    let execute_msg = WorkerMessage::Execute {
+                        job_id,
+                        graph: job.graph.clone(),
+                        settings: job.settings.clone(),
+                        device_index,
+                    };
+                    if let Err(e) = workers.send(&worker_id, execute_msg).await {
+                        tracing::warn!(
+                            job_id = %job_id,
+                            worker_id = %worker_id,
+                            error = %e,
+                            "dispatch: failed to send Execute to worker"
+                        );
+                        // Try to enqueue the job back for retry.
+                        queue.enqueue(job);
+                        continue;
+                    }
+
+                    tracing::debug!(
+                        job_id = %job_id,
+                        worker_id = %worker_id,
+                        "job dispatched to worker"
+                    );
+                }
+            }
+        })
     }
 }
 
@@ -227,11 +358,16 @@ mod tests {
     /// Helper: create a JobScheduler with fresh components.
     async fn make_scheduler(pool: SqlitePool) -> JobScheduler {
         let queue = JobQueue::new();
-        let workers: Arc<Vec<anvilml_core::types::worker::WorkerInfo>> = Arc::new(vec![]);
         let (broadcaster, _rx) = broadcast::channel(16);
-        let notify = Arc::new(Notify::new());
 
-        JobScheduler::new(queue, workers, pool, broadcaster, notify)
+        JobScheduler::new(
+            queue,
+            Arc::new(WorkerPool::new_test_pool()),
+            pool,
+            broadcaster,
+            Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
+            "auto".to_string(),
+        )
     }
 
     /// Valid job submitted via `submit()` is persisted as Queued + enqueued + returns
@@ -313,10 +449,11 @@ mod tests {
         let (broadcaster, mut rx) = broadcast::channel(16);
         let scheduler = JobScheduler::new(
             JobQueue::new(),
-            Arc::new(vec![]),
+            Arc::new(WorkerPool::new_test_pool()),
             pool,
             broadcaster,
-            Arc::new(Notify::new()),
+            Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
+            "auto".to_string(),
         );
 
         let req = SubmitJobRequest {
@@ -380,6 +517,88 @@ mod tests {
             db_job.settings.device_preference,
             custom_settings.device_preference
         );
+    }
+
+    // ── dispatch loop test ────────────────────────────────────────────────────
+
+    /// Submitting a job causes the dispatch loop to:
+    /// - Transition the job's DB status from Queued → Running
+    /// - Mark the worker Busy
+    /// - Decrease the queue length
+    ///
+    /// Note: We verify observable state changes. The actual Execute IPC
+    /// message send is verified indirectly by the worker becoming Busy.
+    #[serial]
+    #[tokio::test]
+    async fn test_dispatch_sends_execute() {
+        use anvilml_worker::ManagedWorker;
+
+        // Build a minimal WorkerPool with one idle worker.
+        let worker = Arc::new(ManagedWorker::new("worker-0".to_string(), 0));
+        // Set the worker to Idle so select_worker picks it.
+        worker.set_status(WorkerStatus::Idle).await;
+
+        let pool = Arc::new(WorkerPool::new_test_pool_with_workers(vec![worker.clone()]));
+
+        // Build the scheduler.
+        let pool_clone = pool.clone();
+        let pool_clone2 = pool.clone();
+        let ledger = Arc::new(tokio::sync::Mutex::new(VramLedger::new()));
+        let (broadcaster, _rx) = broadcast::channel(16);
+        let scheduler = JobScheduler::new(
+            JobQueue::new(),
+            pool_clone,
+            setup_pool().await,
+            broadcaster,
+            ledger.clone(),
+            "auto".to_string(),
+        );
+
+        // Start the dispatch loop.
+        let dispatch_handle = scheduler.start_dispatch_loop();
+
+        // Submit a job — this notifies the dispatch loop.
+        let req = SubmitJobRequest {
+            graph: valid_zit_graph(),
+            settings: JobSettings::default(),
+        };
+        let resp = scheduler.submit(req).await.expect("submit succeeded");
+
+        // Wait for the dispatch loop to process the job.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // 1. Verify DB status is Running.
+        let db_job = get_job(&scheduler.db, resp.job_id)
+            .await
+            .expect("get from DB succeeded")
+            .expect("job exists in DB");
+        assert_eq!(
+            db_job.status,
+            JobStatus::Running,
+            "job status should be Running after dispatch"
+        );
+        assert!(
+            db_job.started_at.is_some(),
+            "started_at should be set after dispatch"
+        );
+
+        // 2. Verify worker is Busy.
+        let infos = pool_clone2.list().await;
+        assert_eq!(infos.len(), 1, "should have exactly one worker");
+        assert_eq!(
+            infos[0].status,
+            WorkerStatus::Busy,
+            "worker should be Busy after dispatch"
+        );
+
+        // 3. Verify queue length decreased (job was dequeued).
+        assert!(
+            scheduler.queue.is_empty(),
+            "queue should be empty after dispatch"
+        );
+
+        // Cleanup: abort the dispatch loop.
+        dispatch_handle.abort();
     }
 
     // ── select_worker tests ─────────────────────────────────────────────────

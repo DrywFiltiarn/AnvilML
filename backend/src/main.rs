@@ -12,7 +12,6 @@ use anvilml_scheduler::{JobQueue, JobScheduler};
 use anvilml_server::ws::stats_tick::spawn_system_stats_tick;
 use anvilml_server::{build_router, AppState, EventBroadcaster};
 use chrono::Utc;
-use tokio::sync::Notify;
 use tracing_subscriber::fmt::layer as fmt_layer;
 use tracing_subscriber::Layer;
 
@@ -248,15 +247,18 @@ async fn main() {
     // Separate broadcast channel for the job scheduler (WsEvent, not Arc<WsEvent>).
     let (scheduler_broadcaster, _scheduler_rx) = broadcast::channel::<WsEvent>(16);
 
+    // Wrap the worker pool in Arc for sharing with the scheduler.
+    let workers = Arc::new(workers);
+
     // Construct the job scheduler and wire it into AppState.
-    let notify = Arc::new(Notify::new());
-    let workers_snapshot: Arc<Vec<anvilml_core::types::worker::WorkerInfo>> = Arc::new(vec![]);
+    let ledger = Arc::new(tokio::sync::Mutex::new(anvilml_scheduler::VramLedger::new()));
     let scheduler = Arc::new(JobScheduler::new(
         JobQueue::new(),
-        workers_snapshot,
+        workers.clone(),
         db.clone(),
         scheduler_broadcaster,
-        notify,
+        ledger,
+        cfg.gpu_selection.default_device.clone(),
     ));
 
     let state = AppState::new_with_hardware(
@@ -266,7 +268,7 @@ async fn main() {
         Some(registry),
         Some(cfg.model_dirs.clone()),
         broadcaster,
-        Some(Arc::new(workers)),
+        Some(workers.clone()),
         Some(scheduler),
     );
     spawn_system_stats_tick(state.clone());
