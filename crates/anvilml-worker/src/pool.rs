@@ -473,6 +473,14 @@ impl WorkerPool {
 /// Test-only accessors for `WorkerPool`.
 #[cfg(any(test, feature = "test-helpers"))]
 impl WorkerPool {
+    /// Publish an event to the pool's broadcast channel.
+    ///
+    /// Forwards a `(worker_id, WorkerEvent)` pair to the pool's internal
+    /// broadcast channel, simulating what a per-worker listener task would send.
+    pub fn publish_event(&self, worker_id: String, event: anvilml_ipc::WorkerEvent) {
+        let _ = self.event_tx.send((worker_id, event));
+    }
+
     /// Return the child process PID for the worker with the given ID.
     ///
     /// Returns `None` if no worker matches or if the child has not been spawned

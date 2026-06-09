@@ -130,16 +130,17 @@
     "P903-C1",
     "P13-A1",
     "P13-A2",
-    "P13-A3"
+    "P13-A3",
+    "P13-A4"
   ],
-  "in_progress": "P13-A4",
+  "in_progress": "P13-A5",
   "plan_approved": true,
-  "current_plan": "1. **Add `_execute_mock` function** in `worker/worker_main.py` (after `_probe_hardware`, before the message loop):\n   - Accepts `job_id` (str/Uuid), `graph` (dict with `nodes` key), `settings` (dict), `device_index` (int)\n   - Records `start_time = time.monotonic()`\n   - Iterates `graph['nodes']` with `enumerate`:\n     - For each node at index `i` with total `len(graph['nodes'])`:\n       - Extract `node_type = node.get('type', 'unknown')`\n       - Emit `Progress{job_id, node_index=i, node_total=len(nodes), node_type=node_type}`\n     - No sleep or delay needed (mock is instant)\n   - Computes `elapsed_ms = int((time.monotonic() - start_time) * 1000)`\n   - Emits `Completed{job_id, elapsed_ms=elapsed_ms}`\n\n2. **Add Execute handler** in the main message loop (after `MemoryQuery`, before `Shutdown`):\n   - Match `_type == \"Execute\"`\n   - Extract `job_id`, `graph`, `settings`, `device_index` from the message\n   - Call `_execute_mock(job_id, graph, settings, device_index)`\n   - Continue to next iteration\n\n3. **Add test** in `worker/tests/test_worker_main.py`:\n   - `test_execute_progress_completed`: spawn worker, send `InitializeHardware`, send `Execute{job_id, graph, settings, device_index}`, send `Shutdown`\n   - Parse stdout frames; assert:\n     - Exactly one `Ready` event with correct worker_id\n     - `N` `Progress` events (where N = number of nodes in graph), each with correct `node_index`, `node_total`, `node_type`\n     - Exactly one `Completed` event with matching `job_id` and `elapsed_ms >= 0`\n     - Exactly one `Dying` event, process exit code 0\n\n4. **Verify**: Run `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py -v` and confirm all tests pass.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-09T12:54:49+0200",
-  "plan_approval_message_id": "1513853292596301918",
+  "last_updated": "2026-06-09T13:27:23+0200",
+  "plan_approval_message_id": "1513866917864149033",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1513853290553671833",
+  "plan_report_message_id": "1513866915024605205",
   "impl_report_message_id": null
 }

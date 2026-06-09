@@ -188,21 +188,36 @@ pub async fn list_jobs(
     Ok(rows.into_iter().map(|r| r.into_job()).collect())
 }
 
-/// Update a job's status to the given value, setting started_at if provided.
+/// Update a job's status to the given value.
 ///
-/// Only allows transitions from Queued → Running (idempotent guard: jobs already Running are
-/// skipped).
+/// Allows transitions from `Queued → Running` (dispatch loop) and from
+/// `Running → Completed` / `Running → Failed` (event handler). Jobs that are
+/// already in a terminal state are never modified.
+///
+/// * `started_at` — set when transitioning to `Running`.
+/// * `completed_at` — set when transitioning to `Completed`.
+/// * `error` — set when transitioning to `Failed`.
+/// * `worker_id` — set when dispatching a job to a worker.
 pub async fn update_status(
     pool: &SqlitePool,
     id: Uuid,
     new_status: JobStatus,
     started_at: Option<DateTime<Utc>>,
+    completed_at: Option<DateTime<Utc>>,
+    error: Option<String>,
+    worker_id: Option<String>,
 ) -> Result<bool, sqlx::Error> {
     let rows_affected = sqlx::query(
-        "UPDATE jobs SET status = ?, started_at = ? WHERE id = ? AND status != 'Running'",
+        "UPDATE jobs SET status = ?, started_at = COALESCE(?, started_at), \
+         completed_at = COALESCE(?, completed_at), error = COALESCE(?, error), \
+         worker_id = COALESCE(?, worker_id) \
+         WHERE id = ? AND (status = 'Queued' OR status = 'Running')",
     )
     .bind(status_to_str(&new_status))
     .bind(started_at.map(|t| t.timestamp()))
+    .bind(completed_at.map(|t| t.timestamp()))
+    .bind(error)
+    .bind(worker_id)
     .bind(id.to_string())
     .execute(pool)
     .await?;
@@ -481,9 +496,17 @@ mod tests {
 
         // Update to Running.
         let running_at = Utc::now();
-        let updated = update_status(&pool, job.id, JobStatus::Running, Some(running_at))
-            .await
-            .expect("update succeeded");
+        let updated = update_status(
+            &pool,
+            job.id,
+            JobStatus::Running,
+            Some(running_at),
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("update succeeded");
         assert!(updated);
 
         // Verify.

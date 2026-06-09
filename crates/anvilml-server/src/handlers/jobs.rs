@@ -251,7 +251,7 @@ mod tests {
     use std::sync::Arc;
 
     use anvilml_core::types::events::WsEvent;
-    use anvilml_scheduler::{JobQueue, JobScheduler};
+    use anvilml_scheduler::JobScheduler;
     use axum::{
         http::{Request, StatusCode},
         Router,

@@ -7,17 +7,20 @@
 use std::sync::Arc;
 
 use anvilml_core::error::AnvilError;
-use anvilml_core::types::events::{JobQueuedEvent, JobStartedEvent, WsEvent};
+use anvilml_core::types::events::{
+    JobCompletedEvent, JobFailedEvent, JobQueuedEvent, JobStartedEvent, WsEvent,
+};
 use anvilml_core::types::job::{Job, JobStatus, SubmitJobRequest, SubmitJobResponse};
-use anvilml_ipc::WorkerMessage;
+use anvilml_ipc::{WorkerEvent, WorkerMessage};
 use anvilml_worker::WorkerPool;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use tokio::sync::broadcast;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::dag::validate_graph;
+use crate::job_store::get_job;
 use crate::job_store::insert_job;
 use crate::job_store::update_status;
 use crate::ledger::VramLedger;
@@ -137,6 +140,10 @@ impl JobScheduler {
     /// worker. The loop repeats until no further dispatch is possible, then waits
     /// on both the `Notify` and worker events.
     ///
+    /// Worker events for `Completed` and `Failed` are handled by transitioning
+    /// the job to its terminal status, setting the worker idle, and broadcasting
+    /// the appropriate WebSocket event.
+    ///
     /// Returns a [`JoinHandle`] for the dispatch loop task.
     #[tracing::instrument(skip(self), fields(default_device = %self.default_device))]
     pub fn start_dispatch_loop(&self) -> JoinHandle<()> {
@@ -151,19 +158,43 @@ impl JobScheduler {
         tokio::spawn(async move {
             tracing::info!("dispatch loop started");
 
-            loop {
-                // Wait for a trigger: new job notification.
-                // Use a short timeout so we periodically check even without
-                // a notification (handles the case where notify is missed).
-                let notified =
-                    tokio::time::timeout(std::time::Duration::from_millis(100), notify.notified())
-                        .await;
+            let mut event_rx = workers.subscribe_events();
 
-                if notified.is_err() {
-                    // Timeout — no notification received, just check the queue.
-                    tracing::debug!("dispatch loop: timeout, checking queue");
-                } else {
-                    tracing::debug!("dispatch loop: job submitted notification");
+            loop {
+                tokio::select! {
+                    _ = notify.notified() => {
+                        tracing::debug!("dispatch loop: job submitted notification");
+                    }
+                    result = event_rx.recv() => {
+                        match result {
+                            Ok((worker_id, event)) => {
+                                tracing::debug!(worker_id = %worker_id, event_type = ?event_discriminant(&event), "dispatch loop: received worker event");
+                                match &event {
+                                    WorkerEvent::Completed { job_id, elapsed_ms: _ } => {
+                                        let now = Utc::now();
+                                        handle_completed(&db, &workers, &broadcaster, &notify, *job_id, now).await;
+                                        notify.notify_one();
+                                    }
+                                    WorkerEvent::Failed { job_id, error, traceback: _ } => {
+                                        let now = Utc::now();
+                                        handle_failed(&db, &workers, &broadcaster, &notify, *job_id, error.clone(), now).await;
+                                        notify.notify_one();
+                                    }
+                                    _ => {} // Progress, ImageReady, etc. — not handled here
+                                }
+                            }
+                            Err(broadcast::error::RecvError::Lagged(n)) => {
+                                tracing::debug!(lagged = n, "dispatch loop: dropped events");
+                            }
+                            Err(broadcast::error::RecvError::Closed) => {
+                                tracing::debug!("dispatch loop: event channel closed");
+                                break;
+                            }
+                        }
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                        tracing::debug!("dispatch loop: timeout, checking queue");
+                    }
                 }
 
                 // Try to dispatch as many queued jobs as possible.
@@ -190,9 +221,17 @@ impl JobScheduler {
 
                     // Update job status to Running in the database.
                     let now = Utc::now();
-                    let updated = update_status(&db, job_id, JobStatus::Running, Some(now))
-                        .await
-                        .unwrap_or(false);
+                    let updated = update_status(
+                        &db,
+                        job_id,
+                        JobStatus::Running,
+                        Some(now),
+                        None,
+                        None,
+                        Some(worker_id.clone()),
+                    )
+                    .await
+                    .unwrap_or(false);
 
                     if !updated {
                         tracing::warn!(
@@ -296,6 +335,115 @@ pub fn select_worker(
     });
 
     idle_workers.into_iter().next().map(|(idx, _)| idx)
+}
+
+/// Handle a `WorkerEvent::Completed` event: transition the job to terminal
+/// status, set the worker idle, and broadcast the completion event.
+async fn handle_completed(
+    db: &sqlx::SqlitePool,
+    workers: &Arc<WorkerPool>,
+    broadcaster: &broadcast::Sender<WsEvent>,
+    notify: &Arc<Notify>,
+    job_id: Uuid,
+    now: DateTime<Utc>,
+) {
+    // Re-read job status from DB to confirm it's still Running.
+    let job = get_job(db, job_id).await.ok().flatten();
+    let Some(job) = job else { return };
+    if !matches!(job.status, JobStatus::Running) {
+        tracing::debug!(job_id = %job_id, status = ?job.status, "completed: job already terminal, ignoring");
+        return;
+    }
+
+    // Update status to Completed.
+    let _ = update_status(
+        db,
+        job_id,
+        JobStatus::Completed,
+        None,
+        Some(now),
+        None,
+        None,
+    )
+    .await;
+    tracing::info!(job_id = %job_id, "job completed");
+
+    // Set worker idle.
+    if let Some(ref wid) = job.worker_id {
+        workers.set_idle(wid).await;
+    }
+
+    // Broadcast completion event.
+    let _ = broadcaster.send(WsEvent::JobCompleted(JobCompletedEvent {
+        event: "job.completed".to_string(),
+        timestamp: now,
+        job_id,
+    }));
+
+    // Wake dispatch loop for next job.
+    notify.notify_one();
+}
+
+/// Handle a `WorkerEvent::Failed` event: transition the job to terminal
+/// status, set the worker idle, and broadcast the failure event.
+async fn handle_failed(
+    db: &sqlx::SqlitePool,
+    workers: &Arc<WorkerPool>,
+    broadcaster: &broadcast::Sender<WsEvent>,
+    notify: &Arc<Notify>,
+    job_id: Uuid,
+    error: String,
+    now: DateTime<Utc>,
+) {
+    let job = get_job(db, job_id).await.ok().flatten();
+    let Some(job) = job else { return };
+    if !matches!(job.status, JobStatus::Running) {
+        tracing::debug!(job_id = %job_id, status = ?job.status, "failed: job already terminal, ignoring");
+        return;
+    }
+
+    let _ = update_status(
+        db,
+        job_id,
+        JobStatus::Failed,
+        None,
+        None,
+        Some(error.clone()),
+        None,
+    )
+    .await;
+    tracing::info!(job_id = %job_id, error = %error, "job failed");
+
+    if let Some(ref wid) = job.worker_id {
+        workers.set_idle(wid).await;
+    }
+
+    let _ = broadcaster.send(WsEvent::JobFailed(JobFailedEvent {
+        event: "job.failed".to_string(),
+        timestamp: now,
+        job_id,
+        error,
+        traceback: None,
+    }));
+
+    notify.notify_one();
+}
+
+/// Get a discriminant name for a WorkerEvent.
+fn event_discriminant(event: &anvilml_ipc::WorkerEvent) -> &'static str {
+    match event {
+        anvilml_ipc::WorkerEvent::Ready { .. } => "Ready",
+        anvilml_ipc::WorkerEvent::Ping { .. } => "Ping",
+        anvilml_ipc::WorkerEvent::Pong { .. } => "Pong",
+        anvilml_ipc::WorkerEvent::Dying { .. } => "Dying",
+        anvilml_ipc::WorkerEvent::MemoryReport { .. } => "MemoryReport",
+        anvilml_ipc::WorkerEvent::Progress { .. } => "Progress",
+        anvilml_ipc::WorkerEvent::ImageReady { .. } => "ImageReady",
+        anvilml_ipc::WorkerEvent::Completed { .. } => "Completed",
+        anvilml_ipc::WorkerEvent::Failed { .. } => "Failed",
+        anvilml_ipc::WorkerEvent::Cancelled { .. } => "Cancelled",
+        anvilml_ipc::WorkerEvent::WorkerStatusChanged { .. } => "WorkerStatusChanged",
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -598,6 +746,87 @@ mod tests {
         );
 
         // Cleanup: abort the dispatch loop.
+        dispatch_handle.abort();
+    }
+
+    /// Submitting a job causes the dispatch loop to transition it to Running,
+    /// then a Completed event from the worker transitions it to Completed.
+    #[serial]
+    #[tokio::test]
+    async fn test_complete() {
+        use anvilml_worker::ManagedWorker;
+
+        // Build a minimal WorkerPool with one idle worker.
+        let worker = Arc::new(ManagedWorker::new("worker-0".to_string(), 0));
+        worker.set_status(WorkerStatus::Idle).await;
+
+        let pool = Arc::new(WorkerPool::new_test_pool_with_workers(vec![worker.clone()]));
+        let ledger = Arc::new(tokio::sync::Mutex::new(VramLedger::new()));
+        let (broadcaster, _rx) = broadcast::channel(16);
+        let scheduler = JobScheduler::new(
+            JobQueue::new(),
+            pool.clone(),
+            setup_pool().await,
+            broadcaster,
+            ledger,
+            "auto".to_string(),
+        );
+
+        let dispatch_handle = scheduler.start_dispatch_loop();
+
+        // Submit a job — triggers dispatch loop.
+        let req = SubmitJobRequest {
+            graph: valid_zit_graph(),
+            settings: JobSettings::default(),
+        };
+        let resp = scheduler.submit(req).await.expect("submit succeeded");
+
+        // Wait for dispatch to move job to Running.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Verify job is Running.
+        let db_job = get_job(&scheduler.db, resp.job_id)
+            .await
+            .expect("get from DB succeeded")
+            .expect("job exists");
+        assert_eq!(
+            db_job.status,
+            JobStatus::Running,
+            "job should be Running after dispatch"
+        );
+
+        // Inject Completed event via pool test helper.
+        pool.publish_event(
+            "worker-0".to_string(),
+            WorkerEvent::Completed {
+                job_id: resp.job_id,
+                elapsed_ms: 42,
+            },
+        );
+
+        // Wait for event handler to process.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Verify job is Completed in DB.
+        let db_job = get_job(&scheduler.db, resp.job_id)
+            .await
+            .expect("get from DB succeeded")
+            .expect("job exists");
+        assert_eq!(
+            db_job.status,
+            JobStatus::Completed,
+            "job should be Completed after event"
+        );
+        assert!(db_job.completed_at.is_some(), "completed_at should be set");
+
+        // Verify worker is back to Idle.
+        let infos = pool.list().await;
+        assert_eq!(
+            infos[0].status,
+            WorkerStatus::Idle,
+            "worker should be Idle after completion"
+        );
+
         dispatch_handle.abort();
     }
 
