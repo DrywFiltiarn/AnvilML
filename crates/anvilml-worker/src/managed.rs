@@ -864,8 +864,7 @@ mod tests {
 
         if !python.exists() {
             eprintln!(
-                "SKIP: Python interpreter not found at {} \
-                (set ANVILML_VENV_PATH to run this test)",
+                "SKIP: Python interpreter not found at {}                  (set ANVILML_VENV_PATH to run this test)",
                 python.display()
             );
             return None;
@@ -1216,177 +1215,198 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "mock-hardware")]
     async fn respawn_after_death() {
-        // Use short keepalive intervals for fast testing.
-        std::env::set_var("ANVILML_PING_INTERVAL_MS", "50");
-        std::env::set_var("ANVILML_PONG_TIMEOUT_MS", "150");
-        std::env::set_var("ANVILML_RESPAWN_DELAY_MS", "100");
-
-        let mut worker = ManagedWorker::new("respawn-test".to_string(), 0);
-
-        // Create mock duplex halves for IPC handles.
-        let socket_path =
-            std::env::temp_dir().join(format!("anvilml-test-{}-respawn", std::process::id()));
-        #[cfg(unix)]
-        {
-            let _ = tokio::fs::remove_file(&socket_path).await;
-            let dir = socket_path.parent().unwrap();
-            let _ = tokio::fs::create_dir_all(dir).await;
-        }
-
-        let name = to_socket_name(&socket_path).expect("convert socket path to name");
-        let listener = ListenerOptions::new()
-            .name(name)
-            .create_tokio()
-            .expect("bind test socket");
-        let (server_stream, _client) = tokio::join!(
+        // Use temp_env to isolate env-var mutations from parallel tests.
+        // Without this, leaked ANVILML_PING_INTERVAL_MS / ANVILML_PONG_TIMEOUT_MS
+        // cause concurrent spawn tests to be killed before Ready arrives.
+        temp_env::async_with_vars(
+            [
+                ("ANVILML_PING_INTERVAL_MS", Some("50")),
+                ("ANVILML_PONG_TIMEOUT_MS", Some("150")),
+                ("ANVILML_RESPAWN_DELAY_MS", Some("100")),
+            ],
             async {
-                let stream = tokio::time::timeout(Duration::from_secs(5), listener.accept())
-                    .await
-                    .expect("accept")
-                    .expect("accept ok");
-                stream
-            },
-            async {
-                tokio::time::timeout(
-                    Duration::from_secs(5),
-                    LocalSocketStream::connect(
-                        to_socket_name(&socket_path).expect("convert to name"),
-                    ),
-                )
-                .await
-                .expect("connect")
-                .expect("connect ok")
-            },
-        );
+                let mut worker = ManagedWorker::new("respawn-test".to_string(), 0);
 
-        let (reader, writer) = server_stream.split();
-
-        // Inject mock handles so the run_loop can start.
-        worker.inject_handles_for_test(reader, writer).await;
-
-        // For testing: set status to Idle directly (simulating Ready event).
-        worker.set_status(WorkerStatus::Idle).await;
-
-        // Spawn the dummy child for keepalive testing.
-        let keepalive_child = spawn_dummy_child();
-        {
-            let mut guard = worker.child.lock().await;
-            *guard = Some(keepalive_child);
-        }
-
-        // Subscribe to events to capture WorkerStatusChanged broadcasts.
-        let mut event_rx = worker.subscribe();
-
-        // Start the keepalive watchdog — no pongs will be sent, so it times out.
-        worker.start_keepalive();
-
-        // Wait for pong timeout → Dead status and WorkerStatusChanged(Dead) broadcast.
-        let dead_result = timeout(Duration::from_secs(2), async {
-            loop {
-                if worker.get_status().await == WorkerStatus::Dead {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        })
-        .await;
-        assert!(
-            dead_result.is_ok(),
-            "worker should be Dead after pong timeout"
-        );
-        assert_eq!(worker.get_status().await, WorkerStatus::Dead);
-
-        // Verify WorkerStatusChanged(Dead) was broadcast.
-        let status_changed = timeout(Duration::from_secs(1), async {
-            loop {
-                match event_rx.recv().await {
-                    Ok((_, WorkerEvent::WorkerStatusChanged { status }))
-                        if status == WorkerStatus::Dead =>
-                    {
-                        return true;
+                // Build platform-appropriate socket paths for mock IPC handles.
+                // On Windows a plain filesystem path is not a valid named pipe path;
+                // \\.\pipe\ prefix is required. On Unix use the temp directory.
+                #[cfg(windows)]
+                let socket_path = std::path::PathBuf::from(format!(
+                    r"\\.\pipe\anvilml-test-{}-respawn",
+                    std::process::id()
+                ));
+                #[cfg(unix)]
+                let socket_path = {
+                    let p = std::env::temp_dir()
+                        .join(format!("anvilml-test-{}-respawn", std::process::id()));
+                    let _ = tokio::fs::remove_file(&p).await;
+                    if let Some(dir) = p.parent() {
+                        let _ = tokio::fs::create_dir_all(dir).await;
                     }
-                    Ok(_) => continue,
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => break false,
+                    p
+                };
+
+                let name = to_socket_name(&socket_path).expect("convert socket path to name");
+                let listener = ListenerOptions::new()
+                    .name(name)
+                    .create_tokio()
+                    .expect("bind test socket");
+                let (server_stream, _client) = tokio::join!(
+                    async {
+                        let stream =
+                            tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                                .await
+                                .expect("accept")
+                                .expect("accept ok");
+                        stream
+                    },
+                    async {
+                        tokio::time::timeout(
+                            Duration::from_secs(5),
+                            LocalSocketStream::connect(
+                                to_socket_name(&socket_path).expect("convert to name"),
+                            ),
+                        )
+                        .await
+                        .expect("connect")
+                        .expect("connect ok")
+                    },
+                );
+
+                let (reader, writer) = server_stream.split();
+
+                // Inject mock handles so the run_loop can start.
+                worker.inject_handles_for_test(reader, writer).await;
+
+                // For testing: set status to Idle directly (simulating Ready event).
+                worker.set_status(WorkerStatus::Idle).await;
+
+                // Spawn the dummy child for keepalive testing.
+                let keepalive_child = spawn_dummy_child();
+                {
+                    let mut guard = worker.child.lock().await;
+                    *guard = Some(keepalive_child);
                 }
-            }
-        })
+
+                // Subscribe to events to capture WorkerStatusChanged broadcasts.
+                let mut event_rx = worker.subscribe();
+
+                // Start the keepalive watchdog — no pongs will be sent, so it times out.
+                worker.start_keepalive();
+
+                // Wait for pong timeout → Dead status and WorkerStatusChanged(Dead) broadcast.
+                let dead_result = timeout(Duration::from_secs(2), async {
+                    loop {
+                        if worker.get_status().await == WorkerStatus::Dead {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                })
+                .await;
+                assert!(
+                    dead_result.is_ok(),
+                    "worker should be Dead after pong timeout"
+                );
+                assert_eq!(worker.get_status().await, WorkerStatus::Dead);
+
+                // Verify WorkerStatusChanged(Dead) was broadcast.
+                let status_changed = timeout(Duration::from_secs(1), async {
+                    loop {
+                        match event_rx.recv().await {
+                            Ok((_, WorkerEvent::WorkerStatusChanged { status }))
+                                if status == WorkerStatus::Dead =>
+                            {
+                                return true;
+                            }
+                            Ok(_) => continue,
+                            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(broadcast::error::RecvError::Closed) => break false,
+                        }
+                    }
+                })
+                .await;
+                assert!(
+                    status_changed.is_ok() && status_changed.unwrap(),
+                    "WorkerStatusChanged(Dead) should be broadcast on pong timeout"
+                );
+
+                // Simulate respawn: set Respawning.
+                worker.set_status(WorkerStatus::Respawning).await;
+                let _ = worker.event_tx.send((
+                    worker.worker_id().to_string(),
+                    WorkerEvent::WorkerStatusChanged {
+                        status: WorkerStatus::Respawning,
+                    },
+                ));
+
+                // Create fresh mock handles for the respawned worker.
+                #[cfg(windows)]
+                let socket_path2 = std::path::PathBuf::from(format!(
+                    r"\\.\pipe\anvilml-test-{}-respawn2",
+                    std::process::id()
+                ));
+                #[cfg(unix)]
+                let socket_path2 = {
+                    let p = std::env::temp_dir()
+                        .join(format!("anvilml-test-{}-respawn2", std::process::id()));
+                    let _ = tokio::fs::remove_file(&p).await;
+                    if let Some(dir) = p.parent() {
+                        let _ = tokio::fs::create_dir_all(dir).await;
+                    }
+                    p
+                };
+
+                let name2 = to_socket_name(&socket_path2).expect("convert socket path to name");
+                let listener2 = ListenerOptions::new()
+                    .name(name2)
+                    .create_tokio()
+                    .expect("bind respawn socket");
+                let (server_stream2, _client2) = tokio::join!(
+                    async {
+                        let stream =
+                            tokio::time::timeout(Duration::from_secs(5), listener2.accept())
+                                .await
+                                .expect("accept")
+                                .expect("accept ok");
+                        stream
+                    },
+                    async {
+                        tokio::time::timeout(
+                            Duration::from_secs(5),
+                            LocalSocketStream::connect(
+                                to_socket_name(&socket_path2).expect("convert to name"),
+                            ),
+                        )
+                        .await
+                        .expect("connect")
+                        .expect("connect ok")
+                    },
+                );
+
+                let (reader2, writer2) = server_stream2.split();
+
+                // Reset IPC channel and inject fresh handles.
+                worker.reset_ipc_tx();
+                worker.inject_handles_for_test(reader2, writer2).await;
+
+                // Set status back to Idle (simulating what Ready event would do).
+                worker.set_status(WorkerStatus::Idle).await;
+
+                // Verify status is Idle.
+                let idle_result = timeout(Duration::from_secs(1), async {
+                    loop {
+                        if worker.get_status().await == WorkerStatus::Idle {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                })
+                .await;
+                assert!(idle_result.is_ok(), "worker should be Idle after respawn");
+            },
+        )
         .await;
-        assert!(
-            status_changed.is_ok() && status_changed.unwrap(),
-            "WorkerStatusChanged(Dead) should be broadcast on pong timeout"
-        );
-
-        // Simulate respawn: set Respawning.
-        worker.set_status(WorkerStatus::Respawning).await;
-        let _ = worker.event_tx.send((
-            worker.worker_id().to_string(),
-            WorkerEvent::WorkerStatusChanged {
-                status: WorkerStatus::Respawning,
-            },
-        ));
-
-        // Create fresh mock handles for the respawned worker.
-        let socket_path2 =
-            std::env::temp_dir().join(format!("anvilml-test-{}-respawn2", std::process::id()));
-        #[cfg(unix)]
-        {
-            let _ = tokio::fs::remove_file(&socket_path2).await;
-            let dir = socket_path2.parent().unwrap();
-            let _ = tokio::fs::create_dir_all(dir).await;
-        }
-
-        let name2 = to_socket_name(&socket_path2).expect("convert socket path to name");
-        let listener2 = ListenerOptions::new()
-            .name(name2)
-            .create_tokio()
-            .expect("bind respawn socket");
-        let (server_stream2, _client2) = tokio::join!(
-            async {
-                let stream = tokio::time::timeout(Duration::from_secs(5), listener2.accept())
-                    .await
-                    .expect("accept")
-                    .expect("accept ok");
-                stream
-            },
-            async {
-                tokio::time::timeout(
-                    Duration::from_secs(5),
-                    LocalSocketStream::connect(
-                        to_socket_name(&socket_path2).expect("convert to name"),
-                    ),
-                )
-                .await
-                .expect("connect")
-                .expect("connect ok")
-            },
-        );
-
-        let (reader2, writer2) = server_stream2.split();
-
-        // Reset IPC channel and inject fresh handles.
-        worker.reset_ipc_tx();
-        worker.inject_handles_for_test(reader2, writer2).await;
-
-        // Set status back to Idle (simulating what Ready event would do).
-        worker.set_status(WorkerStatus::Idle).await;
-
-        // Verify status is Idle.
-        let idle_result = timeout(Duration::from_secs(1), async {
-            loop {
-                if worker.get_status().await == WorkerStatus::Idle {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        })
-        .await;
-        assert!(idle_result.is_ok(), "worker should be Idle after respawn");
-
-        // Cleanup.
-        std::env::remove_var("ANVILML_PING_INTERVAL_MS");
-        std::env::remove_var("ANVILML_PONG_TIMEOUT_MS");
-        std::env::remove_var("ANVILML_RESPAWN_DELAY_MS");
     }
 
     /// Canonical regression test: spawn reaches Idle without timing workarounds.
