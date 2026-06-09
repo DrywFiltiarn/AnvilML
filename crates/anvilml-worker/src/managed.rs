@@ -795,12 +795,12 @@ fn _repo_root_for_worker() -> std::path::PathBuf {
 /// On Unix: `{temp_dir}/anvilml-{pid}/worker-{index}.sock`
 /// On Windows: `\\.\pipe\anvilml-worker-{index}-{pid}`
 fn build_socket_path(device_index: u32, worker_id: String) -> std::path::PathBuf {
+    let pid = std::process::id();
     if cfg!(windows) {
         std::path::PathBuf::from(format!(
-            r"\\.\pipe\anvilml-worker-{worker_id}-{device_index}"
+            r"\\.\pipe\anvilml-worker-{worker_id}-{device_index}-{pid}"
         ))
     } else {
-        let pid = std::process::id();
         let dir = std::env::temp_dir().join(format!("anvilml-{pid}"));
         dir.join(format!("worker-{device_index}.sock"))
     }
