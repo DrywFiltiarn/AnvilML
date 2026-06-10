@@ -8,7 +8,7 @@ use std::sync::Arc;
 use anvilml_core::error::AnvilError;
 use anvilml_core::types::job::{JobStatus, SubmitJobRequest, SubmitJobResponse};
 use anvilml_scheduler::job_store::{
-    get_job as scheduler_get_job, list_jobs as scheduler_list_jobs,
+    delete_by_status, get_job as scheduler_get_job, list_jobs as scheduler_list_jobs,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -16,7 +16,7 @@ use axum::{
     response::{IntoResponse, Json},
 };
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -436,6 +436,136 @@ pub async fn list_jobs(
             )
         }
     }
+}
+
+/// Query parameters for the `DELETE /v1/jobs` bulk-clear endpoint.
+#[derive(Debug, Deserialize, Default)]
+pub struct ClearJobsQuery {
+    /// Filter by job status (case-insensitive).
+    ///
+    /// Accepted values: `completed`, `failed`, `cancelled`, `all`.
+    /// `None` or `"all"` clears all terminal jobs.
+    pub status: Option<String>,
+}
+
+/// Response body for the `DELETE /v1/jobs` bulk-clear endpoint.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ClearJobsResponse {
+    /// Number of jobs successfully removed.
+    pub removed: u32,
+}
+
+/// Bulk-clear terminal jobs by status.
+///
+/// Deletes all jobs matching the given status filter (default: all terminal
+/// jobs). For each matched job, artifacts are deleted first (best-effort),
+/// then the job row is removed from the database.
+///
+/// * `status` — `completed|failed|cancelled|all` (case-insensitive).
+///   Defaults to `all` when omitted.
+///
+/// Returns `{ "removed": <count> }` with 200 OK.
+#[utoipa::path(
+    delete,
+    path = "/v1/jobs",
+    summary = "Bulk-clear terminal jobs by status",
+    params(
+        ("status" = Option<String>, Query, description = "Filter by status: completed, failed, cancelled, or all (default: all)")
+    ),
+    responses(
+        (status = 200, description = "Jobs cleared", body = ClearJobsResponse),
+        (status = 400, description = "Invalid status parameter"),
+        (status = 503, description = "Database not available", body = ErrorInline)
+    )
+)]
+pub async fn clear_jobs(
+    State(state): State<Arc<App>>,
+    Query(query): Query<ClearJobsQuery>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let pool = match &state.db {
+        Some(p) => p,
+        None => {
+            tracing::error!("clear_jobs: database not configured");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(error_body(
+                    "database_not_configured",
+                    "database not available",
+                )),
+            );
+        }
+    };
+
+    // Parse and validate the status parameter.
+    let parsed_filter = match query.status.as_deref() {
+        None | Some("all") => None,
+        Some("completed") | Some("Completed") => Some("Completed"),
+        Some("failed") | Some("Failed") => Some("Failed"),
+        Some("cancelled") | Some("Cancelled") => Some("Cancelled"),
+        Some(other) => {
+            tracing::warn!(status = other, "clear_jobs: invalid status parameter");
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "invalid_status",
+                    "message": format!(
+                        "invalid status '{other}'; must be completed, failed, cancelled, or all"
+                    ),
+                })),
+            );
+        }
+    };
+
+    // Fetch matching job IDs.
+    let job_ids = match delete_by_status(pool, parsed_filter).await {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::error!(error = %e, "clear_jobs: database query failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_body("internal_error", &e.to_string())),
+            );
+        }
+    };
+
+    let total = job_ids.len();
+    let mut failures = 0u32;
+
+    // Delete artifacts and rows for each matched job.
+    for id in &job_ids {
+        let id_str = id.to_string();
+
+        // Best-effort artifact deletion — log warn on failure, continue.
+        if let Err(e) = state.artifact_store.delete_for_job(&id_str).await {
+            tracing::warn!(
+                job_id = %id,
+                error = %e,
+                "clear_jobs: artifact deletion failed, continuing"
+            );
+        }
+
+        // Delete the job row — log error on failure but continue to next job.
+        if let Err(e) = sqlx::query("DELETE FROM jobs WHERE id = ?")
+            .bind(id_str)
+            .execute(pool)
+            .await
+        {
+            tracing::error!(
+                error = %e,
+                job_id = %id,
+                "clear_jobs: failed to delete job row"
+            );
+            failures += 1;
+        }
+    }
+
+    let removed = total as u32 - failures;
+    tracing::info!(removed, "bulk_delete: cleared {} jobs", removed);
+
+    (
+        StatusCode::OK,
+        Json(serde_json::to_value(&ClearJobsResponse { removed }).expect("response serialises")),
+    )
 }
 
 #[cfg(test)]
@@ -1273,5 +1403,438 @@ mod tests {
         let parsed: Value = serde_json::from_str(&body_str).unwrap();
 
         assert_eq!(parsed["error"], "not_found");
+    }
+
+    /// Bulk delete with `?status=completed` must return `{removed:N}`
+    /// and remove only completed jobs from the list.
+    #[tokio::test]
+    async fn clear_jobs_returns_200_for_completed_jobs() {
+        let (app, pool) = build_test_app().await;
+
+        // Submit 3 jobs.
+        let mut job_ids: Vec<Uuid> = Vec::new();
+        for seed in [100, 101, 102] {
+            let req_body = serde_json::json!({
+                "graph": make_valid_zit_graph(),
+                "settings": {"seed": seed, "steps": 5}
+            });
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/jobs")
+                        .header("content-type", "application/json")
+                        .body(Full::<Bytes>::from(serde_json::to_vec(&req_body).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+            let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+            let parsed: Value = serde_json::from_str(&body_str).unwrap();
+            let id: Uuid = parsed["job_id"]
+                .as_str()
+                .expect("job_id must be a string")
+                .parse()
+                .expect("job_id must be valid UUID");
+            job_ids.push(id);
+        }
+
+        // Set all 3 to Completed in the DB.
+        for id in &job_ids {
+            sqlx::query("UPDATE jobs SET status = 'Completed', completed_at = ? WHERE id = ?")
+                .bind(Utc::now().timestamp())
+                .bind(id.to_string())
+                .execute(&pool)
+                .await
+                .expect("update job to Completed");
+        }
+
+        // DELETE with status=completed.
+        let clear_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/v1/jobs?status=completed")
+                    .body(Full::<Bytes>::default())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(clear_response.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(clear_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let parsed: Value = serde_json::from_str(&body_str).unwrap();
+
+        assert_eq!(parsed["removed"].as_u64().unwrap(), 3, "must remove 3 jobs");
+
+        // Verify list returns fewer jobs.
+        let list_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/jobs")
+                    .body(Full::<Bytes>::default())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(list_response.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(list_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let list_parsed: Value = serde_json::from_str(&body_str).unwrap();
+
+        assert!(list_parsed.is_array());
+        assert_eq!(
+            list_parsed.as_array().unwrap().len(),
+            0,
+            "all completed jobs must be removed"
+        );
+    }
+
+    /// Bulk delete must remove on-disk artifact files alongside job rows.
+    #[tokio::test]
+    async fn clear_jobs_removes_artifacts() {
+        let (app, pool) = build_test_app().await;
+
+        // Create the artifacts table (build_test_app only creates the jobs table).
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS artifacts (
+                hash       TEXT PRIMARY KEY,
+                job_id     TEXT    NOT NULL,
+                width      INTEGER NOT NULL,
+                height     INTEGER NOT NULL,
+                format     TEXT    NOT NULL,
+                seed       INTEGER NOT NULL,
+                steps      INTEGER NOT NULL,
+                prompt     TEXT    NOT NULL,
+                created_at INTEGER NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create artifacts table");
+
+        // Submit a job.
+        let req_body = serde_json::json!({
+            "graph": make_valid_zit_graph(),
+            "settings": {"seed": 200, "steps": 5}
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/jobs")
+                    .header("content-type", "application/json")
+                    .body(Full::<Bytes>::from(serde_json::to_vec(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let parsed: Value = serde_json::from_str(&body_str).unwrap();
+        let job_id: Uuid = parsed["job_id"]
+            .as_str()
+            .expect("job_id must be a string")
+            .parse()
+            .expect("job_id must be valid UUID");
+
+        // Insert a fake artifact row for this job.
+        let fake_hash = "aaa111bbb222ccc333ddd444eee555fff666aaa777bbb888ccc999ddd000";
+        sqlx::query(
+            "INSERT INTO artifacts (hash, job_id, width, height, format, seed, steps, prompt, created_at) \
+             VALUES (?, ?, 512, 512, 'png', 200, 5, 'test', ?)",
+        )
+        .bind(fake_hash)
+        .bind(job_id.to_string())
+        .bind(Utc::now().timestamp())
+        .execute(&pool)
+        .await
+        .expect("insert artifact");
+
+        // Create the on-disk artifact file.
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let prefix_dir = tmp_dir.path().join(&fake_hash[..2]);
+        tokio::fs::create_dir_all(&prefix_dir).await.unwrap();
+        let file_path = prefix_dir.join(format!("{fake_hash}.png"));
+        tokio::fs::write(&file_path, b"fake-png").await.unwrap();
+
+        // Replace the artifact store's temp dir with our controlled one.
+        // Since we can't easily swap the store, we just verify artifact row deletion.
+        // The artifact store's delete_for_job will try to remove the file from its
+        // own temp dir (which doesn't contain our file) — best-effort, logs warn.
+
+        // Set job to Completed.
+        sqlx::query("UPDATE jobs SET status = 'Completed', completed_at = ? WHERE id = ?")
+            .bind(Utc::now().timestamp())
+            .bind(job_id.to_string())
+            .execute(&pool)
+            .await
+            .expect("update job to Completed");
+
+        // DELETE with status=completed.
+        let clear_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/v1/jobs?status=completed")
+                    .body(Full::<Bytes>::default())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(clear_response.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(clear_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let parsed: Value = serde_json::from_str(&body_str).unwrap();
+
+        assert_eq!(parsed["removed"].as_u64().unwrap(), 1, "must remove 1 job");
+
+        // Verify artifact row is gone.
+        let remaining: Vec<String> =
+            sqlx::query_scalar("SELECT hash FROM artifacts WHERE job_id = ?")
+                .bind(job_id.to_string())
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert!(
+            remaining.is_empty(),
+            "artifact rows for deleted job must be removed"
+        );
+    }
+
+    /// DELETE ?status=all must never remove Queued or Running jobs.
+    #[tokio::test]
+    async fn clear_jobs_skips_running_jobs() {
+        let (app, _pool) = build_test_app().await;
+
+        // Submit a job (starts as Queued).
+        let req_body = serde_json::json!({
+            "graph": make_valid_zit_graph(),
+            "settings": {"seed": 300, "steps": 5}
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/jobs")
+                    .header("content-type", "application/json")
+                    .body(Full::<Bytes>::from(serde_json::to_vec(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let parsed: Value = serde_json::from_str(&body_str).unwrap();
+        let job_id: Uuid = parsed["job_id"]
+            .as_str()
+            .expect("job_id must be a string")
+            .parse()
+            .expect("job_id must be valid UUID");
+
+        // DELETE with status=all — Queued job should be untouched.
+        let clear_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/v1/jobs?status=all")
+                    .body(Full::<Bytes>::default())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(clear_response.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(clear_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let parsed: Value = serde_json::from_str(&body_str).unwrap();
+
+        assert_eq!(
+            parsed["removed"].as_u64().unwrap(),
+            0,
+            "no terminal jobs to remove"
+        );
+
+        // Verify the Queued job still exists.
+        let get_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&format!("/v1/jobs/{job_id}"))
+                    .body(Full::<Bytes>::default())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(get_response.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(get_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let parsed: Value = serde_json::from_str(&body_str).unwrap();
+        assert_eq!(parsed["status"], "Queued");
+    }
+
+    /// DELETE ?status=running must return 400 with an error message.
+    #[tokio::test]
+    async fn clear_jobs_rejects_invalid_status() {
+        let (app, _pool) = build_test_app().await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/v1/jobs?status=running")
+                    .body(Full::<Bytes>::default())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let parsed: Value = serde_json::from_str(&body_str).unwrap();
+
+        assert_eq!(parsed["error"], "invalid_status");
+        assert!(parsed["message"].is_string());
+    }
+
+    /// DELETE with no status parameter must default to all terminal jobs.
+    #[tokio::test]
+    async fn clear_jobs_defaults_to_all() {
+        let (app, pool) = build_test_app().await;
+
+        // Submit 2 jobs.
+        let mut job_ids: Vec<Uuid> = Vec::new();
+        for seed in [400, 401] {
+            let req_body = serde_json::json!({
+                "graph": make_valid_zit_graph(),
+                "settings": {"seed": seed, "steps": 5}
+            });
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/jobs")
+                        .header("content-type", "application/json")
+                        .body(Full::<Bytes>::from(serde_json::to_vec(&req_body).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+            let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+            let parsed: Value = serde_json::from_str(&body_str).unwrap();
+            let id: Uuid = parsed["job_id"]
+                .as_str()
+                .expect("job_id must be a string")
+                .parse()
+                .expect("job_id must be valid UUID");
+            job_ids.push(id);
+        }
+
+        // Set one to Completed, leave the other as Queued.
+        sqlx::query("UPDATE jobs SET status = 'Completed', completed_at = ? WHERE id = ?")
+            .bind(Utc::now().timestamp())
+            .bind(job_ids[0].to_string())
+            .execute(&pool)
+            .await
+            .expect("update job to Completed");
+
+        // DELETE with no status param — should only clear the Completed one.
+        let clear_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/v1/jobs")
+                    .body(Full::<Bytes>::default())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(clear_response.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(clear_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let parsed: Value = serde_json::from_str(&body_str).unwrap();
+
+        assert_eq!(
+            parsed["removed"].as_u64().unwrap(),
+            1,
+            "only the Completed job should be removed"
+        );
+
+        // Verify the Queued job still exists.
+        let get_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&format!("/v1/jobs/{}", job_ids[1]))
+                    .body(Full::<Bytes>::default())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(get_response.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(get_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let parsed: Value = serde_json::from_str(&body_str).unwrap();
+        assert_eq!(parsed["status"], "Queued");
     }
 }

@@ -33,7 +33,9 @@ pub fn build_router(state: App) -> Router {
         .route("/health", get(handlers::health::health))
         .route(
             "/v1/jobs",
-            get(handlers::jobs::list_jobs).post(handlers::jobs::submit_job),
+            get(handlers::jobs::list_jobs)
+                .post(handlers::jobs::submit_job)
+                .delete(handlers::jobs::clear_jobs),
         )
         .route(
             "/v1/jobs/{id}",

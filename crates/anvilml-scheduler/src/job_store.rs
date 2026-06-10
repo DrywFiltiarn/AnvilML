@@ -227,6 +227,40 @@ pub async fn update_status(
     Ok(rows_affected.rows_affected() > 0)
 }
 
+/// Retrieve job IDs for deletion based on a status filter.
+///
+/// * `status_filter` — `None` → all terminal statuses
+///   (Completed, Failed, Cancelled); exact match → only that status.
+///
+/// Returns the list of matching Uuids ordered by creation time (newest first).
+/// The caller is responsible for actual deletion (artifact cleanup + row removal).
+pub async fn delete_by_status(
+    pool: &SqlitePool,
+    status_filter: Option<&str>,
+) -> Result<Vec<Uuid>, sqlx::Error> {
+    let rows: Vec<(String,)> = if let Some(status) = status_filter {
+        // Exact status match — only that specific status.
+        sqlx::query_as("SELECT id FROM jobs WHERE status = ? ORDER BY created_at DESC")
+            .bind(status)
+            .fetch_all(pool)
+            .await?
+    } else {
+        // No filter — all terminal statuses.
+        sqlx::query_as(
+            "SELECT id FROM jobs \
+             WHERE status IN ('Completed','Failed','Cancelled') \
+             ORDER BY created_at DESC",
+        )
+        .fetch_all(pool)
+        .await?
+    };
+
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id,)| Uuid::parse_str(&id).ok())
+        .collect())
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
