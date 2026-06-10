@@ -136,6 +136,79 @@ impl<A: ArtifactSave + Clone + 'static> JobScheduler<A> {
         self.queue.len()
     }
 
+    /// Cancel a job by its ID.
+    ///
+    /// Reads the job from the database. If the job is not found, returns
+    /// `AnvilError::JobNotFound`. If the job is in a terminal state
+    /// (Completed, Failed, Cancelled), returns `AnvilError::JobNotCancellable`.
+    ///
+    /// For **Queued** jobs: removes from the in-memory queue, updates the DB
+    /// to `Cancelled`, and broadcasts a `JobCancelled` event.
+    ///
+    /// For **Running** jobs: sends a `CancelJob` IPC message to the owning
+    /// worker, updates the DB to `Cancelled`, and broadcasts a
+    /// `JobCancelled` event.
+    #[tracing::instrument(skip(self), fields(job_id = %id))]
+    pub async fn cancel(&self, id: Uuid) -> Result<(), AnvilError> {
+        // 1. Read job from DB.
+        let job = get_job(&self.db, id)
+            .await
+            .map_err(|e| AnvilError::DbError(format!("failed to read job: {e}")))?;
+        let job = job.ok_or(AnvilError::JobNotFound(id))?;
+
+        // 2. Terminal → reject.
+        if !matches!(job.status, JobStatus::Queued | JobStatus::Running) {
+            return Err(AnvilError::JobNotCancellable(id));
+        }
+
+        let now = Utc::now();
+        let worker_id = job.worker_id.clone();
+
+        match job.status {
+            JobStatus::Queued => {
+                // 3a. Cancel in queue + update DB + broadcast.
+                self.queue.cancel_queued(id);
+                update_status(&self.db, id, JobStatus::Cancelled, None, None, None, None)
+                    .await
+                    .ok();
+                let _ = self
+                    .broadcaster
+                    .send(WsEvent::JobCancelled(JobCancelledEvent {
+                        event: "job.cancelled".to_string(),
+                        timestamp: now,
+                        job_id: id,
+                    }));
+                self.dispatch_notify.notify_one();
+                tracing::info!(job_id = %id, "job cancelled (queued)");
+            }
+            JobStatus::Running => {
+                // 3b. Send CancelJob IPC + set worker idle + update DB + broadcast.
+                if let Some(ref wid) = worker_id {
+                    let _ = self
+                        .workers
+                        .send(wid, WorkerMessage::CancelJob { job_id: id })
+                        .await;
+                    self.workers.set_idle(wid).await;
+                }
+                update_status(&self.db, id, JobStatus::Cancelled, None, None, None, None)
+                    .await
+                    .ok();
+                let _ = self
+                    .broadcaster
+                    .send(WsEvent::JobCancelled(JobCancelledEvent {
+                        event: "job.cancelled".to_string(),
+                        timestamp: now,
+                        job_id: id,
+                    }));
+                self.dispatch_notify.notify_one();
+                tracing::info!(job_id = %id, "job cancel requested (running)");
+            }
+            _ => unreachable!(),
+        }
+
+        Ok(())
+    }
+
     /// Start the background dispatch loop.
     ///
     /// The loop subscribes to `WorkerPool::subscribe_events()` for worker events
@@ -580,7 +653,7 @@ async fn handle_cancelled(
 ) {
     let job = get_job(db, job_id).await.ok().flatten();
     let Some(job) = job else { return };
-    if !matches!(job.status, JobStatus::Running) {
+    if !matches!(job.status, JobStatus::Running | JobStatus::Queued) {
         tracing::debug!(job_id = %job_id, status = ?job.status, "cancelled: job already terminal, ignoring");
         return;
     }
@@ -1724,6 +1797,165 @@ mod tests {
             WorkerStatus::Idle,
             "worker should be Idle after cancellation"
         );
+
+        dispatch_handle.abort();
+    }
+
+    // ── Cancel method tests ────────────────────────────────────────────────────
+
+    /// Submitting a job, calling `cancel()` on it while Queued transitions
+    /// the DB status to Cancelled, removes it from the queue, and broadcasts
+    /// a `JobCancelled` event.
+    #[serial]
+    #[tokio::test]
+    async fn test_cancel_queued() {
+        let pool = setup_pool().await;
+        let (broadcaster, mut rx) = broadcast::channel(16);
+        let scheduler = JobScheduler::new(
+            JobQueue::new(),
+            Arc::new(WorkerPool::new_test_pool()),
+            pool.clone(),
+            broadcaster,
+            Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
+            "auto".to_string(),
+            NoopArtifactStore,
+        );
+
+        let req = SubmitJobRequest {
+            graph: valid_zit_graph(),
+            settings: JobSettings::default(),
+        };
+        let resp = scheduler.submit(req).await.expect("submit succeeded");
+
+        // Verify job is Queued.
+        let db_job = get_job(&scheduler.db, resp.job_id)
+            .await
+            .expect("get from DB succeeded")
+            .expect("job exists");
+        assert_eq!(db_job.status, JobStatus::Queued);
+        assert_eq!(scheduler.queue.len(), 1);
+
+        // Call cancel.
+        scheduler
+            .cancel(resp.job_id)
+            .await
+            .expect("cancel succeeded");
+
+        // Verify DB status is Cancelled.
+        let db_job = get_job(&scheduler.db, resp.job_id)
+            .await
+            .expect("get from DB succeeded")
+            .expect("job exists");
+        assert_eq!(
+            db_job.status,
+            JobStatus::Cancelled,
+            "job should be Cancelled after cancel()"
+        );
+
+        // Verify queue is empty (job was removed).
+        assert_eq!(
+            scheduler.queue.len(),
+            0,
+            "queue should be empty after cancel"
+        );
+
+        // Verify JobCancelled was broadcast.
+        let jce = loop {
+            let event = rx.recv().await.expect("received broadcast event");
+            match event {
+                WsEvent::JobQueued(_) => continue,
+                WsEvent::JobCancelled(e) => break e,
+                other => panic!("expected JobCancelled, got {:?}", other),
+            }
+        };
+        assert_eq!(jce.job_id, resp.job_id);
+        assert_eq!(jce.event, "job.cancelled");
+    }
+
+    /// Submitting a job, waiting for dispatch to make it Running, then calling
+    /// `cancel()` sends a `CancelJob` IPC message to the worker, transitions
+    /// the DB to Cancelled, and broadcasts a `JobCancelled` event.
+    #[serial]
+    #[tokio::test]
+    async fn test_cancel_running() {
+        use anvilml_worker::ManagedWorker;
+
+        // Build a minimal WorkerPool with one idle worker.
+        let worker = Arc::new(ManagedWorker::new("worker-0".to_string(), 0));
+        worker.set_status(WorkerStatus::Idle).await;
+
+        let pool = Arc::new(WorkerPool::new_test_pool_with_workers(vec![worker.clone()]));
+        let ledger = Arc::new(tokio::sync::Mutex::new(VramLedger::new()));
+        let (broadcaster, mut rx) = broadcast::channel(16);
+        let scheduler = JobScheduler::new(
+            JobQueue::new(),
+            pool.clone(),
+            setup_pool().await,
+            broadcaster,
+            ledger,
+            "auto".to_string(),
+            NoopArtifactStore,
+        );
+
+        let dispatch_handle = scheduler.start_dispatch_loop();
+
+        // Submit a job — triggers dispatch loop.
+        let req = SubmitJobRequest {
+            graph: valid_zit_graph(),
+            settings: JobSettings::default(),
+        };
+        let resp = scheduler.submit(req).await.expect("submit succeeded");
+
+        // Wait for dispatch to move job to Running.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Verify job is Running.
+        let db_job = get_job(&scheduler.db, resp.job_id)
+            .await
+            .expect("get from DB succeeded")
+            .expect("job exists");
+        assert_eq!(
+            db_job.status,
+            JobStatus::Running,
+            "job should be Running after dispatch"
+        );
+
+        // Call cancel while running.
+        scheduler
+            .cancel(resp.job_id)
+            .await
+            .expect("cancel succeeded");
+
+        // Verify DB status is Cancelled.
+        let db_job = get_job(&scheduler.db, resp.job_id)
+            .await
+            .expect("get from DB succeeded")
+            .expect("job exists");
+        assert_eq!(
+            db_job.status,
+            JobStatus::Cancelled,
+            "job should be Cancelled after cancel()"
+        );
+
+        // Verify worker is back to Idle (set_idle was called).
+        let infos = pool.list().await;
+        assert_eq!(
+            infos[0].status,
+            WorkerStatus::Idle,
+            "worker should be Idle after cancel"
+        );
+
+        // Verify JobCancelled was broadcast.
+        let jce = loop {
+            let event = rx.recv().await.expect("received broadcast event");
+            match event {
+                WsEvent::JobQueued(_) | WsEvent::JobStarted(_) => continue,
+                WsEvent::JobCancelled(e) => break e,
+                other => panic!("expected JobCancelled, got {:?}", other),
+            }
+        };
+        assert_eq!(jce.job_id, resp.job_id);
+        assert_eq!(jce.event, "job.cancelled");
 
         dispatch_handle.abort();
     }

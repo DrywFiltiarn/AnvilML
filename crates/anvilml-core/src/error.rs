@@ -23,6 +23,8 @@ pub enum AnvilError {
     WorkerDead(String),
     /// A job was not found by its UUID.
     JobNotFound(Uuid),
+    /// A job cannot be cancelled (not in Queued or Running state).
+    JobNotCancellable(Uuid),
     /// An artifact was not found by its identifier.
     ArtifactNotFound(String),
     /// A database error occurred.
@@ -45,6 +47,9 @@ impl fmt::Display for AnvilError {
             Self::WorkerDead(msg) => write!(f, "worker dead: {msg}"),
             Self::JobNotFound(id) => {
                 write!(f, "job not found: {id}")
+            }
+            Self::JobNotCancellable(id) => {
+                write!(f, "job not cancellable: {id}")
             }
             Self::ArtifactNotFound(id) => {
                 write!(f, "artifact not found: {id}")
@@ -100,6 +105,9 @@ mod tests {
             AnvilError::WorkerDead("pid 42 exited with 1".into()),
             AnvilError::JobNotFound(
                 Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap(),
+            ),
+            AnvilError::JobNotCancellable(
+                Uuid::parse_str("660e8400-e29b-41d4-a716-446655440000").unwrap(),
             ),
             AnvilError::ArtifactNotFound("sha256:dead".into()),
             AnvilError::DbError("connection refused".into()),

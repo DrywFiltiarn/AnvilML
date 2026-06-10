@@ -37,16 +37,17 @@ impl JobQueue {
     /// Cancel a queued job identified by `id`.
     ///
     /// Iterates the deque in order and finds the first entry whose `id`
-    /// matches and whose `status` is `Queued`.  Sets that entry to
-    /// `Cancelled` and returns `true`.  If no matching job is found or
+    /// matches and whose `status` is `Queued`.  Removes that entry from
+    /// the deque and returns `true`.  If no matching job is found or
     /// it is already in a non-Queued state, returns `false`.
     pub fn cancel_queued(&self, id: Uuid) -> bool {
         let mut inner = self.inner.lock().expect("JobQueue mutex poisoned");
-        for job in inner.iter_mut() {
-            if job.id == id && job.status == JobStatus::Queued {
-                job.status = JobStatus::Cancelled;
-                return true;
-            }
+        if let Some(pos) = inner
+            .iter()
+            .position(|j| j.id == id && j.status == JobStatus::Queued)
+        {
+            inner.remove(pos);
+            return true;
         }
         false
     }

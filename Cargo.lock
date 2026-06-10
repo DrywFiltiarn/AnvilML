@@ -78,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -148,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-scheduler"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "anvilml-core",
  "anvilml-ipc",
@@ -201,7 +201,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-worker"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
