@@ -708,9 +708,10 @@ class TestWorkerMain:
                 proc.wait()
 
     def test_mock_node_delay_ms(self):
-        """Set ANVILML_MOCK_NODE_DELAY_MS=50, execute a 3-node job →
-        verify total elapsed time is at least 100ms (2 inter-node
-        delays × 50ms)."""
+        """Set ANVILML_MOCK_NODE_DELAY_MS=75, execute a 3-node job →
+        verify total elapsed time is at least 120ms (2 inter-node
+        delays × 75ms = 150ms nominal; threshold 120ms gives 30ms
+        margin above Windows timer granularity ~15ms)."""
         nodes = [
             {"type": "LoadModel"},
             {"type": "Inference"},
@@ -726,7 +727,7 @@ class TestWorkerMain:
 
         env = os.environ.copy()
         env["ANVILML_WORKER_MOCK"] = "1"
-        env["ANVILML_MOCK_NODE_DELAY_MS"] = "50"
+        env["ANVILML_MOCK_NODE_DELAY_MS"] = "75"
 
         proc = subprocess.Popen(
             [sys.executable, _WORKER_SCRIPT,
@@ -754,9 +755,10 @@ class TestWorkerMain:
                 f"expected exactly one Completed, got {len(completed_events)}"
             )
             elapsed_ms = completed_events[0]["elapsed_ms"]
-            # 2 inter-node delays × 50ms = 100ms minimum.
-            assert elapsed_ms >= 100, (
-                f"expected elapsed_ms >= 100, got {elapsed_ms}"
+            # 2 inter-node delays × 75ms = 150ms nominal; assert ≥ 120ms to
+            # absorb Windows timer granularity (~15ms) and scheduler jitter.
+            assert elapsed_ms >= 120, (
+                f"expected elapsed_ms >= 120, got {elapsed_ms}"
             )
         finally:
             if proc.poll() is None:
