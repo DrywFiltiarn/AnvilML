@@ -47,6 +47,9 @@ bytes = "1"
 anvilml-registry = { path = "crates/anvilml-registry" }
 
 # Dev dependencies (shared across multiple crates)
+http = "1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1"] }
 serial_test = "3.5.0"
 tempfile = "3.27.0"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }

@@ -1,6 +1,6 @@
 [package]
 name = "backend"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 
 [[bin]]
@@ -26,4 +26,21 @@ tracing-subscriber = { workspace = true }
 mock-hardware = ["anvilml-server/mock-hardware", "anvilml-hardware/mock-hardware"]
 
 [dev-dependencies]
+anvilml-ipc = { path = "../crates/anvilml-ipc" }
+anvilml-worker = { path = "../crates/anvilml-worker" }
+async-trait = "0.1"
+bytes = { workspace = true }
+futures-util = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+serde_json = { workspace = true }
+serial_test = { workspace = true }
+sqlx = { workspace = true }
+temp-env = { version = "0.3", features = ["async_closure"] }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
 toml = { workspace = true }
+uuid = { workspace = true }
