@@ -247,6 +247,73 @@ impl ArtifactStore {
 
         Ok(rows)
     }
+
+    /// Delete all artifact files and DB rows for a given job.
+    ///
+    /// 1. Query `SELECT hash FROM artifacts WHERE job_id = ?`.
+    /// 2. For each hash, build the on-disk path `{artifact_dir}/{hash[0..2]}/{hash}.png`
+    ///    and remove it via `tokio::fs::remove_file`.
+    /// 3. Execute `DELETE FROM artifacts WHERE job_id = ?` and return the count.
+    ///
+    /// If the DB delete fails the files are already gone (best-effort cleanup).
+    /// Returns the number of artifact rows deleted.
+    #[tracing::instrument(skip(self), fields(job_id = %job_id))]
+    pub async fn delete_for_job(&self, job_id: &str) -> Result<u32, ArtifactError> {
+        // 1. Fetch all hashes for this job.
+        let hashes: Vec<String> = sqlx::query_scalar("SELECT hash FROM artifacts WHERE job_id = ?")
+            .bind(job_id)
+            .fetch_all(&self.db)
+            .await?;
+
+        let hash_count = hashes.len();
+        tracing::debug!(hash_count, "delete_for_job: found artifacts to delete");
+
+        // 2. Delete on-disk files (best-effort — skip missing files).
+        let mut files_deleted = 0u32;
+        for hash in &hashes {
+            let prefix_dir = self.artifact_dir.join(&hash[..2]);
+            let file_path = prefix_dir.join(format!("{hash}.png"));
+            if let Err(e) = tokio::fs::remove_file(&file_path).await {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    tracing::debug!(
+                        path = %file_path.display(),
+                        "delete_for_job: file already absent, skipping"
+                    );
+                } else {
+                    tracing::warn!(
+                        path = %file_path.display(),
+                        error = %e,
+                        "delete_for_job: failed to remove artifact file"
+                    );
+                }
+            } else {
+                files_deleted += 1;
+            }
+        }
+
+        // 3. Delete DB rows.
+        let result = sqlx::query("DELETE FROM artifacts WHERE job_id = ?")
+            .bind(job_id)
+            .execute(&self.db)
+            .await;
+
+        match result {
+            Ok(exec_result) => {
+                let rows_deleted = exec_result.rows_affected() as u32;
+                tracing::debug!(files_deleted, rows_deleted, "delete_for_job: completed");
+                Ok(rows_deleted)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    files_deleted,
+                    "delete_for_job: DB delete failed (files already removed)"
+                );
+                // Files are already gone — return the count of files we did delete.
+                Ok(files_deleted)
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -377,5 +444,65 @@ mod tests {
         assert_eq!(result.len(), 2, "before=2500 should return 2 artifacts");
         assert_eq!(result[0].hash, "hash_mid");
         assert_eq!(result[1].hash, "hash_old");
+    }
+
+    #[tokio::test]
+    async fn delete_for_job_removes_files_and_rows() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let pool = setup_pool().await;
+        let store = ArtifactStore::new(tmp_dir.path().to_path_buf(), pool.clone());
+
+        let job_id = "c3d4e5f6-a7b8-9012-cdef-345678901234";
+        let hash_a = "aaa111bbb222ccc333ddd444eee555fff666aaa777bbb888ccc999ddd000";
+        let hash_b = "bbb222ccc333ddd444eee555fff666aaa777bbb888ccc999ddd000aaa111";
+
+        // Insert two artifacts for this job.
+        insert_artifact(&pool, hash_a, job_id, 1000).await;
+        insert_artifact(&pool, hash_b, job_id, 1001).await;
+
+        // Create the on-disk files so they can be deleted.
+        let prefix_a = tmp_dir.path().join(&hash_a[..2]);
+        let prefix_b = tmp_dir.path().join(&hash_b[..2]);
+        tokio::fs::create_dir_all(&prefix_a).await.unwrap();
+        tokio::fs::create_dir_all(&prefix_b).await.unwrap();
+        tokio::fs::write(prefix_a.join(format!("{hash_a}.png")), b"fake-png-a")
+            .await
+            .unwrap();
+        tokio::fs::write(prefix_b.join(format!("{hash_b}.png")), b"fake-png-b")
+            .await
+            .unwrap();
+
+        // Call delete_for_job.
+        let count = store.delete_for_job(job_id).await.unwrap();
+        assert_eq!(count, 2, "should return 2 deleted rows");
+
+        // Verify DB rows are gone.
+        let remaining: Vec<String> =
+            sqlx::query_scalar("SELECT hash FROM artifacts WHERE job_id = ?")
+                .bind(job_id)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert!(remaining.is_empty(), "DB rows should be empty after delete");
+
+        // Verify files are removed.
+        assert!(
+            !prefix_a.join(format!("{hash_a}.png")).exists(),
+            "artifact file a should be deleted"
+        );
+        assert!(
+            !prefix_b.join(format!("{hash_b}.png")).exists(),
+            "artifact file b should be deleted"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_for_job_empty_returns_zero() {
+        let pool = setup_pool().await;
+        let store = ArtifactStore::new(tempfile::tempdir().unwrap().keep(), pool);
+
+        let nonexistent = "d4e5f6a7-b8c9-0123-defa-456789012345";
+        let count = store.delete_for_job(nonexistent).await.unwrap();
+        assert_eq!(count, 0, "should return 0 for a job with no artifacts");
     }
 }

@@ -13,7 +13,7 @@ use anvilml_scheduler::job_store::{
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::Json,
+    response::{IntoResponse, Json},
 };
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -225,6 +225,124 @@ pub async fn cancel_job(
             )
         }
     }
+}
+
+/// Delete a terminal job and its artifacts.
+///
+/// Returns 204 No Content on success. Returns 404 if the job does not exist,
+/// or 409 if the job is in a non-terminal state (Queued or Running).
+///
+/// The job must be in a terminal state (Completed, Failed, or Cancelled).
+/// On success, all on-disk artifact files are removed first, then the job
+/// and artifact rows are deleted from the database.
+#[utoipa::path(
+    delete,
+    path = "/v1/jobs/{id}",
+    summary = "Delete a terminal job and its artifacts",
+    params(
+        ("id" = Uuid, Path, description = "Job UUID")
+    ),
+    responses(
+        (status = 204, description = "Job deleted"),
+        (status = 404, description = "Job not found"),
+        (status = 409, description = "Job is not terminal — cannot delete"),
+        (status = 500, description = "Internal server error", body = ErrorInline)
+    )
+)]
+pub async fn delete_job(
+    State(state): State<Arc<App>>,
+    Path(job_id): Path<Uuid>,
+) -> axum::response::Response {
+    let pool = match &state.db {
+        Some(p) => p,
+        None => {
+            tracing::error!(delete_job = %job_id, "delete_job: database not configured");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(error_body(
+                    "database_not_configured",
+                    "database not available",
+                )),
+            )
+                .into_response();
+        }
+    };
+
+    // 1. Read the job to check its status.
+    let job = match scheduler_get_job(pool, job_id).await {
+        Ok(Some(job)) => job,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error": "not_found",
+                    "message": format!("job {job_id} not found"),
+                })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, delete_job = %job_id, "delete_job: database query failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_body("internal_error", &e.to_string())),
+            )
+                .into_response();
+        }
+    };
+
+    // 2. Reject if job is not in a terminal state.
+    if job.status == JobStatus::Queued || job.status == JobStatus::Running {
+        let status_str = match job.status {
+            JobStatus::Queued => "Queued",
+            JobStatus::Running => "Running",
+            _ => "Unknown",
+        };
+        tracing::warn!(
+            job_id = %job_id,
+            status = status_str,
+            "delete_job: rejecting non-terminal job"
+        );
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "job_active",
+                "message": format!("job {job_id} is {status_str} — must be terminal to delete"),
+            })),
+        )
+            .into_response();
+    }
+
+    // 3. Delete artifacts (best-effort — log on failure but continue).
+    if let Err(e) = state
+        .artifact_store
+        .delete_for_job(&job_id.to_string())
+        .await
+    {
+        tracing::warn!(
+            error = %e,
+            job_id = %job_id,
+            "delete_job: artifact deletion failed, continuing with job deletion"
+        );
+    }
+
+    // 4. Delete the job row.
+    if let Err(e) = sqlx::query("DELETE FROM jobs WHERE id = ?")
+        .bind(job_id.to_string())
+        .execute(pool)
+        .await
+    {
+        tracing::error!(error = %e, delete_job = %job_id, "delete_job: failed to delete job row");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(error_body("internal_error", "failed to delete job")),
+        )
+            .into_response();
+    }
+
+    tracing::info!(job_id = %job_id, "job deleted");
+
+    StatusCode::NO_CONTENT.into_response()
 }
 
 /// Query parameters for the `GET /v1/jobs` list endpoint.
@@ -984,5 +1102,176 @@ mod tests {
         let cancel_parsed: Value = serde_json::from_str(&body_str).unwrap();
 
         assert_eq!(cancel_parsed["error"], "job_not_cancellable");
+    }
+
+    /// Submit a job, set its status to Completed in the DB,
+    /// then DELETE — must return 204, and GET must return 404.
+    #[tokio::test]
+    async fn delete_job_returns_204_for_completed_job() {
+        let (app, pool) = build_test_app().await;
+
+        // Submit a valid job.
+        let req_body = serde_json::json!({
+            "graph": make_valid_zit_graph(),
+            "settings": {"seed": 77, "steps": 5}
+        });
+
+        let submit_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/jobs")
+                    .header("content-type", "application/json")
+                    .body(Full::<Bytes>::from(serde_json::to_vec(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(submit_response.status(), StatusCode::ACCEPTED);
+
+        let body_bytes = axum::body::to_bytes(submit_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let submit_parsed: Value = serde_json::from_str(&body_str).unwrap();
+        let job_id: Uuid = submit_parsed["job_id"]
+            .as_str()
+            .expect("job_id must be a string")
+            .parse()
+            .expect("job_id must be valid UUID");
+
+        // Set the job to Completed in the DB.
+        sqlx::query("UPDATE jobs SET status = 'Completed', completed_at = ? WHERE id = ?")
+            .bind(Utc::now().timestamp())
+            .bind(job_id.to_string())
+            .execute(&pool)
+            .await
+            .expect("update job to Completed");
+
+        // DELETE the completed job — should return 204.
+        let delete_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(&format!("/v1/jobs/{job_id}"))
+                    .body(Full::<Bytes>::default())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(delete_response.status(), StatusCode::NO_CONTENT);
+
+        // GET the deleted job — should return 404.
+        let get_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&format!("/v1/jobs/{job_id}"))
+                    .body(Full::<Bytes>::default())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(get_response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Submit a job (Queued), then DELETE — must return 409.
+    #[tokio::test]
+    async fn delete_job_returns_409_for_queued_job() {
+        let (app, _pool) = build_test_app().await;
+
+        // Submit a valid job (starts as Queued).
+        let req_body = serde_json::json!({
+            "graph": make_valid_zit_graph(),
+            "settings": {"seed": 88, "steps": 5}
+        });
+
+        let submit_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/jobs")
+                    .header("content-type", "application/json")
+                    .body(Full::<Bytes>::from(serde_json::to_vec(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(submit_response.status(), StatusCode::ACCEPTED);
+
+        let body_bytes = axum::body::to_bytes(submit_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let submit_parsed: Value = serde_json::from_str(&body_str).unwrap();
+        let job_id: Uuid = submit_parsed["job_id"]
+            .as_str()
+            .expect("job_id must be a string")
+            .parse()
+            .expect("job_id must be valid UUID");
+
+        // DELETE the queued job — should return 409.
+        let delete_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(&format!("/v1/jobs/{job_id}"))
+                    .body(Full::<Bytes>::default())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(delete_response.status(), StatusCode::CONFLICT);
+
+        let body_bytes = axum::body::to_bytes(delete_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let delete_parsed: Value = serde_json::from_str(&body_str).unwrap();
+
+        assert_eq!(delete_parsed["error"], "job_active");
+        assert!(
+            delete_parsed["message"].is_string(),
+            "message must be a string"
+        );
+    }
+
+    /// DELETE a nonexistent job UUID must return 404.
+    #[tokio::test]
+    async fn delete_job_returns_404_when_missing() {
+        let (app, _pool) = build_test_app().await;
+
+        let random_id = Uuid::new_v4();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(&format!("/v1/jobs/{random_id}"))
+                    .body(Full::<Bytes>::default())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let parsed: Value = serde_json::from_str(&body_str).unwrap();
+
+        assert_eq!(parsed["error"], "not_found");
     }
 }
