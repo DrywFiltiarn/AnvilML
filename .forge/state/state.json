@@ -147,16 +147,17 @@
     "P16-A3",
     "P16-A4",
     "P17-A1",
-    "P17-A2"
+    "P17-A2",
+    "P17-A3"
   ],
-  "in_progress": "P17-A3",
+  "in_progress": "P18-A1",
   "plan_approved": true,
   "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-10T17:12:48+0200",
-  "plan_approval_message_id": "1514286121444446319",
+  "last_updated": "2026-06-10T18:07:17+0200",
+  "plan_approval_message_id": "1514299432345141270",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1514286119179649055",
+  "plan_report_message_id": "1514299429547413675",
   "impl_report_message_id": null
 }

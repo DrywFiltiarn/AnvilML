@@ -45,15 +45,19 @@ pub struct ManagedWorker {
     /// Current lifecycle status, shared across async tasks.
     status: Arc<RwLock<WorkerStatus>>,
     /// Sender for outbound messages to the worker process.
-    tx: mpsc::Sender<WorkerMessage>,
+    /// Wrapped in std::sync::Mutex for interior mutability (needed by reset_ipc_tx / restart).
+    /// The mutex is always accessed via block_in_place() when called from async contexts,
+    /// and blocking_lock() when called from synchronous contexts (start_keepalive).
+    tx: std::sync::Mutex<mpsc::Sender<WorkerMessage>>,
     /// Broadcast sender for events emitted by the reader task.
     event_tx: broadcast::Sender<(String, WorkerEvent)>,
     /// Child process handle (Some while alive), wrapped in Arc for shared access
     /// by both the spawn path and the keepalive watchdog task.
     child: Arc<Mutex<Option<tokio::process::Child>>>,
     /// Join handle for the combined writer+reader task loop.
+    /// Wrapped in Mutex for interior mutability (needed by reset_ipc_tx / restart).
     #[allow(dead_code)]
-    handle: JoinHandle<()>,
+    handle: std::sync::Mutex<JoinHandle<()>>,
     /// Oneshot sender used to deliver IPC handles to the loop.
     ipc_tx: std::sync::Mutex<Option<oneshot::Sender<IpcHandles>>>,
     /// Configurable ping interval (default: 30_000 ms).
@@ -85,6 +89,7 @@ impl ManagedWorker {
     /// to built-in defaults of 30 s and 10 s respectively.
     pub fn new(worker_id: String, device_index: u32) -> Self {
         let (tx, rx) = mpsc::channel(64);
+        let tx = std::sync::Mutex::new(tx);
         let (event_tx, _rx) = broadcast::channel(256);
 
         let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
@@ -128,7 +133,7 @@ impl ManagedWorker {
             tx,
             event_tx,
             child: Arc::new(Mutex::new(None)),
-            handle,
+            handle: std::sync::Mutex::new(handle),
             ipc_tx: std::sync::Mutex::new(Some(ipc_tx)),
             ping_interval,
             pong_timeout,
@@ -297,7 +302,13 @@ impl ManagedWorker {
         let init_msg = WorkerMessage::InitializeHardware {
             device_str: format!("{:?}:{}", device.device_type, self.device_index),
         };
-        if let Err(e) = self.tx.send(init_msg).await {
+        // Clone the sender before awaiting so the MutexGuard is dropped
+        // before the .await point (std::sync::MutexGuard is not Send).
+        let init_tx = {
+            let guard = self.tx_lock();
+            guard.clone()
+        };
+        if let Err(e) = init_tx.send(init_msg).await {
             warn!(error = %e, worker_id = %self.worker_id, "failed to send InitializeHardware");
             return Err(AnvilError::Io(std::io::Error::other(
                 "mpsc channel closed before InitializeHardware could be sent",
@@ -345,10 +356,76 @@ impl ManagedWorker {
             message_type = ?msg_discriminant(&msg),
             "sending message to worker"
         );
-        self.tx.send(msg).await.map_err(|e| {
+        // Clone the sender before awaiting so the MutexGuard is dropped
+        // before the .await point (std::sync::MutexGuard is not Send).
+        let tx = {
+            let guard = self.tx_lock();
+            guard.clone()
+        };
+        tx.send(msg).await.map_err(|e| {
             warn!(error = %e, worker_id = %self.worker_id, "worker channel closed");
             AnvilError::WorkerDead(format!("send failed: {}", e))
         })
+    }
+
+    /// Restart this worker: send Shutdown, wait for Dying, force-kill if needed,
+    /// re-spawn, and wait for Idle.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn restart(&self, device: &GpuDevice, cfg: &ServerConfig) -> Result<(), AnvilError> {
+        // 1. Set status to Respawning and broadcast.
+        self.set_status(WorkerStatus::Respawning).await;
+        let _ = self.event_tx.send((
+            self.worker_id.clone(),
+            WorkerEvent::WorkerStatusChanged {
+                status: WorkerStatus::Respawning,
+            },
+        ));
+        info!(worker_id = %self.worker_id, "worker restart initiated");
+
+        // 2. Send Shutdown.
+        let _ = {
+            let guard = self.tx_lock();
+            guard.clone()
+        }
+        .send(WorkerMessage::Shutdown)
+        .await;
+        debug!(
+            worker_id = %self.worker_id,
+            message_type = "Shutdown",
+            "sent shutdown for restart"
+        );
+
+        // 3. Wait up to 5 s for Dying.
+        let timeout = std::time::Duration::from_secs(5);
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout {
+            if self.get_status().await == WorkerStatus::Dead {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+
+        // 4. Force-kill if still alive.
+        if self.get_status().await != WorkerStatus::Dead {
+            warn!(
+                worker_id = %self.worker_id,
+                "worker did not die in 5s — force-killing"
+            );
+            if let Some(mut ch) = self.child.lock().await.take() {
+                let _ = ch.kill().await;
+            }
+            let mut s = self.status.write().await;
+            *s = WorkerStatus::Dead;
+        }
+
+        // 5. Reset IPC channels (new run_loop).
+        self.reset_ipc_tx().await;
+
+        // 6. Re-spawn (sends InitializeHardware, waits for Idle).
+        self.spawn(device, cfg).await?;
+
+        info!(worker_id = %self.worker_id, "worker restarted");
+        Ok(())
     }
 
     /// Subscribe to the broadcast channel for worker events.
@@ -365,6 +442,36 @@ impl ManagedWorker {
     pub async fn set_status(&self, status: WorkerStatus) {
         let mut s = self.status.write().await;
         *s = status;
+    }
+
+    /// Lock the tx channel, blocking in-place if called from an async context.
+    fn tx_lock(&self) -> std::sync::MutexGuard<'_, mpsc::Sender<WorkerMessage>> {
+        // Use block_in_place to avoid panicking when called from within a tokio runtime.
+        // This moves the blocking lock to a thread pool reserved for blocking operations.
+        tokio::task::block_in_place(|| self.tx.lock().unwrap())
+    }
+
+    /// Force-kill the child process and set status to Dead.
+    ///
+    /// Used by `shutdown_all` to terminate stragglers that did not
+    /// respond to a Shutdown message within the timeout window.
+    pub async fn force_kill(&self) {
+        if let Some(mut ch) = self.child.lock().await.take() {
+            let _ = ch.kill().await;
+        }
+        let mut s = self.status.write().await;
+        *s = WorkerStatus::Dead;
+    }
+
+    /// Send a Shutdown message to the worker.
+    pub async fn send_shutdown(&self) {
+        // Clone the sender before awaiting so the MutexGuard is dropped
+        // before the .await point (std::sync::MutexGuard is not Send).
+        let tx = {
+            let guard = self.tx_lock();
+            guard.clone()
+        };
+        let _ = tx.send(WorkerMessage::Shutdown).await;
     }
 
     /// Get a reference to the worker ID.
@@ -429,7 +536,7 @@ impl ManagedWorker {
         let ping_interval = self.ping_interval;
         let pong_timeout = self.pong_timeout;
         let worker_id = self.worker_id.clone();
-        let tx = self.tx.clone();
+        let tx = self.tx.lock().unwrap().clone();
         let status = self.status.clone();
         let event_tx = self.event_tx.clone();
         let child = self.child.clone();
@@ -562,7 +669,7 @@ impl ManagedWorker {
     /// pair and stores the sender. The old receiver (if any was consumed) is gone;
     /// the run_loop will wait for the new one.
     #[allow(dead_code)]
-    fn reset_ipc_tx(&mut self) {
+    async fn reset_ipc_tx(&self) {
         let (ipc_tx, ipc_rx) = oneshot::channel::<IpcHandles>();
         let (tx, rx) = mpsc::channel(64);
 
@@ -578,9 +685,10 @@ impl ManagedWorker {
             ipc_rx,
         ));
 
-        self.tx = tx;
+        // Use block_in_place to avoid panicking in a tokio runtime.
+        *tokio::task::block_in_place(|| self.tx.lock().unwrap()) = tx;
         *self.ipc_tx.lock().unwrap() = Some(ipc_tx);
-        self.handle = new_handle;
+        *self.handle.lock().unwrap() = new_handle;
     }
 
     /// Respawn the worker process after it has died.
@@ -605,7 +713,7 @@ impl ManagedWorker {
         );
 
         // Reset the IPC channel so the new run_loop can receive handles.
-        self.reset_ipc_tx();
+        self.reset_ipc_tx().await;
 
         // Spawn the Python worker child process.
         self.spawn(device, cfg).await?;
@@ -1231,7 +1339,7 @@ mod tests {
 
     /// Verify that EOF triggers Dead status and WorkerStatusChanged broadcast,
     /// then respawn via mock handles transitions back to Idle.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[cfg(feature = "mock-hardware")]
     async fn respawn_after_death() {
         // Use temp_env to isolate env-var mutations from parallel tests.
@@ -1244,7 +1352,7 @@ mod tests {
                 ("ANVILML_RESPAWN_DELAY_MS", Some("100")),
             ],
             async {
-                let mut worker = ManagedWorker::new("respawn-test".to_string(), 0);
+                let worker = ManagedWorker::new("respawn-test".to_string(), 0);
 
                 // Build platform-appropriate socket paths for mock IPC handles.
                 // On Windows a plain filesystem path is not a valid named pipe path;
@@ -1406,7 +1514,7 @@ mod tests {
                 let (reader2, writer2) = server_stream2.split();
 
                 // Reset IPC channel and inject fresh handles.
-                worker.reset_ipc_tx();
+                worker.reset_ipc_tx().await;
                 worker.inject_handles_for_test(reader2, writer2).await;
 
                 // Set status back to Idle (simulating what Ready event would do).
