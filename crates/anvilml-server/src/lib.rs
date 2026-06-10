@@ -43,6 +43,7 @@ pub fn build_router(state: App) -> Router {
         .route("/v1/system/env", get(handlers::system::get_env))
         .route("/v1/system", get(handlers::system::get_system))
         .route("/v1/workers", get(handlers::workers::list_workers))
+        .route("/v1/artifacts", get(handlers::artifacts::list_artifacts))
         .route(
             "/v1/artifacts/{hash}",
             get(handlers::artifacts::serve_artifact),
