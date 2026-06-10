@@ -153,6 +153,80 @@ pub async fn get_job(
     }
 }
 
+/// Cancel a queued or running job.
+///
+/// Transitions the job to `Cancelled` and returns 202. Returns 404 if the job
+/// does not exist, or 409 if the job is in a terminal state.
+#[utoipa::path(
+    post,
+    path = "/v1/jobs/{id}/cancel",
+    summary = "Cancel a queued or running job",
+    params(
+        ("id" = Uuid, Path, description = "Job UUID")
+    ),
+    responses(
+        (status = 202, description = "Job cancelled"),
+        (status = 404, description = "Job not found"),
+        (status = 409, description = "Job not cancellable — already terminal"),
+        (status = 500, description = "Internal server error", body = ErrorInline)
+    )
+)]
+pub async fn cancel_job(
+    State(state): State<Arc<App>>,
+    Path(job_id): Path<Uuid>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let scheduler = match &state.scheduler {
+        Some(s) => s,
+        None => {
+            tracing::error!(cancel_job = %job_id, "cancel_job: scheduler not configured");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(error_body(
+                    "scheduler_not_configured",
+                    "job scheduler not available",
+                )),
+            );
+        }
+    };
+    match scheduler.cancel(job_id).await {
+        Ok(()) => (
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "status": "cancelled",
+                "job_id": job_id.to_string()
+            })),
+        ),
+        Err(AnvilError::JobNotFound(_)) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "not_found",
+                "message": format!("job {job_id} not found"),
+            })),
+        ),
+        Err(AnvilError::JobNotCancellable(_)) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "job_not_cancellable",
+                "message": format!("job {job_id} is not in a cancellable state"),
+            })),
+        ),
+        Err(AnvilError::DbError(_)) => {
+            tracing::error!(error = %job_id, cancel_job = %job_id, "cancel_job: database error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_body("internal_error", "database error")),
+            )
+        }
+        Err(e) => {
+            tracing::error!(error = %e, cancel_job = %job_id, "cancel_job: unexpected error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_body("internal_error", &e.to_string())),
+            )
+        }
+    }
+}
+
 /// Query parameters for the `GET /v1/jobs` list endpoint.
 #[derive(Debug, Deserialize, Default)]
 pub struct ListJobsQuery {
@@ -264,6 +338,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::{build_router, App, EventBroadcaster};
+    use chrono::Utc;
     use uuid::Uuid;
 
     fn make_valid_zit_graph() -> Value {
@@ -348,7 +423,8 @@ mod tests {
     }
 
     /// Build a test `App` with a real `JobScheduler` backed by an in-memory DB.
-    async fn build_test_app() -> Router {
+    /// Returns the router and a clone of the pool for direct DB access in tests.
+    async fn build_test_app() -> (Router, SqlitePool) {
         use anvilml_scheduler::{JobQueue, VramLedger};
         use anvilml_worker::WorkerPool;
 
@@ -374,7 +450,7 @@ mod tests {
         let broadcaster_ws = Arc::new(EventBroadcaster::new(16));
         let state = App::new(
             "0.1.0",
-            Some(pool),
+            Some(pool.clone()),
             None,
             None,
             broadcaster_ws,
@@ -382,14 +458,14 @@ mod tests {
             Some(scheduler),
             artifact_store,
         );
-        build_router(state)
+        (build_router(state), pool)
     }
 
     /// Submitting a graph with an unknown node type must return 422
     /// with `"error": "invalid_graph"` in the body.
     #[tokio::test]
     async fn submit_job_bad_graph_returns_422() {
-        let app = build_test_app().await;
+        let (app, _pool) = build_test_app().await;
 
         let req_body = serde_json::json!({
             "graph": make_invalid_graph(),
@@ -433,7 +509,7 @@ mod tests {
     /// `job_id` (non-nil UUID) and `queue_position >= 1`.
     #[tokio::test]
     async fn submit_job_valid_zit_graph_returns_202() {
-        let app = build_test_app().await;
+        let (app, _pool) = build_test_app().await;
 
         let req_body = serde_json::json!({
             "graph": make_valid_zit_graph(),
@@ -483,7 +559,7 @@ mod tests {
     /// and status "Queued".
     #[tokio::test]
     async fn get_job_returns_200_with_queued_job() {
-        let app = build_test_app().await;
+        let (app, _pool) = build_test_app().await;
 
         // Submit a valid job.
         let req_body = serde_json::json!({
@@ -545,7 +621,7 @@ mod tests {
     /// GET a nonexistent job UUID must return 404 with `"error": "not_found"`.
     #[tokio::test]
     async fn get_job_returns_404_when_missing() {
-        let app = build_test_app().await;
+        let (app, _pool) = build_test_app().await;
 
         let random_id = Uuid::new_v4();
         let response = app
@@ -574,7 +650,7 @@ mod tests {
     /// Submit two jobs via POST and verify GET /v1/jobs returns both.
     #[tokio::test]
     async fn list_jobs_returns_all_submitted_jobs() {
-        let app = build_test_app().await;
+        let (app, _pool) = build_test_app().await;
 
         // Submit first job.
         let req_body = serde_json::json!({
@@ -646,7 +722,7 @@ mod tests {
     /// GET /v1/jobs?status=queued must filter to only queued jobs.
     #[tokio::test]
     async fn list_jobs_filters_by_status() {
-        let app = build_test_app().await;
+        let (app, _pool) = build_test_app().await;
 
         // Submit two jobs (both start as Queued).
         for seed in [10, 20] {
@@ -697,7 +773,7 @@ mod tests {
     /// GET /v1/jobs?limit=1 must return exactly one job.
     #[tokio::test]
     async fn list_jobs_limit_clamps_to_one() {
-        let app = build_test_app().await;
+        let (app, _pool) = build_test_app().await;
 
         // Submit two jobs.
         for seed in [30, 40] {
@@ -747,5 +823,166 @@ mod tests {
             1,
             "limit=1 must return exactly one job"
         );
+    }
+
+    /// Cancel a nonexistent job UUID must return 404 with `"error": "not_found"`.
+    #[tokio::test]
+    async fn cancel_job_returns_404_when_missing() {
+        let (app, _pool) = build_test_app().await;
+
+        let random_id = Uuid::new_v4();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(&format!("/v1/jobs/{random_id}/cancel"))
+                    .body(Full::<Bytes>::default())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let parsed: Value = serde_json::from_str(&body_str).unwrap();
+
+        assert_eq!(parsed["error"], "not_found");
+    }
+
+    /// Submit a valid job (starts Queued), then cancel it — must return 202.
+    #[tokio::test]
+    async fn cancel_job_returns_202_for_queued_job() {
+        let (app, _pool) = build_test_app().await;
+
+        // Submit a valid job.
+        let req_body = serde_json::json!({
+            "graph": make_valid_zit_graph(),
+            "settings": {"seed": 42, "steps": 20}
+        });
+
+        let submit_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/jobs")
+                    .header("content-type", "application/json")
+                    .body(Full::<Bytes>::from(serde_json::to_vec(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(submit_response.status(), StatusCode::ACCEPTED);
+
+        let body_bytes = axum::body::to_bytes(submit_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let submit_parsed: Value = serde_json::from_str(&body_str).unwrap();
+        let job_id: Uuid = submit_parsed["job_id"]
+            .as_str()
+            .expect("job_id must be a string")
+            .parse()
+            .expect("job_id must be valid UUID");
+
+        // Cancel the job.
+        let cancel_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(&format!("/v1/jobs/{job_id}/cancel"))
+                    .body(Full::<Bytes>::default())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(cancel_response.status(), StatusCode::ACCEPTED);
+
+        let body_bytes = axum::body::to_bytes(cancel_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let cancel_parsed: Value = serde_json::from_str(&body_str).unwrap();
+
+        assert_eq!(cancel_parsed["status"], "cancelled");
+        assert_eq!(cancel_parsed["job_id"], job_id.to_string());
+    }
+
+    /// Submit a job, then update its status to Completed in the DB,
+    /// then cancel — must return 409 with `"error": "job_not_cancellable"`.
+    #[tokio::test]
+    async fn cancel_job_returns_409_for_completed_job() {
+        let (app, pool) = build_test_app().await;
+
+        // Submit a valid job.
+        let req_body = serde_json::json!({
+            "graph": make_valid_zit_graph(),
+            "settings": {"seed": 99, "steps": 5}
+        });
+
+        let submit_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/jobs")
+                    .header("content-type", "application/json")
+                    .body(Full::<Bytes>::from(serde_json::to_vec(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(submit_response.status(), StatusCode::ACCEPTED);
+
+        let body_bytes = axum::body::to_bytes(submit_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let submit_parsed: Value = serde_json::from_str(&body_str).unwrap();
+        let job_id: Uuid = submit_parsed["job_id"]
+            .as_str()
+            .expect("job_id must be a string")
+            .parse()
+            .expect("job_id must be valid UUID");
+
+        // Simulate the job reaching Completed status by directly updating the DB.
+        sqlx::query("UPDATE jobs SET status = 'Completed', completed_at = ? WHERE id = ?")
+            .bind(Utc::now().timestamp())
+            .bind(job_id.to_string())
+            .execute(&pool)
+            .await
+            .expect("update job status to Completed");
+
+        // Cancel the completed job — should return 409.
+        let cancel_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(&format!("/v1/jobs/{job_id}/cancel"))
+                    .body(Full::<Bytes>::default())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(cancel_response.status(), StatusCode::CONFLICT);
+
+        let body_bytes = axum::body::to_bytes(cancel_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let cancel_parsed: Value = serde_json::from_str(&body_str).unwrap();
+
+        assert_eq!(cancel_parsed["error"], "job_not_cancellable");
     }
 }

@@ -36,6 +36,7 @@ pub fn build_router(state: App) -> Router {
             get(handlers::jobs::list_jobs).post(handlers::jobs::submit_job),
         )
         .route("/v1/jobs/{id}", get(handlers::jobs::get_job))
+        .route("/v1/jobs/{id}/cancel", post(handlers::jobs::cancel_job))
         .route("/v1/events", get(ws_events))
         .route("/v1/models/rescan", post(handlers::models::rescan_models))
         .route("/v1/models/{id}", get(handlers::models::get_model))
