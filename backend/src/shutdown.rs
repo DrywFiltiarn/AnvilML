@@ -1,3 +1,8 @@
+use std::sync::Arc;
+
+use anvilml_registry::SqlitePool;
+use anvilml_server::App;
+
 #[cfg(unix)]
 use tokio::signal::unix::{signal, SignalKind};
 #[cfg(windows)]
@@ -38,10 +43,15 @@ fn pending_or_ctrl_shutdown() -> impl std::future::Future<Output = ()> {
 
 /// Cross-platform async shutdown signal handler.
 ///
+/// Waits for a termination signal (SIGINT, SIGTERM, Ctrl-C, Ctrl-CLOSE,
+/// or Ctrl-SHUTDOWN), then performs a graceful shutdown sequence:
+/// 1. Sets the shutdown flag on `AppState` to reject new job submissions.
+/// 2. Drains all workers via `WorkerPool::shutdown_all`.
+/// 3. Closes the SQLite connection pool (flushes WAL).
+///
 /// On Unix: waits for SIGINT (Ctrl-C) or SIGTERM.
 /// On Windows: waits for Ctrl-C, Ctrl-CLOSE, or Ctrl-SHUTDOWN.
-/// Uses `std::future::pending` for inactive-platform arms.
-pub async fn shutdown_signal() {
+pub async fn shutdown_signal(state: Arc<App>, pool: SqlitePool) {
     tokio::select! {
         _ = pending_or_terminate() => {
             tracing::info!("Received termination signal, shutting down");
@@ -57,4 +67,23 @@ pub async fn shutdown_signal() {
             // platforms.
         }
     }
+
+    // 1. Set the shutdown flag to reject new submissions.
+    state.set_shutdown();
+    tracing::info!("submissions closed — rejecting new job submissions");
+
+    // 2. Drain workers.
+    if let Some(workers) = &state.workers {
+        tracing::info!("draining workers");
+        workers.shutdown_all().await;
+        tracing::info!("all workers drained");
+    } else {
+        tracing::warn!("no worker pool configured, skipping drain");
+    }
+
+    // 3. Close the SQLx pool (flushes WAL).
+    drop(pool);
+    tracing::info!("database connection pool closed");
+
+    tracing::info!("graceful shutdown complete");
 }

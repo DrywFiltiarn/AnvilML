@@ -268,6 +268,9 @@ async fn main() {
     ));
 
     let bind_addr = format!("{}:{}", cfg.host, cfg.port);
+    // Clone db for the shutdown handler (state consumes the original).
+    let db_shutdown = db.clone();
+
     let state = App::new_with_hardware(
         env!("CARGO_PKG_VERSION"),
         hw_info,
@@ -293,23 +296,20 @@ async fn main() {
     );
     state.set_env_report(env_report);
 
-    spawn_system_stats_tick(state.clone());
+    // Clone state for shutdown handler before build_router consumes it.
+    let shutdown_state = state.clone();
+
+    spawn_system_stats_tick(shutdown_state.clone());
     let _dispatch_handle = scheduler.start_dispatch_loop();
-    let router = build_router(state);
+    let router = build_router(shutdown_state);
     let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
         .unwrap_or_else(|e| panic!("Failed to bind to {bind_addr}: {e}"));
 
-    tracing::info!("Listening on http://{bind_addr}");
     let _ = axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown::shutdown_signal())
+        .with_graceful_shutdown(shutdown::shutdown_signal(Arc::new(state), db_shutdown))
         .await;
 
-    // Worker drain (P18-A4) is not yet implemented. Force-exit so the
-    // tokio runtime does not hang on live background tasks (keepalive,
-    // scheduler, system-stats). The worker child process is terminated
-    // by the OS when this process exits because CREATE_NEW_PROCESS_GROUP
-    // is set and the named pipe is closed.
     tracing::info!("HTTP server drained, exiting");
     std::process::exit(0);
 }

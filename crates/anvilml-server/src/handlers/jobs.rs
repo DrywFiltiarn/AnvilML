@@ -84,6 +84,18 @@ pub async fn submit_job(
         );
     }
 
+    // Shutdown gate: reject new submissions once the server is shutting down.
+    if state.is_shutdown() {
+        tracing::info!("submit_job: server is shutting down, rejecting");
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(error_body(
+                "server_shutting_down",
+                "server is shutting down — no new submissions accepted",
+            )),
+        );
+    }
+
     let scheduler = match &state.scheduler {
         Some(s) => s,
         None => {

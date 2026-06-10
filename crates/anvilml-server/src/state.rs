@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use anvilml_core::config::ServerConfig;
@@ -37,6 +38,8 @@ pub struct AppState<A: ArtifactSave + Clone + 'static> {
     pub artifact_store: A,
     /// Server configuration — used by handlers that need config (e.g. worker restart).
     pub config: ServerConfig,
+    /// Set to true when a shutdown signal is received. Prevents new job submissions.
+    shutdown: Arc<AtomicBool>,
 }
 
 impl<A: ArtifactSave + Clone + 'static> AppState<A> {
@@ -94,6 +97,7 @@ impl<A: ArtifactSave + Clone + 'static> AppState<A> {
             scheduler,
             artifact_store,
             config,
+            shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -139,6 +143,7 @@ impl<A: ArtifactSave + Clone + 'static> AppState<A> {
             scheduler,
             artifact_store,
             config,
+            shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -168,6 +173,16 @@ impl<A: ArtifactSave + Clone + 'static> AppState<A> {
     pub fn hardware(&self) -> HardwareInfo {
         self.hardware.read().unwrap().clone()
     }
+
+    /// Set the shutdown flag to true — signals the server to reject new jobs.
+    pub fn set_shutdown(&self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+    }
+
+    /// Returns true if a shutdown signal has been received.
+    pub fn is_shutdown(&self) -> bool {
+        self.shutdown.load(Ordering::SeqCst)
+    }
 }
 
 impl<A: ArtifactSave + Clone + 'static> Clone for AppState<A> {
@@ -185,6 +200,7 @@ impl<A: ArtifactSave + Clone + 'static> Clone for AppState<A> {
             scheduler: self.scheduler.clone(),
             artifact_store: self.artifact_store.clone(),
             config: self.config.clone(),
+            shutdown: Arc::clone(&self.shutdown),
         }
     }
 }
