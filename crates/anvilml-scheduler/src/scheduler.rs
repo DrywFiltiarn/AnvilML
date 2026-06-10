@@ -9,7 +9,8 @@ use std::sync::Arc;
 use anvilml_core::error::AnvilError;
 use anvilml_core::types::artifact::{ArtifactSave, ArtifactSaveInput};
 use anvilml_core::types::events::{
-    JobCompletedEvent, JobFailedEvent, JobImageReadyEvent, JobQueuedEvent, JobStartedEvent, WsEvent,
+    JobCancelledEvent, JobCompletedEvent, JobFailedEvent, JobImageReadyEvent, JobProgressEvent,
+    JobQueuedEvent, JobStartedEvent, WsEvent,
 };
 use anvilml_core::types::job::{Job, JobStatus, SubmitJobRequest, SubmitJobResponse};
 use anvilml_ipc::{WorkerEvent, WorkerMessage};
@@ -214,7 +215,47 @@ impl<A: ArtifactSave + Clone + 'static> JobScheduler<A> {
                                         .await;
                                         notify.notify_one();
                                     }
-                                    _ => {} // Progress, etc. — not handled here
+                                    WorkerEvent::Progress {
+                                        job_id,
+                                        node_index,
+                                        node_total,
+                                        node_type,
+                                        step: _,
+                                        step_total: _,
+                                    } => {
+                                        let now = Utc::now();
+                                        // Broadcast JobProgress event (step/step_total None in MVP).
+                                        let _ = broadcaster.send(WsEvent::JobProgress(JobProgressEvent {
+                                            event: "job.progress".to_string(),
+                                            timestamp: now,
+                                            job_id: *job_id,
+                                            node_index: *node_index,
+                                            node_total: *node_total,
+                                            node_type: node_type.clone(),
+                                            step: None,
+                                            step_total: None,
+                                        }));
+                                        tracing::debug!(
+                                            job_id = %job_id,
+                                            node_index = *node_index,
+                                            node_type = %node_type,
+                                            "dispatch loop: progress event broadcast"
+                                        );
+                                    }
+                                    WorkerEvent::Cancelled { job_id } => {
+                                        let now = Utc::now();
+                                        handle_cancelled(
+                                            &db,
+                                            &workers,
+                                            &broadcaster,
+                                            &notify,
+                                            *job_id,
+                                            now,
+                                        )
+                                        .await;
+                                        notify.notify_one();
+                                    }
+                                    _ => {} // MemoryReport, etc. — not handled here
                                 }
                             }
                             Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -525,6 +566,39 @@ async fn handle_image_ready<A: ArtifactSave>(
             tracing::warn!(job_id = %job_id, error = %e, "artifact save failed");
         }
     }
+}
+
+/// Handle a `WorkerEvent::Cancelled` event: transition the job to terminal
+/// status, set the worker idle, and broadcast the cancellation event.
+async fn handle_cancelled(
+    db: &sqlx::SqlitePool,
+    workers: &Arc<WorkerPool>,
+    broadcaster: &broadcast::Sender<WsEvent>,
+    notify: &Arc<Notify>,
+    job_id: Uuid,
+    now: DateTime<Utc>,
+) {
+    let job = get_job(db, job_id).await.ok().flatten();
+    let Some(job) = job else { return };
+    if !matches!(job.status, JobStatus::Running) {
+        tracing::debug!(job_id = %job_id, status = ?job.status, "cancelled: job already terminal, ignoring");
+        return;
+    }
+
+    let _ = update_status(db, job_id, JobStatus::Cancelled, None, None, None, None).await;
+    tracing::info!(job_id = %job_id, "job cancelled");
+
+    if let Some(ref wid) = job.worker_id {
+        workers.set_idle(wid).await;
+    }
+
+    let _ = broadcaster.send(WsEvent::JobCancelled(JobCancelledEvent {
+        event: "job.cancelled".to_string(),
+        timestamp: now,
+        job_id,
+    }));
+
+    notify.notify_one();
 }
 
 /// Get a discriminant name for a WorkerEvent.
@@ -1458,6 +1532,197 @@ mod tests {
             db_job.status,
             JobStatus::Running,
             "job should still be Running after image_ready"
+        );
+
+        dispatch_handle.abort();
+    }
+
+    // ── Progress event test ────────────────────────────────────────────────────
+
+    /// A `WorkerEvent::Progress` event triggers a `WsEvent::JobProgress` broadcast
+    /// with the correct job_id, node_index, node_total, node_type, and step/step_total
+    /// set to None (MVP).
+    #[serial]
+    #[tokio::test]
+    async fn test_progress_broadcasts_event() {
+        use anvilml_worker::ManagedWorker;
+
+        // Build a minimal WorkerPool with one idle worker.
+        let worker = Arc::new(ManagedWorker::new("worker-0".to_string(), 0));
+        worker.set_status(WorkerStatus::Idle).await;
+
+        let pool = Arc::new(WorkerPool::new_test_pool_with_workers(vec![worker.clone()]));
+        let ledger = Arc::new(tokio::sync::Mutex::new(VramLedger::new()));
+        let (broadcaster, mut rx) = broadcast::channel(16);
+        let scheduler = JobScheduler::new(
+            JobQueue::new(),
+            pool.clone(),
+            setup_pool().await,
+            broadcaster,
+            ledger,
+            "auto".to_string(),
+            NoopArtifactStore,
+        );
+
+        let dispatch_handle = scheduler.start_dispatch_loop();
+
+        // Submit a job — triggers dispatch loop.
+        let req = SubmitJobRequest {
+            graph: valid_zit_graph(),
+            settings: JobSettings::default(),
+        };
+        let resp = scheduler.submit(req).await.expect("submit succeeded");
+
+        // Wait for dispatch to move job to Running.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Verify job is Running.
+        let db_job = get_job(&scheduler.db, resp.job_id)
+            .await
+            .expect("get from DB succeeded")
+            .expect("job exists");
+        assert_eq!(
+            db_job.status,
+            JobStatus::Running,
+            "job should be Running after dispatch"
+        );
+
+        // Inject Progress event via pool test helper.
+        pool.publish_event(
+            "worker-0".to_string(),
+            WorkerEvent::Progress {
+                job_id: resp.job_id,
+                node_index: 3,
+                node_total: 5,
+                node_type: "Encode".to_string(),
+                step: Some(10),
+                step_total: Some(50),
+            },
+        );
+
+        // Wait for event handler to process.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Drain any preceding JobQueued/JobStarted events from the submit + dispatch.
+        let jpe = loop {
+            let event = rx.recv().await.expect("received broadcast event");
+            match event {
+                WsEvent::JobQueued(_) | WsEvent::JobStarted(_) => continue,
+                WsEvent::JobProgress(e) => break e,
+                other => panic!("expected JobProgress, got {:?}", other),
+            }
+        };
+        assert_eq!(jpe.job_id, resp.job_id);
+        assert_eq!(jpe.event, "job.progress");
+        assert_eq!(jpe.node_index, 3);
+        assert_eq!(jpe.node_total, 5);
+        assert_eq!(jpe.node_type, "Encode");
+        assert!(jpe.step.is_none(), "step should be None in MVP");
+        assert!(jpe.step_total.is_none(), "step_total should be None in MVP");
+
+        // Job status should still be Running (Progress does not change status).
+        let db_job = get_job(&scheduler.db, resp.job_id)
+            .await
+            .expect("get from DB succeeded")
+            .expect("job exists");
+        assert_eq!(
+            db_job.status,
+            JobStatus::Running,
+            "job should still be Running after progress"
+        );
+
+        dispatch_handle.abort();
+    }
+
+    // ── Cancel event test ──────────────────────────────────────────────────────
+
+    /// A `WorkerEvent::Cancelled` event triggers a `WsEvent::JobCancelled` broadcast,
+    /// transitions the job to Cancelled in the DB, and sets the worker back to Idle.
+    #[serial]
+    #[tokio::test]
+    async fn test_cancel_broadcasts_event() {
+        use anvilml_worker::ManagedWorker;
+
+        // Build a minimal WorkerPool with one idle worker.
+        let worker = Arc::new(ManagedWorker::new("worker-0".to_string(), 0));
+        worker.set_status(WorkerStatus::Idle).await;
+
+        let pool = Arc::new(WorkerPool::new_test_pool_with_workers(vec![worker.clone()]));
+        let ledger = Arc::new(tokio::sync::Mutex::new(VramLedger::new()));
+        let (broadcaster, mut rx) = broadcast::channel(16);
+        let scheduler = JobScheduler::new(
+            JobQueue::new(),
+            pool.clone(),
+            setup_pool().await,
+            broadcaster,
+            ledger,
+            "auto".to_string(),
+            NoopArtifactStore,
+        );
+
+        let dispatch_handle = scheduler.start_dispatch_loop();
+
+        // Submit a job — triggers dispatch loop.
+        let req = SubmitJobRequest {
+            graph: valid_zit_graph(),
+            settings: JobSettings::default(),
+        };
+        let resp = scheduler.submit(req).await.expect("submit succeeded");
+
+        // Wait for dispatch to move job to Running.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Verify job is Running.
+        let db_job = get_job(&scheduler.db, resp.job_id)
+            .await
+            .expect("get from DB succeeded")
+            .expect("job exists");
+        assert_eq!(
+            db_job.status,
+            JobStatus::Running,
+            "job should be Running after dispatch"
+        );
+
+        // Inject Cancelled event via pool test helper.
+        pool.publish_event(
+            "worker-0".to_string(),
+            WorkerEvent::Cancelled {
+                job_id: resp.job_id,
+            },
+        );
+
+        // Wait for event handler to process.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Drain any preceding JobQueued/JobStarted events from the submit + dispatch.
+        let jce = loop {
+            let event = rx.recv().await.expect("received broadcast event");
+            match event {
+                WsEvent::JobQueued(_) | WsEvent::JobStarted(_) => continue,
+                WsEvent::JobCancelled(e) => break e,
+                other => panic!("expected JobCancelled, got {:?}", other),
+            }
+        };
+        assert_eq!(jce.job_id, resp.job_id);
+        assert_eq!(jce.event, "job.cancelled");
+
+        // Verify job status is Cancelled in DB.
+        let db_job = get_job(&scheduler.db, resp.job_id)
+            .await
+            .expect("get from DB succeeded")
+            .expect("job exists");
+        assert_eq!(
+            db_job.status,
+            JobStatus::Cancelled,
+            "job should be Cancelled after cancellation event"
+        );
+
+        // Verify worker is back to Idle.
+        let infos = pool.list().await;
+        assert_eq!(
+            infos[0].status,
+            WorkerStatus::Idle,
+            "worker should be Idle after cancellation"
         );
 
         dispatch_handle.abort();

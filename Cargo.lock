@@ -148,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-scheduler"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "anvilml-core",
  "anvilml-ipc",
