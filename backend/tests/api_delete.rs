@@ -104,6 +104,7 @@ async fn build_test_app() -> (
         Some(workers.clone()),
         Some(scheduler.clone()),
         artifact_store,
+        anvilml_core::ServerConfig::default(),
     );
 
     (state, db, artifact_dir, scheduler, workers, broadcaster)

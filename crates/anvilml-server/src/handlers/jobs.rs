@@ -705,6 +705,7 @@ mod tests {
             None,
             Some(scheduler),
             artifact_store,
+            anvilml_core::ServerConfig::default(),
         );
         (build_router(state), pool)
     }

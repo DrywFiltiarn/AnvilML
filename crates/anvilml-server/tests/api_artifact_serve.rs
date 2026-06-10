@@ -53,7 +53,17 @@ async fn setup_test_env() -> (TempDir, ArtifactStore, String) {
 /// Build a test app router with the given artifact store.
 async fn build_artifact_app(store: ArtifactStore) -> Router {
     let broadcaster = Arc::new(EventBroadcaster::new(16));
-    let state = App::new("0.1.0", None, None, None, broadcaster, None, None, store);
+    let state = App::new(
+        "0.1.0",
+        None,
+        None,
+        None,
+        broadcaster,
+        None,
+        None,
+        store,
+        anvilml_core::ServerConfig::default(),
+    );
     build_router(state)
 }
 

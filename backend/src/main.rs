@@ -266,6 +266,7 @@ async fn main() {
         artifact_store.clone(),
     ));
 
+    let bind_addr = format!("{}:{}", cfg.host, cfg.port);
     let state = App::new_with_hardware(
         env!("CARGO_PKG_VERSION"),
         hw_info,
@@ -276,12 +277,11 @@ async fn main() {
         Some(workers.clone()),
         Some(scheduler.clone()),
         artifact_store,
+        cfg,
     );
     spawn_system_stats_tick(state.clone());
     let _dispatch_handle = scheduler.start_dispatch_loop();
     let router = build_router(state);
-
-    let bind_addr = format!("{}:{}", cfg.host, cfg.port);
     let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
         .unwrap_or_else(|e| panic!("Failed to bind to {bind_addr}: {e}"));

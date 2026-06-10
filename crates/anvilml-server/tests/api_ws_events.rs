@@ -29,6 +29,7 @@ async fn ws_connect_broadcast_receive() {
         None,
         None,
         artifact_store,
+        anvilml_core::ServerConfig::default(),
     );
     let app: Router = build_router(state);
 

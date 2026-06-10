@@ -272,6 +272,7 @@ mod tests {
             None,
             None,
             artifact_store,
+            anvilml_core::ServerConfig::default(),
         );
         (build_router(state), pool)
     }

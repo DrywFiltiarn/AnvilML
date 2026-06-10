@@ -148,16 +148,17 @@
     "P16-A4",
     "P17-A1",
     "P17-A2",
-    "P17-A3"
+    "P17-A3",
+    "P18-A1"
   ],
-  "in_progress": "P18-A1",
+  "in_progress": "P18-A2",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "1. **Add `config` field to `AppState`** \u2014 In `crates/anvilml-server/src/state.rs`, add `pub config: anvilml_core::ServerConfig` to the `AppState` struct. Update both `new()` and `new_with_hardware()` constructors to accept and store a `ServerConfig` argument. Update the `Clone` impl to clone the config.\n\n2. **Implement `restart_worker` handler** \u2014 In `crates/anvilml-server/src/handlers/workers.rs`, add a new async function:\n   ```rust\n   pub async fn restart_worker(\n       State(state): State<Arc<App>>,\n       Path(worker_id): Path<String>,\n   ) -> (StatusCode, Json<serde_json::Value>)\n   ```\n   Logic:\n   - If `state.workers` is `None` \u2192 503 with `{\"error\":\"workers_not_configured\",\"message\":\"worker pool not available\"}`.\n   - Call `state.workers.as_ref().unwrap().restart(&worker_id, &state.config).await`.\n   - On `Err(AnvilError::WorkerDead(_))` \u2192 404 with `{\"error\":\"not_found\",\"message\":\"worker {worker_id} not found\"}`.\n   - On other `Err(e)` \u2192 500 with standard error body.\n   - On `Ok(())` \u2192 202 with `{\"status\":\"restarting\",\"worker_id\":...}`.\n\n3. **Wire the route** \u2014 In `crates/anvilml-server/src/lib.rs`, add `.route(\"/v1/workers/{id}/restart\", post(handlers::workers::restart_worker))` to the router chain, alongside the existing `/v1/workers` GET route.\n\n4. **Update `backend/src/main.rs`** \u2014 Pass the loaded `cfg: ServerConfig` to `App::new_with_hardware(...)` (or `App::new(...)` if no hardware) by adding it as the new parameter.\n\n5. **Add unit test** \u2014 In `crates/anvilml-server/src/lib.rs`, add a test that:\n   - Creates a test `WorkerPool` with a mock worker via `WorkerPool::new_test_pool_with_workers()`.\n   - Builds `AppState` with the worker pool and a minimal `ServerConfig`.\n   - Sends a POST to `/v1/workers/worker-0/restart`.\n   - Verifies the response is 202 (restart path exercised; spawn may fail due to no real Python, but the route and handler logic are exercised).\n   - Also tests 404 for a non-existent worker ID.\n\n6. **Logging** \u2014 The `WorkerPool::restart` method in P18-A1 already emits `info!(worker_id, \"restarting worker\")` and `info!(worker_id, \"worker restarted successfully\")`. The new handler does not need additional logging beyond what `restart` provides, per \u00a711.3 mandatory points.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-10T18:07:17+0200",
-  "plan_approval_message_id": "1514299432345141270",
+  "last_updated": "2026-06-10T20:05:57+0200",
+  "plan_approval_message_id": "1514322778621219008",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1514299429547413675",
+  "plan_report_message_id": "1514322776604021030",
   "impl_report_message_id": null
 }

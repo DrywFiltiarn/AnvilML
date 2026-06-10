@@ -1,5 +1,6 @@
 use std::sync::{Arc, RwLock};
 
+use anvilml_core::config::ServerConfig;
 use anvilml_core::types::artifact::ArtifactSave;
 use anvilml_core::{config::ModelDirConfig, EnvReport, HardwareInfo};
 use anvilml_registry::ModelRegistry;
@@ -34,6 +35,8 @@ pub struct AppState<A: ArtifactSave + Clone + 'static> {
     pub scheduler: Option<Arc<JobScheduler<A>>>,
     /// Artifact store for persisting generated images.
     pub artifact_store: A,
+    /// Server configuration — used by handlers that need config (e.g. worker restart).
+    pub config: ServerConfig,
 }
 
 impl<A: ArtifactSave + Clone + 'static> AppState<A> {
@@ -53,6 +56,7 @@ impl<A: ArtifactSave + Clone + 'static> AppState<A> {
         workers: Option<Arc<WorkerPool>>,
         scheduler: Option<Arc<JobScheduler<A>>>,
         artifact_store: A,
+        config: ServerConfig,
     ) -> Self {
         let registry = match (registry, &db) {
             (Some(r), _) => r,
@@ -89,6 +93,7 @@ impl<A: ArtifactSave + Clone + 'static> AppState<A> {
             workers,
             scheduler,
             artifact_store,
+            config,
         }
     }
 
@@ -105,6 +110,7 @@ impl<A: ArtifactSave + Clone + 'static> AppState<A> {
         workers: Option<Arc<WorkerPool>>,
         scheduler: Option<Arc<JobScheduler<A>>>,
         artifact_store: A,
+        config: ServerConfig,
     ) -> Self {
         let registry = match (registry, &db) {
             (Some(r), _) => r,
@@ -132,6 +138,7 @@ impl<A: ArtifactSave + Clone + 'static> AppState<A> {
             workers,
             scheduler,
             artifact_store,
+            config,
         }
     }
 
@@ -170,6 +177,7 @@ impl<A: ArtifactSave + Clone + 'static> Clone for AppState<A> {
             workers: self.workers.clone(),
             scheduler: self.scheduler.clone(),
             artifact_store: self.artifact_store.clone(),
+            config: self.config.clone(),
         }
     }
 }

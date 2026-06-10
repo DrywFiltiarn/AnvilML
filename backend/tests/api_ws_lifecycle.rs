@@ -133,6 +133,7 @@ async fn test_ws_lifecycle_full_job() {
         None,
         Some(scheduler.clone()),
         artifact_store,
+        anvilml_core::ServerConfig::default(),
     );
 
     let router = anvilml_server::build_router(state);

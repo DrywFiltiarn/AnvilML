@@ -132,6 +132,7 @@ mod tests {
             None,
             None,
             artifact_store,
+            anvilml_core::ServerConfig::default(),
         );
 
         // Spawn the tick task.
