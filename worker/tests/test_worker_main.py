@@ -6,10 +6,11 @@ Ping -> Pong, MemoryQuery -> MemoryReport, Shutdown -> Dying + exit 0.
 """
 
 import os
-import select
+import queue
 import struct
 import subprocess
 import sys
+import threading
 import time
 
 import msgpack
@@ -504,6 +505,11 @@ class TestWorkerMain:
         Uses ANVILML_MOCK_NODE_DELAY_MS so the worker pauses between nodes,
         giving the test time to inject the CancelJob message while the
         worker is blocked in the delay (cooperative cancellation window).
+
+        Note: select.select() does not work with subprocess pipes on Windows
+        (WinError 10038 — anonymous pipes are not sockets). A background
+        reader thread feeding a queue.Queue is used instead, which is
+        portable across Linux and Windows.
         """
         nodes = [
             {"type": "LoadModel"},
@@ -530,6 +536,38 @@ class TestWorkerMain:
             stderr=subprocess.STDOUT, env=env,
         )
 
+        # Background reader thread: continuously reads raw bytes from
+        # proc.stdout and puts them onto a Queue.  This avoids select()
+        # which is not supported on Windows anonymous pipes.
+        raw_q: queue.Queue = queue.Queue()
+
+        def _reader():
+            try:
+                while True:
+                    chunk = proc.stdout.read(256)
+                    if not chunk:
+                        break
+                    raw_q.put(chunk)
+            except Exception:
+                pass
+
+        reader_thread = threading.Thread(target=_reader, daemon=True)
+        reader_thread.start()
+
+        def _drain_queue(timeout_s: float) -> bytes:
+            """Collect all bytes available in raw_q within timeout_s seconds."""
+            data = b""
+            deadline = time.monotonic() + timeout_s
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    data += raw_q.get(timeout=min(remaining, 0.05))
+                except queue.Empty:
+                    break
+            return data
+
         try:
             # Send InitializeHardware + Execute.
             frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
@@ -537,28 +575,21 @@ class TestWorkerMain:
             proc.stdin.write(frames)
             proc.stdin.flush()
 
-            # Read frames until we see the first Progress (node_index 0).
-            # Use select() + small reads so we don't block waiting for 4096
-            # bytes — the worker only sends small frames (~50-100 bytes).
+            # Wait until the first Progress frame (node_index 0) arrives.
             stdout_data = b""
             first_progress_seen = False
             deadline = time.monotonic() + 5
             while not first_progress_seen and time.monotonic() < deadline:
-                ready, _, _ = select.select([proc.stdout], [], [], 0.5)
-                if ready:
-                    chunk = os.read(proc.stdout.fileno(), 4096)
-                    if not chunk:
+                stdout_data += _drain_queue(0.05)
+                parsed = self._parse_frames(stdout_data)
+                for f in parsed:
+                    if f.get("_type") == "Progress" and f.get("node_index") == 0:
+                        first_progress_seen = True
                         break
-                    stdout_data += chunk
-                    parsed = self._parse_frames(stdout_data)
-                    for f in parsed:
-                        if f.get("_type") == "Progress" and f.get("node_index") == 0:
-                            first_progress_seen = True
-                            break
 
             assert first_progress_seen, "Never received first Progress frame"
 
-            # Send CancelJob now — worker is in the delay between nodes.
+            # Send CancelJob — worker is in the delay between nodes.
             cancel_frame = _make_frame({
                 "_type": "CancelJob",
                 "job_id": "cancel-test-1",
@@ -570,28 +601,20 @@ class TestWorkerMain:
             cancelled_seen = False
             cancel_deadline = time.monotonic() + 3
             while not cancelled_seen and time.monotonic() < cancel_deadline:
-                ready, _, _ = select.select([proc.stdout], [], [], 0.5)
-                if ready:
-                    chunk = os.read(proc.stdout.fileno(), 4096)
-                    if not chunk:
-                        break
-                    stdout_data += chunk
-                    parsed = self._parse_frames(stdout_data)
-                    cancelled_seen = any(
-                        f.get("_type") == "Cancelled" for f in parsed
-                    )
+                stdout_data += _drain_queue(0.05)
+                parsed = self._parse_frames(stdout_data)
+                cancelled_seen = any(f.get("_type") == "Cancelled" for f in parsed)
 
-            # Send Shutdown so the worker exits.
+            # Send Shutdown so the worker exits cleanly.
             shutdown_frame = _make_frame({"_type": "Shutdown"})
             proc.stdin.write(shutdown_frame)
             proc.stdin.close()
 
             proc.wait(timeout=5)
 
-            # Read any remaining output after shutdown.
-            remaining, _, _ = select.select([proc.stdout], [], [], 1.0)
-            if remaining:
-                stdout_data += os.read(proc.stdout.fileno(), 4096)
+            # Drain any remaining bytes after shutdown.
+            stdout_data += _drain_queue(1.0)
+            reader_thread.join(timeout=2)
 
             parsed = self._parse_frames(stdout_data)
 
