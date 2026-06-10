@@ -6,6 +6,7 @@ Ping -> Pong, MemoryQuery -> MemoryReport, Shutdown -> Dying + exit 0.
 """
 
 import os
+import select
 import struct
 import subprocess
 import sys
@@ -491,6 +492,249 @@ class TestWorkerMain:
 
             completed_events = [f for f in parsed if f["_type"] == "Completed"]
             assert len(completed_events) == 1
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_cancel_job_during_execute(self):
+        """Send CancelJob after the first Progress frame arrives — verify
+        Cancelled is emitted (no Completed), with correct job_id.
+
+        Uses ANVILML_MOCK_NODE_DELAY_MS so the worker pauses between nodes,
+        giving the test time to inject the CancelJob message while the
+        worker is blocked in the delay (cooperative cancellation window).
+        """
+        nodes = [
+            {"type": "LoadModel"},
+            {"type": "Inference"},
+            {"type": "SaveOutput"},
+        ]
+        execute_msg = {
+            "_type": "Execute",
+            "job_id": "cancel-test-1",
+            "graph": {"nodes": nodes},
+            "settings": {},
+            "device_index": 0,
+        }
+
+        env = os.environ.copy()
+        env["ANVILML_WORKER_MOCK"] = "1"
+        env["ANVILML_MOCK_NODE_DELAY_MS"] = "100"
+
+        proc = subprocess.Popen(
+            [sys.executable, _WORKER_SCRIPT,
+             "--worker-id", "cancel-test-1",
+             "--device-index", "0"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, env=env,
+        )
+
+        try:
+            # Send InitializeHardware + Execute.
+            frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            frames += _make_frame(execute_msg)
+            proc.stdin.write(frames)
+            proc.stdin.flush()
+
+            # Read frames until we see the first Progress (node_index 0).
+            # Use select() + small reads so we don't block waiting for 4096
+            # bytes — the worker only sends small frames (~50-100 bytes).
+            stdout_data = b""
+            first_progress_seen = False
+            deadline = time.monotonic() + 5
+            while not first_progress_seen and time.monotonic() < deadline:
+                ready, _, _ = select.select([proc.stdout], [], [], 0.5)
+                if ready:
+                    chunk = os.read(proc.stdout.fileno(), 4096)
+                    if not chunk:
+                        break
+                    stdout_data += chunk
+                    parsed = self._parse_frames(stdout_data)
+                    for f in parsed:
+                        if f.get("_type") == "Progress" and f.get("node_index") == 0:
+                            first_progress_seen = True
+                            break
+
+            assert first_progress_seen, "Never received first Progress frame"
+
+            # Send CancelJob now — worker is in the delay between nodes.
+            cancel_frame = _make_frame({
+                "_type": "CancelJob",
+                "job_id": "cancel-test-1",
+            })
+            proc.stdin.write(cancel_frame)
+            proc.stdin.flush()
+
+            # Wait for Cancelled event.
+            cancelled_seen = False
+            cancel_deadline = time.monotonic() + 3
+            while not cancelled_seen and time.monotonic() < cancel_deadline:
+                ready, _, _ = select.select([proc.stdout], [], [], 0.5)
+                if ready:
+                    chunk = os.read(proc.stdout.fileno(), 4096)
+                    if not chunk:
+                        break
+                    stdout_data += chunk
+                    parsed = self._parse_frames(stdout_data)
+                    cancelled_seen = any(
+                        f.get("_type") == "Cancelled" for f in parsed
+                    )
+
+            # Send Shutdown so the worker exits.
+            shutdown_frame = _make_frame({"_type": "Shutdown"})
+            proc.stdin.write(shutdown_frame)
+            proc.stdin.close()
+
+            proc.wait(timeout=5)
+
+            # Read any remaining output after shutdown.
+            remaining, _, _ = select.select([proc.stdout], [], [], 1.0)
+            if remaining:
+                stdout_data += os.read(proc.stdout.fileno(), 4096)
+
+            parsed = self._parse_frames(stdout_data)
+
+            # Exactly one Ready event.
+            ready_events = [f for f in parsed if f["_type"] == "Ready"]
+            assert len(ready_events) == 1
+
+            # At least one Progress event (the first one before cancel).
+            progress_events = [f for f in parsed if f["_type"] == "Progress"]
+            assert len(progress_events) >= 1
+
+            # Exactly one Cancelled event (no Completed).
+            cancelled_events = [f for f in parsed if f["_type"] == "Cancelled"]
+            assert len(cancelled_events) == 1, (
+                f"expected exactly one Cancelled, got {len(cancelled_events)}"
+            )
+            assert cancelled_events[0]["job_id"] == "cancel-test-1"
+
+            # No Completed event.
+            completed_events = [f for f in parsed if f["_type"] == "Completed"]
+            assert len(completed_events) == 0, (
+                f"expected no Completed after cancel, got {len(completed_events)}"
+            )
+
+            # Exactly one Dying event, exit code 0.
+            dying_events = [f for f in parsed if f["_type"] == "Dying"]
+            assert len(dying_events) == 1
+            assert proc.returncode == 0
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_cancel_before_execute(self):
+        """Send CancelJob before Execute → worker processes CancelJob
+        (flag set), then receives Execute → should emit Cancelled
+        before any Progress."""
+        proc = self._spawn_worker()
+
+        try:
+            nodes = [
+                {"type": "LoadModel"},
+                {"type": "Inference"},
+            ]
+            execute_msg = {
+                "_type": "Execute",
+                "job_id": "cancel-test-2",
+                "graph": {"nodes": nodes},
+                "settings": {},
+                "device_index": 0,
+            }
+
+            frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            # Cancel before Execute.
+            frames += _make_frame({
+                "_type": "CancelJob",
+                "job_id": "cancel-test-2",
+            })
+            frames += _make_frame(execute_msg)
+            frames += _make_frame({"_type": "Shutdown"})
+            proc.stdin.write(frames)
+            proc.stdin.close()
+
+            stdout_data = proc.stdout.read(4096)
+            proc.wait(timeout=5)
+
+            parsed = self._parse_frames(stdout_data)
+
+            # Exactly one Ready event.
+            ready_events = [f for f in parsed if f["_type"] == "Ready"]
+            assert len(ready_events) == 1
+
+            # Cancelled emitted, no Progress, no Completed.
+            cancelled_events = [f for f in parsed if f["_type"] == "Cancelled"]
+            assert len(cancelled_events) == 1
+            assert cancelled_events[0]["job_id"] == "cancel-test-2"
+
+            progress_events = [f for f in parsed if f["_type"] == "Progress"]
+            assert len(progress_events) == 0
+
+            completed_events = [f for f in parsed if f["_type"] == "Completed"]
+            assert len(completed_events) == 0
+
+            # Exactly one Dying event, exit code 0.
+            dying_events = [f for f in parsed if f["_type"] == "Dying"]
+            assert len(dying_events) == 1
+            assert proc.returncode == 0
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_mock_node_delay_ms(self):
+        """Set ANVILML_MOCK_NODE_DELAY_MS=50, execute a 3-node job →
+        verify total elapsed time is at least 100ms (2 inter-node
+        delays × 50ms)."""
+        nodes = [
+            {"type": "LoadModel"},
+            {"type": "Inference"},
+            {"type": "SaveOutput"},
+        ]
+        execute_msg = {
+            "_type": "Execute",
+            "job_id": "delay-test-1",
+            "graph": {"nodes": nodes},
+            "settings": {},
+            "device_index": 0,
+        }
+
+        env = os.environ.copy()
+        env["ANVILML_WORKER_MOCK"] = "1"
+        env["ANVILML_MOCK_NODE_DELAY_MS"] = "50"
+
+        proc = subprocess.Popen(
+            [sys.executable, _WORKER_SCRIPT,
+             "--worker-id", "test-delay-0",
+             "--device-index", "0"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, env=env,
+        )
+
+        try:
+            frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            frames += _make_frame(execute_msg)
+            frames += _make_frame({"_type": "Shutdown"})
+            proc.stdin.write(frames)
+            proc.stdin.close()
+
+            stdout_data = proc.stdout.read(4096)
+            proc.wait(timeout=10)
+
+            parsed = self._parse_frames(stdout_data)
+
+            # Exactly one Completed event.
+            completed_events = [f for f in parsed if f["_type"] == "Completed"]
+            assert len(completed_events) == 1, (
+                f"expected exactly one Completed, got {len(completed_events)}"
+            )
+            elapsed_ms = completed_events[0]["elapsed_ms"]
+            # 2 inter-node delays × 50ms = 100ms minimum.
+            assert elapsed_ms >= 100, (
+                f"expected elapsed_ms >= 100, got {elapsed_ms}"
+            )
         finally:
             if proc.poll() is None:
                 proc.kill()
