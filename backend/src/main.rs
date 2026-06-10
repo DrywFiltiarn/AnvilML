@@ -1,4 +1,5 @@
 mod cli;
+mod preflight;
 mod shutdown;
 
 use std::sync::Arc;
@@ -277,8 +278,21 @@ async fn main() {
         Some(workers.clone()),
         Some(scheduler.clone()),
         artifact_store,
-        cfg,
+        cfg.clone(),
     );
+
+    // Run Python environment preflight and populate AppState.env_report.
+    let env_report = preflight::run_preflight(&cfg).await;
+    tracing::info!(
+        preflight_ok = env_report.preflight_ok,
+        python_path = %env_report.python_path,
+        python_version = %env_report.python_version,
+        torch_version = %env_report.torch_version,
+        reason = %env_report.reason,
+        "python preflight complete"
+    );
+    state.set_env_report(env_report);
+
     spawn_system_stats_tick(state.clone());
     let _dispatch_handle = scheduler.start_dispatch_loop();
     let router = build_router(state);

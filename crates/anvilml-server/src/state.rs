@@ -17,7 +17,7 @@ pub struct AppState<A: ArtifactSave + Clone + 'static> {
     start_time: Instant,
     /// The application version string.
     version: String,
-    /// Python environment health report (stubbed, updated by preflight).
+    /// Python environment health report (populated by preflight at startup).
     env_report: Arc<RwLock<EnvReport>>,
     /// Hardware detection result (populated at startup by `detect_all_devices`).
     hardware: Arc<RwLock<HardwareInfo>>,
@@ -74,7 +74,7 @@ impl<A: ArtifactSave + Clone + 'static> AppState<A> {
                 python_version: String::new(),
                 torch_version: String::new(),
                 preflight_ok: false,
-                reason: "not_checked".to_string(),
+                reason: "unavailable".to_string(),
             })),
             hardware: Arc::new(RwLock::new(HardwareInfo {
                 host: anvilml_core::HostInfo {
@@ -128,7 +128,7 @@ impl<A: ArtifactSave + Clone + 'static> AppState<A> {
                 python_version: String::new(),
                 torch_version: String::new(),
                 preflight_ok: false,
-                reason: "not_checked".to_string(),
+                reason: "unavailable".to_string(),
             })),
             hardware: Arc::new(RwLock::new(hardware)),
             db,
@@ -155,6 +155,13 @@ impl<A: ArtifactSave + Clone + 'static> AppState<A> {
     /// Returns a clone of the current `EnvReport`.
     pub fn env_report(&self) -> EnvReport {
         self.env_report.read().unwrap().clone()
+    }
+
+    /// Replace the current `EnvReport` with a new value.
+    ///
+    /// Called by preflight at startup to populate real environment data.
+    pub fn set_env_report(&self, report: EnvReport) {
+        *self.env_report.write().unwrap() = report;
     }
 
     /// Returns a clone of the current hardware information.

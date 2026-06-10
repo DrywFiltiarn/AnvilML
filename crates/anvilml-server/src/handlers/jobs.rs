@@ -48,6 +48,8 @@ fn error_body(code: &str, message: &str) -> serde_json::Value {
 ///
 /// Validates the graph structure via the scheduler, persists the job to SQLite,
 /// enqueues it, and returns 202 with the real job_id and queue position.
+/// Returns 503 `workers_unavailable` when the Python preflight check has failed
+/// (unless `ANVILML_WORKER_MOCK` is set).
 #[utoipa::path(
     post,
     path = "/v1/jobs",
@@ -56,13 +58,32 @@ fn error_body(code: &str, message: &str) -> serde_json::Value {
     responses(
         (status = 202, description = "Job accepted and queued", body = SubmitJobResponse),
         (status = 422, description = "Invalid graph — validation errors listed", body = ErrorInline),
-        (status = 500, description = "Internal server error", body = ErrorInline)
+        (status = 500, description = "Internal server error", body = ErrorInline),
+        (status = 503, description = "Workers unavailable — preflight failed", body = ErrorInline)
     )
 )]
 pub async fn submit_job(
     State(state): State<Arc<App>>,
     Json(req): Json<SubmitJobRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    // Preflight gate: reject job submission when Python environment is
+    // unhealthy, unless we are in mock mode (ANVILML_WORKER_MOCK is set).
+    let preflight = state.env_report();
+    if !preflight.preflight_ok && std::env::var("ANVILML_WORKER_MOCK").is_err() {
+        let reason = preflight.reason.clone();
+        tracing::warn!(
+            reason = %reason,
+            "submit_job: preflight failed, rejecting"
+        );
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(error_body(
+                "workers_unavailable",
+                &format!("python preflight failed: {reason}"),
+            )),
+        );
+    }
+
     let scheduler = match &state.scheduler {
         Some(s) => s,
         None => {
@@ -676,6 +697,10 @@ mod tests {
         use anvilml_scheduler::{JobQueue, VramLedger};
         use anvilml_worker::WorkerPool;
 
+        // Set mock mode so the preflight gate is bypassed in tests.
+        // The env var is left set for the duration of the test.
+        std::env::set_var("ANVILML_WORKER_MOCK", "1");
+
         let pool = setup_pool().await;
         let (broadcaster, _rx) = broadcast::channel::<WsEvent>(16);
         let workers = Arc::new(WorkerPool::new_test_pool());
@@ -707,6 +732,7 @@ mod tests {
             artifact_store,
             anvilml_core::ServerConfig::default(),
         );
+
         (build_router(state), pool)
     }
 

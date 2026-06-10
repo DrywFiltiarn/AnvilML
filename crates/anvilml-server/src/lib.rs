@@ -150,7 +150,7 @@ mod tests {
         assert_eq!(parsed["python_version"], "");
         assert_eq!(parsed["torch_version"], "");
         assert_eq!(parsed["preflight_ok"], false);
-        assert_eq!(parsed["reason"], "not_checked");
+        assert_eq!(parsed["reason"], "unavailable");
     }
 
     #[tokio::test]

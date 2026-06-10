@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-server"
-version = "0.1.12"
+version = "0.1.13"
 edition = "2021"
 
 [dependencies]
@@ -34,6 +34,7 @@ base64 = { workspace = true }
 chrono = { workspace = true }
 hex = { workspace = true }
 sha2 = { workspace = true }
+temp-env = { version = "0.3", features = ["async_closure"] }
 tempfile = { workspace = true }
 tokio-tungstenite = { workspace = true }
 http-body-util = { workspace = true }

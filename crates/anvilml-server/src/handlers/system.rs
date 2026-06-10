@@ -6,9 +6,8 @@ use anvilml_core::{EnvReport, HardwareInfo};
 
 /// GET /v1/system/env handler.
 ///
-/// Returns a stubbed `EnvReport` JSON object. The stub values (`python_path=""`,
-/// `preflight_ok=false`, `reason="not_checked"`) are placeholders that will be
-/// replaced by real preflight logic in Phase 18.
+/// Returns the `EnvReport` populated by the Python preflight check at startup.
+/// In test context (no preflight runs), stub values are returned.
 pub async fn get_env(State(state): State<Arc<crate::App>>) -> (StatusCode, Json<EnvReport>) {
     let report = state.env_report();
     (StatusCode::OK, Json(report))
