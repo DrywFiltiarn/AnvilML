@@ -43,7 +43,8 @@ where
                 router.fallback_service(svc)
             }
         }
-        FrontendMode::Headless | FrontendMode::Remote { .. } => router,
+        FrontendMode::Headless => router,
+        FrontendMode::Remote { .. } => router,
     }
 }
 
@@ -144,5 +145,43 @@ mod tests {
             "expected body to contain 'Frontend not found', got: {}",
             body_str
         );
+    }
+
+    #[tokio::test]
+    async fn test_frontend_headless() {
+        let router = Router::new().route("/health", axum::routing::get(|| async { "ok" }));
+        let router = add_frontend_route(router, &FrontendMode::Headless);
+        let app = build_app(router);
+
+        // Headless mode: no catch-all, so GET / returns 404.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(Full::<Bytes>::default())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        // Health endpoint still works.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Full::<Bytes>::default())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        assert_eq!(body_str, "ok");
     }
 }
