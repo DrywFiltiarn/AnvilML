@@ -7,20 +7,19 @@
 | Milestone group | Correction (retrofit) |
 | Depends on phases | 18 |
 | Task file | `.forge/tasks/tasks_phase904.json` |
-| Tasks | 3 |
+| Tasks | 4 |
 
 ## Overview
 
-Phase 904 is a retrofit correction phase inserted between Phase 18 and Phase 19. It resolves two classes of test isolation bug that cause the CI `rust-linux` and `rust-windows` jobs to hang with tests exceeding the 60-second timeout.
+Phase 904 is a retrofit correction phase inserted between Phase 18 and Phase 19. It resolves three classes of test bug that cause the CI `rust-linux` and `rust-windows` jobs to either hang (>60 s timeout) or panic.
 
-**Root cause 1 — `sqlite::memory:` multi-connection pool.** `anvilml-scheduler`'s `setup_pool()` helper calls `SqlitePool::connect("sqlite::memory:")`, which creates a pool with the default `max_connections` (10). Each SQLite `:memory:` URL is a separate, independent database per connection. The `CREATE TABLE` DDL executes on connection 0; subsequent queries are dispatched to connections 1–9, which see an empty schema. The result is either a hard SQL error or an indefinite hang waiting for a lock that spans across connection slots.
+**Root cause 1 — `sqlite::memory:` multi-connection pool.** `anvilml-scheduler`'s `setup_pool()` helper calls `SqlitePool::connect("sqlite::memory:")`, which creates a pool with the default `max_connections` (10). Each SQLite `:memory:` URL is a separate, independent database per connection. The `CREATE TABLE` DDL executes on connection 0; subsequent queries are dispatched to connections 1–9, which see an empty schema. The result is either a hard SQL error or an indefinite hang.
 
-**Root cause 2 — `#[serial_test::serial]` + `#[tokio::test]` deadlock.** `serial_test` 3.x enforces serialisation by acquiring a `parking_lot::Mutex` on the OS thread for the duration of each annotated test. `#[tokio::test]` (default flavor: `current_thread`) drives the runtime via `Runtime::block_on(...)` on that same thread. Any test that spawns a background `tokio::task` (dispatch loop, axum server, broadcast subscriber) requires the tokio thread to poll those tasks — but the thread is blocked in `block_on` holding the serial lock. Nothing can make progress. The deadlock manifests across two crates:
+**Root cause 2 — `#[serial_test::serial]` + `#[tokio::test]` deadlock.** `serial_test` 3.x enforces serialisation by acquiring a `parking_lot::Mutex` on the OS thread for the duration of each annotated test. `#[tokio::test]` (default flavor: `current_thread`) drives the runtime via `Runtime::block_on(...)` on that same thread. Any test that spawns a background `tokio::task` (dispatch loop, axum server, broadcast subscriber) requires the tokio thread to poll those tasks — but the thread is blocked in `block_on` holding the serial lock. Nothing can make progress. This affects all scheduler tests and four backend integration test files (`preflight_check.rs`, `api_ws_lifecycle.rs`, `api_cancel.rs`, `api_delete.rs`).
 
-- `anvilml-scheduler` — all `job_store` and `scheduler` tests carry `#[serial]`.
-- `backend` — four integration test files (`preflight_check.rs`, `api_ws_lifecycle.rs`, `api_cancel.rs`, `api_delete.rs`) all carry `#[serial]` and each spawns an axum server via `tokio::spawn`.
+**Root cause 3 — `resolve_interpreter_unix` test missing platform guard.** `backend/src/preflight.rs` contains a unit test `resolve_interpreter_unix` that asserts the Unix interpreter path (`/opt/myvenv/bin/python3`) with no `#[cfg(not(windows))]` guard. The production function `resolve_interpreter()` correctly returns the Windows path on Windows via `cfg!(windows)`, so the test panics on Windows with a path mismatch.
 
-The fix is uniform: remove `#[serial]` everywhere it is not needed (tests with no shared state), fix the `sqlite::memory:` pool to `max_connections(1)`, and switch tests that require background tasks to `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]`, which does not block the spawning thread and allows background tasks to be polled on worker threads.
+The fix for root causes 1 and 2 is uniform: fix the `:memory:` pool to `max_connections(1)`, remove `#[serial]` everywhere it is not needed, and switch tests that require background tasks to `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]`. The fix for root cause 3 is a single `#[cfg(not(windows))]` attribute on one test function.
 
 `serial_test` remains a legitimate dependency in `anvilml-hardware`, where it serialises sync tests that mutate `ANVILML_MOCK_DEVICE_TYPE` / `ANVILML_MOCK_VRAM_MIB` environment variables. The workspace dependency is retained; only the per-crate dev-dependency entries for `anvilml-scheduler` and `backend` are removed.
 
@@ -28,7 +27,7 @@ The fix is uniform: remove `#[serial]` everywhere it is not needed (tests with n
 
 | Group | Subsystem | Tasks | Summary |
 |-------|-----------|-------|---------|
-| A | Test isolation fixes | P904-A1 … P904-A3 | Fix scheduler pool + serial, fix backend serial, verify workspace |
+| A | Test isolation fixes | P904-A1, P904-A2, P904-A2b, P904-A3 | Fix scheduler pool + serial, fix backend serial, fix preflight platform guard, verify workspace |
 
 ## Prerequisites
 
@@ -37,7 +36,7 @@ The fix is uniform: remove `#[serial]` everywhere it is not needed (tests with n
 
 ## Interfaces and Contracts
 
-No production interfaces change. All modifications are confined to `#[cfg(test)]` code and `[dev-dependencies]` entries.
+No production interfaces change. All modifications are confined to `#[cfg(test)]` code, `[dev-dependencies]` entries, and test attribute annotations.
 
 ## Task Descriptions
 
@@ -59,7 +58,7 @@ No production interfaces change. All modifications are confined to `#[cfg(test)]
 
 **scheduler.rs changes:**
 - For pure logic tests that call `select_worker()` directly with no async spawning (`test_select_auto_single_idle`, `test_select_auto_all_busy`, `test_select_auto_ranked_by_free_mib`, `test_select_auto_tie_break_device_index`, `test_select_cpu`, `test_select_cpu_not_available`, `test_select_preference_idle`, `test_select_preference_busy`, `test_select_preference_not_found`): remove `#[serial]` only; leave `#[tokio::test]` unchanged.
-- For all remaining scheduler tests that call `make_scheduler()` or `start_dispatch_loop()` (any test that touches a broadcast channel or spawns a background task): replace `#[serial]` + `#[tokio::test]` with `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]`.
+- For all remaining scheduler tests that call `make_scheduler()` or `start_dispatch_loop()`: replace `#[serial]` + `#[tokio::test]` with `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]`.
 
 **Cargo.toml changes:**
 - Remove `serial_test = { workspace = true }` from `[dev-dependencies]`.
@@ -82,25 +81,59 @@ No production interfaces change. All modifications are confined to `#[cfg(test)]
 **api_ws_lifecycle.rs, api_cancel.rs, api_delete.rs changes (identical pattern):**
 - Remove `use serial_test::serial;` (or `use serial_test;`).
 - Remove all `#[serial]` attributes from every test function.
-- Change `#[tokio::test]` to `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]` on every test function. These tests all spawn an axum server via `tokio::spawn` and drive a hyper or tungstenite client concurrently — they require a multi-thread runtime to make progress.
-- Env isolation already in place (`temp_env::async_with_vars` + unconditional `remove_var` after): leave unchanged.
+- Change `#[tokio::test]` to `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]` on every test function.
+- Env isolation already in place via `temp_env::async_with_vars`: leave unchanged.
 
 **preflight_check.rs changes:**
 - Same `#[serial]` removal and `multi_thread` runtime change as above.
-- Additionally, in `job_submit_rejected_when_preflight_fails`: the test body currently opens with a bare `std::env::remove_var("ANVILML_WORKER_MOCK")` with no save/restore. Replace this with a `temp_env::async_with_vars([("ANVILML_WORKER_MOCK", None::<&str>)], async { <rest of body> }).await` wrapper so the env state is properly scoped rather than unconditionally stripped.
+- Additionally, in `job_submit_rejected_when_preflight_fails`: replace the bare `std::env::remove_var("ANVILML_WORKER_MOCK")` at the top of the test body with a `temp_env::async_with_vars([("ANVILML_WORKER_MOCK", None::<&str>)], async { <rest of body> }).await` wrapper so the env state is properly scoped rather than unconditionally stripped.
 
 **Cargo.toml changes:**
-- Remove `serial_test = { workspace = true }` from `[dev-dependencies]`. The `temp-env` dev-dependency already present is sufficient for all env isolation needs.
+- Remove `serial_test = { workspace = true }` from `[dev-dependencies]`.
 
 **Acceptance criterion:** `cargo test -p backend --features mock-hardware` exits 0 with 0 failed and no test exceeding 30 seconds.
 
 ---
 
+#### P904-A2b: backend: fix resolve_interpreter_unix test running on Windows without platform guard
+
+**Goal:** Stop `resolve_interpreter_unix` from panicking on Windows.
+
+**File to modify:**
+- `backend/src/preflight.rs`
+
+**The bug:** `resolve_interpreter_unix` has no platform guard and asserts the Unix interpreter path (`/opt/myvenv/bin/python3`). The production function `resolve_interpreter()` correctly returns the Windows path on Windows via `cfg!(windows)`, causing the assertion to fail:
+
+```
+left:  "/opt/myvenv\\Scripts\\python.exe"
+right: "/opt/myvenv/bin/python3"
+```
+
+**The fix:** Add `#[cfg(not(windows))]` to the `resolve_interpreter_unix` test function. One attribute, no logic changes:
+
+```rust
+#[test]
+#[cfg(not(windows))]
+fn resolve_interpreter_unix() {
+    let venv = Path::new("/opt/myvenv");
+    let result = resolve_interpreter(venv);
+    assert_eq!(result, PathBuf::from("/opt/myvenv/bin/python3"));
+}
+```
+
+The companion `resolve_interpreter_windows` test is already correctly structured with `#[cfg(windows)]` guarding its assertion body — do not change it.
+
+No changes to production code. No changes to any other test function.
+
+**Acceptance criterion:** `cargo test -p backend --features mock-hardware -- preflight` exits 0 on both Linux and Windows (cross-check: `cargo test -p backend --features mock-hardware --target x86_64-pc-windows-gnu -- preflight` exits 0).
+
+---
+
 #### P904-A3: anvilml: verify full workspace test suite green after P904 isolation fixes
 
-**Goal:** Confirm that P904-A1 and P904-A2 have not introduced regressions elsewhere, and that all six CI gates pass clean.
+**Goal:** Confirm that P904-A1, P904-A2, and P904-A2b have not introduced regressions elsewhere, and that all six CI gates pass clean.
 
-**No source changes permitted** unless a test failure is directly and demonstrably caused by the P904-A1/A2 changes (e.g. a previously-masked test failure now surfaced). Any such fix must be documented clearly in the implement report with a root-cause explanation.
+**No source changes permitted** unless a test failure is directly and demonstrably caused by the P904 changes. Any such fix must be documented clearly in the implement report with a root-cause explanation.
 
 **Gates to run (all must exit 0):**
 
@@ -135,6 +168,7 @@ All six commands must exit 0.
 ## Known Constraints and Gotchas
 
 - **`serial_test` is retained in `anvilml-hardware`.** The hardware crate uses `#[serial]` on sync tests that mutate `ANVILML_MOCK_DEVICE_TYPE` and `ANVILML_MOCK_VRAM_MIB`. This is a legitimate use (sync tests, no tokio runtime, genuine global env-var mutation). Do not touch that crate.
-- **`serial_test` workspace dependency is retained.** Only the per-crate `[dev-dependencies]` entries in `anvilml-scheduler/Cargo.toml` and `backend/Cargo.toml` are removed. The workspace root `Cargo.toml` entry remains because `anvilml-hardware` still uses it.
-- **`worker_threads = 2` is the minimum for dispatch-loop tests.** The scheduler dispatch loop is a single `tokio::spawn` task; 2 worker threads (the spawning thread + 1 worker) is sufficient. Using a higher count is harmless but unnecessary.
-- **P19-A1 prereq update.** P19-A1 currently prereqs `P18-A4`. After P904 is authored, update P19-A1's prereqs to `["P904-A3"]` so Phase 19 cannot begin until the workspace is verified green.
+- **`serial_test` workspace dependency is retained.** Only the per-crate `[dev-dependencies]` entries in `anvilml-scheduler/Cargo.toml` and `backend/Cargo.toml` are removed.
+- **`resolve_interpreter_windows` test body is already gated.** The existing `#[cfg(windows)]` guard is inside the test body, not on the function itself. This means the function still compiles and runs on all platforms but is a no-op on non-Windows. This pattern is intentional and must not be changed.
+- **`worker_threads = 2` is the minimum for dispatch-loop tests.** The scheduler dispatch loop is a single `tokio::spawn` task; 2 worker threads is sufficient.
+- **P19-A1 prereq update required.** P19-A1 currently prereqs `P18-A4`. After P904 is committed, update P19-A1's prereqs to `["P904-A3"]` so Phase 19 cannot begin until the workspace is verified green.

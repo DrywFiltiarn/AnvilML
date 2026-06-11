@@ -24,7 +24,6 @@ use futures_util::StreamExt;
 use http_body_util::BodyExt;
 use http_body_util::Full;
 use serde_json::Value;
-use serial_test::serial;
 use tokio::net::TcpListener;
 use tokio::time::{timeout, Duration};
 use uuid::Uuid;
@@ -77,8 +76,7 @@ fn minimal_zit_graph() -> Value {
 }
 
 /// Integration test: full WebSocket lifecycle for a mock job.
-#[serial]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_ws_lifecycle_full_job() {
     // ── Step 1: Python availability check ──────────────────────────────────
 

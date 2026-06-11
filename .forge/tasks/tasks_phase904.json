@@ -18,12 +18,21 @@
     "tags": ["reasoning"]
   },
   {
+    "id": "P904-A2b",
+    "description": "backend: fix resolve_interpreter_unix test running on Windows without platform guard",
+    "phase": "904",
+    "project": "anvilml",
+    "prereqs": ["P904-A2"],
+    "context": "backend/src/preflight.rs only. The test resolve_interpreter_unix has no platform guard but asserts the Unix path (/opt/myvenv/bin/python3). On Windows, resolve_interpreter() correctly returns the Windows path via cfg!(windows), so the assertion panics. Fix: add #[cfg(not(windows))] attribute to the resolve_interpreter_unix test function. No changes to production code, no changes to resolve_interpreter_windows (already correctly guarded with #[cfg(windows)] inside its body). cargo test -p backend --features mock-hardware -- preflight exits 0 on both Linux and Windows.",
+    "tags": []
+  },
+  {
     "id": "P904-A3",
     "description": "anvilml: verify full workspace test suite green after P904 isolation fixes",
     "phase": "904",
     "project": "anvilml",
-    "prereqs": ["P904-A2"],
-    "context": "Verification-only — no source changes unless a failure is directly caused by P904-A1/A2 (document any such fix). Run all six gates: cargo test --workspace --features mock-hardware; cargo clippy --workspace --features mock-hardware -- -D warnings; cargo clippy --bin anvilml -- -D warnings; cargo fmt --all -- --check; cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu; cargo check --bin anvilml --target x86_64-pc-windows-gnu. All must exit 0. Record per-crate test counts in implement report.",
+    "prereqs": ["P904-A2b"],
+    "context": "Verification-only — no source changes unless a failure is directly caused by P904-A1/A2/A2b (document any such fix). Run all six gates: cargo test --workspace --features mock-hardware; cargo clippy --workspace --features mock-hardware -- -D warnings; cargo clippy --bin anvilml -- -D warnings; cargo fmt --all -- --check; cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu; cargo check --bin anvilml --target x86_64-pc-windows-gnu. All must exit 0. Record per-crate test counts in implement report.",
     "tags": []
   }
 ]

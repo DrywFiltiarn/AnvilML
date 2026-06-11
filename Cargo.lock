@@ -319,7 +319,7 @@ dependencies = [
 
 [[package]]
 name = "backend"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
@@ -339,7 +339,6 @@ dependencies = [
  "hyper",
  "hyper-util",
  "serde_json",
- "serial_test",
  "sqlx",
  "temp-env",
  "tempfile",

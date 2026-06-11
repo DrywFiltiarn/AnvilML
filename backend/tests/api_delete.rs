@@ -29,7 +29,6 @@ use chrono::Utc;
 use http_body_util::BodyExt;
 use http_body_util::Full;
 use serde_json::Value;
-use serial_test::serial;
 use tokio::net::TcpListener;
 use tokio::time::Duration;
 use uuid::Uuid;
@@ -224,8 +223,7 @@ async fn assert_job_gone(db: &sqlx::SqlitePool, job_id: &str) {
 
 /// Integration test: submit a job, advance to Completed, insert artifact,
 /// DELETE returns 204, DB row + artifact file removed, GET returns 404.
-#[serial]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_completed_job_removes_artifact_and_row() {
     temp_env::async_with_vars(
         [
@@ -337,8 +335,7 @@ async fn delete_completed_job_removes_artifact_and_row() {
 
 /// Integration test: submit a job, advance to Running, DELETE returns 409
 /// with `job_active` error, job not deleted.
-#[serial]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_running_job_returns_409() {
     temp_env::async_with_vars(
         [
@@ -432,8 +429,7 @@ async fn delete_running_job_returns_409() {
 
 /// Integration test: bulk delete all terminal jobs removes Completed,
 /// Failed, Cancelled jobs + artifacts, preserves Running job.
-#[serial]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bulk_delete_all_terminal_jobs() {
     temp_env::async_with_vars(
         [
@@ -562,8 +558,7 @@ async fn bulk_delete_all_terminal_jobs() {
 
 /// Integration test: bulk delete by specific status removes only matching
 /// jobs + artifacts, preserves other terminal jobs.
-#[serial]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bulk_delete_by_status_removes_only_matching() {
     temp_env::async_with_vars(
         [
@@ -679,8 +674,7 @@ async fn bulk_delete_by_status_removes_only_matching() {
 
 /// Integration test: DELETE on a nonexistent job UUID returns 404
 /// with `not_found` error.
-#[serial]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_nonexistent_job_returns_404() {
     temp_env::async_with_vars(
         [

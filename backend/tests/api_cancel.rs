@@ -26,7 +26,6 @@ use futures_util::StreamExt;
 use http_body_util::BodyExt;
 use http_body_util::Full;
 use serde_json::Value;
-use serial_test::serial;
 use tokio::net::TcpListener;
 use tokio::time::{timeout, Duration};
 use uuid::Uuid;
@@ -195,8 +194,7 @@ async fn poll_job_status(
 
 /// Integration test: submit a slow mock job, wait until Running, cancel it,
 /// and verify the full cancellation flow via HTTP + WebSocket.
-#[serial]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancel_running_job_returns_202_and_ws_cancelled() {
     // ── Step 1: Python availability check ──────────────────────────────────
 
@@ -453,8 +451,7 @@ async fn cancel_running_job_returns_202_and_ws_cancelled() {
 
 /// Integration test: submitting a job, advancing it to Completed via DB,
 /// then cancelling returns 409 with `job_not_cancellable` error body.
-#[serial]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancel_terminal_job_returns_409() {
     // ── Step 1: Python availability check ──────────────────────────────────
 

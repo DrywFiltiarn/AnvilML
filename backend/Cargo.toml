@@ -1,6 +1,6 @@
 [package]
 name = "backend"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2021"
 
 [[bin]]
@@ -36,7 +36,6 @@ http-body-util = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 serde_json = { workspace = true }
-serial_test = { workspace = true }
 sqlx = { workspace = true }
 temp-env = { version = "0.3", features = ["async_closure"] }
 tempfile = { workspace = true }
