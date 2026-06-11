@@ -154,16 +154,17 @@
     "P18-A3",
     "P18-A4",
     "P904-A1",
-    "P904-A2"
+    "P904-A2",
+    "P904-A2b"
   ],
-  "in_progress": "P904-A2b",
+  "in_progress": "P904-A3",
   "plan_approved": true,
-  "current_plan": "1. Open `backend/src/preflight.rs`, locate the `resolve_interpreter_unix` test function within the `#[cfg(test)] mod tests` block (currently at lines 196\u2013202).\n2. Insert `#[cfg(not(windows))]` as an attribute on the function, placing it between `#[test]` and `fn resolve_interpreter_unix() {`.\n3. The resulting test block will be:\n   ```rust\n   #[test]\n   #[cfg(not(windows))]\n   fn resolve_interpreter_unix() {\n       let venv = Path::new(\"/opt/myvenv\");\n       let result = resolve_interpreter(venv);\n       assert_eq!(result, PathBuf::from(\"/opt/myvenv/bin/python3\"));\n   }\n   ```\n4. Verify the file still compiles: `cargo check -p backend --features mock-hardware`.",
+  "current_plan": "1. **Gate 1 \u2014 Workspace tests:** Run `cargo test --workspace --features mock-hardware`. Parse the output to extract per-crate test counts (e.g., `running N tests` per crate). Record all output. If any test fails, diagnose whether the failure is a regression from P904-A1/A2/A2b changes (check the failing test's file \u2014 if it is one of the files modified by A1/A2/A2b, fix the minimal regression; otherwise STOP and document as blocker).\n\n2. **Gate 2 \u2014 Clippy workspace:** Run `cargo clippy --workspace --features mock-hardware -- -D warnings`. All warnings must be eliminated (exit 0). If new warnings appear, determine if they stem from P904 changes and fix minimally.\n\n3. **Gate 3 \u2014 Clippy binary:** Run `cargo clippy --bin anvilml -- -D warnings`. This exercises real-hardware (non-mock) code paths. Exit 0 required.\n\n4. **Gate 4 \u2014 Format check:** Run `cargo fmt --all -- --check`. Exit 0 required. If non-zero, run `cargo fmt --all` to fix in-place, then re-run the check.\n\n5. **Gate 5 \u2014 Windows cross-check (mock):** Run `cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu`. Exit 0 required. Exercises `#[cfg(windows)]` cfg-gated mock paths.\n\n6. **Gate 6 \u2014 Windows cross-check (real):** Run `cargo check --bin anvilml --target x86_64-pc-windows-gnu`. Exit 0 required. Exercises real-hardware `#[cfg(windows)]` detection paths.\n\n7. **Final verification:** Confirm all six gates exited 0. Summarize per-crate test counts. If all green, mark task COMPLETE.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-11T09:38:09+0200",
-  "plan_approval_message_id": "1514532941147930737",
+  "last_updated": "2026-06-11T11:40:13+0200",
+  "plan_approval_message_id": "1514543058476073000",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1514532938941730907",
+  "plan_report_message_id": "1514543056655876121",
   "impl_report_message_id": null
 }
