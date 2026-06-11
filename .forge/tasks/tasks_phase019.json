@@ -5,7 +5,8 @@
     "phase": "19",
     "project": "anvilml",
     "prereqs": [
-      "P18-A4"
+      "P18-A4",
+      "P904-A3"
     ],
     "context": "Add tower-http ServeDir feature. Create src/frontend.rs: add_frontend_route(router,mode)->Router. Local{path}: ServeDir at / with SPA fallback to {path}/index.html; if path missing log warn + serve inline HTML '<h1>AnvilML</h1><p>Frontend not found. API at /v1/.</p>'. Register lowest-priority catch-all AFTER /v1 and /health. Serves a CUSTOM frontend only; BloomeryUI is NOT served by AnvilML (SindriStudio runs it separately). Wire from cfg.frontend.mode. Verify: create ./frontend/index.html; frontend.mode=local path=./frontend; cargo run; browser / shows it; /health and /v1/system still work.",
     "tags": [

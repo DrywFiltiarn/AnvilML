@@ -266,11 +266,17 @@ pub async fn delete_by_status(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use std::path::Path;
 
     /// Create an in-memory SQLite pool and initialise the `jobs` table.
     async fn setup_pool() -> SqlitePool {
-        let pool = SqlitePool::connect("sqlite::memory:")
+        let opts = SqliteConnectOptions::new()
+            .filename(Path::new(":memory:"))
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
             .await
             .expect("connect in-memory SQLite");
 
@@ -321,8 +327,7 @@ mod tests {
         }
     }
 
-    #[serial]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_insert_and_get() {
         let pool = setup_pool().await;
         let job = make_queued_job();
@@ -344,8 +349,7 @@ mod tests {
         assert_eq!(retrieved.device_index, Some(0));
     }
 
-    #[serial]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_list_jobs_all() {
         let pool = setup_pool().await;
 
@@ -373,8 +377,7 @@ mod tests {
         assert_eq!(all.len(), 3);
     }
 
-    #[serial]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_list_jobs_status_filter() {
         let pool = setup_pool().await;
 
@@ -441,8 +444,7 @@ mod tests {
         assert_eq!(running_only[0].status, JobStatus::Running);
     }
 
-    #[serial]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_list_jobs_limit() {
         let pool = setup_pool().await;
 
@@ -470,8 +472,7 @@ mod tests {
         assert_eq!(limited.len(), 2);
     }
 
-    #[serial]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_list_jobs_before_cursor() {
         let pool = setup_pool().await;
 
@@ -521,8 +522,7 @@ mod tests {
         assert_eq!(filtered[0].id, early_job.id);
     }
 
-    #[serial]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_update_status() {
         let pool = setup_pool().await;
         let job = make_queued_job();

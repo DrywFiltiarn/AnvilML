@@ -1,0 +1,29 @@
+[
+  {
+    "id": "P904-A1",
+    "description": "anvilml-scheduler: fix test isolation (pool max_connections, serial removal, multi_thread runtime)",
+    "phase": "904",
+    "project": "anvilml",
+    "prereqs": ["P18-A4"],
+    "context": "job_store.rs: setup_pool() — use SqlitePoolOptions::new().max_connections(1).connect_with(SqliteConnectOptions::new().filename(\":memory:\").create_if_missing(true)).await (single-connection pool); remove use serial_test::serial; drop all 6 #[serial]. scheduler.rs: select_worker-only tests (test_select_auto_*, test_select_cpu*, test_select_preference_*) — drop #[serial], keep #[tokio::test]. All remaining tests — use #[tokio::test(flavor=\"multi_thread\",worker_threads=2)]. Cargo.toml: drop serial_test from [dev-dependencies]. cargo test -p anvilml-scheduler --features mock-hardware exits 0.",
+    "tags": ["reasoning"]
+  },
+  {
+    "id": "P904-A2",
+    "description": "backend: fix test isolation (serial removal, multi_thread runtime, temp_env cleanup)",
+    "phase": "904",
+    "project": "anvilml",
+    "prereqs": ["P904-A1"],
+    "context": "api_ws_lifecycle.rs, api_cancel.rs, api_delete.rs: remove use serial_test; remove all #[serial]; change #[tokio::test] to #[tokio::test(flavor=\"multi_thread\",worker_threads=2)] on every test fn. preflight_check.rs: same serial+runtime changes; in job_submit_rejected_when_preflight_fails replace bare std::env::remove_var(\"ANVILML_WORKER_MOCK\") at top with temp_env::async_with_vars([(\"ANVILML_WORKER_MOCK\",None::<&str>)],async{<body>}).await. backend/Cargo.toml: remove serial_test={workspace=true} from [dev-dependencies]. cargo test -p backend --features mock-hardware exits 0.",
+    "tags": ["reasoning"]
+  },
+  {
+    "id": "P904-A3",
+    "description": "anvilml: verify full workspace test suite green after P904 isolation fixes",
+    "phase": "904",
+    "project": "anvilml",
+    "prereqs": ["P904-A2"],
+    "context": "Verification-only — no source changes unless a failure is directly caused by P904-A1/A2 (document any such fix). Run all six gates: cargo test --workspace --features mock-hardware; cargo clippy --workspace --features mock-hardware -- -D warnings; cargo clippy --bin anvilml -- -D warnings; cargo fmt --all -- --check; cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu; cargo check --bin anvilml --target x86_64-pc-windows-gnu. All must exit 0. Record per-crate test counts in implement report.",
+    "tags": []
+  }
+]

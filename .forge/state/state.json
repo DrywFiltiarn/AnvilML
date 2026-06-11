@@ -151,16 +151,17 @@
     "P17-A3",
     "P18-A1",
     "P18-A2",
-    "P18-A3"
+    "P18-A3",
+    "P18-A4"
   ],
-  "in_progress": "P18-A4",
+  "in_progress": "P904-A1",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "1. **job_store.rs \u2014 Fix `setup_pool()`**: Replace `SqlitePool::connect(\"sqlite::memory:\")` with `SqlitePoolOptions::new().max_connections(1).connect_with(SqliteConnectOptions::new().filename(\":memory:\").create_if_missing(true)).await`. This ensures all DDL and queries execute on the same in-memory database.\n\n2. **job_store.rs \u2014 Remove serial_test**: Remove `use serial_test::serial;` from the test module. Remove `#[serial]` from all 6 test functions. Each test creates its own pool, so there is no shared mutable state to protect.\n\n3. **job_store.rs \u2014 Change test runtime**: Replace `#[tokio::test]` with `#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]` on all 6 test functions (each creates its own pool via `setup_pool()`).\n\n4. **scheduler.rs \u2014 Remove serial_test**: Remove `use serial_test::serial;` from the test module.\n\n5. **scheduler.rs \u2014 Keep `#[tokio::test]` for select_worker-only tests** (9 tests that call `select_worker()` directly with no async spawning): `test_select_auto_single_idle`, `test_select_auto_all_busy`, `test_select_auto_ranked_by_free_mib`, `test_select_auto_tie_break_device_index`, `test_select_cpu`, `test_select_cpu_not_available`, `test_select_preference_idle`, `test_select_preference_busy`, `test_select_preference_not_found`. Remove `#[serial]` only.\n\n6. **scheduler.rs \u2014 Add `multi_thread` flavor for tests that spawn background tasks** (10 tests): `test_submit_valid_job`, `test_submit_invalid_graph`, `test_submit_broadcasts_event`, `test_submit_persists_settings`, `test_dispatch_sends_execute`, `test_complete`, `test_image_ready_broadcasts_event`, `test_progress_broadcasts_event`, `test_cancel_broadcasts_event`, `test_cancel_queued`, `test_cancel_running`. Replace `#[serial]` + `#[tokio::test]` with `#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]`.\n\n7. **Cargo.toml \u2014 Remove serial_test dev-dependency**: Delete `serial_test = { workspace = true }` from `[dev-dependencies]`.\n\n8. **Pre-Stop Verification**: Run the three required checks against the written report file.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-11T00:28:37+0200",
-  "plan_approval_message_id": "1514395836816036018",
+  "last_updated": "2026-06-11T08:11:59+0200",
+  "plan_approval_message_id": "1514512057007870085",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1514395834966478910",
+  "plan_report_message_id": "1514512055011377263",
   "impl_report_message_id": null
 }

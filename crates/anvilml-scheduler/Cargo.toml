@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-scheduler"
-version = "0.1.17"
+version = "0.1.18"
 edition = "2021"
 
 [dependencies]
@@ -17,7 +17,6 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-serial_test = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 anvilml-worker = { path = "../anvilml-worker", features = ["test-helpers"] }

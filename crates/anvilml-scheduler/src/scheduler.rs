@@ -696,7 +696,6 @@ fn event_discriminant(event: &anvilml_ipc::WorkerEvent) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
 
     use crate::job_store::get_job;
     use anvilml_core::types::job::JobSettings;
@@ -782,8 +781,7 @@ mod tests {
 
     /// Valid job submitted via `submit()` is persisted as Queued + enqueued + returns
     /// response with job_id and queue_position.
-    #[serial]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_submit_valid_job() {
         let pool = setup_pool().await;
         let scheduler = make_scheduler(pool).await;
@@ -813,8 +811,7 @@ mod tests {
 
     /// Invalid graph (unknown node type) returns AnvilError::InvalidGraph, no DB row,
     /// and queue length is unchanged.
-    #[serial]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_submit_invalid_graph() {
         let pool = setup_pool().await;
         let scheduler = make_scheduler(pool).await;
@@ -852,8 +849,7 @@ mod tests {
     }
 
     /// WsEvent::JobQueued is sent on the broadcast channel with matching job_id.
-    #[serial]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_submit_broadcasts_event() {
         let pool = setup_pool().await;
         let (broadcaster, mut rx) = broadcast::channel(16);
@@ -888,8 +884,7 @@ mod tests {
 
     /// Custom JobSettings (seed, steps, guidance_scale, width, height) round-trip
     /// through submit → database.
-    #[serial]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_submit_persists_settings() {
         let pool = setup_pool().await;
         let scheduler = make_scheduler(pool).await;
@@ -939,8 +934,7 @@ mod tests {
     ///
     /// Note: We verify observable state changes. The actual Execute IPC
     /// message send is verified indirectly by the worker becoming Busy.
-    #[serial]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_dispatch_sends_execute() {
         use anvilml_worker::ManagedWorker;
 
@@ -1015,8 +1009,7 @@ mod tests {
 
     /// Submitting a job causes the dispatch loop to transition it to Running,
     /// then a Completed event from the worker transitions it to Completed.
-    #[serial]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_complete() {
         use anvilml_worker::ManagedWorker;
 
@@ -1099,7 +1092,6 @@ mod tests {
 
     /// `select_worker` with `device_preference = Some(0)` returns index 0
     /// when the worker at index 0 is Idle.
-    #[serial]
     #[tokio::test]
     async fn test_select_preference_idle() {
         let job = Job {
@@ -1144,7 +1136,6 @@ mod tests {
 
     /// `select_worker` with `device_preference = Some(0)` returns `None`
     /// when the worker at index 0 is Busy.
-    #[serial]
     #[tokio::test]
     async fn test_select_preference_busy() {
         let job = Job {
@@ -1189,7 +1180,6 @@ mod tests {
 
     /// `select_worker` with `device_preference = Some(99)` returns `None`
     /// when no worker exists at that index.
-    #[serial]
     #[tokio::test]
     async fn test_select_preference_not_found() {
         let job = Job {
@@ -1223,7 +1213,6 @@ mod tests {
     }
 
     /// Auto mode returns the only idle worker when there is exactly one.
-    #[serial]
     #[tokio::test]
     async fn test_select_auto_single_idle() {
         let job = Job {
@@ -1264,7 +1253,6 @@ mod tests {
     }
 
     /// Auto mode picks the worker with the highest `free_mib` from the ledger.
-    #[serial]
     #[tokio::test]
     async fn test_select_auto_ranked_by_free_mib() {
         let job = Job {
@@ -1308,7 +1296,6 @@ mod tests {
     }
 
     /// Auto mode breaks free_mib ties by `device_index` ascending.
-    #[serial]
     #[tokio::test]
     async fn test_select_auto_tie_break_device_index() {
         let job = Job {
@@ -1352,7 +1339,6 @@ mod tests {
     }
 
     /// Auto mode returns `None` when all workers are Busy.
-    #[serial]
     #[tokio::test]
     async fn test_select_auto_all_busy() {
         let job = Job {
@@ -1393,7 +1379,6 @@ mod tests {
     }
 
     /// Force-CPU mode (`default_device == "cpu"`) picks the CPU worker.
-    #[serial]
     #[tokio::test]
     async fn test_select_cpu() {
         let job = Job {
@@ -1434,7 +1419,6 @@ mod tests {
     }
 
     /// Force-CPU mode returns `None` when no CPU worker exists.
-    #[serial]
     #[tokio::test]
     async fn test_select_cpu_not_available() {
         let job = Job {
@@ -1502,8 +1486,7 @@ mod tests {
     }
 
     /// ImageReady event triggers artifact save and broadcasts JobImageReady with correct fields.
-    #[serial]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_image_ready_broadcasts_event() {
         use anvilml_worker::ManagedWorker;
 
@@ -1615,8 +1598,7 @@ mod tests {
     /// A `WorkerEvent::Progress` event triggers a `WsEvent::JobProgress` broadcast
     /// with the correct job_id, node_index, node_total, node_type, and step/step_total
     /// set to None (MVP).
-    #[serial]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_progress_broadcasts_event() {
         use anvilml_worker::ManagedWorker;
 
@@ -1711,8 +1693,7 @@ mod tests {
 
     /// A `WorkerEvent::Cancelled` event triggers a `WsEvent::JobCancelled` broadcast,
     /// transitions the job to Cancelled in the DB, and sets the worker back to Idle.
-    #[serial]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_cancel_broadcasts_event() {
         use anvilml_worker::ManagedWorker;
 
@@ -1806,8 +1787,7 @@ mod tests {
     /// Submitting a job, calling `cancel()` on it while Queued transitions
     /// the DB status to Cancelled, removes it from the queue, and broadcasts
     /// a `JobCancelled` event.
-    #[serial]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_cancel_queued() {
         let pool = setup_pool().await;
         let (broadcaster, mut rx) = broadcast::channel(16);
@@ -1875,8 +1855,7 @@ mod tests {
     /// Submitting a job, waiting for dispatch to make it Running, then calling
     /// `cancel()` sends a `CancelJob` IPC message to the worker, transitions
     /// the DB to Cancelled, and broadcasts a `JobCancelled` event.
-    #[serial]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_cancel_running() {
         use anvilml_worker::ManagedWorker;
 
