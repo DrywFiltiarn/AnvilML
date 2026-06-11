@@ -8,7 +8,7 @@
       "P18-A4",
       "P904-A3"
     ],
-    "context": "Add tower-http ServeDir feature. Create src/frontend.rs: add_frontend_route(router,mode)->Router. Local{path}: ServeDir at / with SPA fallback to {path}/index.html; if path missing log warn + serve inline HTML '<h1>AnvilML</h1><p>Frontend not found. API at /v1/.</p>'. Register lowest-priority catch-all AFTER /v1 and /health. Serves a CUSTOM frontend only; BloomeryUI is NOT served by AnvilML (SindriStudio runs it separately). Wire from cfg.frontend.mode. Verify: create ./frontend/index.html; frontend.mode=local path=./frontend; cargo run; browser / shows it; /health and /v1/system still work.",
+    "context": "Create src/frontend.rs: pub fn add_frontend_route<S>(router:Router<S>,mode:&FrontendMode)->Router<S> where S:Clone+Send+Sync+'static. Local{path}: if path exists mount ServeDir::new(path).fallback(ServeFile::new(path.join(\"index.html\"))) via router.nest_service(\"/\",svc) — NOT route_service. If path missing, log warn and mount service_fn inline-HTML via nest_service. Other modes: return router unchanged. Wire in lib.rs: clone config before Arc::new(state), call add_frontend_route after /v1+/health routes, before .with_state(). Unit tests read from ./test-frontend/index.html (committed fixture). NOTE: ServeDir has no .index_file() method. Use nest_service not route_service.",
     "tags": [
       "reasoning"
     ]
@@ -21,7 +21,7 @@
     "prereqs": [
       "P19-A1"
     ],
-    "context": "In frontend.rs handle FrontendMode::Headless: register no catch-all; non-API paths return 404. Verify: set frontend.mode=headless in anvilml.toml (or ANVILML_FRONTEND__MODE=headless); cargo run; browser / returns 404; /health still 200.",
+    "context": "In frontend.rs handle FrontendMode::Headless: return router unchanged — register no catch-all; non-API paths fall through to axum's default 404. Verify: set frontend.mode=headless in anvilml.toml (or ANVILML_FRONTEND__MODE=headless); cargo run --features mock-hardware; curl / returns 404; curl /health still 200.",
     "tags": []
   },
   {
@@ -32,7 +32,7 @@
     "prereqs": [
       "P19-A2"
     ],
-    "context": "Add hyper client. In frontend.rs handle FrontendMode::Remote{url}: catch-all handler proxies non-API requests to {url}{path}, forwarding headers (strip hop-by-hop), rewriting Host, streaming response back. For proxying a custom frontend dev server; not for BloomeryUI (SindriStudio's job). Dev-use tolerance is fine. Verify: run any static server on :5173 (e.g. python -m http.server 5173); set frontend.mode=remote url=http://localhost:5173; cargo run; browser http://127.0.0.1:8488/ shows the proxied page; /v1/system still served locally.",
+    "context": "Add hyper/hyper-util deps if absent. In frontend.rs handle FrontendMode::Remote{url}: mount catch-all proxy handler via router.nest_service(\"/\",service_fn(proxy)) — NOT route_service. Proxy forwards headers (strip hop-by-hop), rewrites Host, streams response body. For proxying a custom frontend dev server; not for BloomeryUI (SindriStudio's job). Verify: python -m http.server 5173 --directory test-frontend; ANVILML_FRONTEND__MODE=remote ANVILML_FRONTEND__URL=http://localhost:5173 cargo run; curl / shows proxied page; curl /v1/system served locally.",
     "tags": [
       "reasoning"
     ]
