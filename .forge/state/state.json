@@ -153,16 +153,17 @@
     "P18-A2",
     "P18-A3",
     "P18-A4",
-    "P904-A1"
+    "P904-A1",
+    "P904-A2"
   ],
-  "in_progress": "P904-A2",
+  "in_progress": "P904-A2b",
   "plan_approved": true,
-  "current_plan": "1. **`api_ws_lifecycle.rs`**: Delete line 27 (`use serial_test::serial;`). Delete line 80 (`#[serial]`). Change line 81 from `#[tokio::test]` to `#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]`. Leave the existing `std::env::set_var`/`std::env::remove_var` cleanup at the end unchanged (already adequate).\n\n2. **`api_cancel.rs`**: Delete line 29 (`use serial_test::serial;`). Delete line 198 (`#[serial]`) and change line 199 (`#[tokio::test]` \u2192 `#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]`). Delete line 456 (`#[serial]`) and change line 457 (`#[tokio::test]` \u2192 `#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]`). Leave existing `temp_env::async_with_vars` + unconditional `remove_var` cleanup unchanged.\n\n3. **`api_delete.rs`**: Delete line 32 (`use serial_test::serial;`). Delete lines 227, 340, 435, 565, 682 (`#[serial]`). Change lines 228, 341, 436, 566, 683 (`#[tokio::test]` \u2192 `#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]`). Leave existing `temp_env::async_with_vars` + unconditional `remove_var` cleanup unchanged.\n\n4. **`preflight_check.rs`**:\n   - Remove `#[serial_test::serial]` from `job_submit_rejected_when_preflight_fails` (line 121) and `job_submit_proceeds_in_mock_mode` (line 226).\n   - Change `#[tokio::test]` to `#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]` on both of those test functions (lines 122, 227).\n   - Also change `#[tokio::test]` on `env_endpoint_reflects_failed_preflight` (line 46) and `env_returns_correct_shape_in_stub_context` (line 87) to `#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]` for consistency (they don't use serial, but the task says \"same serial+runtime changes\" on every test fn).\n   - In `job_submit_rejected_when_preflight_fails`: remove the bare `std::env::remove_var(\"ANVILML_WORKER_MOCK\");` at line 125. Wrap the entire test body (from `let tmp = tempfile::tempdir()...` through the end of the function) inside `temp_env::async_with_vars([(\"ANVILML_WORKER_MOCK\", None::<&str>)], async { <body> }).await;`.\n\n5. **`backend/Cargo.toml`**: Remove line 39 (`serial_test = { workspace = true }`) from `[dev-dependencies]`.",
+  "current_plan": "1. Open `backend/src/preflight.rs`, locate the `resolve_interpreter_unix` test function within the `#[cfg(test)] mod tests` block (currently at lines 196\u2013202).\n2. Insert `#[cfg(not(windows))]` as an attribute on the function, placing it between `#[test]` and `fn resolve_interpreter_unix() {`.\n3. The resulting test block will be:\n   ```rust\n   #[test]\n   #[cfg(not(windows))]\n   fn resolve_interpreter_unix() {\n       let venv = Path::new(\"/opt/myvenv\");\n       let result = resolve_interpreter(venv);\n       assert_eq!(result, PathBuf::from(\"/opt/myvenv/bin/python3\"));\n   }\n   ```\n4. Verify the file still compiles: `cargo check -p backend --features mock-hardware`.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-11T08:44:32+0200",
-  "plan_approval_message_id": "1514519541101887561",
+  "last_updated": "2026-06-11T09:38:09+0200",
+  "plan_approval_message_id": "1514532941147930737",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1514519539616972862",
+  "plan_report_message_id": "1514532938941730907",
   "impl_report_message_id": null
 }

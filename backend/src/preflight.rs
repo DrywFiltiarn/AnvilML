@@ -194,6 +194,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(not(windows))]
     fn resolve_interpreter_unix() {
         // On non-Windows, expect bin/python3.
         let venv = Path::new("/opt/myvenv");
