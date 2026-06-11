@@ -1,4 +1,5 @@
 pub mod artifact;
+mod frontend;
 mod handlers;
 mod state;
 pub mod ws;
@@ -27,9 +28,10 @@ pub type App = AppState<ArtifactStore>;
 
 /// Build the application `Router` with all routes wired up.
 pub fn build_router(state: App) -> Router {
+    let config = state.config.clone();
     let state_arc = Arc::new(state);
 
-    Router::new()
+    let mut router = Router::new()
         .route("/health", get(handlers::health::health))
         .route(
             "/v1/jobs",
@@ -57,7 +59,9 @@ pub fn build_router(state: App) -> Router {
         .route(
             "/v1/artifacts/{hash}",
             get(handlers::artifacts::serve_artifact),
-        )
+        );
+    router = frontend::add_frontend_route(router, &config.frontend.mode);
+    router
         .with_state(state_arc)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
