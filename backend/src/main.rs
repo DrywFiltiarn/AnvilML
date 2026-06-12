@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 
 use anvilml_core::types::events::{WorkerStatusChangedEvent, WsEvent};
-use anvilml_core::{load_config, DeviceType, EnumerationSource, HardwareInfo};
+use anvilml_core::{load_config, DeviceType, EnumerationSource, FrontendMode, HardwareInfo};
 use anvilml_ipc::WorkerEvent;
 use anvilml_scheduler::{JobQueue, JobScheduler};
 use anvilml_server::artifact::store::ArtifactStore;
@@ -305,6 +305,19 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
         .unwrap_or_else(|e| panic!("Failed to bind to {bind_addr}: {e}"));
+
+    // Open the default browser to the server URL (unless disabled or headless).
+    if args.no_browser {
+        tracing::debug!("skipping browser open: --no-browser flag set");
+    } else if matches!(cfg.frontend.mode, FrontendMode::Headless) {
+        tracing::debug!("skipping browser open: frontend mode is headless");
+    } else {
+        let url = format!("http://{bind_addr}");
+        match open::that(&url) {
+            Ok(()) => tracing::debug!(url = %url, "browser opened"),
+            Err(e) => tracing::warn!(url = %url, error = %e, "failed to open browser"),
+        }
+    }
 
     let _ = axum::serve(listener, router)
         .with_graceful_shutdown(shutdown::shutdown_signal(Arc::new(state), db_shutdown))
