@@ -162,16 +162,17 @@
     "P19-A3",
     "P20-A1",
     "P20-A2",
-    "P20-A3"
+    "P20-A3",
+    "P20-A4"
   ],
-  "in_progress": "P20-A4",
+  "in_progress": "P905-A1",
   "plan_approved": true,
-  "current_plan": "1. **Read current CI** \u2014 confirm the existing structure of `.github/workflows/ci.yml` (already done).\n\n2. **Add openapi-diff gate to rust-linux job** \u2014 Insert a new step block after the `Checkout` step (or after toolchain setup) in the `rust` job, guarded for ubuntu-latest only:\n   ```yaml\n   - name: Generate OpenAPI spec\n     if: matrix.os == 'ubuntu-latest'\n     run: cargo run -p anvilml-openapi\n   - name: Check OpenAPI spec is up to date\n     if: matrix.os == 'ubuntu-latest'\n     run: git diff --exit-code backend/openapi.json\n   ```\n   These steps are placed before the lint and test steps so that a stale spec fails early.\n\n3. **Update python-worker job** \u2014 Replace the current `pip install msgpack pillow pytest` line with:\n   ```yaml\n   - name: Install dependencies\n     run: pip install -r worker/requirements/base.txt\n   ```\n   Keep the existing `Run worker tests (mock mode)` step unchanged (it already runs `pytest worker/tests/ -v` with `ANVILML_WORKER_MOCK=1`).\n\n4. **Local verification \u2014 openapi-diff** \u2014 Run:\n   ```bash\n   cargo run -p anvilml-openapi && git diff --exit-code backend/openapi.json\n   ```\n   Confirm exit code 0 (spec is already committed and matches).\n\n5. **Local verification \u2014 pytest** \u2014 Run:\n   ```bash\n   ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v\n   ```\n   Confirm exit code 0 (all worker tests pass in mock mode).",
+  "current_plan": "1. **Read current state.** Confirm `DType` enum in `crates/anvilml-core/src/types/model.rs` currently has 6 variants (F32, F16, BF16, Q8, Q4, Unknown) with `#[serde(rename_all = \"snake_case\")]`.\n\n2. **Add F8E4M3 variant.** Insert after the `BF16` variant (line 24):\n   ```rust\n   /// 8-bit float E4M3, torch float8_e4m3fn\n   F8E4M3,\n   ```\n\n3. **Add F8E5M2 variant.** Insert immediately after F8E4M3:\n   ```rust\n   /// 8-bit float E5M2, torch float8_e5m2\n   F8E5M2,\n   ```\n\n4. **Update `dtype_variants` test.** Modify the variants vec to include all 8 variants in order:\n   ```rust\n   let variants: Vec<DType> = vec![\n       DType::F32,\n       DType::F16,\n       DType::BF16,\n       DType::F8E4M3,\n       DType::F8E5M2,\n       DType::Q8,\n       DType::Q4,\n       DType::Unknown,\n   ];\n   assert_eq!(variants.len(), 8, \"must have exactly 8 variants\");\n   ```\n\n5. **Update `dtype_roundtrip_json` test.** Add both new variants to the dtypes array:\n   ```rust\n   let dtypes = [\n       DType::F32,\n       DType::F16,\n       DType::BF16,\n       DType::F8E4M3,\n       DType::F8E5M2,\n       DType::Q8,\n       DType::Q4,\n       DType::Unknown,\n   ];\n   ```\n\n6. **Add `dtype_f8_serde_strings` test.** New test asserting exact JSON strings:\n   ```rust\n   #[test]\n   fn dtype_f8_serde_strings() {\n       assert_eq!(\n           serde_json::to_string(&DType::F8E4M3).expect(\"serialize F8E4M3\"),\n           \"\\\"f8_e4m3\\\"\"\n       );\n       assert_eq!(\n           serde_json::to_string(&DType::F8E5M2).expect(\"serialize F8E5M2\"),\n           \"\\\"f8_e5m2\\\"\"\n       );\n   }\n   ```\n\n7. **Bump version.** Update `crates/anvilml-core/Cargo.toml`:\n   - Change `version = \"0.1.2\"` to `version = \"0.1.3\"`.\n\n8. **Verify.** Run `cargo test -p anvilml-core` \u2014 expect 75+ tests (74 existing + 1 new), all passing, exit code 0.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-12T11:14:52+0200",
-  "plan_approval_message_id": "1514918427377012796",
+  "last_updated": "2026-06-12T11:41:46+0200",
+  "plan_approval_message_id": "1514926127762772058",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1514918425552748715",
+  "plan_report_message_id": "1514926126059880458",
   "impl_report_message_id": null
 }

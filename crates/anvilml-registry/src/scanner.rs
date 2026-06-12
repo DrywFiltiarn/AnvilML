@@ -54,7 +54,7 @@ pub fn vram_estimate_mib(size_bytes: u64, dtype: DType) -> u32 {
     let factor = match dtype {
         DType::F32 => 2.0,
         DType::F16 | DType::BF16 => 1.0,
-        DType::Q8 => 0.5,
+        DType::F8E4M3 | DType::F8E5M2 | DType::Q8 => 0.5,
         DType::Q4 => 0.25,
         DType::Unknown => 1.0,
     };

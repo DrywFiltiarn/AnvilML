@@ -22,6 +22,12 @@ pub enum DType {
     F16,
     /// Brain floating point (16-bit).
     BF16,
+    /// 8-bit float E4M3, torch float8_e4m3fn.
+    #[serde(rename = "f8_e4m3")]
+    F8E4M3,
+    /// 8-bit float E5M2, torch float8_e5m2.
+    #[serde(rename = "f8_e5m2")]
+    F8E5M2,
     /// 8-bit integer quantization.
     Q8,
     /// 4-bit integer quantization.
@@ -85,12 +91,14 @@ mod tests {
             DType::F32,
             DType::F16,
             DType::BF16,
+            DType::F8E4M3,
+            DType::F8E5M2,
             DType::Q8,
             DType::Q4,
             DType::Unknown,
         ];
 
-        assert_eq!(variants.len(), 6, "must have exactly 6 variants");
+        assert_eq!(variants.len(), 8, "must have exactly 8 variants");
 
         // All variants must be distinct.
         for i in 0..variants.len() {
@@ -115,6 +123,8 @@ mod tests {
             DType::F32,
             DType::F16,
             DType::BF16,
+            DType::F8E4M3,
+            DType::F8E5M2,
             DType::Q8,
             DType::Q4,
             DType::Unknown,
@@ -124,6 +134,18 @@ mod tests {
             let restored: DType = serde_json::from_str(&json).expect("deserialize DType");
             assert_eq!(restored, dtype);
         }
+    }
+
+    #[test]
+    fn dtype_f8_serde_strings() {
+        assert_eq!(
+            serde_json::to_string(&DType::F8E4M3).expect("serialize F8E4M3"),
+            "\"f8_e4m3\""
+        );
+        assert_eq!(
+            serde_json::to_string(&DType::F8E5M2).expect("serialize F8E5M2"),
+            "\"f8_e5m2\""
+        );
     }
 
     #[test]
