@@ -5,7 +5,8 @@
     "phase": "22",
     "project": "anvilml",
     "prereqs": [
-      "P21-A7"
+      "P21-A7",
+      "P907-B1"
     ],
     "context": "Create worker/nodes/sdxl.py: SdxlLoadPipeline (dual encoders), SdxlTextEncode (negative_prompt optional, default ''), SdxlSampler (steps 20, guidance 7.5, seed resolve, cancel callback), SdxlDecode. Slots exactly per 14.6. Mock branches mirror zit (sentinels/black image). Update nodes/__init__.py to import sdxl. pytest worker/tests/test_nodes_sdxl.py (mock) exits 0: output slots; missing negative_prompt defaults to ''.",
     "tags": [

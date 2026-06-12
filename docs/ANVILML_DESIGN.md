@@ -98,7 +98,7 @@ The backend is a first-class citizen on **Linux and Windows**; macOS runs CPU-on
 | NVIDIA / CUDA worker | ✓ | ✓ | ✗ | Enumerated via Vulkan (driver-bundled); no CUDA SDK / `nvidia-smi` needed (§5). |
 | AMD / ROCm worker | ✓ | ✓ | ✗ | **MVP-mandatory on both OSes** (§5). Windows uses AMD's *PyTorch on Windows* package (ROCm ≥ 7.2) on supported Radeon RX 7000/9000-series + select Ryzen AI parts. DirectML still deferred (§25). |
 | CPU worker | ✓ | ✓ | ✓ | Always available fallback. |
-| IPC transport | Unix domain socket | Windows named pipe | Unix domain socket | Path passed via `ANVILML_IPC_SOCKET` (§7). |
+| IPC transport | ZeroMQ DEALER over TCP loopback | ZeroMQ DEALER over TCP loopback | ZeroMQ DEALER over TCP loopback | Port passed via `ANVILML_IPC_PORT` (§7). |
 | venv provisioning script | `.sh` | `.ps1` | `.sh` | §21.4; Windows uses `py -3.12`. |
 | Graceful shutdown | `SIGINT`/`SIGTERM` | Ctrl-C / `ctrl_close` / `ctrl_shutdown` | as Unix | §16.3. |
 | Orphan-worker cleanup on hard kill | `PR_SET_PDEATHSIG` | Job Object | best-effort | §22.4. |
@@ -642,23 +642,19 @@ To repair a broken venv without restarting the server: delete and recreate the v
 
 ## 7. IPC Protocol (`anvilml-ipc`)
 
-Communication uses a **Unix domain socket** (Linux/macOS) or **Windows named pipe**. The supervisor creates the socket before spawning the worker and passes its path via the `ANVILML_IPC_SOCKET` environment variable; the worker connects on startup. stderr is captured to `{worker_log_dir}/worker-{device_index}.log` (rotated at 10 MiB, 3 retained).
+Communication uses a **ZeroMQ DEALER socket** over TCP loopback (`tcp://127.0.0.1:{port}`). The supervisor binds on an OS-assigned port before spawning the worker and passes the port via the `ANVILML_IPC_PORT` environment variable; the worker connects on startup. stderr is captured to `{worker_log_dir}/worker-{device_index}.log` (rotated at 10 MiB, 3 retained).
 
-**Socket path convention:**
-- Linux/macOS: `{std::env::temp_dir()}/anvilml-{supervisor_pid}/worker-{device_index}.sock`
-- Windows: `\\.\pipe\anvilml-worker-{device_index}-{supervisor_pid}`
-
-The supervisor creates the socket directory before spawning the child and removes it on clean shutdown. On restart after an unclean exit the directory is recreated, overwriting any stale socket.
+ZeroMQ handles connection, framing, and backpressure internally. There are no named pipes, no Unix domain sockets, and no platform-specific socket path construction. The transport is identical on Linux, macOS, and Windows.
 
 ### 7.1 Framing
 
+Each IPC message is a single ZeroMQ message frame containing a msgpack-serialised payload. ZeroMQ guarantees atomic delivery of complete frames — no custom length prefix or read-fully loop is required.
+
 ```
-[ 4 bytes big-endian u32: payload length N ] [ N bytes: msgpack payload ]
+[ ZMQ frame: N bytes msgpack payload ]
 ```
 
-Maximum payload: `limits.max_ipc_payload_mib` (default 64 MiB). A frame exceeding the limit, or a deserialization failure, causes an immediate worker kill + respawn (it indicates a desynced stream). The reader enforces the cap **before** allocating the buffer.
-
-Frames are raw binary msgpack carried over the IPC socket. On both platforms the framing reader must **read-fully** (loop until the 4-byte header and then the full N-byte payload are received), because socket reads may return fewer bytes than requested.
+A deserialization failure causes an immediate worker kill + respawn (it indicates a desynced stream).
 
 ### 7.2 Messages (Rust → Python)
 

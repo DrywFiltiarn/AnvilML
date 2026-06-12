@@ -1,0 +1,111 @@
+[
+  {
+    "id": "P907-A1",
+    "description": "Cargo.toml: add zeromq workspace dependency",
+    "phase": "907",
+    "project": "anvilml",
+    "prereqs": [
+      "P21-A7"
+    ],
+    "context": "Add zeromq = { version = \"0.4\", features = [\"tokio\"] } to [workspace.dependencies] in root Cargo.toml. Add zeromq = { workspace = true } to crates/anvilml-worker/Cargo.toml. Remove interprocess from crates/anvilml-worker/Cargo.toml. Bump anvilml-worker patch version. cargo check --workspace --features mock-hardware exits 0. cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P907-A2",
+    "description": "worker/requirements: add pyzmq to base.txt",
+    "phase": "907",
+    "project": "anvilml",
+    "prereqs": [
+      "P907-A1"
+    ],
+    "context": "Add pyzmq>=26.0 to worker/requirements/base.txt. No other file changes. Acceptance: pip install -r worker/requirements/base.txt exits 0 in the project venv.",
+    "tags": []
+  },
+  {
+    "id": "P907-A3",
+    "description": "anvilml-worker: env.rs replace ANVILML_IPC_SOCKET with ANVILML_IPC_PORT",
+    "phase": "907",
+    "project": "anvilml",
+    "prereqs": [
+      "P907-A2"
+    ],
+    "context": "In crates/anvilml-worker/src/env.rs replace ANVILML_IPC_SOCKET env var with ANVILML_IPC_PORT (value: u16 as string). Remove any socket-path construction logic. Update build_worker_env tests: assert ANVILML_IPC_PORT present, ANVILML_IPC_SOCKET absent. cargo test -p anvilml-worker --features mock-hardware -- env exits 0. cargo check --target x86_64-pc-windows-gnu --features mock-hardware exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P907-A4",
+    "description": "anvilml-worker: managed.rs replace interprocess with ZeroMQ DEALER socket",
+    "phase": "907",
+    "project": "anvilml",
+    "prereqs": [
+      "P907-A3"
+    ],
+    "context": "Replace interprocess named-pipe/Unix-socket IPC in managed.rs with zeromq. Supervisor binds a DEALER socket on tcp://127.0.0.1:0 (OS-assigned port), reads port via local_addr(), passes port via ANVILML_IPC_PORT env var. Remove socket path construction, interprocess imports, ListenerOptions, to_socket_name, build_socket_path. IpcHandles now holds zeromq::Socket. reader_task and writer_task use zeromq send/recv. Remove all #[cfg(windows)]/#[cfg(unix)] socket-path branches. cargo check --workspace --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P907-A5",
+    "description": "worker/ipc.py: replace named-pipe/Unix-socket transport with ZeroMQ DEALER",
+    "phase": "907",
+    "project": "anvilml",
+    "prereqs": [
+      "P907-A4"
+    ],
+    "context": "Rewrite worker/ipc.py: remove _WindowsPipeSocket, _StdioTransport, AF_UNIX connect, CreateFileW. Add connect(port:int): global _sock = zmq.Context.instance().socket(zmq.DEALER); _sock.connect(f'tcp://127.0.0.1:{port}'). read_frame(): _sock.recv() -> msgpack.unpackb. write_frame(data): _sock.send(msgpack.packb(data,use_bin_type=True)). In worker_main.py: ipc.connect(int(os.environ['ANVILML_IPC_PORT'])). Remove ANVILML_IPC_SOCKET references. pytest worker/tests/test_ipc.py exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P907-A6",
+    "description": "worker/tests: update test_ipc.py and test_worker_main.py for ZeroMQ transport",
+    "phase": "907",
+    "project": "anvilml",
+    "prereqs": [
+      "P907-A5"
+    ],
+    "context": "Rewrite worker/tests/test_ipc.py: replace socketpair tests with zmq PAIR socket roundtrip. Rewrite _spawn_worker() in test_worker_main.py: set ANVILML_IPC_PORT env var instead of ANVILML_IPC_SOCKET; remove stdin=PIPE/stdout=PIPE (worker communicates via ZMQ not stdio). Update all test assertions that assumed stdin/stdout framing. ANVILML_WORKER_MOCK=1 pytest worker/tests/ -v exits 0 with all tests passing.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P907-A7",
+    "description": "anvilml-worker: managed.rs update mock-hardware tests for ZeroMQ",
+    "phase": "907",
+    "project": "anvilml",
+    "prereqs": [
+      "P907-A6"
+    ],
+    "context": "Update inject_handles_for_test, respawn_after_death, keepalive_pings_and_kills_on_timeout, eof_sets_dead, spawn_ping_pong, status_transitions, handshake_completes_once, spawn_reaches_idle in managed.rs to use zeromq PAIR sockets instead of interprocess local socket halves. Remove all interprocess test socket construction. cargo test -p anvilml-worker --features mock-hardware exits 0 with 0 failed. cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P907-A8",
+    "description": "anvilml-worker: remove anvilml-ipc framing dependency, use ZeroMQ frames directly",
+    "phase": "907",
+    "project": "anvilml",
+    "prereqs": [
+      "P907-A7"
+    ],
+    "context": "ZeroMQ messages are already length-prefixed by the protocol; the custom 4-byte framing in anvilml-ipc/src/framing.rs is redundant. Remove framing::read_frame/write_frame calls from managed.rs reader_task/writer_task. Serialise WorkerMessage/WorkerEvent directly to msgpack bytes using rmp_serde and send/recv as single ZMQ message frames. Keep anvilml-ipc crate for message type definitions (WorkerMessage, WorkerEvent enums). Bump anvilml-worker patch version. cargo test --workspace --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P907-B1",
+    "description": "anvilml: integration smoke test worker Ready handshake over ZeroMQ",
+    "phase": "907",
+    "project": "anvilml",
+    "prereqs": [
+      "P907-A8"
+    ],
+    "context": "Add integration test backend/tests/api_worker_zmq.rs: spawn AnvilML with ANVILML_WORKER_MOCK=1, poll GET /v1/workers until one worker reaches status=Idle within 30s (no 60s timeout panic). Assert server stays alive. Use temp_env::async_with_vars pattern. cargo test --workspace --features mock-hardware --test api_worker_zmq exits 0. This is the acceptance gate proving ZeroMQ handshake is reliable.",
+    "tags": []
+  }
+]

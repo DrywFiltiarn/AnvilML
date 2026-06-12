@@ -120,7 +120,7 @@ new dependency must follow this order.
 | `anvilml-hardware` | Detect GPUs/CPU **SDK-free**; refreshable VRAM snapshot. | `lib.rs` (`detect_all_devices`), `vulkan.rs` (primary enumeration), `dxgi.rs` (Windows fallback), `sysfs.rs` + `nvml.rs` (Linux fallback), `device_db.rs` (PCI-ID capability table), `cpu.rs`, `mock.rs` |
 | `anvilml-registry` | Scan model dirs, persist `ModelMeta` to SQLite, serve queries; `SeedLoader` (SHA256-gated SQL seed runner for `backend/seeds/`). | `scanner.rs`, `store.rs`, `device_store.rs`, `seed_loader.rs`, `lib.rs` |
 | `anvilml-ipc` | IPC message enums + length-prefixed msgpack framing. | `messages.rs`, `framing.rs` |
-| `anvilml-worker` | Spawn/supervise/respawn workers; IPC bridge; env injection. | `pool.rs`, `managed.rs` (spawn + Unix socket/named pipe IPC bridge), `env.rs` |
+| `anvilml-worker` | Spawn/supervise/respawn workers; IPC bridge; env injection. | `pool.rs`, `managed.rs` (spawn + ZeroMQ DEALER IPC bridge), `env.rs` |
 | `anvilml-scheduler` | Job queue, VRAM ledger, DAG validation, dispatch loop. | `queue.rs`, `ledger.rs`, `dag.rs`, `nodes.rs` (`KNOWN_NODE_TYPES`), `job_store.rs`, `scheduler.rs` |
 | `anvilml-server` | axum router, handlers, WS broadcaster, artifact store, frontend serving. | `lib.rs`, `state.rs`, `handlers/*.rs`, `ws/{broadcaster,handler,stats_tick}.rs`, `artifact/store.rs`, `frontend.rs` |
 | `anvilml-openapi` | Emit `openapi.json` from utoipa annotations (build-time only). | `main.rs` |
@@ -146,9 +146,9 @@ The Python-side mock (`ANVILML_WORKER_MOCK=1`) is a separate, orthogonal mechani
 
 ## 6. IPC Protocol Summary
 
-**Transport:** Unix domain socket (Linux/macOS) or Windows named pipe. The supervisor creates the socket before spawning the worker; the worker connects on startup. Path passed via `ANVILML_IPC_SOCKET` environment variable. See `ANVILML_DESIGN.md §7` for socket path convention.
+**Transport:** ZeroMQ DEALER socket over `tcp://127.0.0.1:{port}`. The supervisor binds on an OS-assigned port before spawning the worker; the worker connects on startup. Port passed via `ANVILML_IPC_PORT` environment variable.
 
-**Framing:** `[ 4 bytes big-endian u32: payload_len ] [ payload_len bytes: msgpack ]`
+**Framing:** ZeroMQ native message frames (no custom length prefix). Each message is a single ZMQ frame containing a msgpack-serialised payload.
 
 **Max payload:** `limits.max_ipc_payload_mib` (default 64 MiB). Exceeding the limit or
 a deserialisation failure causes immediate worker kill + respawn.
