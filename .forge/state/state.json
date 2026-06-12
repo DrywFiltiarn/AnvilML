@@ -159,16 +159,17 @@
     "P904-A3",
     "P19-A1",
     "P19-A2",
-    "P19-A3"
+    "P19-A3",
+    "P20-A1"
   ],
-  "in_progress": "P20-A1",
+  "in_progress": "P20-A2",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "1. **Update `anvilml-openapi/Cargo.toml`** \u2014 add `utoipa` (with `json` feature for serialization) and `serde_json` as dependencies. Both are available via workspace: `utoipa = { workspace = true }` with `features = [\"json\"]`, `serde_json = { workspace = true }`.\n\n2. **Implement `anvilml-openapi/src/main.rs`**:\n   a. Import the handler modules from `anvilml_server::handlers` (health, system, jobs, models, workers, artifacts) and the `WsEvent` type from `anvilml_core::types::events`.\n   b. Define a single `#[derive(OpenApi)]` struct named `OpenApiSpec` with:\n      - `paths` attribute referencing all handler functions via module paths (e.g., `anvilml_server::handlers::health::health`, `anvilml_server::handlers::jobs::submit_job`, etc.)\n      - `components` attribute registering all schema types: `HealthResponse`, `EnvReport`, `HardwareInfo`, `SubmitJobRequest`, `SubmitJobResponse`, `ErrorInline`, `ClearJobsResponse`, `RescanResponse`, `ArtifactMeta`, `Job`, `ModelMeta`, `WorkerInfo`, `WsEvent` and all its variant structs (`SystemStatsEvent`, `JobQueuedEvent`, `JobStartedEvent`, `JobProgressEvent`, `JobImageReadyEvent`, `JobCompletedEvent`, `JobFailedEvent`, `JobCancelledEvent`, `WorkerStatusChangedEvent`), `GpuStatSnapshot`, `JobStatus`, `ModelKind`, `DeviceType`, `WorkerStatus`, `EnumerationSource`, `CapabilitySource`, `InferenceCaps`, `GpuDevice`, `HardwareInfo`, `HostInfo`, `EnvReport`, `AnvilError`\n      - `info` attribute with title, version\n   c. In `main()`: call `OpenApiSpec::openapi()` to get the `OpenApi` struct, serialize via `serde_json::to_string_pretty`, write to `../../backend/openapi.json` (relative to `crates/anvilml-openapi/src/main.rs`, the output path is `backend/openapi.json` from workspace root).\n\n3. **Write the output file**: Use `std::fs::write` with the pretty-printed JSON string. The output path is computed relative to the workspace root: read `std::env::var(\"CARGO_MANIFEST_DIR\")` and traverse up two levels to the workspace root, then append `backend/openapi.json`.\n\n4. **Verification plan** (for ACT session): Run `cargo run -p anvilml-openapi`, confirm `backend/openapi.json` is non-empty, contains all `/v1/*` paths, and includes the error response shape.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-12T07:28:50+0200",
-  "plan_approval_message_id": "1514858375542866030",
+  "last_updated": "2026-06-12T08:21:15+0200",
+  "plan_approval_message_id": "1514875978910929008",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1514858373214896129",
+  "plan_report_message_id": "1514875976813776978",
   "impl_report_message_id": null
 }

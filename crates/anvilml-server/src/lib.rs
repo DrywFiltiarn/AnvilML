@@ -1,6 +1,6 @@
 pub mod artifact;
 mod frontend;
-mod handlers;
+pub mod handlers;
 mod state;
 pub mod ws;
 

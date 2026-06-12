@@ -1,0 +1,1712 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "AnvilML API",
+    "description": "AnvilML — GPU job orchestration server API",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health check",
+        "description": "Returns HTTP 200 with a JSON body containing the application status,\nversion, and uptime in seconds since start.",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "Service is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/artifacts": {
+      "get": {
+        "summary": "List artifacts with optional filters",
+        "description": "Returns a JSON array of `ArtifactMeta` objects sorted newest-first.",
+        "operationId": "list_artifacts",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "query",
+            "description": "Filter by job UUID",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of results (default 100, max 1000)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Only artifacts created before this Unix timestamp",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Artifact list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ArtifactMeta"
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Database not available",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/artifacts/{hash}": {
+      "get": {
+        "summary": "Get an artifact by its content hash",
+        "description": "Returns the raw PNG bytes with:\n- `Content-Type: image/png`\n- `Cache-Control: public, immutable, max-age=31536000`\n- `ETag: \"{hash}\"`\n\nReturns 404 JSON when the artifact file does not exist.",
+        "operationId": "serve_artifact",
+        "parameters": [
+          {
+            "name": "hash",
+            "in": "path",
+            "description": "SHA-256 hex digest of the artifact",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Artifact found",
+            "content": {
+              "image/png": {}
+            }
+          },
+          "404": {
+            "description": "Artifact not found",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/events": {
+      "get": {
+        "summary": "WebSocket event stream",
+        "description": "Upgrades the HTTP connection to a WebSocket, subscribes to the shared\n[`EventBroadcaster`], and forwards each event as a JSON text frame.",
+        "operationId": "ws_events",
+        "responses": {
+          "101": {
+            "description": "WebSocket upgrade successful"
+          }
+        }
+      }
+    },
+    "/v1/jobs": {
+      "get": {
+        "summary": "List jobs with optional filters",
+        "description": "Returns a JSON array of `Job` objects sorted newest-first.",
+        "operationId": "list_jobs",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Filter by job status",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/JobStatus"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of results (default 100, max 1000)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Only jobs created before this ISO 8601 timestamp",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Job"
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Database not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInline"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Submit a new job for execution",
+        "description": "Validates the graph structure via the scheduler, persists the job to SQLite,\nenqueues it, and returns 202 with the real job_id and queue position.\nReturns 503 `workers_unavailable` when the Python preflight check has failed\n(unless `ANVILML_WORKER_MOCK` is set).",
+        "operationId": "submit_job",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitJobRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Job accepted and queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitJobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid graph — validation errors listed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInline"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInline"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Workers unavailable — preflight failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInline"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Bulk-clear terminal jobs by status",
+        "description": "Deletes all jobs matching the given status filter (default: all terminal\njobs). For each matched job, artifacts are deleted first (best-effort),\nthen the job row is removed from the database.\n\n* `status` — `completed|failed|cancelled|all` (case-insensitive).\n  Defaults to `all` when omitted.\n\nReturns `{ \"removed\": <count> }` with 200 OK.",
+        "operationId": "clear_jobs",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Filter by status: completed, failed, cancelled, or all (default: all)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Jobs cleared",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClearJobsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid status parameter"
+          },
+          "503": {
+            "description": "Database not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInline"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/jobs/{id}": {
+      "get": {
+        "summary": "Get a job by ID",
+        "description": "Returns 200 with the full `Job` record if found, or 404 if not found.",
+        "operationId": "get_job",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Job UUID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Job not found"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInline"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete a terminal job and its artifacts",
+        "description": "Returns 204 No Content on success. Returns 404 if the job does not exist,\nor 409 if the job is in a non-terminal state (Queued or Running).\n\nThe job must be in a terminal state (Completed, Failed, or Cancelled).\nOn success, all on-disk artifact files are removed first, then the job\nand artifact rows are deleted from the database.",
+        "operationId": "delete_job",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Job UUID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Job deleted"
+          },
+          "404": {
+            "description": "Job not found"
+          },
+          "409": {
+            "description": "Job is not terminal — cannot delete"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInline"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/jobs/{id}/cancel": {
+      "post": {
+        "summary": "Cancel a queued or running job",
+        "description": "Transitions the job to `Cancelled` and returns 202. Returns 404 if the job\ndoes not exist, or 409 if the job is in a terminal state.",
+        "operationId": "cancel_job",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Job UUID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Job cancelled"
+          },
+          "404": {
+            "description": "Job not found"
+          },
+          "409": {
+            "description": "Job not cancellable — already terminal"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInline"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "summary": "List scanned models",
+        "description": "Returns a JSON array of all scanned model metadata, optionally filtered\nby `kind`. Delegates to `registry.list(kind)` from the application state.",
+        "operationId": "list_models",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "Filter by model kind",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ModelKind"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Model list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ModelMeta"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/models/rescan": {
+      "post": {
+        "summary": "Trigger model directory rescan",
+        "description": "Triggers a background model directory rescan. The handler returns 202\nAccepted immediately; the actual scanning work is performed by a spawned\ntokio task.",
+        "operationId": "rescan_models",
+        "responses": {
+          "202": {
+            "description": "Rescan started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RescanResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/models/{id}": {
+      "get": {
+        "summary": "Get a model by ID",
+        "description": "Returns the model metadata for a single model identified by its ID.\nReturns 200 with the model on success, or 404 with an error JSON body\nwhen no model with the given ID exists.",
+        "operationId": "get_model",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Model ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Model found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelMeta"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Model not found"
+          }
+        }
+      }
+    },
+    "/v1/system": {
+      "get": {
+        "summary": "Get hardware information",
+        "description": "Returns the hardware detection result collected at server startup.",
+        "operationId": "get_system",
+        "responses": {
+          "200": {
+            "description": "Hardware info",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HardwareInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/system/env": {
+      "get": {
+        "summary": "Get Python environment health report",
+        "description": "Returns the `EnvReport` populated by the Python preflight check at startup.\nIn test context (no preflight runs), stub values are returned.",
+        "operationId": "get_env",
+        "responses": {
+          "200": {
+            "description": "Environment report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnvReport"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workers": {
+      "get": {
+        "summary": "List worker pool status",
+        "description": "Returns a JSON array of `WorkerInfo` objects, one per worker in the pool.",
+        "operationId": "list_workers",
+        "responses": {
+          "200": {
+            "description": "Worker list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WorkerInfo"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workers/{id}/restart": {
+      "post": {
+        "summary": "Restart a worker",
+        "description": "Sends a shutdown to the specified worker, force-kills it, and respawns it.",
+        "operationId": "restart_worker",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Worker ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Worker restarting"
+          },
+          "404": {
+            "description": "Worker not found"
+          },
+          "500": {
+            "description": "Restart failed"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ArtifactMeta": {
+        "type": "object",
+        "description": "Metadata about an artifact produced by a generation job.",
+        "required": [
+          "model_id",
+          "path",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the artifact was created."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Unique identifier for this artifact (UUID v4)."
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The job that produced this artifact."
+          },
+          "mime_hint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "MIME type hint (e.g. \"image/png\")."
+          },
+          "model_id": {
+            "type": "string",
+            "description": "The model that produced this artifact."
+          },
+          "path": {
+            "type": "string",
+            "description": "Filesystem path to the artifact file."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Size of the artifact file in bytes.",
+            "minimum": 0
+          }
+        }
+      },
+      "CapabilitySource": {
+        "type": "string",
+        "description": "Source used to resolve inference capabilities for a GPU device.",
+        "enum": [
+          "Fallback",
+          "DeviceTable",
+          "Worker"
+        ]
+      },
+      "ClearJobsResponse": {
+        "type": "object",
+        "description": "Response body for the `DELETE /v1/jobs` bulk-clear endpoint.",
+        "required": [
+          "removed"
+        ],
+        "properties": {
+          "removed": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of jobs successfully removed.",
+            "minimum": 0
+          }
+        }
+      },
+      "DType": {
+        "type": "string",
+        "description": "Data type of model weights.",
+        "enum": [
+          "f32",
+          "f16",
+          "b_f16",
+          "q8",
+          "q4",
+          "unknown"
+        ]
+      },
+      "DeviceType": {
+        "type": "string",
+        "description": "Hardware device type for inference.",
+        "enum": [
+          "cuda",
+          "rocm",
+          "cpu"
+        ]
+      },
+      "EnumerationSource": {
+        "type": "string",
+        "description": "Source used to enumerate a GPU device.",
+        "enum": [
+          "Vulkan",
+          "Dxgi",
+          "Sysfs",
+          "Nvml",
+          "Override",
+          "Mock",
+          "DeviceTable",
+          "Fallback"
+        ]
+      },
+      "EnvReport": {
+        "type": "object",
+        "description": "Python environment health report from the preflight check.",
+        "required": [
+          "python_path",
+          "preflight_ok"
+        ],
+        "properties": {
+          "preflight_ok": {
+            "type": "boolean",
+            "description": "Whether the preflight checks all passed."
+          },
+          "python_path": {
+            "type": "string",
+            "description": "Path to the Python interpreter."
+          },
+          "python_version": {
+            "type": "string",
+            "description": "Python version string (e.g. \"3.12.4\")."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Reason if preflight failed; empty string if it succeeded."
+          },
+          "torch_version": {
+            "type": "string",
+            "description": "PyTorch version string (e.g. \"2.4.0+cu121\")."
+          }
+        }
+      },
+      "ErrorInline": {
+        "type": "object",
+        "description": "Error response body for graph validation failures.",
+        "required": [
+          "error",
+          "message",
+          "request_id"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Machine-readable error identifier."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable error description (joined validation errors)."
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Opaque request correlation ID."
+          }
+        }
+      },
+      "GpuDevice": {
+        "type": "object",
+        "description": "A single GPU device detected on the host.",
+        "required": [
+          "index",
+          "name",
+          "device_type",
+          "vram_total_mib",
+          "vram_free_mib",
+          "driver_version"
+        ],
+        "properties": {
+          "arch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Architecture identifier — CUDA SM version (\"8.6\") or AMD gfx (\"gfx1100\")."
+          },
+          "capabilities_source": {
+            "$ref": "#/components/schemas/CapabilitySource",
+            "description": "Source used to resolve inference capabilities."
+          },
+          "caps": {
+            "$ref": "#/components/schemas/InferenceCaps",
+            "description": "Inference capability flags resolved from the device database or defaults."
+          },
+          "db_group_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Database group name — the model name from the device capability DB, shown in parentheses\nalongside a preserved Vulkan SKU name (e.g. \"Radeon RX 7900 XTX (Navi 31 XL)\")."
+          },
+          "device_type": {
+            "$ref": "#/components/schemas/DeviceType",
+            "description": "Hardware backend type."
+          },
+          "driver_version": {
+            "type": "string",
+            "description": "GPU driver version string."
+          },
+          "enumeration_source": {
+            "$ref": "#/components/schemas/EnumerationSource",
+            "description": "Source used to enumerate this device."
+          },
+          "index": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Zero-based index of this GPU device.",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string",
+            "description": "Human-readable device name (e.g. \"NVIDIA A100-SXM4-80GB\")."
+          },
+          "pci_device_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "PCI device ID within the vendor.",
+            "minimum": 0
+          },
+          "pci_vendor_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "PCI vendor ID (e.g. 0x10DE for NVIDIA, 0x1002 for AMD).",
+            "minimum": 0
+          },
+          "vram_free_mib": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Free VRAM in MiB (refreshed periodically from worker MemoryReport events).",
+            "minimum": 0
+          },
+          "vram_total_mib": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Total VRAM in MiB.",
+            "minimum": 0
+          }
+        }
+      },
+      "GpuStatSnapshot": {
+        "type": "object",
+        "description": "GPU VRAM snapshot for a single device at a point in time.",
+        "required": [
+          "index",
+          "vram_used_mib",
+          "vram_total_mib"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Zero-based index of the GPU device.",
+            "minimum": 0
+          },
+          "vram_total_mib": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Total VRAM available on this GPU in MiB.",
+            "minimum": 0
+          },
+          "vram_used_mib": {
+            "type": "integer",
+            "format": "int32",
+            "description": "VRAM currently used by this GPU in MiB.",
+            "minimum": 0
+          }
+        }
+      },
+      "HardwareInfo": {
+        "type": "object",
+        "description": "Complete hardware report for the host.",
+        "required": [
+          "host"
+        ],
+        "properties": {
+          "gpus": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GpuDevice"
+            },
+            "description": "Detected GPU devices."
+          },
+          "host": {
+            "$ref": "#/components/schemas/HostInfo",
+            "description": "Host-level information (OS, CPU, RAM)."
+          },
+          "inference_caps": {
+            "$ref": "#/components/schemas/InferenceCaps",
+            "description": "Inference capability flags derived from device type and driver."
+          }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "version",
+          "uptime_s"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Service status — always \"ok\" when healthy."
+          },
+          "uptime_s": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Uptime in seconds since server start.",
+            "minimum": 0
+          },
+          "version": {
+            "type": "string",
+            "description": "Application version string."
+          }
+        }
+      },
+      "HostInfo": {
+        "type": "object",
+        "description": "Host-level hardware information.",
+        "required": [
+          "os",
+          "cpu_model",
+          "ram_total_mib",
+          "ram_free_mib"
+        ],
+        "properties": {
+          "cpu_model": {
+            "type": "string",
+            "description": "CPU model string (e.g. \"Intel(R) Xeon(R) CPU E5-2686 v4 @ 2.30GHz\")."
+          },
+          "os": {
+            "type": "string",
+            "description": "Operating system identifier (e.g. \"Linux 6.1.0\")."
+          },
+          "ram_free_mib": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Free host RAM in MiB.",
+            "minimum": 0
+          },
+          "ram_total_mib": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total host RAM in MiB.",
+            "minimum": 0
+          }
+        }
+      },
+      "InferenceCaps": {
+        "type": "object",
+        "description": "Inference capability flags for detected hardware.",
+        "properties": {
+          "bf16": {
+            "type": "boolean",
+            "description": "Whether the device supports BF16 (bfloat16) inference."
+          },
+          "flash_attention": {
+            "type": "boolean",
+            "description": "Whether the device supports Flash Attention."
+          },
+          "fp16": {
+            "type": "boolean",
+            "description": "Whether the device supports FP16 (half-precision) inference."
+          },
+          "fp32": {
+            "type": "boolean",
+            "description": "Whether the device supports FP32 (single-precision) inference."
+          },
+          "fp4": {
+            "type": "boolean",
+            "description": "Whether the device supports FP4 inference."
+          },
+          "fp8": {
+            "type": "boolean",
+            "description": "Whether the device supports FP8 inference."
+          },
+          "nvfp4": {
+            "type": "boolean",
+            "description": "Whether the device supports NVIDIA FP4 (NVFP4) inference."
+          }
+        }
+      },
+      "Job": {
+        "type": "object",
+        "description": "A generation job tracked by the scheduler.",
+        "required": [
+          "id",
+          "status",
+          "graph",
+          "settings",
+          "created_at"
+        ],
+        "properties": {
+          "artifact_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of artifacts produced so far.",
+            "minimum": 0
+          },
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the job reached a terminal state. `None` while in-flight."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the job was created (always set)."
+          },
+          "device_index": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Assigned GPU device index. `None` until dispatched.",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Error message if the job failed. `None` otherwise."
+          },
+          "graph": {
+            "type": "object",
+            "description": "The validated DAG graph (as raw JSON)."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Unique identifier for this job."
+          },
+          "settings": {
+            "$ref": "#/components/schemas/JobSettings",
+            "description": "Generation settings supplied at submission time."
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When execution began. `None` until dispatched."
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus",
+            "description": "Current lifecycle status."
+          },
+          "worker_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The worker that processed this job. `None` until dispatched."
+          }
+        }
+      },
+      "JobCancelledEvent": {
+        "type": "object",
+        "description": "Job-cancelled event — emitted when a user cancels a running job.",
+        "required": [
+          "event",
+          "timestamp",
+          "job_id"
+        ],
+        "properties": {
+          "event": {
+            "type": "string",
+            "description": "Event type name, always `\"job.cancelled\"`."
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "UUID of the cancelled job."
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the cancellation was processed."
+          }
+        }
+      },
+      "JobCompletedEvent": {
+        "type": "object",
+        "description": "Job-completed event — emitted when a job finishes successfully.",
+        "required": [
+          "event",
+          "timestamp",
+          "job_id"
+        ],
+        "properties": {
+          "event": {
+            "type": "string",
+            "description": "Event type name, always `\"job.completed\"`."
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "UUID of the completed job."
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the job completed."
+          }
+        }
+      },
+      "JobFailedEvent": {
+        "type": "object",
+        "description": "Job-failed event — emitted when a job encounters an unrecoverable error.",
+        "required": [
+          "event",
+          "timestamp",
+          "job_id",
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Human-readable error message."
+          },
+          "event": {
+            "type": "string",
+            "description": "Event type name, always `\"job.failed\"`."
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "UUID of the failed job."
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the failure was detected."
+          },
+          "traceback": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional stack trace or additional diagnostic context."
+          }
+        }
+      },
+      "JobImageReadyEvent": {
+        "type": "object",
+        "description": "Job-image-ready event — emitted when a worker produces an output image.",
+        "required": [
+          "event",
+          "timestamp",
+          "job_id",
+          "artifact_hash",
+          "width",
+          "height",
+          "seed"
+        ],
+        "properties": {
+          "artifact_hash": {
+            "type": "string",
+            "description": "SHA-256 hash used to fetch the artifact via `GET /v1/artifacts/:hash`."
+          },
+          "event": {
+            "type": "string",
+            "description": "Event type name, always `\"job.image_ready\"`."
+          },
+          "height": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Image height in pixels.",
+            "minimum": 0
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "UUID of the job that produced this image."
+          },
+          "seed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Random seed used to generate this image."
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the image became available."
+          },
+          "width": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Image width in pixels.",
+            "minimum": 0
+          }
+        }
+      },
+      "JobProgressEvent": {
+        "type": "object",
+        "description": "Job-progress event — emitted periodically during job execution to report\nDAG node completion progress.",
+        "required": [
+          "event",
+          "timestamp",
+          "job_id",
+          "node_index",
+          "node_total",
+          "node_type"
+        ],
+        "properties": {
+          "event": {
+            "type": "string",
+            "description": "Event type name, always `\"job.progress\"`."
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "UUID of the job being executed."
+          },
+          "node_index": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Index of the node that just completed (0-based).",
+            "minimum": 0
+          },
+          "node_total": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Total number of nodes in the DAG.",
+            "minimum": 0
+          },
+          "node_type": {
+            "type": "string",
+            "description": "Type / class name of the completed node."
+          },
+          "step": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Per-step progress within a node. Reserved for future use; always `None`\nin the MVP.",
+            "minimum": 0
+          },
+          "step_total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Total steps within a node. Reserved for future use; always `None` in\nthe MVP.",
+            "minimum": 0
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this progress update was emitted."
+          }
+        }
+      },
+      "JobQueuedEvent": {
+        "type": "object",
+        "description": "Job-queued event — emitted when a new job enters the queue.",
+        "required": [
+          "event",
+          "timestamp",
+          "job_id"
+        ],
+        "properties": {
+          "event": {
+            "type": "string",
+            "description": "Event type name, always `\"job.queued\"`."
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "UUID of the newly queued job."
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the job was queued."
+          }
+        }
+      },
+      "JobSettings": {
+        "type": "object",
+        "description": "Generation parameters supplied by the frontend when creating a job.",
+        "properties": {
+          "device_preference": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "User-requested device index. `None` means auto-select.",
+            "minimum": 0
+          },
+          "guidance_scale": {
+            "type": "number",
+            "format": "float",
+            "description": "Classifier-free guidance scale."
+          },
+          "height": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Target image height in pixels.",
+            "minimum": 0
+          },
+          "seed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seed for the random number generator. `-1` means \"random\", resolved\nby the worker at execution time."
+          },
+          "steps": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of diffusion steps.",
+            "minimum": 0
+          },
+          "width": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Target image width in pixels.",
+            "minimum": 0
+          }
+        }
+      },
+      "JobStartedEvent": {
+        "type": "object",
+        "description": "Job-started event — emitted when a worker begins executing a job.",
+        "required": [
+          "event",
+          "timestamp",
+          "job_id"
+        ],
+        "properties": {
+          "event": {
+            "type": "string",
+            "description": "Event type name, always `\"job.started\"`."
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "UUID of the job that started."
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When execution began."
+          }
+        }
+      },
+      "JobStatus": {
+        "type": "string",
+        "description": "Lifecycle status of a generation job.",
+        "enum": [
+          "Queued",
+          "Running",
+          "Completed",
+          "Failed",
+          "Cancelled"
+        ]
+      },
+      "ModelMeta": {
+        "type": "object",
+        "description": "Metadata about a scanned model file.",
+        "required": [
+          "id",
+          "name",
+          "path",
+          "kind",
+          "size_bytes"
+        ],
+        "properties": {
+          "dtype_hint": {
+            "$ref": "#/components/schemas/DType",
+            "description": "Hint about the data type of the model weights."
+          },
+          "id": {
+            "type": "string",
+            "description": "Unique identifier for the model (opaque string)."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ModelKind",
+            "description": "Kind/category of the model."
+          },
+          "name": {
+            "type": "string",
+            "description": "Human-readable display name."
+          },
+          "path": {
+            "type": "string",
+            "description": "Filesystem path to the model weights."
+          },
+          "scanned_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this model was last scanned by the registry."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Size of the model file in bytes.",
+            "minimum": 0
+          },
+          "vram_estimate_mib": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Estimated VRAM consumption in MiB.",
+            "minimum": 0
+          }
+        }
+      },
+      "RescanResponse": {
+        "type": "object",
+        "description": "Response body for POST /v1/models/rescan.",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Rescan status — always \"rescan_started\"."
+          }
+        }
+      },
+      "SubmitJobRequest": {
+        "type": "object",
+        "description": "Request body for the `POST /v1/jobs` endpoint.",
+        "required": [
+          "graph",
+          "settings"
+        ],
+        "properties": {
+          "graph": {
+            "type": "object",
+            "description": "The validated DAG graph (as raw JSON)."
+          },
+          "settings": {
+            "$ref": "#/components/schemas/JobSettings",
+            "description": "Generation settings."
+          }
+        }
+      },
+      "SubmitJobResponse": {
+        "type": "object",
+        "description": "Response body for the `POST /v1/jobs` endpoint.",
+        "required": [
+          "job_id"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The UUID of the newly created job."
+          },
+          "queue_position": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Position in the queue (1-based).",
+            "minimum": 0
+          }
+        }
+      },
+      "SystemStatsEvent": {
+        "type": "object",
+        "description": "System statistics event — periodically broadcast to report hardware state.",
+        "required": [
+          "event",
+          "timestamp",
+          "ram_used_mib",
+          "ram_total_mib"
+        ],
+        "properties": {
+          "event": {
+            "type": "string",
+            "description": "Event type name, always `\"system.stats\"`."
+          },
+          "gpus": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GpuStatSnapshot"
+            },
+            "description": "Per-GPU VRAM snapshots."
+          },
+          "ram_total_mib": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total host RAM in MiB.",
+            "minimum": 0
+          },
+          "ram_used_mib": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Host RAM currently used in MiB.",
+            "minimum": 0
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this snapshot was taken."
+          }
+        }
+      },
+      "WorkerInfo": {
+        "type": "object",
+        "description": "Information about a managed worker process.",
+        "required": [
+          "worker_id",
+          "device_index",
+          "device_name",
+          "status"
+        ],
+        "properties": {
+          "current_job_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The job currently being executed. `None` when idle/dead."
+          },
+          "device_index": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Device index this worker manages.",
+            "minimum": 0
+          },
+          "device_name": {
+            "type": "string",
+            "description": "Name of the GPU device (or \"CPU\" for CPU workers)."
+          },
+          "status": {
+            "$ref": "#/components/schemas/WorkerStatus",
+            "description": "Current lifecycle status."
+          },
+          "vram_used_mib": {
+            "type": "integer",
+            "format": "int32",
+            "description": "VRAM consumed by the worker in MiB.",
+            "minimum": 0
+          },
+          "worker_id": {
+            "type": "string",
+            "description": "Unique worker identifier (format: \"worker-{device_index}\")."
+          }
+        }
+      },
+      "WorkerStatus": {
+        "type": "string",
+        "description": "Lifecycle status of a worker process.",
+        "enum": [
+          "Initializing",
+          "Idle",
+          "Busy",
+          "Dead",
+          "Respawning"
+        ]
+      },
+      "WorkerStatusChangedEvent": {
+        "type": "object",
+        "description": "Worker-status-changed event — emitted whenever a worker's lifecycle state\ntransitions (e.g. Idle → Busy, Busy → Dead).",
+        "required": [
+          "event",
+          "timestamp",
+          "worker_id",
+          "status"
+        ],
+        "properties": {
+          "event": {
+            "type": "string",
+            "description": "Event type name, always `\"worker.status\"`."
+          },
+          "status": {
+            "$ref": "#/components/schemas/WorkerStatus",
+            "description": "The new lifecycle status of the worker."
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the status change occurred."
+          },
+          "worker_id": {
+            "type": "string",
+            "description": "The worker identifier (format: `\"worker-{device_index}\"`)."
+          }
+        }
+      },
+      "WsEvent": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "System statistics snapshot (§4.5).",
+            "required": [
+              "SystemStats"
+            ],
+            "properties": {
+              "SystemStats": {
+                "$ref": "#/components/schemas/SystemStatsEvent",
+                "description": "System statistics snapshot (§4.5)."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Job has been queued for execution.",
+            "required": [
+              "JobQueued"
+            ],
+            "properties": {
+              "JobQueued": {
+                "$ref": "#/components/schemas/JobQueuedEvent",
+                "description": "Job has been queued for execution."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Job execution has started on a worker.",
+            "required": [
+              "JobStarted"
+            ],
+            "properties": {
+              "JobStarted": {
+                "$ref": "#/components/schemas/JobStartedEvent",
+                "description": "Job execution has started on a worker."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Progress update during job execution.",
+            "required": [
+              "JobProgress"
+            ],
+            "properties": {
+              "JobProgress": {
+                "$ref": "#/components/schemas/JobProgressEvent",
+                "description": "Progress update during job execution."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "An output image is available for retrieval.",
+            "required": [
+              "JobImageReady"
+            ],
+            "properties": {
+              "JobImageReady": {
+                "$ref": "#/components/schemas/JobImageReadyEvent",
+                "description": "An output image is available for retrieval."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Job completed successfully.",
+            "required": [
+              "JobCompleted"
+            ],
+            "properties": {
+              "JobCompleted": {
+                "$ref": "#/components/schemas/JobCompletedEvent",
+                "description": "Job completed successfully."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Job failed with an error.",
+            "required": [
+              "JobFailed"
+            ],
+            "properties": {
+              "JobFailed": {
+                "$ref": "#/components/schemas/JobFailedEvent",
+                "description": "Job failed with an error."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Job was cancelled by the user.",
+            "required": [
+              "JobCancelled"
+            ],
+            "properties": {
+              "JobCancelled": {
+                "$ref": "#/components/schemas/JobCancelledEvent",
+                "description": "Job was cancelled by the user."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A worker's lifecycle status changed.",
+            "required": [
+              "WorkerStatusChanged"
+            ],
+            "properties": {
+              "WorkerStatusChanged": {
+                "$ref": "#/components/schemas/WorkerStatusChangedEvent",
+                "description": "A worker's lifecycle status changed."
+              }
+            }
+          }
+        ],
+        "description": "All WebSocket event types that the server may broadcast to connected clients."
+      }
+    }
+  }
+}

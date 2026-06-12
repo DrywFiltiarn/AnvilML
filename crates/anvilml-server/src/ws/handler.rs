@@ -15,6 +15,14 @@ use crate::App;
 ///
 /// Upgrades the HTTP connection to a WebSocket, subscribes to the shared
 /// [`EventBroadcaster`], and forwards each event as a JSON text frame.
+#[utoipa::path(
+    get,
+    path = "/v1/events",
+    summary = "WebSocket event stream",
+    responses(
+        (status = 101, description = "WebSocket upgrade successful")
+    )
+)]
 pub async fn ws_events(
     upgrade: WebSocketUpgrade,
     State(state): State<std::sync::Arc<App>>,

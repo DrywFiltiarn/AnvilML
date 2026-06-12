@@ -25,7 +25,6 @@ use crate::App;
 
 /// Error response body for graph validation failures.
 #[derive(Debug, ToSchema)]
-#[expect(dead_code)]
 pub struct ErrorInline {
     /// Machine-readable error identifier.
     pub error: String,
