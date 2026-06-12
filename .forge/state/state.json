@@ -161,16 +161,17 @@
     "P19-A2",
     "P19-A3",
     "P20-A1",
-    "P20-A2"
+    "P20-A2",
+    "P20-A3"
   ],
-  "in_progress": "P20-A3",
+  "in_progress": "P20-A4",
   "plan_approved": true,
-  "current_plan": "1. **Add dependency.** Add `open = \"5.3\"` to `[workspace.dependencies]` in root `Cargo.toml`, then add `open = { workspace = true }` to `[dependencies]` in `backend/Cargo.toml`.\n\n2. **Add browser-open logic in `main.rs`.** After the TCP listener is bound (line ~305) and before `axum::serve` is called (line ~309), insert a conditional block:\n   - Check `args.no_browser` \u2014 if `true`, log at DEBUG level (`\"skipping browser open: --no-browser flag set\"`) and skip.\n   - Check `cfg.frontend.mode` against `FrontendMode::Headless` \u2014 if headless, log at DEBUG level (`\"skipping browser open: frontend mode is headless\"`) and skip.\n   - Otherwise, construct the URL string `http://host:port` and call `open::that(url)`.\n   - On success: log at DEBUG level (`\"browser opened to {url}\"`).\n   - On error: log at WARN level (`\"failed to open browser: {error}\"`) \u2014 do not abort.\n\n3. **Import `FrontendMode`.** Add `FrontendMode` to the `anvilml_core::` import line in `main.rs` (currently imports `load_config, DeviceType, EnumerationSource, HardwareInfo`).\n\n4. **Bump version.** Increment `backend/Cargo.toml` `[package] version` from `\"0.1.12\"` to `\"0.1.13\"`.",
+  "current_plan": "1. **Read current CI** \u2014 confirm the existing structure of `.github/workflows/ci.yml` (already done).\n\n2. **Add openapi-diff gate to rust-linux job** \u2014 Insert a new step block after the `Checkout` step (or after toolchain setup) in the `rust` job, guarded for ubuntu-latest only:\n   ```yaml\n   - name: Generate OpenAPI spec\n     if: matrix.os == 'ubuntu-latest'\n     run: cargo run -p anvilml-openapi\n   - name: Check OpenAPI spec is up to date\n     if: matrix.os == 'ubuntu-latest'\n     run: git diff --exit-code backend/openapi.json\n   ```\n   These steps are placed before the lint and test steps so that a stale spec fails early.\n\n3. **Update python-worker job** \u2014 Replace the current `pip install msgpack pillow pytest` line with:\n   ```yaml\n   - name: Install dependencies\n     run: pip install -r worker/requirements/base.txt\n   ```\n   Keep the existing `Run worker tests (mock mode)` step unchanged (it already runs `pytest worker/tests/ -v` with `ANVILML_WORKER_MOCK=1`).\n\n4. **Local verification \u2014 openapi-diff** \u2014 Run:\n   ```bash\n   cargo run -p anvilml-openapi && git diff --exit-code backend/openapi.json\n   ```\n   Confirm exit code 0 (spec is already committed and matches).\n\n5. **Local verification \u2014 pytest** \u2014 Run:\n   ```bash\n   ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v\n   ```\n   Confirm exit code 0 (all worker tests pass in mock mode).",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-12T10:42:27+0200",
-  "plan_approval_message_id": "1514911329272463512",
+  "last_updated": "2026-06-12T11:14:52+0200",
+  "plan_approval_message_id": "1514918427377012796",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1514911326441308262",
+  "plan_report_message_id": "1514918425552748715",
   "impl_report_message_id": null
 }
