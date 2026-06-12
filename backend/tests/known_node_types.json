@@ -1,0 +1,11 @@
+[
+    "ZitLoadPipeline",
+    "ZitTextEncode",
+    "ZitSampler",
+    "ZitDecode",
+    "SdxlLoadPipeline",
+    "SdxlTextEncode",
+    "SdxlSampler",
+    "SdxlDecode",
+    "SaveImage"
+]

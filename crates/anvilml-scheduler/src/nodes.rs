@@ -128,4 +128,29 @@ mod tests {
             "ZitSampler outputs must include 'seed'"
         );
     }
+
+    #[test]
+    fn test_node_parity() {
+        use std::collections::HashSet;
+        use std::path::Path;
+
+        let json_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .unwrap()
+            .join("backend")
+            .join("tests")
+            .join("known_node_types.json");
+        let content = std::fs::read_to_string(&json_path)
+            .expect("known_node_types.json must exist at backend/tests/");
+        let json_values: Vec<String> = serde_json::from_str(&content)
+            .expect("known_node_types.json must be a valid JSON array of strings");
+        let rust_set: HashSet<&str> = KNOWN_NODE_TYPES.iter().copied().collect();
+        let json_set: HashSet<&str> = json_values.iter().map(|s| s.as_str()).collect();
+        assert_eq!(
+            rust_set, json_set,
+            "KNOWN_NODE_TYPES {:?} do not match known_node_types.json {:?}",
+            KNOWN_NODE_TYPES, json_values
+        );
+    }
 }
