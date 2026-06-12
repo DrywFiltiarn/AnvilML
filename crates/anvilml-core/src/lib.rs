@@ -9,7 +9,7 @@ pub use error::AnvilError;
 
 // Re-export model and artifact domain types for convenience.
 pub use types::artifact::{ArtifactMeta, ArtifactSave, ArtifactSaveInput};
-pub use types::model::{DType, ModelKind, ModelMeta};
+pub use types::model::{DType, ModelKind, ModelMeta, ModelMetaPatch};
 
 // Re-export hardware domain types (§4.3).
 pub use types::hardware::{

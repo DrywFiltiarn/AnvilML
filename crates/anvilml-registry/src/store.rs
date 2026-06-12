@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 
 use anvilml_core::error::AnvilError;
+use anvilml_core::ModelMetaPatch;
 
 /// Convert a `sqlx::Error` into an `AnvilError::DbError`.
 fn sqlx_error(err: sqlx::Error) -> AnvilError {
@@ -224,5 +225,40 @@ impl ModelRegistry {
 
         let removed = stale_ids.len();
         Ok((upserted, removed))
+    }
+
+    /// Partially update a model's metadata in the registry.
+    ///
+    /// Only the fields set to `Some` in `patch` are applied; absent fields
+    /// are left untouched. After applying the patch, VRAM is recomputed from
+    /// the (possibly changed) dtype and the record is upserted.
+    ///
+    /// Returns `Ok(None)` if no model with the given ID exists.
+    pub async fn patch_meta(
+        &self,
+        id: &str,
+        patch: ModelMetaPatch,
+    ) -> Result<Option<ModelMeta>, AnvilError> {
+        let current = self.get(id).await?;
+
+        let mut updated = match current {
+            Some(meta) => meta,
+            None => return Ok(None),
+        };
+
+        if let Some(dtype) = patch.dtype_hint {
+            updated.dtype_hint = dtype;
+        }
+
+        if let Some(kind) = patch.kind {
+            updated.kind = kind;
+        }
+
+        updated.vram_estimate_mib =
+            crate::scanner::vram_estimate_mib(updated.size_bytes, updated.dtype_hint);
+
+        self.upsert(&updated).await?;
+
+        Ok(Some(updated))
     }
 }

@@ -62,6 +62,17 @@ pub struct ModelMeta {
     pub scanned_at: DateTime<Utc>,
 }
 
+/// Partial update for model metadata.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct ModelMetaPatch {
+    /// New data type hint for the model weights.
+    #[serde(default)]
+    pub dtype_hint: Option<DType>,
+    /// New model kind/category.
+    #[serde(default)]
+    pub kind: Option<ModelKind>,
+}
+
 fn default_scanned_at() -> DateTime<Utc> {
     Utc::now()
 }
