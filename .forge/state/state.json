@@ -158,16 +158,17 @@
     "P904-A2b",
     "P904-A3",
     "P19-A1",
-    "P19-A2"
+    "P19-A2",
+    "P19-A3"
   ],
-  "in_progress": "P19-A3",
+  "in_progress": "P20-A1",
   "plan_approved": true,
-  "current_plan": "1. **Verify workspace deps exist.** The root `Cargo.toml` already declares\n   `hyper = { version = \"1\", features = [\"client\", \"http1\"] }` and\n   `hyper-util = { version = \"0.1\", features = [\"client\", \"client-legacy\", \"http1\"] }`\n   (lines 51\u201352). Confirm no new feature flags are needed \u2014 the existing ones suffice for\n   a basic HTTP/1 reverse proxy client.\n\n2. **Add deps to `anvilml-server/Cargo.toml`.** Add two lines under `[dependencies]`:\n   ```toml\n   hyper = { workspace = true }\n   hyper-util = { workspace = true }\n   ```\n   Verify no version conflict with the workspace declarations.\n\n3. **Implement the Remote arm in `frontend.rs`.**\n   - Add imports: `hyper`, `hyper_util`, `http::{Request, Uri}`, `tower::service_fn`,\n     `anvilml_core::FrontendMode`.\n   - In the `FrontendMode::Remote { url }` arm of `add_frontend_route()`:\n     - Log at DEBUG: `mounting remote frontend proxy to {url}`.\n     - Create a `hyper::Client` with `hyper_util::client::legacy::Connector::default()`.\n     - Define an inner `proxy_handler` async closure (capturing `url` and `client`):\n       1. Extract the original request's `uri` and `method`.\n       2. Parse the path and query from the request URI.\n       3. Construct the upstream URI: `url.join(path)?` with query preserved.\n       4. Build a new `Request<Body>`:\n          - Method from original.\n          - URI set to upstream.\n          - Copy all original headers except hop-by-hop ones.\n          - Set `Host` header to the upstream host (from `url`).\n       5. Send the request via `client.request(upstream_req)`.\n       6. On success: build a response from the upstream response, stripping hop-by-hop\n          headers and preserving status + body. Stream body with `hyper_util::body::SyncBoxBody`\n          or `axum::body::Body::from_stream`.\n       7. On error: return 502 Bad Gateway with the error description.\n     - Mount via `router.nest_service(\"/\", svc)`.\n   - Ensure the match arm for `Remote` is exhaustive (replacing the current `..` catchall).\n\n4. **Write the unit test `test_frontend_remote`.**\n   - Use `tokio::net::TcpListener::bind(\"127.0.0.1:0\")` to get a random available port.\n   - Spawn an async task that accepts one connection, reads the request line, and replies\n     with a minimal HTTP/1.1 200 response containing `AnvilML Remote Proxy Test` in the body.\n   - Build the router with `FrontendMode::Remote { url }` pointing to\n     `http://127.0.0.1:{port}`.\n   - Send `GET /` via `app.oneshot(...)`.\n   - Assert status 200 and body contains `AnvilML Remote Proxy Test`.\n   - Assert that `/health` still returns 200 (API routes take priority over nest_service).\n\n5. **Bump crate version.** Change `anvilml-server/Cargo.toml` version from `0.1.16` to\n   `0.1.17`.\n\n6. **Verify.** Run `cargo test -p anvilml-server --lib -- frontend` and confirm all tests\n   pass. Run `cargo clippy -p anvilml-server --features mock-hardware -- -D warnings`\n   and confirm zero warnings.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-12T00:16:44+0200",
-  "plan_approval_message_id": "1514750727610699886",
+  "last_updated": "2026-06-12T07:28:50+0200",
+  "plan_approval_message_id": "1514858375542866030",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1514750725710676191",
+  "plan_report_message_id": "1514858373214896129",
   "impl_report_message_id": null
 }

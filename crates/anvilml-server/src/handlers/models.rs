@@ -1,6 +1,7 @@
 use axum::{extract::Path, extract::Query, extract::State, http::StatusCode, response::Json};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use utoipa::ToSchema;
 
 use anvilml_core::ModelKind;
 
@@ -17,6 +18,17 @@ pub struct ModelsListQuery {
 ///
 /// Returns a JSON array of all scanned model metadata, optionally filtered
 /// by `kind`. Delegates to `registry.list(kind)` from the application state.
+#[utoipa::path(
+    get,
+    path = "/v1/models",
+    summary = "List scanned models",
+    params(
+        ("kind" = Option<ModelKind>, Query, description = "Filter by model kind")
+    ),
+    responses(
+        (status = 200, description = "Model list", body = Vec<anvilml_core::ModelMeta>)
+    )
+)]
 pub async fn list_models(
     State(state): State<Arc<App>>,
     Query(query): Query<ModelsListQuery>,
@@ -41,6 +53,18 @@ pub async fn list_models(
 /// Returns the model metadata for a single model identified by its ID.
 /// Returns 200 with the model on success, or 404 with an error JSON body
 /// when no model with the given ID exists.
+#[utoipa::path(
+    get,
+    path = "/v1/models/{id}",
+    summary = "Get a model by ID",
+    params(
+        ("id" = String, Path, description = "Model ID")
+    ),
+    responses(
+        (status = 200, description = "Model found", body = anvilml_core::ModelMeta),
+        (status = 404, description = "Model not found")
+    )
+)]
 pub async fn get_model(
     State(state): State<Arc<App>>,
     Path(id): Path<String>,
@@ -72,6 +96,14 @@ pub async fn get_model(
 /// Triggers a background model directory rescan. The handler returns 202
 /// Accepted immediately; the actual scanning work is performed by a spawned
 /// tokio task.
+#[utoipa::path(
+    post,
+    path = "/v1/models/rescan",
+    summary = "Trigger model directory rescan",
+    responses(
+        (status = 202, description = "Rescan started", body = RescanResponse)
+    )
+)]
 pub async fn rescan_models(State(state): State<Arc<App>>) -> (StatusCode, Json<RescanResponse>) {
     let dirs = state.model_dirs.clone();
     let registry = Arc::clone(&state.registry);
@@ -92,7 +124,8 @@ pub async fn rescan_models(State(state): State<Arc<App>>) -> (StatusCode, Json<R
 }
 
 /// Response body for POST /v1/models/rescan.
-#[derive(Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct RescanResponse {
+    /// Rescan status — always "rescan_started".
     pub status: &'static str,
 }

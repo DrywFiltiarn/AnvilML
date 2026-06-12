@@ -6,6 +6,14 @@ use anvilml_core::WorkerInfo;
 /// GET /v1/workers handler.
 ///
 /// Returns a JSON array of `WorkerInfo` objects, one per worker in the pool.
+#[utoipa::path(
+    get,
+    path = "/v1/workers",
+    summary = "List worker pool status",
+    responses(
+        (status = 200, description = "Worker list", body = Vec<WorkerInfo>)
+    )
+)]
 pub async fn list_workers(
     State(state): State<Arc<crate::App>>,
 ) -> (StatusCode, Json<Vec<WorkerInfo>>) {
@@ -21,6 +29,19 @@ pub async fn list_workers(
 /// POST /v1/workers/{id}/restart handler.
 ///
 /// Sends a shutdown to the specified worker, force-kills it, and respawns it.
+#[utoipa::path(
+    post,
+    path = "/v1/workers/{id}/restart",
+    summary = "Restart a worker",
+    params(
+        ("id" = String, Path, description = "Worker ID")
+    ),
+    responses(
+        (status = 202, description = "Worker restarting"),
+        (status = 404, description = "Worker not found"),
+        (status = 500, description = "Restart failed")
+    )
+)]
 pub async fn restart_worker(
     State(state): State<Arc<crate::App>>,
     Path(worker_id): Path<String>,
