@@ -31,8 +31,9 @@ async fn test_rescan_adds_models() {
         kind: Some(ModelKind::Diffusion),
     }];
 
-    let count = registry.rescan(&dirs).await.unwrap();
-    assert_eq!(count, 2);
+    let (upserted, removed) = registry.rescan(&dirs).await.unwrap();
+    assert_eq!(upserted, 2);
+    assert_eq!(removed, 0);
 
     let models = registry.list(None).await.unwrap();
     assert_eq!(models.len(), 2);
@@ -70,8 +71,9 @@ async fn test_rescan_idempotent() {
     }];
 
     // First rescan.
-    let count1 = registry.rescan(&dirs).await.unwrap();
-    assert_eq!(count1, 2);
+    let (upserted1, removed1) = registry.rescan(&dirs).await.unwrap();
+    assert_eq!(upserted1, 2);
+    assert_eq!(removed1, 0);
 
     let models1 = registry.list(None).await.unwrap();
     assert_eq!(models1.len(), 2);
@@ -79,8 +81,9 @@ async fn test_rescan_idempotent() {
     let ids_first: Vec<String> = models1.iter().map(|m| m.id.clone()).collect();
 
     // Second rescan on the same files.
-    let count2 = registry.rescan(&dirs).await.unwrap();
-    assert_eq!(count2, 2);
+    let (upserted2, removed2) = registry.rescan(&dirs).await.unwrap();
+    assert_eq!(upserted2, 2);
+    assert_eq!(removed2, 0);
 
     let models2 = registry.list(None).await.unwrap();
     assert_eq!(models2.len(), 2);

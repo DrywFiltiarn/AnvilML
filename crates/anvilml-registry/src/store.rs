@@ -1,5 +1,6 @@
 //! ModelRegistry — SQLite-backed store for model metadata.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use anvilml_core::config::ModelDirConfig;
@@ -158,17 +159,70 @@ impl ModelRegistry {
     }
 
     /// Scan the configured model directories and upsert every discovered
-    /// model into the registry. Returns the total number of models processed.
+    /// model into the registry. Returns `(upserted, removed_stale)`.
     ///
     /// This operation is idempotent: calling it multiple times over the same
     /// files will not create duplicates because `upsert` uses `INSERT OR REPLACE`.
-    /// Stale rows (files deleted from disk) are NOT removed — manual cleanup
-    /// is required via a separate mechanism.
-    pub async fn rescan(&self, dirs: &[ModelDirConfig]) -> Result<u32, AnvilError> {
+    /// Stale rows (files deleted from disk) are automatically removed.
+    pub async fn rescan(&self, dirs: &[ModelDirConfig]) -> Result<(usize, usize), AnvilError> {
         let metas = crate::scanner::scan_dirs(dirs).await;
+
+        // Upsert all discovered models.
         for meta in &metas {
             self.upsert(meta).await?;
         }
-        Ok(metas.len() as u32)
+
+        let upserted = metas.len();
+
+        // Collect the set of fresh model paths.
+        let fresh_paths: HashSet<String> = metas
+            .iter()
+            .map(|m| m.path.to_string_lossy().to_string())
+            .collect();
+
+        // Query DB for all model rows whose path starts with any scanned directory root.
+        let mut all_rows: Vec<(String, String)> = Vec::new();
+        for dir in dirs {
+            let dir_str = dir.path.to_string_lossy().to_string();
+            let rows: Vec<(String, String)> =
+                sqlx::query_as("SELECT id, path FROM models WHERE path LIKE ? || '/' || '%'")
+                    .bind(&dir_str)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(sqlx_error)?;
+            all_rows.extend(rows);
+        }
+
+        // Also match rows that are exactly the dir root (no subdirectory).
+        for dir in dirs {
+            let dir_str = dir.path.to_string_lossy().to_string();
+            let rows: Vec<(String, String)> =
+                sqlx::query_as("SELECT id, path FROM models WHERE path = ?")
+                    .bind(&dir_str)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(sqlx_error)?;
+            all_rows.extend(rows);
+        }
+
+        // Compute stale set: DB rows whose path is not in the fresh set.
+        let stale_ids: Vec<String> = all_rows
+            .into_iter()
+            .filter(|(_, path)| !fresh_paths.contains(path))
+            .map(|(id, _)| id)
+            .collect();
+
+        // Delete each stale row.
+        for id in &stale_ids {
+            tracing::debug!(path = %id, "rescan: removed stale model");
+            sqlx::query("DELETE FROM models WHERE id = ?")
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(sqlx_error)?;
+        }
+
+        let removed = stale_ids.len();
+        Ok((upserted, removed))
     }
 }

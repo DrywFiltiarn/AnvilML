@@ -229,7 +229,13 @@ async fn main() {
     let scan_dirs = cfg.model_dirs.clone();
     tokio::spawn(async move {
         match scan_reg.rescan(&scan_dirs).await {
-            Ok(count) => tracing::info!(models_scanned = count, "initial model scan complete"),
+            Ok((upserted, removed)) => {
+                tracing::info!(
+                    models_scanned = upserted,
+                    removed_stale = removed,
+                    "initial model scan complete"
+                )
+            }
             Err(e) => tracing::warn!("initial model scan failed: {e}"),
         }
     });

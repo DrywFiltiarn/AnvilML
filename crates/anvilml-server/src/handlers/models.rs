@@ -110,7 +110,13 @@ pub async fn rescan_models(State(state): State<Arc<App>>) -> (StatusCode, Json<R
 
     tokio::spawn(async move {
         match registry.rescan(&dirs).await {
-            Ok(count) => tracing::info!(models_scanned = count, "background rescan complete"),
+            Ok((upserted, removed)) => {
+                tracing::info!(
+                    models_scanned = upserted,
+                    removed_stale = removed,
+                    "background rescan complete"
+                )
+            }
             Err(e) => tracing::warn!("background rescan failed: {e}"),
         }
     });

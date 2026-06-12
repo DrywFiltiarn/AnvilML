@@ -165,16 +165,17 @@
     "P20-A3",
     "P20-A4",
     "P905-A1",
-    "P905-A2"
+    "P905-A2",
+    "P905-A3"
   ],
-  "in_progress": "P905-A3",
+  "in_progress": "P905-A4",
   "plan_approved": true,
-  "current_plan": "1. **Add `read_safetensors_dtype` function** in `crates/anvilml-registry/src/scanner.rs`:\n   - Use `std::fs::File` and `std::io::Read` (already available via std)\n   - Read first 8 bytes as little-endian u64 (`u64::from_le_bytes`)\n   - Guard: `if header_len > 100 * 1024 * 1024 { return None; }`\n   - Allocate buffer of `header_len` bytes, read into it\n   - Convert to UTF-8 string with `std::str::from_utf8`\n   - Parse with `serde_json::from_str` to get `serde_json::Value::Object`\n   - Iterate keys: skip `__metadata__`; for each value, if it's a string, increment its count in a `HashMap<String, u32>`\n   - Find the key with maximum count; map via a helper function\n   - Return `Some(mapped_dtype)` or `None` on any error\n\n2. **Modify `scan_dirs`** in the same file:\n   - After computing `stem` (file stem), before calling `infer_dtype(stem)`:\n   - If extension is `safetensors`, call `read_safetensors_dtype(entry.path())`\n   - If result is `Some(DType::Unknown)` or `None`, fall through to `infer_dtype(stem)`\n   - If result is `Some(dtype)` where dtype != Unknown, use it directly\n\n3. **Add unit tests** in `scanner.rs` `mod tests`:\n   - `test_read_safetensors_dtype_header_wins`: create temp dir, write a valid safetensors header with mostly F16 keys, write file as `model-f32.safetensors`, verify dtype is F16 (header wins over filename)\n   - `test_read_safetensors_dtype_fallback_malformed`: write invalid binary data as `.safetensors`, verify scanner falls back to `infer_dtype` and returns Q8 (from filename)\n   - `test_read_safetensors_dtype_fp8_header`: write valid safetensors header with F8_E4M3 keys, verify dtype is F8E4M3\n\n4. **Add integration test** in `crates/anvilml-registry/tests/safetensors_header.rs`:\n   - `test_safetensors_header_dtype_detection`: create temp dir with a safetensors file whose header declares F16 but filename says F32, scan it, assert dtype_hint is F16\n\n5. **Bump version** in `crates/anvilml-registry/Cargo.toml`: `0.1.1` \u2192 `0.1.2`",
+  "current_plan": "1. **Extend `rescan` in `store.rs`** (lines 160\u2013173):\n   - Change signature from `pub async fn rescan(&self, dirs: &[ModelDirConfig]) -> Result<u32, AnvilError>` to `pub async fn rescan(&self, dirs: &[ModelDirConfig]) -> Result<(usize, usize), AnvilError>`.\n   - Collect fresh model IDs into a `HashSet<String>` during the upsert loop.\n   - Query the DB for all model rows whose `path` column starts with any scanned directory root:\n     ```sql\n     SELECT id, path FROM models WHERE path LIKE ? || '%'\n     ```\n     (One query per dir root, or a single query with `OR` chains.)\n   - Compute `stale_ids` = DB rows whose `path` is not in the fresh set.\n   - DELETE each stale row:\n     ```sql\n     DELETE FROM models WHERE id = ?\n     ```\n   - Return `(metas.len(), stale_ids.len())`.\n   - Add `tracing::info!(models_scanned = upserted, removed_stale = removed, \"background rescan complete\")` to match the log format used by callers.\n   - Add `tracing::debug!(path = %path, \"rescan: removed stale model\")` for each deleted row.\n\n2. **Update `handlers/models.rs`** (lines 107\u2013124):\n   - In `rescan_models`, change the tokio spawn closure to destructure `Ok((upserted, removed))` and log:\n     ```rust\n     tracing::info!(models_scanned = upserted, removed_stale = removed, \"background rescan complete\")\n     ```\n\n3. **Update `backend/src/main.rs`** (lines 231\u2013235):\n   - Change `Ok(count)` to `Ok((upserted, removed))` and log:\n     ```rust\n     tracing::info!(models_scanned = upserted, removed_stale = removed, \"initial model scan complete\")\n     ```\n\n4. **Add integration test** `crates/anvilml-registry/tests/rescan_stale.rs`:\n   - Follow the pattern of `tests/rescan.rs` (tempfile for DB, tempdir for models).\n   - Write 2 `.safetensors` files in a model directory.\n   - First rescan \u2192 assert count is 2, DB has 2 rows.\n   - Delete 1 file from disk.\n   - Second rescan \u2192 assert returned tuple is `(1, 1)`, DB has 1 row.\n\n5. **Bump version** in `crates/anvilml-registry/Cargo.toml`: `0.1.2` \u2192 `0.1.3`.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-12T13:29:50+0200",
-  "plan_approval_message_id": "1514954476673564692",
+  "last_updated": "2026-06-12T14:07:05+0200",
+  "plan_approval_message_id": "1514961850754662420",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1514954474769219725",
+  "plan_report_message_id": "1514961848397729853",
   "impl_report_message_id": null
 }
