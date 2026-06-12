@@ -39,9 +39,7 @@ if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
 
 import argparse
-import base64
 import queue
-import random
 import threading
 
 # ── Thread environment setup (§14.1 of ANVILML_DESIGN.md) ─────────────────────
@@ -120,112 +118,6 @@ def _probe_hardware():
     }
 
 
-# ── Mock executor ──────────────────────────────────────────────────────────────
-
-
-def _generate_black_png() -> bytes:
-    """Create a 64x64 black RGB PNG and return raw PNG bytes."""
-    from io import BytesIO
-    from PIL import Image
-
-    img = Image.new("RGB", (64, 64), (0, 0, 0))
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
-
-
-def _execute_mock(
-    job_id: str | int,
-    graph: dict,
-    settings: dict,
-    device_index: int,
-    cancel_flag: dict[str, bool] | None = None,
-) -> None:
-    """Execute a graph in mock mode: emit Progress per node, then Completed.
-
-    Iterates ``graph['nodes']`` in the order given (no topological sort —
-    the DAG is validated by the server).  For each node a ``Progress``
-    event is emitted; for ``SaveImage`` nodes an ``ImageReady`` event is
-    also emitted.  After all nodes a single ``Completed`` event is emitted
-    with the total elapsed time in milliseconds.
-
-    If ``cancel_flag[job_id]`` is set before a node is processed, the
-    function emits ``Cancelled{job_id}`` instead of ``Completed`` and
-    returns immediately.
-
-    When the ``ANVILML_MOCK_NODE_DELAY_MS`` environment variable is set
-    to a positive integer, the executor sleeps that many milliseconds
-    between nodes (after each ``Progress`` event), making cancellation
-    observable during integration tests.
-    """
-    import worker.ipc as ipc  # noqa: E402
-
-    if cancel_flag is None:
-        cancel_flag = {}
-
-    delay_ms = int(os.environ.get("ANVILML_MOCK_NODE_DELAY_MS", "0"))
-
-    nodes = graph.get("nodes", [])
-    start_time = time.monotonic()
-
-    for i, node in enumerate(nodes):
-        if cancel_flag.get(job_id):
-            ipc.write_frame({
-                "_type": "Cancelled",
-                "job_id": job_id,
-            })
-            return
-
-        node_type = node.get("type", "unknown")
-        ipc.write_frame({
-            "_type": "Progress",
-            "job_id": job_id,
-            "node_index": i,
-            "node_total": len(nodes),
-            "node_type": node_type,
-        })
-
-        if node_type == "SaveImage":
-            inputs = node.get("inputs", {})
-
-            # Resolve prompt — default empty string.
-            prompt = inputs.get("prompt", "")
-
-            # Resolve seed — from node inputs, fallback to settings, then -1.
-            seed = inputs.get("seed", settings.get("seed", -1))
-            if seed == -1:
-                seed = random.randint(0, 2**63 - 1)
-
-            # Resolve steps — from node inputs, fallback to settings, then 1.
-            steps = inputs.get("steps", settings.get("steps", 1))
-
-            # Generate black PNG and base64-encode.
-            png_bytes = _generate_black_png()
-            image_b64 = base64.b64encode(png_bytes).decode("ascii")
-
-            ipc.write_frame({
-                "_type": "ImageReady",
-                "job_id": job_id,
-                "image_b64": image_b64,
-                "width": 64,
-                "height": 64,
-                "format": "png",
-                "seed": seed,
-                "steps": steps,
-                "prompt": prompt,
-            })
-
-        if delay_ms > 0 and i < len(nodes) - 1:
-            time.sleep(delay_ms / 1000.0)
-
-    elapsed_ms = int((time.monotonic() - start_time) * 1000)
-    ipc.write_frame({
-        "_type": "Completed",
-        "job_id": job_id,
-        "elapsed_ms": elapsed_ms,
-    })
-
-
 # ── Background threads ─────────────────────────────────────────────────────────
 
 _shutdown_event = threading.Event()
@@ -257,16 +149,17 @@ def _memory_report_thread(worker_id: str, device_index: int) -> None:
 
 
 def _message_reader_thread(
-    cancel_flag: dict[str, bool],
+    cancel_flags: dict[str, threading.Event],
     msg_queue: queue.Queue,
 ) -> None:
     """Background thread that reads IPC messages from the socket.
 
-    Owns the socket read side.  ``CancelJob`` messages set the cancel
-    flag directly; all other messages are placed on ``msg_queue`` for
-    the main loop to process.  This ensures messages are never lost
-    whether the main loop is in the message loop or blocked inside
-    ``_execute_mock``.
+    Owns the socket read side.  ``CancelJob`` messages create or set the
+    cancel event (creating it if necessary so that a CancelJob arriving
+    before Execute is still honoured); all other messages are placed on
+    ``msg_queue`` for the main loop to process.  This ensures messages
+    are never lost whether the main loop is in the message loop or
+    blocked inside ``run_graph``.
     """
     import worker.ipc as ipc  # noqa: E402
 
@@ -280,7 +173,11 @@ def _message_reader_thread(
 
         if _type == "CancelJob":
             job_id = msg.get("job_id", "")
-            cancel_flag[job_id] = True
+            # Create the event if it doesn't exist yet (CancelJob may
+            # arrive before the Execute handler creates it).
+            if job_id not in cancel_flags:
+                cancel_flags[job_id] = threading.Event()
+            cancel_flags[job_id].set()
         elif _type == "Shutdown":
             _shutdown_event.set()
             msg_queue.put(msg)
@@ -320,14 +217,15 @@ def main() -> None:
 
     ready_sent = False
     hw_props: dict | None = None
-    cancel_flag: dict[str, bool] = {}
+    device_str: str = "cpu"
+    cancel_flags: dict[str, threading.Event] = {}
     msg_queue: queue.Queue = queue.Queue()
 
     # Start the message reader thread so CancelJob messages can be
-    # received while ``_execute_mock`` is running.
+    # received while ``run_graph`` is running.
     reader = threading.Thread(
         target=_message_reader_thread,
-        args=(cancel_flag, msg_queue),
+        args=(cancel_flags, msg_queue),
         daemon=True,
         name="anvilml-msg-reader",
     )
@@ -339,6 +237,7 @@ def main() -> None:
 
         if _type == "InitializeHardware" and not ready_sent:
             hw_props = _probe_hardware()
+            device_str = msg.get("device_str", "cpu")
             ready_event = {
                 "_type": "Ready",
                 "worker_id": args.worker_id,
@@ -372,8 +271,36 @@ def main() -> None:
             graph = msg.get("graph", {})
             settings = msg.get("settings", {})
             device_index = msg.get("device_index", args.device_index)
-            _execute_mock(job_id, graph, settings, device_index, cancel_flag)
-            cancel_flag.pop(job_id, None)
+
+            # Derive device_str from device_index when not set by Init.
+            if device_str == "cpu" and not _mock:
+                device_str = f"cuda:{device_index}"
+
+            # Retrieve (or create) the cancel event for this job.
+            # The reader thread may have already created it if
+            # CancelJob arrived before Execute.
+            if job_id not in cancel_flags:
+                cancel_flags[job_id] = threading.Event()
+            cancel_event = cancel_flags[job_id]
+
+            # Build emit_fn closure around ipc.write_frame.
+            def emit_fn(frame: dict) -> None:
+                ipc.write_frame(frame)
+
+            # Import run_graph here so NODE_REGISTRY is available.
+            from worker.executor import run_graph  # noqa: E402
+
+            result = run_graph(
+                graph,
+                settings,
+                device_str,
+                cancel_event,
+                emit_fn,
+                pipeline_cache=None,
+                job_id=job_id,
+            )
+
+            cancel_flags.pop(job_id, None)
             continue
 
         if _type == "Shutdown":
