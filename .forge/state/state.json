@@ -173,16 +173,17 @@
     "P905-A7",
     "P906-A1",
     "P906-A2",
-    "P906-A3"
+    "P906-A3",
+    "P906-A4"
   ],
-  "in_progress": "P906-A4",
+  "in_progress": "P906-A5",
   "plan_approved": true,
-  "current_plan": "1. **Regenerate the spec:**\n   ```bash\n   cargo run -p anvilml-openapi\n   ```\n   This reads all `#[utoipa::path]` annotations and `ToSchema`-derived types from the\n   workspace, including the ModelKind schema registered in A1, the png binary schema\n   from A2, and the BF16 rename from A3. Output is written to `backend/openapi.json`.\n\n2. **Verify the file changed:**\n   ```bash\n   git diff --exit-code backend/openapi.json\n   ```\n   This must exit 1 (file differs from committed version). This confirms the generator\n   produces a corrected spec different from the stale committed file.\n\n3. **Inspect generated content for correctness:**\n   - Confirm `components/schemas/ModelKind` exists with `type: string` and\n     `enum: [clip, diffusion, vae, lora, control_net, unet, upscale]`\n   - Confirm `components/schemas/DType.enum` contains `bf16` (not `b_f16`),\n     `f8_e4m3`, `f8_e5m2`\n   - Confirm `paths[\"/v1/artifacts/{hash}\"].get.responses.200.content[\"image/png\"].schema`\n     has `type: string, format: binary`\n\n4. **Stage the regenerated file:**\n   ```bash\n   git add backend/openapi.json\n   ```\n   The Forge orchestrator handles the commit.\n\n5. **Run full test suite:**\n   ```bash\n   cargo test --workspace --features mock-hardware\n   ```\n   Must exit 0. This is the acceptance criterion gate.\n\n6. **Verify idempotency (implicit acceptance criterion):**\n   Running `cargo run -p anvilml-openapi` a second time must produce an identical file,\n   confirmed by `git diff --exit-code backend/openapi.json` exiting 0.",
+  "current_plan": "1. **Add `norm_path` helper** in `store.rs`:\n   ```rust\n   /// Normalise a path string: replace all backslashes with forward slashes.\n   fn norm_path(p: &str) -> String {\n       p.replace('\\\\', \"/\")\n   }\n   ```\n\n2. **Normalise path in `upsert`** (line 54):\n   Change from:\n   ```rust\n   .bind(meta.path.to_string_lossy().to_string())\n   ```\n   To:\n   ```rust\n   .bind(norm_path(&meta.path.to_string_lossy()))\n   ```\n\n3. **Normalise paths in `rescan`** \u2014 three locations:\n   - **Fresh paths collection** (line 181):\n     ```rust\n     let fresh_paths: HashSet<String> = metas\n         .iter()\n         .map(|m| norm_path(&m.path.to_string_lossy()))\n         .collect();\n     ```\n   - **Replace the two-pass SQL** (lines 185\u2013207) with a single query + Rust filter:\n     ```rust\n     // Fetch all DB rows for stale detection.\n     let all_rows: Vec<(String, String)> =\n         sqlx::query_as(\"SELECT id, path FROM models\")\n             .fetch_all(&self.pool)\n             .await\n             .map_err(sqlx_error)?;\n\n     // Normalised dir prefixes for filtering.\n     let dir_prefixes: Vec<String> = dirs\n         .iter()\n         .map(|d| norm_path(&d.path.to_string_lossy()))\n         .collect();\n\n     // Filter: row path starts with any normalised dir prefix and is not fresh.\n     let stale_ids: Vec<String> = all_rows\n         .into_iter()\n         .filter(|(_, path)| {\n             let path_norm = norm_path(path);\n             dir_prefixes.iter().any(|prefix| path_norm.starts_with(prefix))\n                 && !fresh_paths.contains(&path_norm)\n         })\n         .map(|(id, _)| id)\n         .collect();\n     ```\n\n4. **Bump `anvilml-registry` patch version** in `Cargo.toml`:\n   `0.1.4` \u2192 `0.1.5`",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-12T18:12:24+0200",
-  "plan_approval_message_id": "1515025854307238000",
+  "last_updated": "2026-06-12T18:47:37+0200",
+  "plan_approval_message_id": "1515032941116522686",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1515025852767932469",
+  "plan_report_message_id": "1515032939027501148",
   "impl_report_message_id": null
 }

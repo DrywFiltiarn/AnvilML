@@ -16,6 +16,11 @@ fn sqlx_error(err: sqlx::Error) -> AnvilError {
     AnvilError::DbError(err.to_string())
 }
 
+/// Normalise a path string: replace all backslashes with forward slashes.
+fn norm_path(p: &str) -> String {
+    p.replace('\\', "/")
+}
+
 /// Tuple representing a single row from the `models` table.
 type ModelRow = (
     String, // id
@@ -51,7 +56,7 @@ impl ModelRegistry {
         )
         .bind(&meta.id)
         .bind(&meta.name)
-        .bind(meta.path.to_string_lossy().to_string())
+        .bind(norm_path(&meta.path.to_string_lossy()))
         .bind(serde_json::to_string(&meta.kind).map_err(|e| AnvilError::Json(e.to_string()))?)
         .bind(meta.size_bytes as i64)
         .bind(serde_json::to_string(&meta.dtype_hint).map_err(|e| AnvilError::Json(e.to_string()))?)
@@ -178,38 +183,31 @@ impl ModelRegistry {
         // Collect the set of fresh model paths.
         let fresh_paths: HashSet<String> = metas
             .iter()
-            .map(|m| m.path.to_string_lossy().to_string())
+            .map(|m| norm_path(&m.path.to_string_lossy()))
             .collect();
 
-        // Query DB for all model rows whose path starts with any scanned directory root.
-        let mut all_rows: Vec<(String, String)> = Vec::new();
-        for dir in dirs {
-            let dir_str = dir.path.to_string_lossy().to_string();
-            let rows: Vec<(String, String)> =
-                sqlx::query_as("SELECT id, path FROM models WHERE path LIKE ? || '/' || '%'")
-                    .bind(&dir_str)
-                    .fetch_all(&self.pool)
-                    .await
-                    .map_err(sqlx_error)?;
-            all_rows.extend(rows);
-        }
+        // Fetch all DB rows for stale detection.
+        let all_rows: Vec<(String, String)> = sqlx::query_as("SELECT id, path FROM models")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(sqlx_error)?;
 
-        // Also match rows that are exactly the dir root (no subdirectory).
-        for dir in dirs {
-            let dir_str = dir.path.to_string_lossy().to_string();
-            let rows: Vec<(String, String)> =
-                sqlx::query_as("SELECT id, path FROM models WHERE path = ?")
-                    .bind(&dir_str)
-                    .fetch_all(&self.pool)
-                    .await
-                    .map_err(sqlx_error)?;
-            all_rows.extend(rows);
-        }
+        // Normalised dir prefixes for filtering.
+        let dir_prefixes: Vec<String> = dirs
+            .iter()
+            .map(|d| norm_path(&d.path.to_string_lossy()))
+            .collect();
 
-        // Compute stale set: DB rows whose path is not in the fresh set.
+        // Filter: row path starts with any normalised dir prefix and is not fresh.
         let stale_ids: Vec<String> = all_rows
             .into_iter()
-            .filter(|(_, path)| !fresh_paths.contains(path))
+            .filter(|(_, path)| {
+                let path_norm = norm_path(path);
+                dir_prefixes
+                    .iter()
+                    .any(|prefix| path_norm.starts_with(prefix))
+                    && !fresh_paths.contains(&path_norm)
+            })
             .map(|(id, _)| id)
             .collect();
 
