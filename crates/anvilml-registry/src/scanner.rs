@@ -195,9 +195,9 @@ pub async fn scan_dirs(dirs: &[ModelDirConfig]) -> Vec<ModelMeta> {
                 }
             };
 
-            // Only process files.
+            // Only process files; directories are descended into by WalkDir automatically.
             if !entry.file_type().is_file() {
-                tracing::debug!(path = %entry.path().display(), reason = "not a file", "scanner: skipped");
+                tracing::debug!(path = %entry.path().display(), "scanner: found model directory");
                 continue;
             }
 
@@ -298,7 +298,12 @@ pub async fn scan_dirs(dirs: &[ModelDirConfig]) -> Vec<ModelMeta> {
                 ..ModelMeta::default()
             });
 
-            tracing::debug!(path = %canonical_path.display(), id = %id_clone, "scanner: accepted");
+            // Log with a clean path: strip Windows \\?\  UNC prefix, normalise separators.
+            let display_path = canonical_path
+                .to_string_lossy()
+                .trim_start_matches("\\\\?\\")
+                .replace('\\', "/");
+            tracing::debug!(path = %display_path, id = %id_clone, "scanner: accepted");
         }
     }
 

@@ -157,10 +157,10 @@ async fn main() {
     // Initialise the tracing subscriber before any server logic.
     let env_filter = std::env::var("ANVILML_LOG")
         .or_else(|_| std::env::var("RUST_LOG"))
-        .unwrap_or_else(|_| "info".to_string());
+        .unwrap_or_else(|_| "info,sqlx::query=off".to_string());
     let filter = tracing_subscriber::EnvFilter::try_new(env_filter).unwrap_or_else(|e| {
         eprintln!("Invalid RUST_LOG/ANVILML_LOG value: {e}, falling back to info");
-        tracing_subscriber::EnvFilter::new("info")
+        tracing_subscriber::EnvFilter::new("info,sqlx::query=off")
     });
 
     // Build the formatter layer.  Boxing via `dyn Layer` unifies the
