@@ -164,16 +164,17 @@
     "P20-A2",
     "P20-A3",
     "P20-A4",
-    "P905-A1"
+    "P905-A1",
+    "P905-A2"
   ],
-  "in_progress": "P905-A2",
+  "in_progress": "P905-A3",
   "plan_approved": true,
-  "current_plan": "1. **Read current `infer_dtype()`** \u2014 it currently handles f32, bf16, fp16/f16, q8, q4, falling through to Unknown. The bf16 check must remain before the f16 check (bf16 ends with f16).\n\n2. **Add FP8 suffix matching** before the bf16 check in `infer_dtype()`:\n   - `f8e4m3` or `fp8e4m3` \u2192 `DType::F8E4M3`\n   - `f8e5m2` or `fp8e5m2` \u2192 `DType::F8E5M2`\n   - `fp8` or `f8` \u2192 `DType::F8E4M3` (default FP8 type)\n   - All checks are case-insensitive (already using `.to_lowercase()`).\n   - Order matters: `fp8e4m3`/`fp8e5m2` must be checked before `fp8`/`f8` since \"fp8e4m3\" ends with \"fp8\".\n\n3. **Verify `vram_estimate_mib`** \u2014 confirm the existing match arm `DType::F8E4M3 | DType::F8E5M2 | DType::Q8 => 0.5` is correct. No code change needed; document in plan.\n\n4. **Add `test_infer_dtype_fp8_suffixes`** \u2014 new `#[test]` function covering:\n   - `model-fp8` \u2192 F8E4M3\n   - `model-f8` \u2192 F8E4M3\n   - `MODEL-FP8` \u2192 F8E4M3 (case-insensitive)\n   - `model-fp8e4m3` \u2192 F8E4M3\n   - `model-fp8e5m2` \u2192 F8E5M2\n   - `model-f8e4m3` \u2192 F8E4M3\n   - `model-f8e5m2` \u2192 F8E5M2\n\n5. **Update `test_vram_estimate_mib`** \u2014 add one FP8 assertion:\n   - `vram_estimate_mib(1048576, DType::F8E4M3) == 0` (0.5 MiB, clamped to 1)\n\n6. **Bump `anvilml-registry` patch version** \u2014 edit `crates/anvilml-registry/Cargo.toml`: `version = \"0.1.0\"` \u2192 `version = \"0.1.1\"`.\n\n7. **Run tests** \u2014 `cargo test -p anvilml-registry` must exit 0.\n\n8. **Run format check** \u2014 `cargo fmt --all -- --check` must exit 0.",
+  "current_plan": "1. **Add `read_safetensors_dtype` function** in `crates/anvilml-registry/src/scanner.rs`:\n   - Use `std::fs::File` and `std::io::Read` (already available via std)\n   - Read first 8 bytes as little-endian u64 (`u64::from_le_bytes`)\n   - Guard: `if header_len > 100 * 1024 * 1024 { return None; }`\n   - Allocate buffer of `header_len` bytes, read into it\n   - Convert to UTF-8 string with `std::str::from_utf8`\n   - Parse with `serde_json::from_str` to get `serde_json::Value::Object`\n   - Iterate keys: skip `__metadata__`; for each value, if it's a string, increment its count in a `HashMap<String, u32>`\n   - Find the key with maximum count; map via a helper function\n   - Return `Some(mapped_dtype)` or `None` on any error\n\n2. **Modify `scan_dirs`** in the same file:\n   - After computing `stem` (file stem), before calling `infer_dtype(stem)`:\n   - If extension is `safetensors`, call `read_safetensors_dtype(entry.path())`\n   - If result is `Some(DType::Unknown)` or `None`, fall through to `infer_dtype(stem)`\n   - If result is `Some(dtype)` where dtype != Unknown, use it directly\n\n3. **Add unit tests** in `scanner.rs` `mod tests`:\n   - `test_read_safetensors_dtype_header_wins`: create temp dir, write a valid safetensors header with mostly F16 keys, write file as `model-f32.safetensors`, verify dtype is F16 (header wins over filename)\n   - `test_read_safetensors_dtype_fallback_malformed`: write invalid binary data as `.safetensors`, verify scanner falls back to `infer_dtype` and returns Q8 (from filename)\n   - `test_read_safetensors_dtype_fp8_header`: write valid safetensors header with F8_E4M3 keys, verify dtype is F8E4M3\n\n4. **Add integration test** in `crates/anvilml-registry/tests/safetensors_header.rs`:\n   - `test_safetensors_header_dtype_detection`: create temp dir with a safetensors file whose header declares F16 but filename says F32, scan it, assert dtype_hint is F16\n\n5. **Bump version** in `crates/anvilml-registry/Cargo.toml`: `0.1.1` \u2192 `0.1.2`",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-12T13:01:12+0200",
-  "plan_approval_message_id": "1514939757367525478",
+  "last_updated": "2026-06-12T13:29:50+0200",
+  "plan_approval_message_id": "1514954476673564692",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1514939755601727549",
+  "plan_report_message_id": "1514954474769219725",
   "impl_report_message_id": null
 }

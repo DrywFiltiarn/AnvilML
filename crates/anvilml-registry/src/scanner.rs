@@ -3,7 +3,9 @@
 //! Discovers `.safetensors`, `.ckpt`, `.pt`, `.bin` files, computes deterministic IDs
 //! via SHA-256 of canonical paths, and infers kind/dtype heuristics.
 
-use std::io;
+use std::collections::HashMap;
+use std::io::{self, Read};
+use std::path::Path;
 
 use anvilml_core::config::ModelDirConfig;
 use anvilml_core::{DType, ModelKind, ModelMeta};
@@ -11,6 +13,66 @@ use sha2::{Digest, Sha256};
 
 /// Allowed model file extensions (without the dot).
 const ALLOWED_EXTENSIONS: &[&str] = &["safetensors", "ckpt", "pt", "bin"];
+
+/// Maximum safetensors header size in bytes (100 MiB).
+const MAX_SAFETENSORS_HEADER: u64 = 100 * 1024 * 1024;
+
+/// Map a safetensors dtype string to an `DType`.
+fn map_dtype_str(s: &str) -> DType {
+    match s {
+        "F32" => DType::F32,
+        "F16" => DType::F16,
+        "BF16" => DType::BF16,
+        "F8_E4M3" => DType::F8E4M3,
+        "F8_E5M2" => DType::F8E5M2,
+        "I8" => DType::Q8,
+        "I4" => DType::Q4,
+        _ => DType::Unknown,
+    }
+}
+
+/// Read a safetensors file header and infer dtype from the most-frequent key dtype string.
+///
+/// Safetensors files store a JSON header at the start containing per-tensor dtype
+/// annotations. This function reads that header, counts dtype occurrences across all
+/// tensor keys (excluding `__metadata__`), and returns the most-frequent dtype.
+///
+/// Returns `None` on any read, parse, or decode error — the caller should fall back
+/// to filename-based inference.
+pub fn read_safetensors_dtype(path: &Path) -> Option<DType> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut len_buf = [0u8; 8];
+    file.read_exact(&mut len_buf).ok()?;
+    let header_len = u64::from_le_bytes(len_buf);
+
+    // Guard against excessively large headers.
+    if header_len > MAX_SAFETENSORS_HEADER {
+        return None;
+    }
+
+    let mut header_bytes = vec![0u8; header_len as usize];
+    file.read_exact(&mut header_bytes).ok()?;
+
+    let header_str = std::str::from_utf8(&header_bytes).ok()?;
+    let json_value: serde_json::Value = serde_json::from_str(header_str).ok()?;
+
+    let object = json_value.as_object()?;
+
+    // Count dtype strings across all keys (skip __metadata__).
+    let mut dtype_counts: HashMap<String, u32> = HashMap::new();
+    for (key, value) in object {
+        if key == "__metadata__" {
+            continue;
+        }
+        if let Some(dtype_str) = value.as_str() {
+            *dtype_counts.entry(dtype_str.to_string()).or_insert(0) += 1;
+        }
+    }
+
+    // Find the key with the maximum count.
+    let most_frequent = dtype_counts.into_iter().max_by_key(|&(_, count)| count)?;
+    Some(map_dtype_str(&most_frequent.0))
+}
 
 /// Infer the model kind from a parent directory name (case-insensitive exact match).
 pub fn infer_kind(parent_dir: &str) -> ModelKind {
@@ -165,13 +227,20 @@ pub async fn scan_dirs(dirs: &[ModelDirConfig]) -> Vec<ModelMeta> {
                 .kind
                 .unwrap_or_else(|| infer_kind(parent_dir_name));
 
-            // Infer dtype from file stem suffix.
+            // Infer dtype: try safetensors header first, fall back to filename.
             let stem = entry
                 .path()
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or_default();
-            let dtype = infer_dtype(stem);
+            let dtype = if ext == "safetensors" {
+                match read_safetensors_dtype(entry.path()) {
+                    Some(DType::Unknown) | None => infer_dtype(stem),
+                    Some(dtype) => dtype,
+                }
+            } else {
+                infer_dtype(stem)
+            };
 
             // Estimate VRAM.
             let vram = vram_estimate_mib(size_bytes, dtype);
@@ -257,15 +326,15 @@ mod tests {
 
     #[test]
     fn test_vram_estimate_mib() {
-        // 1 MiB file (1048576 bytes) with F32 → 2.0 MiB
+        // 1 MiB file (1048576 bytes) with F32 -> 2.0 MiB
         assert_eq!(vram_estimate_mib(1048576, DType::F32), 2);
-        // 1 MiB file with F16 → 1.0 MiB
+        // 1 MiB file with F16 -> 1.0 MiB
         assert_eq!(vram_estimate_mib(1048576, DType::F16), 1);
-        // 1 MiB file with Q4 → 0.25 MiB → clamped to 1
+        // 1 MiB file with Q4 -> 0.25 MiB -> clamped to 1
         assert_eq!(vram_estimate_mib(1048576, DType::Q4), 1);
-        // 1 MiB file with F8E4M3 → 0.5 MiB → clamped to 1
+        // 1 MiB file with F8E4M3 -> 0.5 MiB -> clamped to 1
         assert_eq!(vram_estimate_mib(1048576, DType::F8E4M3), 1);
-        // Small file (e.g. 100 bytes) → 0 MiB → clamped to 1
+        // Small file (e.g. 100 bytes) -> 0 MiB -> clamped to 1
         assert_eq!(vram_estimate_mib(100, DType::Unknown), 1);
     }
 
@@ -277,6 +346,151 @@ mod tests {
         assert_eq!(
             hash,
             "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+    }
+
+    #[test]
+    fn test_map_dtype_str() {
+        assert_eq!(map_dtype_str("F32"), DType::F32);
+        assert_eq!(map_dtype_str("F16"), DType::F16);
+        assert_eq!(map_dtype_str("BF16"), DType::BF16);
+        assert_eq!(map_dtype_str("F8_E4M3"), DType::F8E4M3);
+        assert_eq!(map_dtype_str("F8_E5M2"), DType::F8E5M2);
+        assert_eq!(map_dtype_str("I8"), DType::Q8);
+        assert_eq!(map_dtype_str("I4"), DType::Q4);
+        assert_eq!(map_dtype_str("UNKNOWN"), DType::Unknown);
+    }
+
+    #[test]
+    fn test_read_safetensors_dtype_header_wins() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path = tmp.path().join("model-f32.safetensors");
+
+        // Build a safetensors header: mostly F16 keys, one F32 key.
+        let header = serde_json::json!({
+            "tensor_a": "F16",
+            "tensor_b": "F16",
+            "tensor_c": "F16",
+            "tensor_d": "F32",
+        });
+        let header_bytes = serde_json::to_vec(&header).expect("serialize header");
+        let header_len = (header_bytes.len() as u64).to_le_bytes();
+
+        let mut data = Vec::with_capacity(8 + header_bytes.len());
+        data.extend_from_slice(&header_len);
+        data.extend_from_slice(&header_bytes);
+        std::fs::write(&path, &data).expect("write safetensors file");
+
+        let dtype = read_safetensors_dtype(&path);
+        assert_eq!(
+            dtype,
+            Some(DType::F16),
+            "header F16 should win over filename f32"
+        );
+    }
+
+    #[test]
+    fn test_read_safetensors_dtype_fallback_malformed() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path = tmp.path().join("weights-q8.safetensors");
+
+        // Write invalid binary data (not a valid safetensors header).
+        std::fs::write(&path, b"\x00\x00\x00\x00\x00\x00\x00\x00invalid")
+            .expect("write malformed file");
+
+        let dtype = read_safetensors_dtype(&path);
+        assert!(dtype.is_none(), "malformed header should return None");
+
+        // Scanner should fall back to infer_dtype from filename.
+        assert_eq!(infer_dtype("weights-q8"), DType::Q8);
+    }
+
+    #[test]
+    fn test_read_safetensors_dtype_fp8_header() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path = tmp.path().join("model-fp8.safetensors");
+
+        // Build a safetensors header with F8_E4M3 keys.
+        let header = serde_json::json!({
+            "layers.0.weight": "F8_E4M3",
+            "layers.1.weight": "F8_E4M3",
+            "layers.2.weight": "F8_E4M3",
+            "layers.3.bias": "F8_E4M3",
+        });
+        let header_bytes = serde_json::to_vec(&header).expect("serialize header");
+        let header_len = (header_bytes.len() as u64).to_le_bytes();
+
+        let mut data = Vec::with_capacity(8 + header_bytes.len());
+        data.extend_from_slice(&header_len);
+        data.extend_from_slice(&header_bytes);
+        std::fs::write(&path, &data).expect("write safetensors file");
+
+        let dtype = read_safetensors_dtype(&path);
+        assert_eq!(
+            dtype,
+            Some(DType::F8E4M3),
+            "header F8_E4M3 should map to F8E4M3"
+        );
+    }
+
+    #[test]
+    fn test_read_safetensors_dtype_too_large_header() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path = tmp.path().join("huge.safetensors");
+
+        // Write a header length that exceeds the guard (100 MiB + 1 byte).
+        let oversized_len = (MAX_SAFETENSORS_HEADER + 1).to_le_bytes();
+        std::fs::write(&path, &oversized_len).expect("write oversized header file");
+
+        let dtype = read_safetensors_dtype(&path);
+        assert!(dtype.is_none(), "oversized header should return None");
+    }
+
+    #[test]
+    fn test_read_safetensors_dtype_nonexistent() {
+        let dtype = read_safetensors_dtype(Path::new("/nonexistent/path/file.safetensors"));
+        assert!(dtype.is_none(), "nonexistent file should return None");
+    }
+
+    #[test]
+    fn test_read_safetensors_dtype_empty_header() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path = tmp.path().join("empty.safetensors");
+
+        // Write a header length of 0 (empty JSON object).
+        let len_bytes = (0u64).to_le_bytes();
+        std::fs::write(&path, &len_bytes).expect("write empty header file");
+
+        let dtype = read_safetensors_dtype(&path);
+        assert!(
+            dtype.is_none(),
+            "empty header with no tensor keys should return None"
+        );
+    }
+
+    #[test]
+    fn test_read_safetensors_dtype_metadata_only() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path = tmp.path().join("metadata-only.safetensors");
+
+        // Header with only __metadata__ (no tensor keys).
+        let header = serde_json::json!({
+            "__metadata__": {
+                "format": "pt"
+            }
+        });
+        let header_bytes = serde_json::to_vec(&header).expect("serialize header");
+        let header_len = (header_bytes.len() as u64).to_le_bytes();
+
+        let mut data = Vec::with_capacity(8 + header_bytes.len());
+        data.extend_from_slice(&header_len);
+        data.extend_from_slice(&header_bytes);
+        std::fs::write(&path, &data).expect("write safetensors file");
+
+        let dtype = read_safetensors_dtype(&path);
+        assert!(
+            dtype.is_none(),
+            "header with only __metadata__ should return None"
         );
     }
 }
