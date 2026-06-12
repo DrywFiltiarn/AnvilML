@@ -17,7 +17,8 @@ use anvilml_core::types::hardware::{CapabilitySource, GpuDevice, HostInfo};
 use anvilml_core::types::job::{Job, JobSettings, JobStatus, SubmitJobRequest, SubmitJobResponse};
 use anvilml_core::types::model::DType;
 use anvilml_core::{
-    DeviceType, EnumerationSource, EnvReport, HardwareInfo, InferenceCaps, WorkerInfo, WorkerStatus,
+    DeviceType, EnumerationSource, EnvReport, HardwareInfo, InferenceCaps, ModelKind, WorkerInfo,
+    WorkerStatus,
 };
 use anvilml_server::handlers::artifacts;
 use anvilml_server::handlers::health;
@@ -61,6 +62,7 @@ fn main() {
         .schema("DeviceType", DeviceType::schema())
         .schema("EnumerationSource", EnumerationSource::schema())
         .schema("CapabilitySource", CapabilitySource::schema())
+        .schema("ModelKind", ModelKind::schema())
         .schema("SubmitJobRequest", SubmitJobRequest::schema())
         .schema("SubmitJobResponse", SubmitJobResponse::schema())
         .schema("JobSettings", JobSettings::schema())

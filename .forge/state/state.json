@@ -169,16 +169,17 @@
     "P905-A3",
     "P905-A4",
     "P905-A5",
-    "P905-A6"
+    "P905-A6",
+    "P905-A7"
   ],
-  "in_progress": "P905-A7",
+  "in_progress": "P906-A1",
   "plan_approved": true,
-  "current_plan": "1. **Read** `backend/tests/api_cancel.rs` and inspect the `cancel_terminal_job_returns_409` function (lines 455\u2013591).\n2. **Verify** that the `temp_env::async_with_vars` call at line 465\u2013470 includes `(\"ANVILML_WORKER_MOCK\", Some(\"1\"))` in its vars array. If absent, insert it after the existing `ANVILML_MOCK_VRAM_MIB` entry.\n3. **Verify** that the unconditional cleanup block at the end of the function (after the `.await` on `async_with_vars`) includes `std::env::remove_var(\"ANVILML_WORKER_MOCK\")`. If absent, add it alongside the existing `remove_var` calls.\n4. **Bump** `backend/Cargo.toml` `[package] version` from `0.1.13` to `0.1.14`.\n5. **Run** `cargo test --features mock-hardware --test api_cancel` and verify both tests pass (exit 0).",
+  "current_plan": "1. **Read** `crates/anvilml-openapi/src/main.rs` to confirm current schema registrations (already done \u2014 lines 54\u201391 show the components builder with no `ModelKind` entry).\n\n2. **Add import** \u2014 insert `use anvilml_core::ModelKind;` into the existing import block at line 19 (`use anvilml_core::{ ... }`) or as a separate line alongside the existing `anvilml_core` imports. Since `ModelKind` is re-exported at the crate root (`pub use types::model::ModelKind` in `lib.rs`), the import path is `use anvilml_core::ModelKind;`.\n\n3. **Add schema registration** \u2014 insert `.schema(\"ModelKind\", ModelKind::schema())` into the components builder chain. Place it logically near the other config-type schemas (e.g., after `DeviceType` / `EnumerationSource` / `CapabilitySource` on lines 61\u201363, since `ModelKind` is also a domain config enum).\n\n4. **Bump version** \u2014 change `version = \"0.1.1\"` to `version = \"0.1.2\"` in `crates/anvilml-openapi/Cargo.toml`.\n\n5. **Verify build** \u2014 run `cargo build -p anvilml-openapi` and confirm exit 0.\n\n6. **Verify clippy** \u2014 run `cargo clippy -p anvilml-openapi -- -D warnings` and confirm exit 0.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-12T15:19:53+0200",
-  "plan_approval_message_id": "1514982257591582780",
+  "last_updated": "2026-06-12T15:54:09+0200",
+  "plan_approval_message_id": "1514990971991887933",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1514982255909539971",
+  "plan_report_message_id": "1514990969257197628",
   "impl_report_message_id": null
 }
