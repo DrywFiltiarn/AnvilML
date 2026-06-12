@@ -174,16 +174,17 @@
     "P906-A1",
     "P906-A2",
     "P906-A3",
-    "P906-A4"
+    "P906-A4",
+    "P906-A5"
   ],
-  "in_progress": "P906-A5",
+  "in_progress": "P21-A1",
   "plan_approved": true,
-  "current_plan": "1. **Add `norm_path` helper** in `store.rs`:\n   ```rust\n   /// Normalise a path string: replace all backslashes with forward slashes.\n   fn norm_path(p: &str) -> String {\n       p.replace('\\\\', \"/\")\n   }\n   ```\n\n2. **Normalise path in `upsert`** (line 54):\n   Change from:\n   ```rust\n   .bind(meta.path.to_string_lossy().to_string())\n   ```\n   To:\n   ```rust\n   .bind(norm_path(&meta.path.to_string_lossy()))\n   ```\n\n3. **Normalise paths in `rescan`** \u2014 three locations:\n   - **Fresh paths collection** (line 181):\n     ```rust\n     let fresh_paths: HashSet<String> = metas\n         .iter()\n         .map(|m| norm_path(&m.path.to_string_lossy()))\n         .collect();\n     ```\n   - **Replace the two-pass SQL** (lines 185\u2013207) with a single query + Rust filter:\n     ```rust\n     // Fetch all DB rows for stale detection.\n     let all_rows: Vec<(String, String)> =\n         sqlx::query_as(\"SELECT id, path FROM models\")\n             .fetch_all(&self.pool)\n             .await\n             .map_err(sqlx_error)?;\n\n     // Normalised dir prefixes for filtering.\n     let dir_prefixes: Vec<String> = dirs\n         .iter()\n         .map(|d| norm_path(&d.path.to_string_lossy()))\n         .collect();\n\n     // Filter: row path starts with any normalised dir prefix and is not fresh.\n     let stale_ids: Vec<String> = all_rows\n         .into_iter()\n         .filter(|(_, path)| {\n             let path_norm = norm_path(path);\n             dir_prefixes.iter().any(|prefix| path_norm.starts_with(prefix))\n                 && !fresh_paths.contains(&path_norm)\n         })\n         .map(|(id, _)| id)\n         .collect();\n     ```\n\n4. **Bump `anvilml-registry` patch version** in `Cargo.toml`:\n   `0.1.4` \u2192 `0.1.5`",
+  "current_plan": "1. **Write `worker/nodes/base.py`:**\n   - Import `ABC`, `ClassVar`, `dataclass`, `Any`, `dict`, `threading.Event` from appropriate modules\n   - Define `NodeContext` as a `@dataclass` with fields: `pipeline_cache`, `device_str: str`, `emit_fn`, `cancel_flag: threading.Event`, `job_id: str`\n   - Define `BaseNode(ABC)` with class variables `NODE_TYPE: ClassVar[str] = \"\"`, `INPUT_SLOTS: ClassVar[list[str]] = []`, `OUTPUT_SLOTS: ClassVar[list[str]] = []`; `__init__(self, ctx: NodeContext)` storing `self.ctx = ctx`; `@abstractmethod def execute(self, **inputs) -> dict[str, Any]`\n   - Define `NODE_REGISTRY: dict[str, type[BaseNode]] = {}`\n   - Define `def register(cls: type[BaseNode]) -> type[BaseNode]: NODE_REGISTRY[cls.NODE_TYPE] = cls; return cls`\n\n2. **Update `worker/nodes/__init__.py`:**\n   - Add import of `worker.nodes.base` (or `from . import base`) to ensure `NODE_REGISTRY` is defined\n   - Use a glob or explicit imports of remaining modules (`common`, `zit`, `sdxl`) \u2014 since only `base.py` exists now, the `__init__.py` should import them conditionally or use `pkgutil`/`importlib` to auto-discover. Per the design doc (\u00a714.3), `nodes/__init__.py` imports every node module so the registry is populated at startup. Use a simple approach: import `base` explicitly, then use `pkgutil.iter_modules` to import all other `.py` modules in the package directory.\n\n3. **Create `worker/tests/test_nodes_base.py`:**\n   - Test 1: `test_register_populates_registry` \u2014 define a concrete subclass of `BaseNode` with a dummy `NODE_TYPE`, decorate it with `@register`, assert `NODE_REGISTRY` contains the key and the class\n   - Test 2: `test_missing_execute_raises_typeerror` \u2014 define an incomplete subclass of `BaseNode` (no `execute` override), attempt to instantiate it, assert `TypeError` is raised",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-12T18:47:37+0200",
-  "plan_approval_message_id": "1515032941116522686",
+  "last_updated": "2026-06-12T20:02:17+0200",
+  "plan_approval_message_id": "1515039348804813123",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1515032939027501148",
+  "plan_report_message_id": "1515039347143868416",
   "impl_report_message_id": null
 }
