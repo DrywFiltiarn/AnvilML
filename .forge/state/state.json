@@ -168,16 +168,17 @@
     "P905-A2",
     "P905-A3",
     "P905-A4",
-    "P905-A5"
+    "P905-A5",
+    "P905-A6"
   ],
-  "in_progress": "P905-A6",
+  "in_progress": "P905-A7",
   "plan_approved": true,
-  "current_plan": "1. **Add handler** in `crates/anvilml-server/src/handlers/models.rs`:\n   - Import `ModelMetaPatch` from `anvilml_core` (already re-exported via `anvilml-core::types::model`)\n   - Import `axum::extract::Json` (already imported)\n   - Implement `pub async fn patch_model(State(state): State<Arc<App>>, Path(id): Path<String>, body: Json<ModelMetaPatch>)` following the existing pattern:\n     - Call `state.registry.patch_meta(&id, body.into_inner()).await`\n     - On `Ok(None)` \u2192 404 with `{\"error\":\"not_found\",\"message\":\"model not found\"}`\n     - On `Ok(Some(meta))` \u2192 200 with `Json(serde_json::to_value(&meta).unwrap())`\n     - On `Err(e)` \u2192 500 with error JSON, log at ERROR level\n   - Add `#[utoipa::path]` annotation:\n     - `patch`, `path = \"/v1/models/{id}\"`, summary = \"Patch model metadata\"\n     - Params: `(\"id\" = String, Path, description = \"Model ID\")`\n     - Request body: `body = ModelMetaPatch` (via utoipa `ToSchema`)\n     - Responses: 200 with `ModelMeta`, 404, 422, 500\n\n2. **Wire route** in `crates/anvilml-server/src/lib.rs`:\n   - Import `patch` from `axum::routing` (add to existing `use axum::routing::{get, post}` \u2192 `use axum::routing::{get, patch, post}`)\n   - Add `.route(\"/v1/models/{id}\", patch(handlers::models::patch_model).get(handlers::models::get_model))`\n   - Note: axum allows chaining multiple methods on the same route path; the existing `.route(\"/v1/models/{id}\", get(handlers::models::get_model))` line will be extended to include `patch`\n\n3. **Add tests** in `crates/anvilml-server/src/lib.rs` (within existing `#[cfg(test)] mod tests`):\n   - `patch_model_updates_dtype_hint`: Use `make_test_app` or the `get_model_returns_404_when_missing` pattern with a real registry. Insert a model via `registry.upsert()`, send PATCH with `{\"dtype_hint\":\"f8_e4m3\"}`, verify 200 and that `dtype_hint` changed and `vram_estimate_mib` recomputed.\n   - `patch_model_returns_404`: Use empty registry, send PATCH to non-existent ID, verify 404.\n   - `patch_model_partial_preserves_other_fields`: Insert a model with known `dtype_hint`, send PATCH with only `{\"kind\":\"vae\"}`, verify `dtype_hint` is unchanged and `kind` is updated.\n\n4. **Bump version** in `crates/anvilml-server/Cargo.toml`:\n   - Change `version = \"0.1.18\"` \u2192 `version = \"0.1.19\"`\n\n5. **Verify**: Run `cargo test -p anvilml-server --features mock-hardware` and confirm exit 0.",
+  "current_plan": "1. **Read** `backend/tests/api_cancel.rs` and inspect the `cancel_terminal_job_returns_409` function (lines 455\u2013591).\n2. **Verify** that the `temp_env::async_with_vars` call at line 465\u2013470 includes `(\"ANVILML_WORKER_MOCK\", Some(\"1\"))` in its vars array. If absent, insert it after the existing `ANVILML_MOCK_VRAM_MIB` entry.\n3. **Verify** that the unconditional cleanup block at the end of the function (after the `.await` on `async_with_vars`) includes `std::env::remove_var(\"ANVILML_WORKER_MOCK\")`. If absent, add it alongside the existing `remove_var` calls.\n4. **Bump** `backend/Cargo.toml` `[package] version` from `0.1.13` to `0.1.14`.\n5. **Run** `cargo test --features mock-hardware --test api_cancel` and verify both tests pass (exit 0).",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-12T14:59:24+0200",
-  "plan_approval_message_id": "1514977324964118548",
+  "last_updated": "2026-06-12T15:19:53+0200",
+  "plan_approval_message_id": "1514982257591582780",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1514977323252846705",
+  "plan_report_message_id": "1514982255909539971",
   "impl_report_message_id": null
 }
