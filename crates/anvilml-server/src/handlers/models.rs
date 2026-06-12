@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::ToSchema;
 
-use anvilml_core::ModelKind;
+use anvilml_core::{ModelKind, ModelMetaPatch};
 
 use crate::App;
 
@@ -80,6 +80,53 @@ pub async fn get_model(
         ),
         Err(e) => {
             tracing::error!(error = %e, "get_model: registry query failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "internal_error",
+                    "message": e.to_string()
+                })),
+            )
+        }
+    }
+}
+
+/// PATCH /v1/models/:id handler.
+///
+/// Partially updates a model's metadata (e.g. `dtype_hint` or `kind`).
+/// Delegates to `registry.patch_meta()` and returns the updated `ModelMeta`
+/// on success, or 404 when the model does not exist.
+#[utoipa::path(
+    patch,
+    path = "/v1/models/{id}",
+    summary = "Patch model metadata",
+    params(
+        ("id" = String, Path, description = "Model ID")
+    ),
+    request_body = ModelMetaPatch,
+    responses(
+        (status = 200, description = "Model updated", body = anvilml_core::ModelMeta),
+        (status = 404, description = "Model not found"),
+        (status = 422, description = "Invalid request body"),
+        (status = 500, description = "Internal server error")
+    )
+)]
+pub async fn patch_model(
+    State(state): State<Arc<App>>,
+    Path(id): Path<String>,
+    body: axum::extract::Json<ModelMetaPatch>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match state.registry.patch_meta(&id, body.0).await {
+        Ok(Some(meta)) => (StatusCode::OK, Json(serde_json::to_value(&meta).unwrap())),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "not_found",
+                "message": "model not found"
+            })),
+        ),
+        Err(e) => {
+            tracing::error!(error = %e, "patch_model: registry update failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({

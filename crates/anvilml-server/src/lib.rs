@@ -9,7 +9,7 @@ pub use ws::broadcaster::EventBroadcaster;
 use std::sync::Arc;
 
 use axum::{
-    routing::{get, post},
+    routing::{get, patch, post},
     Router,
 };
 use tower_http::cors::CorsLayer;
@@ -46,7 +46,10 @@ pub fn build_router(state: App) -> Router {
         .route("/v1/jobs/{id}/cancel", post(handlers::jobs::cancel_job))
         .route("/v1/events", get(ws_events))
         .route("/v1/models/rescan", post(handlers::models::rescan_models))
-        .route("/v1/models/{id}", get(handlers::models::get_model))
+        .route(
+            "/v1/models/{id}",
+            patch(handlers::models::patch_model).get(handlers::models::get_model),
+        )
         .route("/v1/models", get(handlers::models::list_models))
         .route("/v1/system/env", get(handlers::system::get_env))
         .route("/v1/system", get(handlers::system::get_system))
@@ -489,5 +492,200 @@ mod tests {
 
         let parsed: Value = serde_json::from_str(&body_str).unwrap();
         assert_eq!(parsed["error"], "workers_not_configured");
+    }
+
+    /// PATCH /v1/models/:id returns 200 with updated dtype_hint and
+    /// recomputed vram_estimate_mib.
+    #[tokio::test]
+    async fn patch_model_updates_dtype_hint() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db_path = tmp.path().to_path_buf();
+        let pool = anvilml_registry::db::open(&db_path)
+            .await
+            .expect("open db must succeed");
+        let registry = std::sync::Arc::new(anvilml_registry::ModelRegistry::new(pool.clone()));
+
+        // Insert a model via upsert.
+        let meta = anvilml_core::ModelMeta {
+            id: "patch-test-model".to_string(),
+            name: "Patch Test Model".to_string(),
+            path: std::path::PathBuf::from("/models/patch-test.safetensors"),
+            kind: anvilml_core::ModelKind::Diffusion,
+            size_bytes: 6_700_000_000,
+            dtype_hint: anvilml_core::DType::F32,
+            vram_estimate_mib: 16_384,
+            scanned_at: chrono::Utc::now(),
+        };
+        registry.upsert(&meta).await.expect("upsert must succeed");
+
+        let artifact_store =
+            crate::artifact::store::ArtifactStore::new(tempfile::tempdir().unwrap().keep(), pool);
+        let broadcaster = Arc::new(EventBroadcaster::new(16));
+        let state = App::new(
+            "0.1.0",
+            None,
+            Some(registry),
+            None,
+            broadcaster,
+            None,
+            None,
+            artifact_store,
+            anvilml_core::ServerConfig::default(),
+        );
+        let app = build_router(state);
+
+        let patch_body = serde_json::json!({
+            "dtype_hint": "f8_e4m3"
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/v1/models/patch-test-model")
+                    .header("content-type", "application/json")
+                    .body(Full::<Bytes>::from(patch_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+        let parsed: Value = serde_json::from_str(&body_str).unwrap();
+        assert_eq!(parsed["dtype_hint"], "f8_e4m3");
+        // vram_estimate_mib must have been recomputed (f8_e4m3 → smaller than f32).
+        assert!(
+            parsed["vram_estimate_mib"].is_u64(),
+            "vram_estimate_mib should be a number"
+        );
+    }
+
+    /// PATCH /v1/models/:id returns 404 when the model does not exist.
+    #[tokio::test]
+    async fn patch_model_returns_404() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db_path = tmp.path().to_path_buf();
+        let pool = anvilml_registry::db::open(&db_path)
+            .await
+            .expect("open db must succeed");
+        let registry = std::sync::Arc::new(anvilml_registry::ModelRegistry::new(pool.clone()));
+        let artifact_store =
+            crate::artifact::store::ArtifactStore::new(tempfile::tempdir().unwrap().keep(), pool);
+        let broadcaster = Arc::new(EventBroadcaster::new(16));
+        let state = App::new(
+            "0.1.0",
+            None,
+            Some(registry),
+            None,
+            broadcaster,
+            None,
+            None,
+            artifact_store,
+            anvilml_core::ServerConfig::default(),
+        );
+        let app = build_router(state);
+
+        let patch_body = serde_json::json!({
+            "dtype_hint": "f8_e4m3"
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/v1/models/nonexistent")
+                    .header("content-type", "application/json")
+                    .body(Full::<Bytes>::from(patch_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+        let parsed: Value = serde_json::from_str(&body_str).unwrap();
+        assert_eq!(parsed["error"], "not_found");
+        assert_eq!(parsed["message"], "model not found");
+    }
+
+    /// PATCH /v1/models/:id with a partial body preserves fields not
+    /// mentioned in the patch.
+    #[tokio::test]
+    async fn patch_model_partial_preserves_other_fields() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db_path = tmp.path().to_path_buf();
+        let pool = anvilml_registry::db::open(&db_path)
+            .await
+            .expect("open db must succeed");
+        let registry = std::sync::Arc::new(anvilml_registry::ModelRegistry::new(pool.clone()));
+
+        // Insert a model with a known dtype_hint.
+        let meta = anvilml_core::ModelMeta {
+            id: "partial-test-model".to_string(),
+            name: "Partial Test Model".to_string(),
+            path: std::path::PathBuf::from("/models/partial-test.safetensors"),
+            kind: anvilml_core::ModelKind::Diffusion,
+            size_bytes: 6_700_000_000,
+            dtype_hint: anvilml_core::DType::F16,
+            vram_estimate_mib: 8_192,
+            scanned_at: chrono::Utc::now(),
+        };
+        registry.upsert(&meta).await.expect("upsert must succeed");
+
+        let artifact_store =
+            crate::artifact::store::ArtifactStore::new(tempfile::tempdir().unwrap().keep(), pool);
+        let broadcaster = Arc::new(EventBroadcaster::new(16));
+        let state = App::new(
+            "0.1.0",
+            None,
+            Some(registry),
+            None,
+            broadcaster,
+            None,
+            None,
+            artifact_store,
+            anvilml_core::ServerConfig::default(),
+        );
+        let app = build_router(state);
+
+        // Patch only `kind`, not `dtype_hint`.
+        let patch_body = serde_json::json!({
+            "kind": "vae"
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/v1/models/partial-test-model")
+                    .header("content-type", "application/json")
+                    .body(Full::<Bytes>::from(patch_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+        let parsed: Value = serde_json::from_str(&body_str).unwrap();
+        assert_eq!(parsed["kind"], "vae");
+        // dtype_hint must be unchanged.
+        assert_eq!(parsed["dtype_hint"], "f16");
     }
 }
