@@ -264,7 +264,7 @@ If this exits non-zero after the pass 1 re-run, set Status=BLOCKED and STOP — 
 | Test (Rust) | `cargo test --workspace --features mock-hardware` | Zero failures |
 | Test (Python worker) | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` | Zero failures |
 | Config drift gate | `cargo test -p backend --features mock-hardware -- config_reference` | See §8 Gate 1 |
-| OpenAPI drift gate | `cargo run -p anvilml-openapi && git diff --exit-code backend/openapi.json` | On handler/schema changes only |
+| OpenAPI drift gate | `cargo run -p anvilml-openapi && git diff --exit-code backend/openapi.json` | Required — see Gate 2 trigger list in §8 |
 
 The OpenAPI drift gate applies only when `anvilml-server` handler signatures or
 `utoipa` annotations are modified. It is not required for every task.
@@ -324,6 +324,46 @@ weaken or skip the test. **Skip only** if task P3-B2 has not yet been implemente
 (i.e. `backend/tests/config_reference.rs` does not yet exist).
 
 Record the verbatim output in `## Project Gates` in the implementation report.
+
+---
+
+### Gate 2 — OpenAPI Drift
+
+Run this gate whenever any of the following are true of the current task:
+
+- Any file under `crates/anvilml-server/src/handlers/` was modified (handler
+  signatures, response types, `#[utoipa::path]` annotations)
+- Any type in `crates/anvilml-core/` that derives `ToSchema` was changed —
+  including enum variant additions or removals, and serde rename changes on
+  `DType`, `ModelKind`, `JobStatus`, `WorkerStatus`, or any other
+  `ToSchema`-derived type
+- `crates/anvilml-openapi/src/main.rs` was modified (schema component
+  registration, path registration)
+- Any `#[utoipa::path]` annotation anywhere in the workspace was added or changed
+
+**When in doubt, run it.** The gate is idempotent and takes seconds. A false
+positive wastes nothing. A false negative silently breaks CI.
+
+```bash
+cargo run -p anvilml-openapi && git diff --exit-code backend/openapi.json
+```
+
+If the diff is non-empty, `backend/openapi.json` is stale. Regenerate and stage it:
+
+```bash
+cargo run -p anvilml-openapi
+git add backend/openapi.json
+```
+
+Then re-run the gate command to confirm idempotency (must exit 0).
+
+Record the verbatim gate output in `## Project Gates` in the implementation
+report. Do NOT write "Not required" or "Not applicable" unless **none** of the
+trigger conditions above are met for this task.
+
+**Skip entirely only if** `backend/openapi.json` does not yet exist in the
+repository (i.e. `anvilml-openapi` is still a stub — prior to phase 20).
+
 ---
 
 ## 9. Logging Conventions (`FORGE_AGENT_RULES.md §11`)

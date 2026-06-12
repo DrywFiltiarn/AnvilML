@@ -1,0 +1,57 @@
+[
+  {
+    "id": "P906-A1",
+    "description": "anvilml-openapi: add missing ModelKind schema to component registration",
+    "phase": "906",
+    "project": "anvilml",
+    "prereqs": [
+      "P905-A6",
+      "P905-A7"
+    ],
+    "context": "In crates/anvilml-openapi/src/main.rs add ModelKind to the components list in the #[derive(OpenApi)] schemas(...) macro. ModelKind is in anvilml_core::config; add use anvilml_core::ModelKind; import. Do NOT regenerate backend/openapi.json here (P906-A4 owns regeneration). Bump anvilml-openapi patch version. cargo build -p anvilml-openapi exits 0; cargo clippy -p anvilml-openapi -- -D warnings exits 0.",
+    "tags": [
+      "fix"
+    ]
+  },
+  {
+    "id": "P906-A2",
+    "description": "anvilml-openapi: secondary spec fixes (png schema, required fields)",
+    "phase": "906",
+    "project": "anvilml",
+    "prereqs": [
+      "P906-A1"
+    ],
+    "context": "In crates/anvilml-openapi/src/main.rs: (1) Add image/png binary schema to serve_artifact 200 response annotation so spec includes schema:{type:string,format:binary}. (2) Add id and job_id to ArtifactMeta required fields in the utoipa annotation (Option<Uuid> but always present). (3) Add fp32:bool to InferenceCaps required fields. Do NOT regenerate backend/openapi.json here (P906-A4 owns regeneration). cargo clippy -p anvilml-openapi -- -D warnings exits 0.",
+    "tags": [
+      "fix"
+    ]
+  },
+  {
+    "id": "P906-A3",
+    "description": "anvilml-core: fix BF16 serde rename (b_f16 -> bf16)",
+    "phase": "906",
+    "project": "anvilml",
+    "prereqs": [
+      "P905-A6",
+      "P905-A7"
+    ],
+    "context": "In crates/anvilml-core/src/types/model.rs add #[serde(rename = \"bf16\")] to the BF16 variant of DType. rename_all=snake_case produces b_f16 (splits B, F, 16 as three words); the explicit rename corrects this to bf16. Add test dtype_bf16_serde_string asserting serde_json::to_string(&DType::BF16)==\"\\\"bf16\\\"\". Bump anvilml-core patch version. cargo test -p anvilml-core exits 0.",
+    "tags": [
+      "fix"
+    ]
+  },
+  {
+    "id": "P906-A4",
+    "description": "anvilml-openapi: regenerate and commit corrected backend/openapi.json",
+    "phase": "906",
+    "project": "anvilml",
+    "prereqs": [
+      "P906-A2",
+      "P906-A3"
+    ],
+    "context": "No source changes. Run cargo run -p anvilml-openapi to regenerate backend/openapi.json with all fixes from P906-A1 (ModelKind), P906-A2 (png+required), and P906-A3 (BF16 rename) in place. Verify: git diff --exit-code backend/openapi.json exits 1 before staging (file changed), then git add backend/openapi.json. Confirm spec contains ModelKind, DType enum includes bf16 (not b_f16), f8_e4m3, f8_e5m2. cargo test --workspace --features mock-hardware exits 0.",
+    "tags": [
+      "fix"
+    ]
+  }
+]
