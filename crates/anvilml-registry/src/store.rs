@@ -16,9 +16,16 @@ fn sqlx_error(err: sqlx::Error) -> AnvilError {
     AnvilError::DbError(err.to_string())
 }
 
-/// Normalise a path string: replace all backslashes with forward slashes.
+/// Normalise a path string for cross-platform comparison.
+///
+/// 1. Replace all backslashes with forward slashes.
+/// 2. Strip the Windows UNC extended-path prefix `\\?\` (appears as `//?/`
+///    after step 1) so that canonicalized Windows paths compare equal to
+///    raw paths that lack the prefix.
 fn norm_path(p: &str) -> String {
-    p.replace('\\', "/")
+    let s = p.replace('\\', "/");
+    // Strip the UNC extended-path prefix produced by Path::canonicalize on Windows.
+    s.strip_prefix("//?/").unwrap_or(&s).to_string()
 }
 
 /// Tuple representing a single row from the `models` table.
