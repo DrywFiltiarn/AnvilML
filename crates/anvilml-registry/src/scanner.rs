@@ -32,6 +32,12 @@ pub fn infer_dtype(filename: &str) -> DType {
     let lower = filename.to_lowercase();
     if lower.ends_with("f32") {
         DType::F32
+    } else if lower.ends_with("fp8e4m3") || lower.ends_with("f8e4m3") {
+        DType::F8E4M3
+    } else if lower.ends_with("fp8e5m2") || lower.ends_with("f8e5m2") {
+        DType::F8E5M2
+    } else if lower.ends_with("fp8") || lower.ends_with("f8") {
+        DType::F8E4M3
     } else if lower.ends_with("bf16") {
         // Must be checked before f16, since "bf16" ends with "f16".
         DType::BF16
@@ -239,6 +245,17 @@ mod tests {
     }
 
     #[test]
+    fn test_infer_dtype_fp8_suffixes() {
+        assert_eq!(infer_dtype("model-fp8"), DType::F8E4M3);
+        assert_eq!(infer_dtype("model-f8"), DType::F8E4M3);
+        assert_eq!(infer_dtype("MODEL-FP8"), DType::F8E4M3);
+        assert_eq!(infer_dtype("model-fp8e4m3"), DType::F8E4M3);
+        assert_eq!(infer_dtype("model-fp8e5m2"), DType::F8E5M2);
+        assert_eq!(infer_dtype("model-f8e4m3"), DType::F8E4M3);
+        assert_eq!(infer_dtype("model-f8e5m2"), DType::F8E5M2);
+    }
+
+    #[test]
     fn test_vram_estimate_mib() {
         // 1 MiB file (1048576 bytes) with F32 → 2.0 MiB
         assert_eq!(vram_estimate_mib(1048576, DType::F32), 2);
@@ -246,6 +263,8 @@ mod tests {
         assert_eq!(vram_estimate_mib(1048576, DType::F16), 1);
         // 1 MiB file with Q4 → 0.25 MiB → clamped to 1
         assert_eq!(vram_estimate_mib(1048576, DType::Q4), 1);
+        // 1 MiB file with F8E4M3 → 0.5 MiB → clamped to 1
+        assert_eq!(vram_estimate_mib(1048576, DType::F8E4M3), 1);
         // Small file (e.g. 100 bytes) → 0 MiB → clamped to 1
         assert_eq!(vram_estimate_mib(100, DType::Unknown), 1);
     }
