@@ -250,13 +250,22 @@ impl ManagedWorker {
             });
         }
 
-        // Accept the worker's connection with a 10s timeout.
-        let stream = tokio::time::timeout(std::time::Duration::from_secs(10), listener.accept())
+        // Accept the worker's connection.
+        // Default: 30 s — the Python process must connect before importing torch,
+        // so this is cheap on any healthy system. Override with
+        // ANVILML_WORKER_CONNECT_TIMEOUT_MS for constrained or slow-start environments.
+        let connect_timeout = std::env::var("ANVILML_WORKER_CONNECT_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(std::time::Duration::from_millis)
+            .unwrap_or(std::time::Duration::from_secs(30));
+        let stream = tokio::time::timeout(connect_timeout, listener.accept())
             .await
             .map_err(|_| {
                 warn!(
                     worker_id = %self.worker_id,
                     socket_path = %socket_path_str,
+                    connect_timeout_ms = connect_timeout.as_millis(),
                     "IPC accept timed out — worker did not connect"
                 );
                 AnvilError::Io(std::io::Error::other("IPC accept timed out"))
@@ -324,7 +333,14 @@ impl ManagedWorker {
         }
 
         // Wait for status to transition from Initializing to Idle.
-        let timeout_duration = std::time::Duration::from_secs(10);
+        // Default: 60 s — HIP/ROCm on Windows requires ~5 s on warm runs and
+        // significantly more on cold boot or under driver initialisation load.
+        // Override with ANVILML_WORKER_READY_TIMEOUT_MS for testing or tight envs.
+        let timeout_duration = std::env::var("ANVILML_WORKER_READY_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(std::time::Duration::from_millis)
+            .unwrap_or(std::time::Duration::from_secs(60));
         let start = std::time::Instant::now();
         while start.elapsed() < timeout_duration {
             if *self.status.read().await == WorkerStatus::Idle {

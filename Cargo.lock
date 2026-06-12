@@ -207,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-worker"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
