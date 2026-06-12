@@ -171,16 +171,17 @@
     "P905-A5",
     "P905-A6",
     "P905-A7",
-    "P906-A1"
+    "P906-A1",
+    "P906-A2"
   ],
-  "in_progress": "P906-A2",
+  "in_progress": "P906-A3",
   "plan_approved": true,
-  "current_plan": "1. **Fix 1 \u2014 image/png binary schema:** In `crates/anvilml-server/src/handlers/artifacts.rs`,\n   modify the `#[utoipa::path]` annotation on `serve_artifact` (line 38) from:\n   ```rust\n   (status = 200, description = \"Artifact found\", content_type = \"image/png\"),\n   ```\n   to:\n   ```rust\n   (status = 200, description = \"Artifact found\", content_type = \"image/png\",\n    body = inline(schema!({\"type\": \"string\", \"format\": \"binary\"}))),\n   ```\n   This requires importing `utoipa::schema` if not already available. The `schema!` macro\n   is provided by utoipa 5.x for inline schema definitions.\n\n2. **Fix 2 \u2014 ArtifactMeta required fields:** In `crates/anvilml-core/src/types/artifact.rs`,\n   add `#[schema(required)]` to the `id` and `job_id` fields (lines 16 and 21):\n   ```rust\n   #[serde(default)]\n   #[schema(required)]\n   pub id: Uuid,\n   ...\n   #[serde(default)]\n   #[schema(required)]\n   pub job_id: Uuid,\n   ```\n\n3. **Fix 3 \u2014 InferenceCaps required fields:** In `crates/anvilml-core/src/types/hardware.rs`,\n   add `#[schema(required)]` to the `fp32` field (line 67):\n   ```rust\n   #[serde(default)]\n   #[schema(required)]\n   pub fp32: bool,\n   ```\n\n4. **Verify:** Run `cargo clippy -p anvilml-openapi -- -D warnings` \u2014 must exit 0.\n   This single command exercises all three modified files through the dependency chain\n   (`anvilml-openapi` \u2192 `anvilml-server` \u2192 `anvilml-core`).",
+  "current_plan": "1. **Add serde rename attribute.** In `crates/anvilml-core/src/types/model.rs`, on line 24 (the `BF16` variant), add `#[serde(rename = \"bf16\")]` immediately above it, matching the pattern already used for `F8E4M3` and `F8E5M2`.\n\n2. **Add unit test.** In the existing `#[cfg(test)] mod tests` block in the same file, add:\n   ```rust\n   #[test]\n   fn dtype_bf16_serde_string() {\n       assert_eq!(\n           serde_json::to_string(&DType::BF16).expect(\"serialize BF16\"),\n           \"\\\"bf16\\\"\"\n       );\n   }\n   ```\n\n3. **Bump patch version.** In `crates/anvilml-core/Cargo.toml`, change `version = \"0.1.3\"` to `version = \"0.1.4\"`.\n\n4. **Verify.** Run `cargo test -p anvilml-core` \u2014 all existing tests must pass, plus the new `dtype_bf16_serde_string` test.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-12T16:14:57+0200",
-  "plan_approval_message_id": "1514996073649930251",
+  "last_updated": "2026-06-12T17:05:48+0200",
+  "plan_approval_message_id": "1515009050113212449",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1514996071653314655",
+  "plan_report_message_id": "1515009048586747985",
   "impl_report_message_id": null
 }

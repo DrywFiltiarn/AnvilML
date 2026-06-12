@@ -21,6 +21,7 @@ pub enum DType {
     /// 16-bit IEEE floating point.
     F16,
     /// Brain floating point (16-bit).
+    #[serde(rename = "bf16")]
     BF16,
     /// 8-bit float E4M3, torch float8_e4m3fn.
     #[serde(rename = "f8_e4m3")]
@@ -145,6 +146,14 @@ mod tests {
             let restored: DType = serde_json::from_str(&json).expect("deserialize DType");
             assert_eq!(restored, dtype);
         }
+    }
+
+    #[test]
+    fn dtype_bf16_serde_string() {
+        assert_eq!(
+            serde_json::to_string(&DType::BF16).expect("serialize BF16"),
+            "\"bf16\""
+        );
     }
 
     #[test]
