@@ -7,7 +7,7 @@
     "prereqs": [
       "P20-A4",
       "P905-A7",
-      "P906-A4"
+      "P906-A5"
     ],
     "context": "Create worker/nodes/base.py: NodeContext dataclass (pipeline_cache, device_str, emit_fn, cancel_flag: threading.Event, job_id:str). BaseNode(ABC) with ClassVars NODE_TYPE, INPUT_SLOTS, OUTPUT_SLOTS; __init__(ctx); abstract execute(**inputs)->dict. NODE_REGISTRY dict + @register decorator. nodes/__init__.py imports node modules to populate registry. pytest worker/tests/test_nodes_base.py exits 0: @register populates; missing execute raises TypeError.",
     "tags": []
