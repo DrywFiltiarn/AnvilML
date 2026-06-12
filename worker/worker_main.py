@@ -287,8 +287,12 @@ def main() -> None:
             def emit_fn(frame: dict) -> None:
                 ipc.write_frame(frame)
 
-            # Import run_graph here so NODE_REGISTRY is available.
+            # Import run_graph and PipelineCache here so NODE_REGISTRY is
+            # available and the cache is fresh per execution context.
             from worker.executor import run_graph  # noqa: E402
+            from worker.pipeline_cache import PipelineCache  # noqa: E402
+
+            pipeline_cache = PipelineCache()
 
             result = run_graph(
                 graph,
@@ -296,7 +300,7 @@ def main() -> None:
                 device_str,
                 cancel_event,
                 emit_fn,
-                pipeline_cache=None,
+                pipeline_cache=pipeline_cache,
                 job_id=job_id,
             )
 

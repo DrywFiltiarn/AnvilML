@@ -134,9 +134,11 @@ These are used in CI and local development only. Never set in production.
 | `ANVILML_MOCK_VRAM_MIB`   | VRAM (MiB) reported by mock hardware detector.        | `8192`  |
 | `ANVILML_MOCK_GFX_ARCH`   | GPU arch string reported by mock hardware detector.   | `gfx1100` |
 | `ANVILML_MOCK_NODE_DELAY_MS` | Per-node sleep injected by the mock executor so cancel/crash tests can act mid-job. | unset (0) |
-| `ANVILML_PING_INTERVAL_MS`| Worker keepalive ping interval override (tests only).  | `30000` |
-| `ANVILML_PONG_TIMEOUT_MS` | Worker Pong-response timeout override (tests only).    | `10000` |
-| `ANVILML_RESPAWN_DELAY_MS`| Delay before respawning a dead worker (tests only).    | `2000`  |
+| `ANVILML_PING_INTERVAL_MS`          | Worker keepalive ping interval override (tests only).               | `30000`  |
+| `ANVILML_PONG_TIMEOUT_MS`           | Worker Pong-response timeout override (tests only).                 | `10000`  |
+| `ANVILML_RESPAWN_DELAY_MS`          | Delay before respawning a dead worker (tests only).                 | `2000`   |
+| `ANVILML_WORKER_CONNECT_TIMEOUT_MS` | IPC socket accept timeout. Worker must connect before this elapses. | `30000`  |
+| `ANVILML_WORKER_READY_TIMEOUT_MS`   | Ready state timeout. Worker must send `Ready` before this elapses. HIP/ROCm on Windows requires ~5 s on warm runs; increase for cold-boot or slow-start environments. | `60000` |
 
 ### 3.7 Per-Worker Variables (injected by Rust, not set by user)
 

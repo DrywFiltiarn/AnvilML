@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
 import traceback
 from typing import Any
@@ -25,6 +26,15 @@ import worker.ipc as ipc
 from worker.nodes.base import NODE_REGISTRY
 
 logger = logging.getLogger(__name__)
+
+# ── Conditional torch import (same guard as worker_main.py) ─────────────────────
+
+_mock = os.environ.get("ANVILML_WORKER_MOCK") == "1"
+
+if _mock:
+    torch: Any = None  # type: ignore[name-defined]
+else:
+    import torch  # noqa: E402  # type: ignore[assignment]
 
 
 class CancelledError(Exception):
@@ -160,6 +170,31 @@ def run_graph(
                     })
                     return {"status": "cancelled"}
                 except Exception as e:
+                    # ── OOM trap (CUDA-specific) ─────────────────────
+                    if torch is not None and isinstance(
+                        e, torch.cuda.OutOfMemoryError
+                    ):
+                        tb = traceback.format_exc()
+                        logger.error(
+                            "CUDA OOM during node execution for job %s: %s",
+                            job_id, e,
+                            exc_info=e,
+                        )
+                        if torch is not None:
+                            torch.cuda.empty_cache()
+                        emit_fn({
+                            "_type": "Failed",
+                            "job_id": job_id,
+                            "error": "cuda_oom",
+                            "traceback": tb,
+                        })
+                        return {
+                            "status": "failed",
+                            "error": "cuda_oom",
+                            "traceback": tb,
+                        }
+
+                    # ── General exception ────────────────────────────
                     tb = traceback.format_exc()
                     logger.error(
                         "node execution failed for job %s: %s", job_id, e,
