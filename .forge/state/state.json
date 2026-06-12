@@ -172,16 +172,17 @@
     "P905-A6",
     "P905-A7",
     "P906-A1",
-    "P906-A2"
+    "P906-A2",
+    "P906-A3"
   ],
-  "in_progress": "P906-A3",
+  "in_progress": "P906-A4",
   "plan_approved": true,
-  "current_plan": "1. **Add serde rename attribute.** In `crates/anvilml-core/src/types/model.rs`, on line 24 (the `BF16` variant), add `#[serde(rename = \"bf16\")]` immediately above it, matching the pattern already used for `F8E4M3` and `F8E5M2`.\n\n2. **Add unit test.** In the existing `#[cfg(test)] mod tests` block in the same file, add:\n   ```rust\n   #[test]\n   fn dtype_bf16_serde_string() {\n       assert_eq!(\n           serde_json::to_string(&DType::BF16).expect(\"serialize BF16\"),\n           \"\\\"bf16\\\"\"\n       );\n   }\n   ```\n\n3. **Bump patch version.** In `crates/anvilml-core/Cargo.toml`, change `version = \"0.1.3\"` to `version = \"0.1.4\"`.\n\n4. **Verify.** Run `cargo test -p anvilml-core` \u2014 all existing tests must pass, plus the new `dtype_bf16_serde_string` test.",
+  "current_plan": "1. **Regenerate the spec:**\n   ```bash\n   cargo run -p anvilml-openapi\n   ```\n   This reads all `#[utoipa::path]` annotations and `ToSchema`-derived types from the\n   workspace, including the ModelKind schema registered in A1, the png binary schema\n   from A2, and the BF16 rename from A3. Output is written to `backend/openapi.json`.\n\n2. **Verify the file changed:**\n   ```bash\n   git diff --exit-code backend/openapi.json\n   ```\n   This must exit 1 (file differs from committed version). This confirms the generator\n   produces a corrected spec different from the stale committed file.\n\n3. **Inspect generated content for correctness:**\n   - Confirm `components/schemas/ModelKind` exists with `type: string` and\n     `enum: [clip, diffusion, vae, lora, control_net, unet, upscale]`\n   - Confirm `components/schemas/DType.enum` contains `bf16` (not `b_f16`),\n     `f8_e4m3`, `f8_e5m2`\n   - Confirm `paths[\"/v1/artifacts/{hash}\"].get.responses.200.content[\"image/png\"].schema`\n     has `type: string, format: binary`\n\n4. **Stage the regenerated file:**\n   ```bash\n   git add backend/openapi.json\n   ```\n   The Forge orchestrator handles the commit.\n\n5. **Run full test suite:**\n   ```bash\n   cargo test --workspace --features mock-hardware\n   ```\n   Must exit 0. This is the acceptance criterion gate.\n\n6. **Verify idempotency (implicit acceptance criterion):**\n   Running `cargo run -p anvilml-openapi` a second time must produce an identical file,\n   confirmed by `git diff --exit-code backend/openapi.json` exiting 0.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-12T17:05:48+0200",
-  "plan_approval_message_id": "1515009050113212449",
+  "last_updated": "2026-06-12T18:12:24+0200",
+  "plan_approval_message_id": "1515025854307238000",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1515009048586747985",
+  "plan_report_message_id": "1515025852767932469",
   "impl_report_message_id": null
 }
