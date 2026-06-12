@@ -9,7 +9,7 @@
 | Status | Draft |
 | Depends on phases | 905 (via P905-A6 and P905-A7) |
 | Task file | `.forge/tasks/tasks_phase906.json` |
-| Tasks | 4 |
+| Tasks | 5 |
 
 ---
 
@@ -64,7 +64,7 @@ change manually before The Forge picks up Phase 906.
 
 | Group | Subsystem | Tasks | Summary |
 |-------|-----------|-------|---------|
-| A | anvilml-openapi / anvilml-core | P906-A1 – P906-A4 | Schema registration fix; secondary spec fixes; BF16 rename fix; regeneration gate |
+| A | anvilml-openapi / anvilml-core / anvilml-registry | P906-A1 – P906-A5 | Schema registration fix; secondary spec fixes; BF16 rename fix; regeneration gate; Windows path normalisation |
 
 ---
 
@@ -226,6 +226,64 @@ generator twice produces no diff).
 
 ---
 
+#### P906-A5: anvilml-registry: fix stale-model LIKE query fails on Windows paths
+
+- **Prereqs:** P905-A6, P905-A7
+- **Tags:** fix
+
+**Problem:** `test_rescan_removes_stale_models` passes on Linux and fails on Windows CI
+with `assertion failed: should remove 1 stale model (left: 0, right: 1)`.
+
+Root cause: `store.rs` constructs the LIKE query with a hardcoded forward slash:
+```sql
+WHERE path LIKE ? || '/' || '%'
+```
+On Windows, `tempfile::tempdir()` produces backslash-separated paths
+(e.g. `C:\Users\...\Temp\...`). The `/` separator never matches, `all_rows` is empty,
+`stale_ids` is empty, and `removed` returns 0.
+
+**Fix — two-part:**
+
+1. **Normalise paths to forward slashes** at the point of DB write (in `upsert`) and
+   at the point of query construction (in `rescan`):
+   ```rust
+   let path_str = meta.path.to_string_lossy().replace('\\', "/");
+   ```
+   Apply this to every `path` string that flows into or out of the `models` table.
+
+2. **Replace the two-pass LIKE+exact SQL** with a single full-table fetch filtered in
+   Rust:
+   ```rust
+   let all_rows: Vec<(String, String)> =
+       sqlx::query_as("SELECT id, path FROM models")
+           .fetch_all(&self.pool).await.map_err(sqlx_error)?;
+   // Filter: path starts with any normalised dir prefix
+   let stale_ids: Vec<String> = all_rows
+       .into_iter()
+       .filter(|(_, path)| {
+           dirs.iter().any(|d| {
+               let dir_norm = d.path.to_string_lossy().replace('\\', "/");
+               path.starts_with(&dir_norm)
+           }) && !fresh_paths.contains(path)
+       })
+       .map(|(id, _)| id)
+       .collect();
+   ```
+   This eliminates the platform-specific separator dependency in SQL entirely and
+   handles registries with multiple scanned directories correctly.
+
+**No changes to test files.** The existing `rescan_stale.rs` test is correct — it
+asserts `removed == 1` which is the expected behaviour. The fix makes the production
+code match the test's expectation on all platforms.
+
+Bump `anvilml-registry` patch version.
+
+**Acceptance criterion:** `cargo test -p anvilml-registry` exits 0; the
+`test_rescan_removes_stale_models` test passes; `cargo test --workspace
+--features mock-hardware` exits 0.
+
+---
+
 ## Phase Acceptance Criteria
 
 ```bash
@@ -251,7 +309,10 @@ assert 'f8_e4m3' in dt and 'f8_e5m2' in dt, f'F8 missing: {dt}'
 print('DType enum OK:', dt)
 "
 
-# 5. Full workspace test suite green
+# 5. Stale-model removal works on all platforms
+cargo test -p anvilml-registry -- rescan_stale
+
+# 6. Full workspace test suite green
 cargo test --workspace --features mock-hardware
 ```
 
@@ -272,6 +333,13 @@ cargo test --workspace --features mock-hardware
 - **`ControlNet` → `"control_net"`**: two-word PascalCase produces an
   underscore under `rename_all`. Verify the generated `ModelKind` enum
   in the spec uses `"control_net"`, not `"controlnet"`.
+- **Windows path normalisation (A5):** All path strings stored in and read from the
+  `models` table must use forward slashes. Apply `.replace('\\', "/")` consistently
+  in both `upsert` (before insert) and `rescan` (before prefix comparison). Mixed
+  separators in the DB (some rows written before the fix, some after) will cause false
+  negatives in stale detection — this is acceptable for the retrofit since the DB is
+  ephemeral in test environments and users are expected to trigger a rescan after
+  upgrade.
 - **`anvilml-core` version bump in A3.** Source files in `anvilml-core`
   are modified; the patch version must be bumped per `FORGE_AGENT_RULES.md
   §12.5`.

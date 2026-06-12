@@ -53,5 +53,19 @@
     "tags": [
       "fix"
     ]
+  },
+  {
+    "id": "P906-A5",
+    "description": "anvilml-registry: fix stale-model LIKE query fails on Windows paths",
+    "phase": "906",
+    "project": "anvilml",
+    "prereqs": [
+      "P905-A6",
+      "P905-A7"
+    ],
+    "context": "In crates/anvilml-registry/src/store.rs fix stale-model detection on Windows. The LIKE query uses hardcoded \"/\" which never matches Windows backslash paths. Fix: (1) Normalise all path strings to forward slashes before DB writes and LIKE queries (replace \"\\\\\",\"/\"). (2) Replace the two-pass LIKE+exact SQL with a single SELECT id,path FROM models; filter in Rust: keep rows whose normalised path starts with the normalised dir prefix. (3) Apply same normalisation in upsert. Verify rescan_stale test still asserts removed==1. cargo test -p anvilml-registry exits 0.",
+    "tags": [
+      "fix"
+    ]
   }
 ]
