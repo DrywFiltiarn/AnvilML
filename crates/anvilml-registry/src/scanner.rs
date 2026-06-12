@@ -162,6 +162,18 @@ fn content_hash_id(path: &Path) -> io::Result<String> {
 }
 
 /// Scan configured model directories and return discovered model metadata.
+///
+/// Every accepted file is resolved to a **canonical absolute path** via
+/// [`std::fs::canonicalize`] before any further processing. This guarantees:
+///
+/// - The same physical file always produces the same path string regardless of
+///   the process working directory at scan time.
+/// - Paths stored in the DB via [`crate::store::ModelRegistry::upsert`] are
+///   absolute, so the stale-detection pass in `rescan` works correctly on both
+///   Windows and Linux without any CWD dependency.
+/// - On Windows, `canonicalize` returns `\\?\`-prefixed UNC paths; the store's
+///   `norm_path` helper strips that prefix and normalises separators to `/`
+///   before writing to SQLite, keeping stored paths platform-neutral.
 pub async fn scan_dirs(dirs: &[ModelDirConfig]) -> Vec<ModelMeta> {
     let mut results = Vec::new();
 
@@ -215,24 +227,38 @@ pub async fn scan_dirs(dirs: &[ModelDirConfig]) -> Vec<ModelMeta> {
                 }
             };
 
-            // Extract name from file stem.
-            let name = entry
-                .path()
+            // Resolve to a canonical absolute path. This is the single point where
+            // relative paths produced by WalkDir (e.g. `.\models\diffusion\file.sft`)
+            // become stable absolute paths. All downstream consumers — ID hashing,
+            // DB storage, stale detection — operate on this canonical form.
+            let canonical_path = match std::fs::canonicalize(entry.path()) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        path = %entry.path().display(),
+                        error = %e,
+                        "scanner: canonicalize failed, skipping file"
+                    );
+                    continue;
+                }
+            };
+
+            // Extract name from file stem of the canonical path.
+            let name = canonical_path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or_default()
                 .to_string();
 
             // Compute ID from SHA-256 of file content (4 MiB head + 4 MiB tail).
-            let id = match content_hash_id(entry.path()) {
+            let id = match content_hash_id(&canonical_path) {
                 Ok(h) => h,
                 Err(e) => {
-                    tracing::warn!(path = %entry.path().display(), error = %e, "scanner: skipping unreadable file");
+                    tracing::warn!(path = %canonical_path.display(), error = %e, "scanner: skipping unreadable file");
                     continue;
                 }
             };
             let id_clone = id.clone();
-            let canonical_path = entry.path().to_path_buf();
 
             // Infer kind: explicit config or from parent directory name.
             let parent_dir_name = canonical_path
@@ -245,13 +271,12 @@ pub async fn scan_dirs(dirs: &[ModelDirConfig]) -> Vec<ModelMeta> {
                 .unwrap_or_else(|| infer_kind(parent_dir_name));
 
             // Infer dtype: try safetensors header first, fall back to filename.
-            let stem = entry
-                .path()
+            let stem = canonical_path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or_default();
             let dtype = if ext == "safetensors" {
-                match read_safetensors_dtype(entry.path()) {
+                match read_safetensors_dtype(&canonical_path) {
                     Some(DType::Unknown) | None => infer_dtype(stem),
                     Some(dtype) => dtype,
                 }

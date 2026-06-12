@@ -1,5 +1,6 @@
 //! ModelRegistry — SQLite-backed store for model metadata.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use anvilml_core::config::ModelDirConfig;
@@ -13,6 +14,25 @@ use anvilml_core::ModelMetaPatch;
 /// Convert a `sqlx::Error` into an `AnvilError::DbError`.
 fn sqlx_error(err: sqlx::Error) -> AnvilError {
     AnvilError::DbError(err.to_string())
+}
+
+/// Normalise a path string for consistent DB storage and comparison.
+///
+/// Two transformations are applied in order:
+///
+/// 1. Strip the Windows UNC extended-length prefix `\\?\` that
+///    [`std::fs::canonicalize`] produces on Windows. This prefix is an
+///    implementation detail of the Win32 API and must not appear in stored paths.
+/// 2. Replace all backslashes with forward slashes so that paths written on
+///    Windows and paths written on Linux compare equal when the same logical
+///    file is referenced.
+///
+/// After this function every path in the `models` table is an absolute
+/// forward-slash string with no UNC prefix, regardless of the platform that
+/// wrote it.
+fn norm_path(p: &str) -> String {
+    let stripped = p.strip_prefix(r"\\?\").unwrap_or(p);
+    stripped.replace('\\', "/")
 }
 
 /// Tuple representing a single row from the `models` table.
@@ -42,6 +62,12 @@ impl ModelRegistry {
     ///
     /// Uses `INSERT OR REPLACE` so that calling this with an existing `id`
     /// updates all columns to the provided values.
+    ///
+    /// The path is normalised via [`norm_path`] before storage: the Windows
+    /// `\\?\` UNC prefix is stripped and backslashes are converted to forward
+    /// slashes. This ensures every row in the table is platform-neutral and
+    /// that the stale-detection pass in [`Self::rescan`] can compare DB paths
+    /// against scanner-produced paths using simple string equality.
     pub async fn upsert(&self, meta: &ModelMeta) -> Result<(), AnvilError> {
         sqlx::query(
             r#"INSERT OR REPLACE INTO models
@@ -50,7 +76,7 @@ impl ModelRegistry {
         )
         .bind(&meta.id)
         .bind(&meta.name)
-        .bind(meta.path.to_string_lossy().as_ref())
+        .bind(norm_path(&meta.path.to_string_lossy()))
         .bind(serde_json::to_string(&meta.kind).map_err(|e| AnvilError::Json(e.to_string()))?)
         .bind(meta.size_bytes as i64)
         .bind(serde_json::to_string(&meta.dtype_hint).map_err(|e| AnvilError::Json(e.to_string()))?)
@@ -164,8 +190,25 @@ impl ModelRegistry {
     /// This operation is idempotent: calling it multiple times over the same
     /// files will not create duplicates because `upsert` uses `INSERT OR REPLACE`.
     /// Stale rows (files deleted from disk) are automatically removed.
+    ///
+    /// # Path consistency guarantee
+    ///
+    /// [`crate::scanner::scan_dirs`] canonicalises every path to an absolute
+    /// form before returning it. [`Self::upsert`] then calls [`norm_path`] to
+    /// strip the Windows `\\?\` prefix and convert backslashes to forward
+    /// slashes before writing to SQLite. The stale-detection pass here
+    /// applies the same [`norm_path`] transformation to every DB row and
+    /// compares against the normalised fresh set, so the check is exact and
+    /// platform-neutral on both Windows and Linux.
     pub async fn rescan(&self, dirs: &[ModelDirConfig]) -> Result<(usize, usize), AnvilError> {
         let metas = crate::scanner::scan_dirs(dirs).await;
+
+        // Build the set of normalised absolute paths produced by this scan.
+        // upsert() writes norm_path() strings, so the comparison is exact.
+        let fresh_paths: HashSet<String> = metas
+            .iter()
+            .map(|m| norm_path(&m.path.to_string_lossy()))
+            .collect();
 
         // Upsert all discovered models.
         for meta in &metas {
@@ -174,7 +217,8 @@ impl ModelRegistry {
 
         let upserted = metas.len();
 
-        // Fetch all DB rows and remove any whose file no longer exists on disk.
+        // Fetch all DB rows. Any row whose normalised path is absent from
+        // fresh_paths is stale (the file was deleted or moved).
         let all_rows: Vec<(String, String)> = sqlx::query_as("SELECT id, path FROM models")
             .fetch_all(&self.pool)
             .await
@@ -182,7 +226,7 @@ impl ModelRegistry {
 
         let stale_ids: Vec<String> = all_rows
             .into_iter()
-            .filter(|(_, path)| !std::path::Path::new(path).exists())
+            .filter(|(_, path)| !fresh_paths.contains(&norm_path(path)))
             .map(|(id, _)| id)
             .collect();
 
