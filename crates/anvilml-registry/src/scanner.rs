@@ -1,10 +1,10 @@
 //! Model directory scanner — walks configured model directories and discovers weight files.
 //!
 //! Discovers `.safetensors`, `.ckpt`, `.pt`, `.bin` files, computes deterministic IDs
-//! via SHA-256 of canonical paths, and infers kind/dtype heuristics.
+//! via SHA-256 of file content (4 MiB head + 4 MiB tail), and infers kind/dtype heuristics.
 
 use std::collections::HashMap;
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use anvilml_core::config::ModelDirConfig;
@@ -130,12 +130,35 @@ pub fn vram_estimate_mib(size_bytes: u64, dtype: DType) -> u32 {
     estimate.max(1.0) as u32
 }
 
-/// Compute a SHA-256 hex digest of the input string.
-pub fn sha256_hex(input: &str) -> String {
+/// Compute a model identity hash from file content.
+///
+/// Reads up to `CHUNK` bytes from the head and `CHUNK` bytes from the tail,
+/// feeds both into SHA-256, and returns the first 16 hex characters.
+/// Files smaller than `2 × CHUNK` are read in full.
+fn content_hash_id(path: &Path) -> io::Result<String> {
+    const CHUNK: u64 = 4 * 1024 * 1024; // 4 MiB
+
+    let mut file = std::fs::File::open(path)?;
+    let file_len = file.metadata()?.len();
     let mut hasher = Sha256::new();
-    hasher.update(input.as_bytes());
-    let result = hasher.finalize();
-    hex::encode(result)
+
+    if file_len <= CHUNK * 2 {
+        let mut buf = Vec::with_capacity(file_len as usize);
+        file.read_to_end(&mut buf)?;
+        hasher.update(&buf);
+    } else {
+        let mut head = vec![0u8; CHUNK as usize];
+        file.read_exact(&mut head)?;
+        hasher.update(&head);
+
+        file.seek(SeekFrom::End(-(CHUNK as i64)))?;
+        let mut tail = vec![0u8; CHUNK as usize];
+        file.read_exact(&mut tail)?;
+        hasher.update(&tail);
+    }
+
+    let full_hex = hex::encode(hasher.finalize());
+    Ok(full_hex.chars().take(16).collect())
 }
 
 /// Scan configured model directories and return discovered model metadata.
@@ -200,22 +223,16 @@ pub async fn scan_dirs(dirs: &[ModelDirConfig]) -> Vec<ModelMeta> {
                 .unwrap_or_default()
                 .to_string();
 
-            // Compute ID from SHA-256 of canonical path string.
-            let canonical_path = match entry.path().canonicalize() {
-                Ok(p) => p,
+            // Compute ID from SHA-256 of file content (4 MiB head + 4 MiB tail).
+            let id = match content_hash_id(entry.path()) {
+                Ok(h) => h,
                 Err(e) => {
-                    if e.kind() == io::ErrorKind::NotFound {
-                        tracing::warn!(path = %entry.path().display(), "scanner: skipping missing path");
-                    } else {
-                        tracing::warn!(path = %entry.path().display(), error = %e, "scanner: canonicalize failed, using raw path");
-                    }
-                    entry.path().to_path_buf()
+                    tracing::warn!(path = %entry.path().display(), error = %e, "scanner: skipping unreadable file");
+                    continue;
                 }
             };
-            let canonical_str = canonical_path.to_string_lossy().to_string();
-            let full_hash = sha256_hex(&canonical_str);
-            let id: String = full_hash.chars().take(16).collect();
             let id_clone = id.clone();
+            let canonical_path = entry.path().to_path_buf();
 
             // Infer kind: explicit config or from parent directory name.
             let parent_dir_name = canonical_path
@@ -339,14 +356,29 @@ mod tests {
     }
 
     #[test]
-    fn test_sha256_hex() {
-        let hash = sha256_hex("hello world");
-        assert_eq!(hash.len(), 64);
-        // Known SHA-256 of "hello world"
-        assert_eq!(
-            hash,
-            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
-        );
+    fn test_content_hash_id_small_file() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path = tmp.path().join("small.safetensors");
+        std::fs::write(&path, b"hello world").expect("write file");
+
+        let id = content_hash_id(&path).expect("hash small file");
+        assert_eq!(id.len(), 16, "id must be 16 hex chars");
+        // Must be stable: same content → same id.
+        let id2 = content_hash_id(&path).expect("hash again");
+        assert_eq!(id, id2, "content hash must be deterministic");
+    }
+
+    #[test]
+    fn test_content_hash_id_different_content() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path_a = tmp.path().join("a.safetensors");
+        let path_b = tmp.path().join("b.safetensors");
+        std::fs::write(&path_a, b"content_a").expect("write a");
+        std::fs::write(&path_b, b"content_b").expect("write b");
+
+        let id_a = content_hash_id(&path_a).expect("hash a");
+        let id_b = content_hash_id(&path_b).expect("hash b");
+        assert_ne!(id_a, id_b, "different content must produce different ids");
     }
 
     #[test]

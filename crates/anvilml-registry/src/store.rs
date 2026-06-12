@@ -1,6 +1,5 @@
 //! ModelRegistry — SQLite-backed store for model metadata.
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 
 use anvilml_core::config::ModelDirConfig;
@@ -14,18 +13,6 @@ use anvilml_core::ModelMetaPatch;
 /// Convert a `sqlx::Error` into an `AnvilError::DbError`.
 fn sqlx_error(err: sqlx::Error) -> AnvilError {
     AnvilError::DbError(err.to_string())
-}
-
-/// Normalise a path string for cross-platform comparison.
-///
-/// 1. Replace all backslashes with forward slashes.
-/// 2. Strip the Windows UNC extended-path prefix `\\?\` (appears as `//?/`
-///    after step 1) so that canonicalized Windows paths compare equal to
-///    raw paths that lack the prefix.
-fn norm_path(p: &str) -> String {
-    let s = p.replace('\\', "/");
-    // Strip the UNC extended-path prefix produced by Path::canonicalize on Windows.
-    s.strip_prefix("//?/").unwrap_or(&s).to_string()
 }
 
 /// Tuple representing a single row from the `models` table.
@@ -63,7 +50,7 @@ impl ModelRegistry {
         )
         .bind(&meta.id)
         .bind(&meta.name)
-        .bind(norm_path(&meta.path.to_string_lossy()))
+        .bind(meta.path.to_string_lossy().as_ref())
         .bind(serde_json::to_string(&meta.kind).map_err(|e| AnvilError::Json(e.to_string()))?)
         .bind(meta.size_bytes as i64)
         .bind(serde_json::to_string(&meta.dtype_hint).map_err(|e| AnvilError::Json(e.to_string()))?)
@@ -187,40 +174,20 @@ impl ModelRegistry {
 
         let upserted = metas.len();
 
-        // Collect the set of fresh model paths.
-        let fresh_paths: HashSet<String> = metas
-            .iter()
-            .map(|m| norm_path(&m.path.to_string_lossy()))
-            .collect();
-
-        // Fetch all DB rows for stale detection.
+        // Fetch all DB rows and remove any whose file no longer exists on disk.
         let all_rows: Vec<(String, String)> = sqlx::query_as("SELECT id, path FROM models")
             .fetch_all(&self.pool)
             .await
             .map_err(sqlx_error)?;
 
-        // Normalised dir prefixes for filtering.
-        let dir_prefixes: Vec<String> = dirs
-            .iter()
-            .map(|d| norm_path(&d.path.to_string_lossy()))
-            .collect();
-
-        // Filter: row path starts with any normalised dir prefix and is not fresh.
         let stale_ids: Vec<String> = all_rows
             .into_iter()
-            .filter(|(_, path)| {
-                let path_norm = norm_path(path);
-                dir_prefixes
-                    .iter()
-                    .any(|prefix| path_norm.starts_with(prefix))
-                    && !fresh_paths.contains(&path_norm)
-            })
+            .filter(|(_, path)| !std::path::Path::new(path).exists())
             .map(|(id, _)| id)
             .collect();
 
-        // Delete each stale row.
         for id in &stale_ids {
-            tracing::debug!(path = %id, "rescan: removed stale model");
+            tracing::debug!(model_id = %id, "rescan: removed stale model");
             sqlx::query("DELETE FROM models WHERE id = ?")
                 .bind(id)
                 .execute(&self.pool)
