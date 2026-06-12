@@ -35,7 +35,8 @@ use crate::{artifact::store::ArtifactMeta, App};
         ("hash" = String, Path, description = "SHA-256 hex digest of the artifact")
     ),
     responses(
-        (status = 200, description = "Artifact found", content_type = "image/png"),
+        (status = 200, description = "Artifact found", content_type = "image/png",
+            body = inline(String)),
         (status = 404, description = "Artifact not found", body = serde_json::Value)
     )
 )]

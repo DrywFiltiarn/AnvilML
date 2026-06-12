@@ -107,7 +107,11 @@
           "200": {
             "description": "Artifact found",
             "content": {
-              "image/png": {}
+              "image/png": {
+                "schema": {
+                  "type": "string"
+                }
+              }
             }
           },
           "404": {
@@ -597,7 +601,9 @@
         "type": "object",
         "description": "Metadata about an artifact produced by a generation job.",
         "required": [
+          "id",
           "model_id",
+          "job_id",
           "path",
           "created_at"
         ],
@@ -948,6 +954,9 @@
       "InferenceCaps": {
         "type": "object",
         "description": "Inference capability flags for detected hardware.",
+        "required": [
+          "fp32"
+        ],
         "properties": {
           "bf16": {
             "type": "boolean",
@@ -1360,6 +1369,19 @@
           "Completed",
           "Failed",
           "Cancelled"
+        ]
+      },
+      "ModelKind": {
+        "type": "string",
+        "description": "Kind of a model file in the model directory.",
+        "enum": [
+          "clip",
+          "diffusion",
+          "vae",
+          "lora",
+          "control_net",
+          "unet",
+          "upscale"
         ]
       },
       "ModelMeta": {

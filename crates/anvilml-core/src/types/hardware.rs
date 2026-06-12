@@ -64,6 +64,7 @@ pub struct HostInfo {
 pub struct InferenceCaps {
     /// Whether the device supports FP32 (single-precision) inference.
     #[serde(default)]
+    #[schema(required)]
     pub fp32: bool,
     /// Whether the device supports FP16 (half-precision) inference.
     #[serde(default)]

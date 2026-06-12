@@ -13,11 +13,13 @@ use uuid::Uuid;
 pub struct ArtifactMeta {
     /// Unique identifier for this artifact (UUID v4).
     #[serde(default)]
+    #[schema(required)]
     pub id: Uuid,
     /// The model that produced this artifact.
     pub model_id: String,
     /// The job that produced this artifact.
     #[serde(default)]
+    #[schema(required)]
     pub job_id: Uuid,
     /// Filesystem path to the artifact file.
     #[schema(value_type = String)]
