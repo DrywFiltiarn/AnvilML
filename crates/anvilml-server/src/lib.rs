@@ -352,6 +352,11 @@ mod tests {
     /// handler returns 202 (the restart logic path is exercised).
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn restart_worker_returns_202_for_existing_worker() {
+        // Bound the spawn timeout so this test doesn't stall for 60s when
+        // the mock venv (/dev/null) causes spawn() to wait for Ready.
+        std::env::set_var("ANVILML_WORKER_READY_TIMEOUT_MS", "500");
+        std::env::set_var("ANVILML_WORKER_CONNECT_TIMEOUT_MS", "500");
+
         let broadcaster = Arc::new(EventBroadcaster::new(16));
 
         // Create a pool with a mock worker and matching device in hardware.
@@ -420,6 +425,9 @@ mod tests {
             "expected 202 or 500 (spawn failure), got {}",
             response.status()
         );
+
+        std::env::remove_var("ANVILML_WORKER_READY_TIMEOUT_MS");
+        std::env::remove_var("ANVILML_WORKER_CONNECT_TIMEOUT_MS");
     }
 
     /// POST /v1/workers/{id}/restart returns 404 for a non-existent worker.
