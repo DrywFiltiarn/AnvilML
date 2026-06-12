@@ -1,7 +1,8 @@
-msgpack>=1.0
+diffusers>=0.27
+transformers>=4.40
+accelerate
 Pillow>=10.0
+msgpack>=1.0
 numpy
 safetensors
-diffusers
-transformers
 pytest
