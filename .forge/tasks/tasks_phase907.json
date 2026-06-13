@@ -98,12 +98,25 @@
     ]
   },
   {
+    "id": "P907-A9",
+    "description": "managed.rs + worker_main.py: fix peer-not-connected race \u2014 recv-before-send handshake",
+    "phase": "907",
+    "project": "anvilml",
+    "prereqs": [
+      "P907-A8"
+    ],
+    "context": "Root cause: run_loop sends InitializeHardware before Python worker calls ipc.connect(), ZeroMQ DEALER drops with 'Not connected to peers'. Fix: (1) worker_main.py sends {'_type':'Connected'} immediately after ipc.connect(). (2) run_loop calls socket.recv() first; on Connected sends InitializeHardware; on anything else warns and exits. Supervisor only writes after peer confirmed. Update managed.rs run_loop and worker_main.py only. cargo run ANVILML_WORKER_MOCK=1 reaches Idle. cargo test -p anvilml-worker --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
     "id": "P907-B1",
     "description": "anvilml: integration smoke test worker Ready handshake over ZeroMQ",
     "phase": "907",
     "project": "anvilml",
     "prereqs": [
-      "P907-A8"
+      "P907-A9"
     ],
     "context": "Add integration test backend/tests/api_worker_zmq.rs: spawn AnvilML with ANVILML_WORKER_MOCK=1, poll GET /v1/workers until one worker reaches status=Idle within 30s (no 60s timeout panic). Assert server stays alive. Use temp_env::async_with_vars pattern. cargo test --workspace --features mock-hardware --test api_worker_zmq exits 0. This is the acceptance gate proving ZeroMQ handshake is reliable.",
     "tags": []

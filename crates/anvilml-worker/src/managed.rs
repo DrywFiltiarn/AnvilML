@@ -34,6 +34,132 @@ impl std::fmt::Debug for IpcHandles {
     }
 }
 
+/// Test-only IPC socket handle wrapping a DEALER socket.
+///
+/// Mirrors [`IpcHandles`] but is used exclusively for test IPC.
+/// `PairSocket` does not exist in zeromq 0.4; DEALER sockets are used
+/// instead, which is identical to the production `IpcHandles` type.
+#[cfg(test)]
+struct TestIpcHandles {
+    socket: zeromq::DealerSocket,
+}
+
+#[cfg(test)]
+impl std::fmt::Debug for TestIpcHandles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TestIpcHandles")
+            .field("socket", &"..")
+            .finish()
+    }
+}
+
+/// Test-only event loop identical to [`Self::run_loop`] but accepts
+/// `TestIpcHandles` (containing a `DealerSocket`) via a oneshot channel.
+///
+/// This exists so that tests can inject their own socket without
+/// modifying the production `run_loop` signature.
+#[cfg(test)]
+async fn run_loop_with_pair(
+    worker_id: String,
+    mut rx: mpsc::Receiver<WorkerMessage>,
+    event_tx: broadcast::Sender<(String, WorkerEvent)>,
+    status: Arc<RwLock<WorkerStatus>>,
+    ipc_rx: oneshot::Receiver<TestIpcHandles>,
+) {
+    let TestIpcHandles { mut socket } = match ipc_rx.await {
+        Ok(handles) => handles,
+        Err(_) => {
+            warn!(worker_id = %worker_id, "IPC channel closed before handles received");
+            return;
+        }
+    };
+
+    // Combined reader/writer loop for the zeromq DEALER socket.
+    // Same logic as run_loop.
+    loop {
+        select! {
+            msg = rx.recv() => {
+                match msg {
+                    Some(msg) => {
+                        debug!(
+                            worker_id = %worker_id,
+                            message_type = ?msg_discriminant(&msg),
+                            "sending message to worker"
+                        );
+                        let payload = match serialize_message(&msg) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                warn!(error = %e, worker_id = %worker_id, "failed to serialize message");
+                                break;
+                            }
+                        };
+                        if let Err(e) = socket.send(zeromq::ZmqMessage::from(payload)).await {
+                            warn!(error = %e, worker_id = %worker_id, "failed to send IPC frame");
+                            break;
+                        }
+                    }
+                    None => {
+                        debug!(worker_id = %worker_id, "mpsc channel closed");
+                        break;
+                    }
+                }
+            }
+            result = socket.recv() => {
+                let msg = match result {
+                    Ok(msg) => msg,
+                    Err(e) => {
+                        warn!(error = %e, worker_id = %worker_id, "socket recv error");
+                        break;
+                    }
+                };
+
+                let bytes: Vec<u8> = match msg.try_into() {
+                    Ok(b) => b,
+                    Err(_) => {
+                        warn!(worker_id = %worker_id, "failed to convert zmq message to bytes");
+                        break;
+                    }
+                };
+
+                let event = match rmp_serde::from_slice::<serde_json::Map<String, JsonValue>>(&bytes) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        warn!(error = %e, worker_id = %worker_id, "failed to deserialize IPC frame");
+                        break;
+                    }
+                };
+
+                let event = match worker_event_from_map(&event) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        warn!(error = %e, worker_id = %worker_id, "failed to parse worker event");
+                        break;
+                    }
+                };
+
+                debug!(
+                    worker_id = %worker_id,
+                    event_type = ?event_discriminant(&event),
+                    "received event from worker"
+                );
+
+                update_status_from_event(&status, &event).await;
+
+                let _ = event_tx.send((worker_id.clone(), event));
+            }
+        }
+    }
+
+    warn!(worker_id = %worker_id, "run_loop_with_pair exiting — worker is Dead");
+
+    let _ = event_tx.send((
+        worker_id.clone(),
+        WorkerEvent::WorkerStatusChanged {
+            status: WorkerStatus::Dead,
+        },
+    ));
+}
+
 /// A managed Python worker process with IPC bridge.
 ///
 /// Owns the child process lifecycle (spawn, socket IPC piping) and provides
@@ -612,13 +738,18 @@ impl ManagedWorker {
 
     /// Inject mock IPC handles for testing without spawning a real Python process.
     ///
-    /// Creates a zeromq DEALER socket pair, injects the worker-side socket into the
-    /// run_loop via the oneshot channel, and returns the supervisor-side socket
-    /// for the test to use.
+    /// Creates a zeromq DEALER socket pair, spawns a fresh `run_loop_with_pair`
+    /// task, injects the worker-side DEALER socket, and returns the supervisor-side
+    /// socket for the test to use.
+    ///
+    /// This replaces the existing mpsc channel and join handle so that
+    /// subsequent `send()` calls go through the new loop.
+    ///
+    /// Note: `PairSocket` does not exist in zeromq 0.4; DEALER sockets are used
+    /// instead (identical to the production `IpcHandles` type).
     #[cfg(test)]
     pub async fn inject_handles_for_test(&self) -> zeromq::DealerSocket {
         // Create a DEALER socket pair for test IPC.
-        // Supervisor side: bind a DEALER socket.
         let mut supervisor_dealer = zeromq::DealerSocket::new();
         let endpoint = supervisor_dealer
             .bind("tcp://127.0.0.1:0")
@@ -629,21 +760,40 @@ impl ManagedWorker {
             _ => panic!("expected TCP endpoint"),
         };
 
-        // Worker side: connect to the bound address.
         let mut worker_dealer = zeromq::DealerSocket::new();
         worker_dealer
             .connect(&format!("tcp://127.0.0.1:{port}"))
             .await
             .expect("connect worker dealer");
 
-        // Inject the worker-side socket into the run_loop.
-        let mut guard = self.ipc_tx.lock().unwrap();
-        if let Some(tx) = guard.take() {
-            tx.send(IpcHandles {
+        // Create a fresh (tx, rx) pair for the mpsc channel.
+        let (tx, rx) = mpsc::channel(64);
+
+        // Create a oneshot channel for injecting TestIpcHandles into run_loop_with_pair.
+        let (test_ipc_tx, test_ipc_rx) = oneshot::channel::<TestIpcHandles>();
+        let worker_id = self.worker_id.clone();
+        let status = self.status.clone();
+        let event_tx = self.event_tx.clone();
+
+        // Spawn a run_loop_with_pair for the test.
+        let handle = spawn(run_loop_with_pair(
+            worker_id,
+            rx,
+            event_tx,
+            status,
+            test_ipc_rx,
+        ));
+
+        // Replace the existing handle and channel.
+        *tokio::task::block_in_place(|| self.tx.lock().unwrap()) = tx;
+        *self.handle.lock().unwrap() = handle;
+
+        // Inject the worker-side DEALER socket.
+        test_ipc_tx
+            .send(TestIpcHandles {
                 socket: worker_dealer,
             })
             .unwrap();
-        }
 
         // Return the supervisor-side socket for the test to use.
         supervisor_dealer
@@ -675,6 +825,35 @@ impl ManagedWorker {
         *tokio::task::block_in_place(|| self.tx.lock().unwrap()) = tx;
         *self.ipc_tx.lock().unwrap() = Some(ipc_tx);
         *self.handle.lock().unwrap() = new_handle;
+    }
+
+    /// Reset the IPC channel for respawn using test IPC (test-only).
+    ///
+    /// Creates a fresh mpsc channel and spawns a new `run_loop_with_pair` task.
+    /// Returns the oneshot sender so the caller can inject `TestIpcHandles`
+    /// (containing the worker-side DEALER socket) into the new loop.
+    #[cfg(test)]
+    async fn reset_ipc_tx_for_test(&self) -> oneshot::Sender<TestIpcHandles> {
+        let (tx, rx) = mpsc::channel(64);
+        let worker_id = self.worker_id.clone();
+        let status = self.status.clone();
+        let event_tx = self.event_tx.clone();
+        let (test_ipc_tx, test_ipc_rx) = oneshot::channel::<TestIpcHandles>();
+
+        let new_handle = spawn(run_loop_with_pair(
+            worker_id,
+            rx,
+            event_tx,
+            status,
+            test_ipc_rx,
+        ));
+
+        // Use block_in_place to avoid panicking in a tokio runtime.
+        *tokio::task::block_in_place(|| self.tx.lock().unwrap()) = tx;
+        *self.handle.lock().unwrap() = new_handle;
+
+        // Return the oneshot sender so the caller can inject TestIpcHandles.
+        test_ipc_tx
     }
 
     /// Respawn the worker process after it has died.
@@ -1192,6 +1371,66 @@ mod tests {
         })
     }
 
+    /// Verify that inject_handles_for_test creates a DEALER socket pair and
+    /// injects it into a fresh run_loop_with_pair.
+    ///
+    /// Flow:
+    /// 1. Create ManagedWorker, subscribe to events
+    /// 2. Call inject_handles_for_test() → returns supervisor DEALER socket
+    /// 3. Send a Ready frame through the supervisor socket
+    /// 4. Verify Ready event received and status transitions to Idle
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[cfg(feature = "mock-hardware")]
+    async fn inject_handles_for_test() {
+        let worker = ManagedWorker::new("inject-test".to_string(), 0);
+        let mut event_rx = worker.subscribe();
+
+        // Create a DEALER socket pair and inject the worker-side socket.
+        let mut supervisor = worker.inject_handles_for_test().await;
+
+        // Write a Ready frame using msgpack-serialised flat dict.
+        let ready_json: serde_json::Map<String, JsonValue> = [
+            ("_type".to_string(), serde_json::json!("Ready")),
+            ("worker_id".to_string(), serde_json::json!("inject-test")),
+            ("device_index".to_string(), serde_json::json!(0u64)),
+            ("vram_total_mib".to_string(), serde_json::json!(8192u64)),
+            ("vram_free_mib".to_string(), serde_json::json!(8192u64)),
+            ("arch".to_string(), serde_json::json!("gfx1100")),
+            ("fp16".to_string(), serde_json::json!(true)),
+            ("bf16".to_string(), serde_json::json!(true)),
+            ("flash_attention".to_string(), serde_json::json!(false)),
+        ]
+        .into_iter()
+        .collect();
+        let ready_payload = rmp_serde::to_vec_named(&ready_json).expect("serialize");
+
+        // Send the Ready frame through the supervisor DEALER socket.
+        supervisor
+            .send(zeromq::ZmqMessage::from(ready_payload))
+            .await
+            .expect("send ready");
+
+        // Drain events: expect a Ready event.
+        let ready_received = timeout(Duration::from_secs(2), async {
+            loop {
+                match event_rx.recv().await {
+                    Ok((_, WorkerEvent::Ready { .. })) => return true,
+                    Ok(_) => continue,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break false,
+                }
+            }
+        })
+        .await;
+        assert!(
+            ready_received.is_ok() && ready_received.unwrap(),
+            "should receive Ready event"
+        );
+
+        // Verify status is Idle.
+        assert_eq!(worker.get_status().await, WorkerStatus::Idle);
+    }
+
     /// Spawn a mock worker, send Ping, receive Pong, then Shutdown.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[cfg(feature = "mock-hardware")]
@@ -1429,12 +1668,12 @@ mod tests {
         .await;
     }
 
-    /// Verify that a socket error on the zeromq socket causes the run_loop to
-    /// exit and broadcast a Dead status event.
+    /// Verify that a socket error on the zeromq DEALER socket causes the
+    /// run_loop_with_pair to exit and broadcast a Dead status event.
     ///
-    /// Creates a DEALER socket pair, injects the worker-side socket into the
-    /// run_loop, sends a Ready frame through the supervisor side, then
-    /// sends an invalid message to trigger a deserialization error, which
+    /// Creates a DEALER socket pair, injects the worker-side socket via
+    /// `run_loop_with_pair`, sends a Ready frame through the supervisor side,
+    /// then sends an invalid message to trigger a deserialization error, which
     /// causes the run_loop to exit and broadcast WorkerStatusChanged(Dead).
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[cfg(feature = "mock-hardware")]
@@ -1456,18 +1695,35 @@ mod tests {
             .await
             .expect("connect worker dealer");
 
-        // Create a worker and subscribe to events before injecting handles.
+        // Create a worker and subscribe to events.
         let worker = ManagedWorker::new("eof-test".to_string(), 0);
         let mut event_rx = worker.subscribe();
 
-        // Inject the worker-side socket into the run_loop.
-        let mut guard = worker.ipc_tx.lock().unwrap();
-        if let Some(tx) = guard.take() {
-            tx.send(IpcHandles {
+        // Inject the worker-side DEALER socket via run_loop_with_pair.
+        let (tx, rx) = mpsc::channel(64);
+        let (test_ipc_tx, test_ipc_rx) = oneshot::channel::<TestIpcHandles>();
+        let worker_id = worker.worker_id.clone();
+        let status = worker.status.clone();
+        let event_tx = worker.event_tx.clone();
+
+        let handle = spawn(run_loop_with_pair(
+            worker_id,
+            rx,
+            event_tx,
+            status,
+            test_ipc_rx,
+        ));
+
+        // Replace the worker's channel and handle.
+        *tokio::task::block_in_place(|| worker.tx.lock().unwrap()) = tx;
+        *worker.handle.lock().unwrap() = handle;
+
+        // Inject the worker-side DEALER socket.
+        test_ipc_tx
+            .send(TestIpcHandles {
                 socket: worker_dealer,
             })
             .unwrap();
-        }
 
         // Write a Ready frame using msgpack-serialised flat dict (same as Python worker).
         let ready_json: serde_json::Map<String, JsonValue> = [
@@ -1485,7 +1741,7 @@ mod tests {
         .collect();
         let ready_payload = rmp_serde::to_vec_named(&ready_json).expect("serialize");
 
-        // Send the Ready frame through the supervisor socket.
+        // Send the Ready frame through the supervisor DEALER socket.
         supervisor_dealer
             .send(zeromq::ZmqMessage::from(ready_payload))
             .await
@@ -1610,7 +1866,7 @@ mod tests {
     }
 
     /// Verify that EOF triggers Dead status and WorkerStatusChanged broadcast,
-    /// then respawn via mock handles transitions back to Idle.
+    /// then respawn via DEALER-socket mock handles transitions back to Idle.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[cfg(feature = "mock-hardware")]
     async fn respawn_after_death() {
@@ -1703,13 +1959,35 @@ mod tests {
                     },
                 ));
 
-                // Create fresh mock handles for the respawned worker.
-                let supervisor2 = worker.inject_handles_for_test().await;
-                drop(supervisor2); // Drop to trigger EOF on the new injected socket.
+                // Reset IPC with DEALER socket: create fresh run_loop_with_pair.
+                let test_ipc_tx = worker.reset_ipc_tx_for_test().await;
 
-                // Reset IPC channel and inject fresh handles.
-                worker.reset_ipc_tx().await;
-                let _supervisor3 = worker.inject_handles_for_test().await;
+                // Create a fresh DEALER socket pair for the respawned worker.
+                let mut supervisor2 = zeromq::DealerSocket::new();
+                let endpoint = supervisor2
+                    .bind("tcp://127.0.0.1:0")
+                    .await
+                    .expect("bind supervisor dealer");
+                let port = match endpoint {
+                    zeromq::Endpoint::Tcp(_, port) => port,
+                    _ => panic!("expected TCP endpoint"),
+                };
+
+                let mut worker_dealer = zeromq::DealerSocket::new();
+                worker_dealer
+                    .connect(&format!("tcp://127.0.0.1:{port}"))
+                    .await
+                    .expect("connect worker dealer");
+
+                // Inject the worker-side DEALER socket into the new run loop.
+                test_ipc_tx
+                    .send(TestIpcHandles {
+                        socket: worker_dealer,
+                    })
+                    .unwrap();
+
+                // Drop supervisor to trigger EOF (simulating worker death after respawn).
+                drop(supervisor2);
 
                 // Set status back to Idle (simulating what Ready event would do).
                 worker.set_status(WorkerStatus::Idle).await;
