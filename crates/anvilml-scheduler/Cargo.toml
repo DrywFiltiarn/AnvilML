@@ -1,0 +1,16 @@
+[package]
+name = "anvilml-scheduler"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anvilml-core = { path = "../anvilml-core" }
+anvilml-hardware = { path = "../anvilml-hardware" }
+anvilml-registry = { path = "../anvilml-registry" }
+anvilml-worker = { path = "../anvilml-worker" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[features]
+# Forward mock-hardware to anvilml-hardware so MockDetector is compiled in.
+mock-hardware = ["anvilml-hardware/mock-hardware"]

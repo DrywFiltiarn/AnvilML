@@ -1,0 +1,13 @@
+[package]
+name = "anvilml-hardware"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anvilml-core = { path = "../anvilml-core" }
+tracing = { workspace = true }
+
+[features]
+# Replace GPU detection with MockDetector driven by ANVILML_MOCK_* env vars.
+# Declared here; forwarded by anvilml-worker, anvilml-scheduler, anvilml-server, and backend.
+mock-hardware = []

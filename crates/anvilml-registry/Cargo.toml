@@ -1,0 +1,10 @@
+[package]
+name = "anvilml-registry"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anvilml-core = { path = "../anvilml-core" }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }

@@ -1,0 +1,23 @@
+[package]
+name = "anvilml"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "anvilml"
+path = "src/main.rs"
+
+[dependencies]
+anvilml-core = { path = "../crates/anvilml-core" }
+anvilml-hardware = { path = "../crates/anvilml-hardware" }
+anvilml-registry = { path = "../crates/anvilml-registry" }
+anvilml-ipc = { path = "../crates/anvilml-ipc" }
+anvilml-worker = { path = "../crates/anvilml-worker" }
+anvilml-scheduler = { path = "../crates/anvilml-scheduler" }
+anvilml-server = { path = "../crates/anvilml-server" }
+clap = { version = "4.5.54", features = ["derive"] }
+
+[features]
+# Forward mock-hardware to all crates that transitively depend on anvilml-hardware.
+# All CI builds use this feature; never enabled in release builds.
+mock-hardware = ["anvilml-hardware/mock-hardware"]
