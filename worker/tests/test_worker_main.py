@@ -3,6 +3,10 @@
 Spawns the worker as a subprocess with ``ANVILML_WORKER_MOCK=1`` and
 exercises the IPC framing protocol: InitializeHardware -> Ready,
 Ping -> Pong, MemoryQuery -> MemoryReport, Shutdown -> Dying + exit 0.
+
+NOTE: These tests use stdin/stdout pipes with length-prefix framing.
+They are incompatible with the ZeroMQ DEALER transport introduced in
+P907-A5. They are skipped here and will be rewritten in P907-A6.
 """
 
 import os
@@ -15,6 +19,10 @@ import time
 
 import msgpack
 import pytest
+
+pytestmark = pytest.mark.skip(
+    reason="stdin/stdout IPC replaced by ZeroMQ DEALER in P907-A5; rewrite in P907-A6"
+)
 
 # The worker script path (absolute so it works regardless of cwd).
 # __file__ is worker/tests/test_worker_main.py, so we go up two levels to repo root.

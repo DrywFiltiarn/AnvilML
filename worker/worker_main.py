@@ -1,7 +1,7 @@
 """AnvilML Python worker entry point.
 
-Implements a blocking socket message loop over the IPC framing
-protocol defined in ``worker.ipc``.  Supports mock mode (no torch
+Implements a blocking message loop over the ZeroMQ IPC transport
+defined in ``worker.ipc``.  Supports mock mode (no torch
 dependency) via ``ANVILML_WORKER_MOCK=1``.
 
 Message protocol
@@ -199,12 +199,8 @@ def main() -> None:
 
     import worker.ipc as ipc  # noqa: E402 (after argparse so it can parse)
 
-    # Connect to the IPC socket provided by the Rust supervisor.
-    # Falls back to stdin/stdout if ANVILML_IPC_SOCKET is unset
-    # (e.g. during testing).
-    socket_path = os.environ.get("ANVILML_IPC_SOCKET")
-    if socket_path is not None:
-        ipc.connect(socket_path)
+    # Connect to the ZeroMQ DEALER socket provided by the Rust supervisor.
+    ipc.connect(int(os.environ["ANVILML_IPC_PORT"]))
 
     # Start the background memory-report thread.
     t = threading.Thread(
