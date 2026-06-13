@@ -6,3 +6,4 @@ msgpack>=1.0
 numpy
 safetensors
 pytest
+pyzmq>=26.0

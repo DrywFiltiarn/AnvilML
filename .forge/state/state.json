@@ -182,16 +182,17 @@
     "P21-A4",
     "P21-A5",
     "P21-A6",
-    "P21-A7"
+    "P21-A7",
+    "P907-A1"
   ],
-  "in_progress": "P907-A1",
+  "in_progress": "P907-A2",
   "plan_approved": true,
-  "current_plan": "1. Open root `Cargo.toml` and append `zeromq = { version = \"0.4\", features = [\"tokio\"] }` to the `[workspace.dependencies]` section, placed alphabetically among the existing entries (between `uuid` and `walkdir`).\n2. Open `crates/anvilml-worker/Cargo.toml`:\n   a. Add `zeromq = { workspace = true }` to `[dependencies]`, placed alphabetically between `anvilml-ipc` and `rmp-serde`.\n   b. Remove the line `interprocess = { version = \"2.4\", features = [\"tokio\"] }` from `[dependencies]`.\n   c. Bump `[package] version` from `\"0.1.22\"` to `\"0.1.23\"`.\n3. Run `cargo check --workspace --features mock-hardware` to verify compilation on the native Linux target.\n4. Run `cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu` to verify cross-compilation to Windows.",
+  "current_plan": "1. Append `pyzmq>=26.0` as a new line at the end of `worker/requirements/base.txt`.\n   - The version constraint `>=26.0` matches the Phase 907 prerequisite stated in\n     `docs/TASKS_PHASE907.md` (\"`pyzmq>=26.0` installable in the project venv before P907-A5 runs\").\n   - Verified via MCP (pypi-query): latest pyzmq is 27.1.0; 26.4.0 is the latest 26.x\n     release; `>=26.0` is compatible with Python \u22653.8 (project uses 3.12).\n2. No further file modifications.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-13T10:40:17+0200",
-  "plan_approval_message_id": "1515267138258997378",
+  "last_updated": "2026-06-13T11:23:28+0200",
+  "plan_approval_message_id": "1515285286786043935",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1515267136795181146",
+  "plan_report_message_id": "1515285285372563557",
   "impl_report_message_id": null
 }
