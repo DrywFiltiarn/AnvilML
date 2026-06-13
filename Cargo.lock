@@ -207,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-worker"
-version = "0.1.24"
+version = "0.1.25"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
@@ -218,6 +218,7 @@ dependencies = [
  "temp-env",
  "tokio",
  "tracing",
+ "uuid",
  "zeromq",
 ]
 

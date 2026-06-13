@@ -1,37 +1,36 @@
 //! Managed worker process lifecycle and IPC bridge.
 //!
 //! The `ManagedWorker` struct owns a Python worker child process, manages its
-//! Unix socket / Windows named pipe IPC, and runs writer/reader tasks that
-//! translate between Rust channel messages and msgpack-framed IPC protocol bytes.
+//! ZeroMQ DEALER socket IPC, and runs a combined reader/writer task that
+//! translates between Rust channel messages and msgpack-serialised IPC protocol bytes.
 
 use anvilml_core::{
     config::ServerConfig, types::worker::WorkerStatus, AnvilError, GpuDevice, WorkerInfo,
 };
-use anvilml_ipc::{framing, WorkerEvent, WorkerMessage};
+use anvilml_ipc::{WorkerEvent, WorkerMessage};
+use serde_json::Value as JsonValue;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
+use tokio::select;
 use tokio::spawn;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
+use zeromq::prelude::*;
 
 use crate::build_worker_env;
 
-/// Shared IPC read/write handles for the writer/reader tasks.
+/// Shared IPC socket handle for the run_loop.
 struct IpcHandles {
-    reader: Box<dyn tokio::io::AsyncRead + Send + Unpin + 'static>,
-    writer: Box<dyn tokio::io::AsyncWrite + Send + Unpin + 'static>,
+    socket: zeromq::DealerSocket,
 }
 
 impl std::fmt::Debug for IpcHandles {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("IpcHandles")
-            .field("reader", &"..")
-            .field("writer", &"..")
-            .finish()
+        f.debug_struct("IpcHandles").field("socket", &"..").finish()
     }
 }
 
@@ -76,8 +75,6 @@ pub struct ManagedWorker {
     /// `Dead` when the counter still matches, preventing stale timeouts from a
     /// previous lifecycle from triggering a spurious death after respawn.
     generation: Arc<AtomicU64>,
-    /// IPC socket path used for logging and cleanup.
-    ipc_socket_path: Arc<std::sync::Mutex<String>>,
 }
 
 impl ManagedWorker {
@@ -141,7 +138,6 @@ impl ManagedWorker {
             pong_timeout,
             respawn_delay_ms,
             generation: Arc::new(AtomicU64::new(0)),
-            ipc_socket_path: Arc::new(std::sync::Mutex::new(String::new())),
         }
     }
 
@@ -149,8 +145,8 @@ impl ManagedWorker {
     ///
     /// Resolves the Python interpreter path from the config's `venv_path`,
     /// builds the command with environment variables from
-    /// `build_worker_env`, and connects to the worker via a Unix socket
-    /// (Linux/macOS) or Windows named pipe.
+    /// `build_worker_env`, and connects to the worker via a ZeroMQ DEALER socket
+    /// on `tcp://127.0.0.1:{port}`.
     pub async fn spawn(&self, device: &GpuDevice, cfg: &ServerConfig) -> Result<(), AnvilError> {
         // Resolve venv path to absolute (fixes Windows CreateProcess
         // ERROR_PATH_NOT_FOUND when child CWD differs from parent CWD).
@@ -163,22 +159,22 @@ impl ManagedWorker {
         // Resolve python interpreter path.
         let python_path = resolve_python_path(&abs_venv);
 
-        // Bind a local TCP listener for IPC (port 0 = let OS pick an available port).
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .map_err(|e| {
-                AnvilError::Io(std::io::Error::other(format!(
-                    "failed to bind IPC socket: {e}"
-                )))
-            })?;
-        let local_addr = listener.local_addr().map_err(|e| {
+        // Bind a ZeroMQ DEALER socket for IPC (port 0 = let OS pick an available port).
+        let mut socket = zeromq::DealerSocket::new();
+        let endpoint = socket.bind("tcp://127.0.0.1:0").await.map_err(|e| {
             AnvilError::Io(std::io::Error::other(format!(
-                "failed to get local addr: {e}"
+                "failed to bind IPC socket: {e}"
             )))
         })?;
-        let ipc_port = local_addr.port();
-        let ipc_addr = format!("127.0.0.1:{}", ipc_port);
-        *self.ipc_socket_path.lock().unwrap() = ipc_addr.clone();
+        let ipc_port = match endpoint {
+            zeromq::Endpoint::Tcp(_, port) => port,
+            other => {
+                return Err(AnvilError::Io(std::io::Error::other(format!(
+                    "unexpected bind endpoint type: {other:?}"
+                ))))
+            }
+        };
+        let ipc_addr = format!("127.0.0.1:{ipc_port}");
 
         // Build the command.
         let mut cmd = Command::new(&python_path);
@@ -240,48 +236,6 @@ impl ManagedWorker {
             });
         }
 
-        // Accept the worker's connection.
-        // Default: 30 s — the Python process must connect before importing torch,
-        // so this is cheap on any healthy system. Override with
-        // ANVILML_WORKER_CONNECT_TIMEOUT_MS for constrained or slow-start environments.
-        let connect_timeout = std::env::var("ANVILML_WORKER_CONNECT_TIMEOUT_MS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .map(std::time::Duration::from_millis)
-            .unwrap_or(std::time::Duration::from_secs(30));
-        let (stream, _) = tokio::time::timeout(connect_timeout, listener.accept())
-            .await
-            .map_err(|_| {
-                warn!(
-                    worker_id = %self.worker_id,
-                    ipc_addr = %ipc_addr,
-                    connect_timeout_ms = connect_timeout.as_millis(),
-                    "IPC accept timed out — worker did not connect"
-                );
-                AnvilError::Io(std::io::Error::other("IPC accept timed out"))
-            })?
-            .map_err(|e| {
-                warn!(
-                    worker_id = %self.worker_id,
-                    error = %e,
-                    "failed to accept IPC connection"
-                );
-                AnvilError::Io(e)
-            })?;
-
-        debug!(
-            worker_id = %self.worker_id,
-            ipc_addr = %ipc_addr,
-            "IPC connection accepted"
-        );
-
-        let (reader, writer) = tokio::io::split(stream);
-
-        // Box the halves so they can be stored in IpcHandles (and used with
-        // inject_handles_for_test which may provide a different concrete type).
-        let reader: Box<dyn tokio::io::AsyncRead + Send + Unpin + 'static> = Box::new(reader);
-        let writer: Box<dyn tokio::io::AsyncWrite + Send + Unpin + 'static> = Box::new(writer);
-
         // Deliver IPC handles to run_loop immediately — before any data is sent.
         // This ensures the reader task registers the socket for polling (Linux) or
         // I/O completion ports (Windows) before InitializeHardware arrives,
@@ -289,7 +243,7 @@ impl ManagedWorker {
         {
             let mut guard = self.ipc_tx.lock().unwrap();
             if let Some(tx) = guard.take() {
-                tx.send(IpcHandles { reader, writer }).map_err(|_| {
+                tx.send(IpcHandles { socket }).map_err(|_| {
                     AnvilError::Io(std::io::Error::other("run_loop already exited"))
                 })?;
             } else {
@@ -299,10 +253,10 @@ impl ManagedWorker {
             }
         }
 
-        // Send InitializeHardware through the mpsc channel. The writer_task
-        // inside run_loop will serialize and write it to the socket after the
-        // reader_task has already registered the socket for polling. This avoids
-        // the race where data arrives before epoll registration.
+        // Send InitializeHardware through the mpsc channel. The run_loop
+        // will serialize and send it to the socket after the socket has
+        // been registered for polling. This avoids the race where data
+        // arrives before epoll registration.
         let init_msg = WorkerMessage::InitializeHardware {
             device_str: format!("{:?}:{}", device.device_type, self.device_index),
         };
@@ -319,10 +273,10 @@ impl ManagedWorker {
             )));
         }
 
-        // Yield multiple times so writer_task can process the message, write it to
-        // the socket, and reader_task can read the Ready response and update status.
+        // Yield multiple times so run_loop can process the message, send it to
+        // the socket, and read the Ready response and update status.
         // Without these yields, spawn() would block the event loop in its polling
-        // loop before writer_task/reader_task get scheduled.
+        // loop before run_loop gets scheduled.
         for _ in 0..3 {
             tokio::task::yield_now().await;
         }
@@ -658,21 +612,41 @@ impl ManagedWorker {
 
     /// Inject mock IPC handles for testing without spawning a real Python process.
     ///
-    /// Delivers the provided reader/writer handles to the run_loop via the oneshot
-    /// channel, bypassing the actual child process spawn. The caller is responsible
-    /// for ensuring the handles are compatible with the framing protocol.
+    /// Creates a zeromq DEALER socket pair, injects the worker-side socket into the
+    /// run_loop via the oneshot channel, and returns the supervisor-side socket
+    /// for the test to use.
     #[cfg(test)]
-    pub async fn inject_handles_for_test<S>(&self, stream: S)
-    where
-        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-    {
-        let (reader, writer) = tokio::io::split(stream);
-        let reader: Box<dyn tokio::io::AsyncRead + Send + Unpin + 'static> = Box::new(reader);
-        let writer: Box<dyn tokio::io::AsyncWrite + Send + Unpin + 'static> = Box::new(writer);
+    pub async fn inject_handles_for_test(&self) -> zeromq::DealerSocket {
+        // Create a DEALER socket pair for test IPC.
+        // Supervisor side: bind a DEALER socket.
+        let mut supervisor_dealer = zeromq::DealerSocket::new();
+        let endpoint = supervisor_dealer
+            .bind("tcp://127.0.0.1:0")
+            .await
+            .expect("bind supervisor dealer");
+        let port = match endpoint {
+            zeromq::Endpoint::Tcp(_, port) => port,
+            _ => panic!("expected TCP endpoint"),
+        };
+
+        // Worker side: connect to the bound address.
+        let mut worker_dealer = zeromq::DealerSocket::new();
+        worker_dealer
+            .connect(&format!("tcp://127.0.0.1:{port}"))
+            .await
+            .expect("connect worker dealer");
+
+        // Inject the worker-side socket into the run_loop.
         let mut guard = self.ipc_tx.lock().unwrap();
         if let Some(tx) = guard.take() {
-            tx.send(IpcHandles { reader, writer }).unwrap();
+            tx.send(IpcHandles {
+                socket: worker_dealer,
+            })
+            .unwrap();
         }
+
+        // Return the supervisor-side socket for the test to use.
+        supervisor_dealer
     }
 
     /// Reset the IPC oneshot channel for respawn.
@@ -739,16 +713,20 @@ impl ManagedWorker {
     }
 
     /// The main event loop: waits for IPC handles via oneshot, then runs
-    /// writer and reader tasks concurrently.
+    /// a combined reader/writer loop that handles both sending messages
+    /// to the worker and receiving events from it.
+    ///
+    /// This function runs inline (not spawned) because the zeromq DEALER
+    /// socket cannot be cloned and must stay in a single task.
     async fn run_loop(
         worker_id: String,
-        rx: mpsc::Receiver<WorkerMessage>,
+        mut rx: mpsc::Receiver<WorkerMessage>,
         event_tx: broadcast::Sender<(String, WorkerEvent)>,
         status: Arc<RwLock<WorkerStatus>>,
         ipc_rx: oneshot::Receiver<IpcHandles>,
     ) {
         // Wait for IPC handles from spawn().
-        let IpcHandles { reader, writer } = match ipc_rx.await {
+        let IpcHandles { mut socket } = match ipc_rx.await {
             Ok(handles) => handles,
             Err(_) => {
                 warn!(worker_id = %worker_id, "IPC channel closed before handles received");
@@ -756,94 +734,100 @@ impl ManagedWorker {
             }
         };
 
-        let writer_handle = spawn(writer_task(
+        // Combined reader/writer loop for the zeromq DEALER socket.
+        // Handles both sending messages from the mpsc channel to the worker
+        // and receiving events from the worker via the zeromq socket.
+        loop {
+            select! {
+                // Send path: receive a message from the mpsc channel and send it
+                // to the worker via zeromq.
+                msg = rx.recv() => {
+                    match msg {
+                        Some(msg) => {
+                            debug!(
+                                worker_id = %worker_id,
+                                message_type = ?msg_discriminant(&msg),
+                                "sending message to worker"
+                            );
+                            let payload = match serialize_message(&msg) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    warn!(error = %e, worker_id = %worker_id, "failed to serialize message");
+                                    break;
+                                }
+                            };
+                            if let Err(e) = socket.send(zeromq::ZmqMessage::from(payload)).await {
+                                warn!(error = %e, worker_id = %worker_id, "failed to send IPC frame");
+                                break;
+                            }
+                        }
+                        None => {
+                            // mpsc channel closed — worker is gone.
+                            debug!(worker_id = %worker_id, "mpsc channel closed");
+                            break;
+                        }
+                    }
+                }
+
+                // Receive path: read an event from the worker via zeromq.
+                result = socket.recv() => {
+                    let msg = match result {
+                        Ok(msg) => msg,
+                        Err(e) => {
+                            // Connection closed (EOF) or other error — treat as worker death.
+                            warn!(error = %e, worker_id = %worker_id, "socket recv error");
+                            break;
+                        }
+                    };
+
+                    let bytes: Vec<u8> = match msg.try_into() {
+                        Ok(b) => b,
+                        Err(_) => {
+                            warn!(worker_id = %worker_id, "failed to convert zmq message to bytes");
+                            break;
+                        }
+                    };
+
+                    let event = match rmp_serde::from_slice::<serde_json::Map<String, JsonValue>>(&bytes) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            warn!(error = %e, worker_id = %worker_id, "failed to deserialize IPC frame");
+                            break;
+                        }
+                    };
+
+                    let event = match worker_event_from_map(&event) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            warn!(error = %e, worker_id = %worker_id, "failed to parse worker event");
+                            break;
+                        }
+                    };
+
+                    debug!(
+                        worker_id = %worker_id,
+                        event_type = ?event_discriminant(&event),
+                        "received event from worker"
+                    );
+
+                    // Update status based on the event.
+                    update_status_from_event(&status, &event).await;
+
+                    let _ = event_tx.send((worker_id.clone(), event));
+                }
+            }
+        }
+
+        warn!(worker_id = %worker_id, "run_loop exiting — worker is Dead");
+
+        // Broadcast status change so pool can trigger respawn.
+        let _ = event_tx.send((
             worker_id.clone(),
-            rx,
-            writer,
-            status.clone(),
-            event_tx.clone(),
+            WorkerEvent::WorkerStatusChanged {
+                status: WorkerStatus::Dead,
+            },
         ));
-
-        let reader_handle = spawn(reader_task(worker_id, status, event_tx, reader));
-
-        // Wait for both tasks to complete.
-        let _ = tokio::join!(writer_handle, reader_handle);
     }
-}
-
-/// Write frames from messages received on the channel.
-async fn writer_task(
-    worker_id: String,
-    mut rx: mpsc::Receiver<WorkerMessage>,
-    mut writer: Box<dyn tokio::io::AsyncWrite + Send + Unpin + 'static>,
-    _status: Arc<RwLock<WorkerStatus>>,
-    _event_tx: broadcast::Sender<(String, WorkerEvent)>,
-) {
-    while let Some(msg) = rx.recv().await {
-        debug!(
-            worker_id = %worker_id,
-            message_type = ?msg_discriminant(&msg),
-            "writing frame to worker"
-        );
-        if let Err(e) = framing::write_frame(&mut writer, &msg).await {
-            warn!(error = %e, worker_id = %worker_id, "failed to write IPC frame");
-            break;
-        } else {
-            // Flush after each write to ensure data reaches the Python worker.
-            // Without flush, the OS may buffer the data and the reader won't see it.
-            if let Err(e) = writer.flush().await {
-                warn!(error = %e, worker_id = %worker_id, "failed to flush IPC frame");
-                break;
-            }
-        }
-    }
-
-    debug!(worker_id = %worker_id, "writer task exiting");
-}
-
-/// Read frames from the worker connection and broadcast events.
-async fn reader_task(
-    worker_id: String,
-    status: Arc<RwLock<WorkerStatus>>,
-    event_tx: broadcast::Sender<(String, WorkerEvent)>,
-    mut reader: Box<dyn tokio::io::AsyncRead + Send + Unpin + 'static>,
-) {
-    // Default IPC payload limit: 64 MiB.
-    let max_mib = 64;
-
-    loop {
-        match framing::read_frame(&mut reader, max_mib).await {
-            Ok(event) => {
-                debug!(
-                    worker_id = %worker_id,
-                    event_type = ?event_discriminant(&event),
-                    "received event from worker"
-                );
-
-                // Update status based on the event.
-                update_status_from_event(&status, &event).await;
-
-                let _ = event_tx.send((worker_id.clone(), event));
-            }
-            Err(AnvilError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                warn!(worker_id = %worker_id, "worker connection closed (EOF)");
-                // Broadcast status change before exiting.
-                let _ = event_tx.send((
-                    worker_id.clone(),
-                    WorkerEvent::WorkerStatusChanged {
-                        status: WorkerStatus::Dead,
-                    },
-                ));
-                break;
-            }
-            Err(e) => {
-                warn!(error = %e, worker_id = %worker_id, "reader error");
-                break;
-            }
-        }
-    }
-
-    warn!(worker_id = %worker_id, "reader task exiting — worker is Dead");
 }
 
 /// Update the worker status based on an incoming event.
@@ -857,6 +841,256 @@ async fn update_status_from_event(status: &Arc<RwLock<WorkerStatus>>, event: &Wo
             *s = WorkerStatus::Dead;
         }
         _ => {}
+    }
+}
+
+/// Serialize a `WorkerMessage` into a flat dict compatible with Python's
+/// msgpack serialization (uses `_type` as the variant discriminator).
+///
+/// Copied from `anvilml_ipc::framing` to decouple managed.rs from the framing module
+/// after switching from tokio TCP to zeromq transport.
+fn serialize_message(msg: &WorkerMessage) -> Result<Vec<u8>, AnvilError> {
+    let mut map = serde_json::Map::new();
+    match msg {
+        WorkerMessage::Ping { seq } => {
+            map.insert("_type".into(), "Ping".into());
+            map.insert("seq".into(), JsonValue::Number((*seq).into()));
+        }
+        WorkerMessage::Shutdown => {
+            map.insert("_type".into(), "Shutdown".into());
+        }
+        WorkerMessage::InitializeHardware { device_str } => {
+            map.insert("_type".into(), "InitializeHardware".into());
+            map.insert("device_str".into(), JsonValue::String(device_str.clone()));
+        }
+        WorkerMessage::Execute {
+            job_id,
+            graph,
+            settings,
+            device_index,
+        } => {
+            map.insert("_type".into(), "Execute".into());
+            map.insert("job_id".into(), JsonValue::String(job_id.to_string()));
+            map.insert("graph".into(), graph.clone());
+            // Serialize JobSettings as a flat dict
+            let mut settings_map = serde_json::Map::new();
+            settings_map.insert("seed".into(), JsonValue::Number(settings.seed.into()));
+            settings_map.insert("steps".into(), JsonValue::Number(settings.steps.into()));
+            let gs = settings.guidance_scale as f64;
+            map.insert(
+                "guidance_scale".into(),
+                JsonValue::Number(
+                    serde_json::Number::from_f64(gs).unwrap_or_else(|| serde_json::Number::from(1)),
+                ),
+            );
+            settings_map.insert("width".into(), JsonValue::Number(settings.width.into()));
+            settings_map.insert("height".into(), JsonValue::Number(settings.height.into()));
+            if let Some(ref dp) = settings.device_preference {
+                settings_map.insert("device_preference".into(), JsonValue::Number((*dp).into()));
+            }
+            map.insert("settings".into(), JsonValue::Object(settings_map));
+            map.insert(
+                "device_index".into(),
+                JsonValue::Number((*device_index).into()),
+            );
+        }
+        WorkerMessage::CancelJob { job_id } => {
+            map.insert("_type".into(), "CancelJob".into());
+            map.insert("job_id".into(), JsonValue::String(job_id.to_string()));
+        }
+        WorkerMessage::MemoryQuery => {
+            map.insert("_type".into(), "MemoryQuery".into());
+        }
+    }
+    rmp_serde::to_vec_named(&map).map_err(|e| {
+        tracing::error!(error = %e, "IPC frame serialize failed");
+        AnvilError::Json(e.to_string())
+    })
+}
+
+/// Deserialize a flat dict (from Python's msgpack) into a WorkerEvent.
+///
+/// The dict uses `_type` as the variant discriminator and has fields at
+/// the top level (e.g. `{"_type": "Ready", "worker_id": "...", ...}`).
+///
+/// Copied from `anvilml_ipc::framing` to decouple managed.rs from the framing module
+/// after switching from tokio TCP to zeromq transport.
+fn worker_event_from_map(map: &serde_json::Map<String, JsonValue>) -> Result<WorkerEvent, String> {
+    let _type = map
+        .get("_type")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "_type field missing or not a string".to_string())?;
+
+    match _type {
+        "Ready" => Ok(WorkerEvent::Ready {
+            worker_id: map
+                .get("worker_id")
+                .and_then(|v| v.as_str())
+                .ok_or("worker_id missing")?
+                .to_string(),
+            device_index: map
+                .get("device_index")
+                .and_then(|v| v.as_u64())
+                .ok_or("device_index missing")? as u32,
+            vram_total_mib: map
+                .get("vram_total_mib")
+                .and_then(|v| v.as_u64())
+                .ok_or("vram_total_mib missing")? as u32,
+            vram_free_mib: map
+                .get("vram_free_mib")
+                .and_then(|v| v.as_u64())
+                .ok_or("vram_free_mib missing")? as u32,
+            arch: map
+                .get("arch")
+                .and_then(|v| v.as_str())
+                .ok_or("arch missing")?
+                .to_string(),
+            fp16: map
+                .get("fp16")
+                .and_then(|v| v.as_bool())
+                .ok_or("fp16 missing")?,
+            bf16: map
+                .get("bf16")
+                .and_then(|v| v.as_bool())
+                .ok_or("bf16 missing")?,
+            flash_attention: map
+                .get("flash_attention")
+                .and_then(|v| v.as_bool())
+                .ok_or("flash_attention missing")?,
+        }),
+        "Ping" => Ok(WorkerEvent::Ping {
+            seq: map
+                .get("seq")
+                .and_then(|v| v.as_u64())
+                .ok_or("seq missing")?,
+        }),
+        "Pong" => Ok(WorkerEvent::Pong {
+            seq: map
+                .get("seq")
+                .and_then(|v| v.as_u64())
+                .ok_or("seq missing")?,
+        }),
+        "Dying" => Ok(WorkerEvent::Dying {
+            reason: map
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .ok_or("reason missing")?
+                .to_string(),
+        }),
+        "MemoryReport" => Ok(WorkerEvent::MemoryReport {
+            vram_used_mib: map
+                .get("vram_used_mib")
+                .and_then(|v| v.as_u64())
+                .ok_or("vram_used_mib missing")? as u32,
+            ram_used_mib: map
+                .get("ram_used_mib")
+                .and_then(|v| v.as_u64())
+                .ok_or("ram_used_mib missing")?,
+        }),
+        "Progress" => Ok(WorkerEvent::Progress {
+            job_id: uuid::Uuid::parse_str(
+                map.get("job_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or("job_id missing")?,
+            )
+            .map_err(|e| format!("invalid job_id: {}", e))?,
+            node_index: map
+                .get("node_index")
+                .and_then(|v| v.as_u64())
+                .ok_or("node_index missing")? as u32,
+            node_total: map
+                .get("node_total")
+                .and_then(|v| v.as_u64())
+                .ok_or("node_total missing")? as u32,
+            node_type: map
+                .get("node_type")
+                .and_then(|v| v.as_str())
+                .ok_or("node_type missing")?
+                .to_string(),
+            step: map.get("step").and_then(|v| v.as_u64()).map(|v| v as u32),
+            step_total: map
+                .get("step_total")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32),
+        }),
+        "ImageReady" => Ok(WorkerEvent::ImageReady {
+            job_id: uuid::Uuid::parse_str(
+                map.get("job_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or("job_id missing")?,
+            )
+            .map_err(|e| format!("invalid job_id: {}", e))?,
+            image_b64: map
+                .get("image_b64")
+                .and_then(|v| v.as_str())
+                .ok_or("image_b64 missing")?
+                .to_string(),
+            width: map
+                .get("width")
+                .and_then(|v| v.as_u64())
+                .ok_or("width missing")? as u32,
+            height: map
+                .get("height")
+                .and_then(|v| v.as_u64())
+                .ok_or("height missing")? as u32,
+            format: map
+                .get("format")
+                .and_then(|v| v.as_str())
+                .ok_or("format missing")?
+                .to_string(),
+            seed: map
+                .get("seed")
+                .and_then(|v| v.as_i64())
+                .ok_or("seed missing")?,
+            steps: map
+                .get("steps")
+                .and_then(|v| v.as_u64())
+                .ok_or("steps missing")? as u32,
+            prompt: map
+                .get("prompt")
+                .and_then(|v| v.as_str())
+                .ok_or("prompt missing")?
+                .to_string(),
+        }),
+        "Completed" => Ok(WorkerEvent::Completed {
+            job_id: uuid::Uuid::parse_str(
+                map.get("job_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or("job_id missing")?,
+            )
+            .map_err(|e| format!("invalid job_id: {}", e))?,
+            elapsed_ms: map
+                .get("elapsed_ms")
+                .and_then(|v| v.as_u64())
+                .ok_or("elapsed_ms missing")?,
+        }),
+        "Failed" => Ok(WorkerEvent::Failed {
+            job_id: uuid::Uuid::parse_str(
+                map.get("job_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or("job_id missing")?,
+            )
+            .map_err(|e| format!("invalid job_id: {}", e))?,
+            error: map
+                .get("error")
+                .and_then(|v| v.as_str())
+                .ok_or("error missing")?
+                .to_string(),
+            traceback: map
+                .get("traceback")
+                .and_then(|v| v.as_str())
+                .ok_or("traceback missing")?
+                .to_string(),
+        }),
+        "Cancelled" => Ok(WorkerEvent::Cancelled {
+            job_id: uuid::Uuid::parse_str(
+                map.get("job_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or("job_id missing")?,
+            )
+            .map_err(|e| format!("invalid job_id: {}", e))?,
+        }),
+        _ => Err(format!("unknown event type: {}", _type)),
     }
 }
 
@@ -912,16 +1146,10 @@ fn _repo_root_for_worker() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
-/// (removed — spawn() now binds a TCP listener directly)
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::AsyncWriteExt;
     use tokio::time::{timeout, Duration};
-
-    // Re-export rmp_serde for test serialization.
-    use rmp_serde;
 
     /// Returns a `ServerConfig` with the venv path resolved from `ANVILML_VENV_PATH`,
     /// or `None` if the resulting Python interpreter does not exist on disk.
@@ -1201,15 +1429,48 @@ mod tests {
         .await;
     }
 
-    /// Verify that EOF on the pipe sets status to Dead.
-    #[tokio::test]
+    /// Verify that a socket error on the zeromq socket causes the run_loop to
+    /// exit and broadcast a Dead status event.
+    ///
+    /// Creates a DEALER socket pair, injects the worker-side socket into the
+    /// run_loop, sends a Ready frame through the supervisor side, then
+    /// sends an invalid message to trigger a deserialization error, which
+    /// causes the run_loop to exit and broadcast WorkerStatusChanged(Dead).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[cfg(feature = "mock-hardware")]
     async fn eof_sets_dead() {
-        // Create a duplex pipe to simulate EOF.
-        let (mut tx, mut rx) = tokio::io::duplex(4096);
+        // Create a DEALER socket pair: supervisor binds, worker connects.
+        let mut supervisor_dealer = zeromq::DealerSocket::new();
+        let endpoint = supervisor_dealer
+            .bind("tcp://127.0.0.1:0")
+            .await
+            .expect("bind supervisor dealer");
+        let port = match endpoint {
+            zeromq::Endpoint::Tcp(_, port) => port,
+            _ => panic!("expected TCP endpoint"),
+        };
 
-        // Write a Ready frame using flat dict format (same as Python worker).
-        let ready_json: serde_json::Map<String, serde_json::Value> = [
+        let mut worker_dealer = zeromq::DealerSocket::new();
+        worker_dealer
+            .connect(&format!("tcp://127.0.0.1:{port}"))
+            .await
+            .expect("connect worker dealer");
+
+        // Create a worker and subscribe to events before injecting handles.
+        let worker = ManagedWorker::new("eof-test".to_string(), 0);
+        let mut event_rx = worker.subscribe();
+
+        // Inject the worker-side socket into the run_loop.
+        let mut guard = worker.ipc_tx.lock().unwrap();
+        if let Some(tx) = guard.take() {
+            tx.send(IpcHandles {
+                socket: worker_dealer,
+            })
+            .unwrap();
+        }
+
+        // Write a Ready frame using msgpack-serialised flat dict (same as Python worker).
+        let ready_json: serde_json::Map<String, JsonValue> = [
             ("_type".to_string(), serde_json::json!("Ready")),
             ("worker_id".to_string(), serde_json::json!("eof-test")),
             ("device_index".to_string(), serde_json::json!(0u64)),
@@ -1222,21 +1483,59 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        let payload = rmp_serde::to_vec_named(&ready_json).expect("serialize");
-        let len = payload.len() as u32;
-        tx.write_all(&len.to_be_bytes())
-            .await
-            .expect("write header");
-        tx.write_all(&payload).await.expect("write payload");
-        drop(tx); // Close write side → EOF.
+        let ready_payload = rmp_serde::to_vec_named(&ready_json).expect("serialize");
 
-        // Read the Ready event and verify status transitioned to Idle.
-        let event = timeout(Duration::from_secs(2), framing::read_frame(&mut rx, 64))
+        // Send the Ready frame through the supervisor socket.
+        supervisor_dealer
+            .send(zeromq::ZmqMessage::from(ready_payload))
             .await
-            .expect("read Ready frame")
-            .expect("frame ok");
+            .expect("send ready");
 
-        assert!(matches!(event, WorkerEvent::Ready { .. }));
+        // Drain events: expect a Ready event.
+        let ready_received = timeout(Duration::from_secs(2), async {
+            loop {
+                match event_rx.recv().await {
+                    Ok((_, WorkerEvent::Ready { .. })) => return true,
+                    Ok(_) => continue,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break false,
+                }
+            }
+        })
+        .await;
+        assert!(
+            ready_received.is_ok() && ready_received.unwrap(),
+            "should receive Ready event"
+        );
+
+        // Send an invalid message (not msgpack-encoded) to trigger deserialization
+        // error, which causes the run_loop to exit and broadcast Dead.
+        supervisor_dealer
+            .send(zeromq::ZmqMessage::from(vec![0xff, 0xfe, 0xfd]))
+            .await
+            .expect("send invalid");
+
+        // Wait for the run_loop to detect the error and broadcast Dead.
+        let dead_received = timeout(Duration::from_secs(3), async {
+            loop {
+                match event_rx.recv().await {
+                    Ok((_, WorkerEvent::WorkerStatusChanged { status }))
+                        if status == WorkerStatus::Dead =>
+                    {
+                        return true;
+                    }
+                    Ok(_) => continue,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break false,
+                }
+            }
+        })
+        .await;
+
+        assert!(
+            dead_received.is_ok() && dead_received.unwrap(),
+            "should receive WorkerStatusChanged(Dead) after socket error"
+        );
     }
 
     /// Keepalive watchdog: sends Pongs for seq 0–1, then stops; verifies the
@@ -1327,11 +1626,20 @@ mod tests {
             async {
                 let worker = ManagedWorker::new("respawn-test".to_string(), 0);
 
-                // Use a duplex pipe for mock IPC handles (works on all platforms).
-                let (pipe_a, _pipe_b) = tokio::io::duplex(4096);
+                // Use inject_handles_for_test to get a supervisor socket.
+                let supervisor = worker.inject_handles_for_test().await;
+                drop(supervisor); // Drop to trigger EOF on the injected socket.
 
-                // Inject mock handles so the run_loop can start.
-                worker.inject_handles_for_test(pipe_a).await;
+                // Wait for the run_loop to detect EOF and set status to Dead.
+                let _ = timeout(Duration::from_secs(2), async {
+                    loop {
+                        if worker.get_status().await == WorkerStatus::Dead {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                })
+                .await;
 
                 // For testing: set status to Idle directly (simulating Ready event).
                 worker.set_status(WorkerStatus::Idle).await;
@@ -1396,11 +1704,12 @@ mod tests {
                 ));
 
                 // Create fresh mock handles for the respawned worker.
-                let (pipe_a2, _pipe_b2) = tokio::io::duplex(4096);
+                let supervisor2 = worker.inject_handles_for_test().await;
+                drop(supervisor2); // Drop to trigger EOF on the new injected socket.
 
                 // Reset IPC channel and inject fresh handles.
                 worker.reset_ipc_tx().await;
-                worker.inject_handles_for_test(pipe_a2).await;
+                let _supervisor3 = worker.inject_handles_for_test().await;
 
                 // Set status back to Idle (simulating what Ready event would do).
                 worker.set_status(WorkerStatus::Idle).await;
