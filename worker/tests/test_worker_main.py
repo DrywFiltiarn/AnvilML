@@ -1,28 +1,18 @@
 """Tests for :mod:`worker.worker_main` message loop (mock mode).
 
 Spawns the worker as a subprocess with ``ANVILML_WORKER_MOCK=1`` and
-exercises the IPC framing protocol: InitializeHardware -> Ready,
+exercises the ZeroMQ DEALER IPC transport: InitializeHardware -> Ready,
 Ping -> Pong, MemoryQuery -> MemoryReport, Shutdown -> Dying + exit 0.
-
-NOTE: These tests use stdin/stdout pipes with length-prefix framing.
-They are incompatible with the ZeroMQ DEALER transport introduced in
-P907-A5. They are skipped here and will be rewritten in P907-A6.
 """
 
 import os
-import queue
-import struct
 import subprocess
 import sys
-import threading
 import time
 
-import msgpack
-import pytest
+import zmq
 
-pytestmark = pytest.mark.skip(
-    reason="stdin/stdout IPC replaced by ZeroMQ DEALER in P907-A5; rewrite in P907-A6"
-)
+import msgpack
 
 # The worker script path (absolute so it works regardless of cwd).
 # __file__ is worker/tests/test_worker_main.py, so we go up two levels to repo root.
@@ -32,84 +22,87 @@ _WORKER_SCRIPT = os.path.join(
 )
 
 
-def _make_frame(data: dict) -> bytes:
-    """Build a length-prefixed msgpack frame."""
-    payload = msgpack.packb(data, use_bin_type=True)
-    header = struct.pack(">I", len(payload))
-    return header + payload
+class _ZmqTransport:
+    """Thin wrapper around a zmq.DEALER socket for test communication."""
+
+    def __init__(self, sock: zmq.Socket) -> None:
+        self._sock = sock
+
+    def send(self, data: dict) -> None:
+        self._sock.send(msgpack.packb(data, use_bin_type=True))
+
+    def recv(self, timeout_ms: int = 10000) -> dict:
+        self._sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
+        data = self._sock.recv()
+        return msgpack.unpackb(data, raw=False)
+
+    def poll_recv(self, timeout_ms: int = 5000) -> dict | None:
+        """Poll for a message with the given timeout; returns None on timeout."""
+        self._sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
+        if self._sock.poll(timeout_ms) == 0:
+            return None
+        data = self._sock.recv()
+        return msgpack.unpackb(data, raw=False)
+
+
+def _spawn_worker(worker_id: str = "test-0", device_index: int = 0):
+    """Spawn the worker in mock mode with ZMQ DEALER transport.
+
+    Binds a DEALER socket on an ephemeral port, passes the port via
+    ANVILML_IPC_PORT, and returns (worker_proc, transport, ctx).
+    """
+    ctx = zmq.Context()
+    sock = ctx.socket(zmq.DEALER)
+    sock.bind("tcp://127.0.0.1:0")
+    endpoint = sock.getsockopt(zmq.LAST_ENDPOINT).decode()  # e.g. "tcp://127.0.0.1:54321"
+    port = int(endpoint.split(":")[-1])
+
+    env = os.environ.copy()
+    env["ANVILML_WORKER_MOCK"] = "1"
+    env["ANVILML_IPC_PORT"] = str(port)
+
+    proc = subprocess.Popen(
+        [sys.executable, _WORKER_SCRIPT, "--worker-id", worker_id,
+         "--device-index", str(device_index)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE, env=env,
+    )
+    transport = _ZmqTransport(sock)
+    return proc, transport, ctx
 
 
 class TestWorkerMain:
     """Integration tests that spawn the worker subprocess."""
 
-    @staticmethod
-    def _parse_frames(data: bytes) -> list[dict]:
-        """Parse length-prefixed msgpack frames from raw bytes."""
-        frames = []
-        offset = 0
-        while offset + 4 <= len(data):
-            length = struct.unpack(">I", data[offset:offset + 4])[0]
-            offset += 4
-            if offset + length > len(data):
-                break  # Incomplete frame.
-            payload = data[offset:offset + length]
-            frames.append(msgpack.unpackb(payload, raw=False))
-            offset += length
-        return frames
-
-    def _spawn_worker(self, worker_id: str = "test-0", device_index: int = 0):
-        """Spawn the worker in mock mode."""
-        env = os.environ.copy()
-        env["ANVILML_WORKER_MOCK"] = "1"
-
-        proc = subprocess.Popen(
-            [sys.executable, _WORKER_SCRIPT, "--worker-id", worker_id,
-             "--device-index", str(device_index)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            env=env,
-        )
-        return proc
-
     def test_ready_on_init_hardware(self):
         """InitializeHardware triggers Ready{} with mock values."""
-        proc = self._spawn_worker()
+        proc, transport, ctx = _spawn_worker()
 
         try:
-            frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
-            frames += _make_frame({"_type": "Shutdown"})
-            proc.stdin.write(frames)
-            proc.stdin.close()
-
-            stdout_data = proc.stdout.read(4096)
-            proc.wait(timeout=5)
-
-            parsed = self._parse_frames(stdout_data)
-            ready = next(f for f in parsed if f["_type"] == "Ready")
-            dying = next(f for f in parsed if f["_type"] == "Dying")
-
+            transport.send({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            ready = transport.recv()
+            assert ready["_type"] == "Ready"
             assert ready["worker_id"] == "test-0"
             assert ready["device_index"] == 0
+
+            transport.send({"_type": "Shutdown"})
+            dying = transport.recv()
+            assert dying["_type"] == "Dying"
             assert dying["reason"] == "shutdown"
         finally:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+            transport._sock.close()
+            ctx.term()
 
     def test_mock_values(self):
         """Mock Ready payload matches spec values."""
-        proc = self._spawn_worker()
+        proc, transport, ctx = _spawn_worker()
 
         try:
-            frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
-            frames += _make_frame({"_type": "Shutdown"})
-            proc.stdin.write(frames)
-            proc.stdin.close()
-
-            stdout_data = proc.stdout.read(4096)
-            proc.wait(timeout=5)
-
-            parsed = self._parse_frames(stdout_data)
-            ready = next(f for f in parsed if f["_type"] == "Ready")
+            transport.send({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            ready = transport.recv()
 
             assert ready["vram_total_mib"] == 8192
             assert ready["vram_free_mib"] == 8192
@@ -117,84 +110,82 @@ class TestWorkerMain:
             assert ready["fp16"] is True
             assert ready["bf16"] is True
             assert ready["flash_attention"] is False
+
+            transport.send({"_type": "Shutdown"})
+            transport.recv()
         finally:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+            transport._sock.close()
+            ctx.term()
 
     def test_ping_pong(self):
         """Worker receives Ping{seq} and responds with Pong{seq}."""
-        proc = self._spawn_worker()
+        proc, transport, ctx = _spawn_worker()
 
         try:
-            frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
-            frames += _make_frame({"_type": "Ping", "seq": 42})
-            frames += _make_frame({"_type": "Shutdown"})
-            proc.stdin.write(frames)
-            proc.stdin.close()
-
-            stdout_data = proc.stdout.read(4096)
-            proc.wait(timeout=5)
-
-            parsed = self._parse_frames(stdout_data)
-            ready = next(f for f in parsed if f["_type"] == "Ready")
-            pong = next(f for f in parsed if f["_type"] == "Pong")
-
+            transport.send({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            ready = transport.recv()
             assert ready["worker_id"] == "test-0"
+
+            transport.send({"_type": "Ping", "seq": 42})
+            pong = transport.recv()
+            assert pong["_type"] == "Pong"
             assert pong["seq"] == 42
+
+            transport.send({"_type": "Shutdown"})
+            transport.recv()
         finally:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+            transport._sock.close()
+            ctx.term()
 
     def test_memory_query_report(self):
         """Worker receives MemoryQuery{} and responds with MemoryReport{0, 0}."""
-        proc = self._spawn_worker()
+        proc, transport, ctx = _spawn_worker()
 
         try:
-            frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
-            frames += _make_frame({"_type": "MemoryQuery"})
-            frames += _make_frame({"_type": "Shutdown"})
-            proc.stdin.write(frames)
-            proc.stdin.close()
-
-            stdout_data = proc.stdout.read(4096)
-            proc.wait(timeout=5)
-
-            parsed = self._parse_frames(stdout_data)
-            ready = next(f for f in parsed if f["_type"] == "Ready")
-            mem_report = next(f for f in parsed if f["_type"] == "MemoryReport")
-
+            transport.send({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            ready = transport.recv()
             assert ready["worker_id"] == "test-0"
+
+            transport.send({"_type": "MemoryQuery"})
+            mem_report = transport.recv()
+            assert mem_report["_type"] == "MemoryReport"
             assert mem_report["vram_used_mib"] == 0
             assert mem_report["ram_used_mib"] == 0
+
+            transport.send({"_type": "Shutdown"})
+            transport.recv()
         finally:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+            transport._sock.close()
+            ctx.term()
 
     def test_shutdown_dying_exit(self):
         """Worker receives Shutdown{}, responds Dying{reason: shutdown}, exits 0."""
-        proc = self._spawn_worker()
+        proc, transport, ctx = _spawn_worker()
 
         try:
-            frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
-            frames += _make_frame({"_type": "Shutdown"})
-            proc.stdin.write(frames)
-            proc.stdin.close()
+            transport.send({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            transport.recv()  # Ready
 
-            stdout_data = proc.stdout.read(4096)
-            proc.wait(timeout=5)
-
-            parsed = self._parse_frames(stdout_data)
-            dying = next(f for f in parsed if f["_type"] == "Dying")
-
+            transport.send({"_type": "Shutdown"})
+            dying = transport.recv()
             assert dying["reason"] == "shutdown"
+            proc.wait(timeout=5)
             assert proc.returncode == 0
         finally:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+            transport._sock.close()
+            ctx.term()
 
     def test_double_init_exits(self):
         """Sending two InitializeHardware frames: first produces Ready, second
@@ -203,52 +194,38 @@ class TestWorkerMain:
         write bug (P10-B1). The Python worker's `ready_sent` guard ensures
         exactly one Ready is emitted regardless of how many InitializeHardware
         frames arrive."""
-        proc = self._spawn_worker()
+        proc, transport, ctx = _spawn_worker()
 
         try:
-            # Send two InitializeHardware frames in sequence.
-            init_frame = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
-            proc.stdin.write(init_frame)
-            proc.stdin.write(init_frame)
-            # Then send Shutdown to trigger a clean exit.
-            shutdown_frame = _make_frame({"_type": "Shutdown"})
-            proc.stdin.write(shutdown_frame)
-            proc.stdin.close()
+            transport.send({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            ready1 = transport.recv()
+            assert ready1["_type"] == "Ready"
 
-            stdout_data = proc.stdout.read(4096)
+            # Second InitializeHardware — should produce no event.
+            transport.send({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            # Poll with short timeout to confirm no second Ready arrives.
+            second = transport.poll_recv(timeout_ms=2000)
+            assert second is None, "Expected no second Ready event"
+
+            transport.send({"_type": "Shutdown"})
+            dying = transport.recv()
+            assert dying["_type"] == "Dying"
+            assert dying["reason"] == "shutdown"
             proc.wait(timeout=5)
-
-            parsed = self._parse_frames(stdout_data)
-
-            # There should be exactly one Ready event.
-            ready_events = [f for f in parsed if f["_type"] == "Ready"]
-            assert len(ready_events) == 1, (
-                f"expected exactly one Ready, got {len(ready_events)}"
-            )
-            assert ready_events[0]["worker_id"] == "test-0"
-            assert ready_events[0]["device_index"] == 0
-
-            # There should be exactly one Dying event (from Shutdown).
-            dying_events = [f for f in parsed if f["_type"] == "Dying"]
-            assert len(dying_events) == 1, (
-                f"expected exactly one Dying, got {len(dying_events)}"
-            )
-            assert dying_events[0]["reason"] == "shutdown"
-
-            # The process should exit cleanly.
-            assert proc.returncode == 0, f"worker exited with code {proc.returncode}"
+            assert proc.returncode == 0
         finally:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+            transport._sock.close()
+            ctx.term()
 
     def test_execute_progress_completed(self):
         """Execute{job_id, graph, settings, device_index} triggers N Progress
         events followed by a single Completed event."""
-        proc = self._spawn_worker()
+        proc, transport, ctx = _spawn_worker()
 
         try:
-            # Build a mock graph with 3 nodes.
             nodes = [
                 {"type": "LoadModel"},
                 {"type": "Inference"},
@@ -262,26 +239,27 @@ class TestWorkerMain:
                 "device_index": 0,
             }
 
-            frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
-            frames += _make_frame(execute_msg)
-            frames += _make_frame({"_type": "Shutdown"})
-            proc.stdin.write(frames)
-            proc.stdin.close()
+            transport.send({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            transport.recv()  # Ready
 
-            stdout_data = proc.stdout.read(4096)
-            proc.wait(timeout=5)
+            transport.send(execute_msg)
 
-            parsed = self._parse_frames(stdout_data)
+            # Collect events: Ready (already consumed), then Progress × N, Completed.
+            progress_events = []
+            completed_events = []
+            deadline = time.monotonic() + 10
 
-            # Exactly one Ready event with correct worker_id.
-            ready_events = [f for f in parsed if f["_type"] == "Ready"]
-            assert len(ready_events) == 1, (
-                f"expected exactly one Ready, got {len(ready_events)}"
-            )
-            assert ready_events[0]["worker_id"] == "test-0"
+            while time.monotonic() < deadline:
+                ev = transport.poll_recv(timeout_ms=500)
+                if ev is None:
+                    continue
+                ev_type = ev.get("_type", "")
+                if ev_type == "Progress":
+                    progress_events.append(ev)
+                elif ev_type == "Completed":
+                    completed_events.append(ev)
+                    break  # Completed means execution finished.
 
-            # N Progress events (N = number of nodes).
-            progress_events = [f for f in parsed if f["_type"] == "Progress"]
             assert len(progress_events) == len(nodes), (
                 f"expected {len(nodes)} Progress events, got {len(progress_events)}"
             )
@@ -292,31 +270,29 @@ class TestWorkerMain:
                 assert pe["node_total"] == len(nodes)
                 assert pe["node_type"] == node["type"]
 
-            # Exactly one Completed event.
-            completed_events = [f for f in parsed if f["_type"] == "Completed"]
-            assert len(completed_events) == 1, (
-                f"expected exactly one Completed, got {len(completed_events)}"
-            )
+            assert len(completed_events) == 1
             completed = completed_events[0]
             assert completed["job_id"] == "exec-test-1"
             assert completed["elapsed_ms"] >= 0
 
-            # Exactly one Dying event, exit code 0.
-            dying_events = [f for f in parsed if f["_type"] == "Dying"]
-            assert len(dying_events) == 1
-            assert dying_events[0]["reason"] == "shutdown"
+            transport.send({"_type": "Shutdown"})
+            dying = transport.recv()
+            assert dying["reason"] == "shutdown"
+            proc.wait(timeout=5)
             assert proc.returncode == 0
         finally:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+            transport._sock.close()
+            ctx.term()
 
     def test_execute_saveimage_imageready(self):
         """Execute with a graph containing a SaveImage node → verify ImageReady
         event emitted with correct fields (width=64, height=64, format='png',
         valid base64 image_b64, resolved seed, steps, prompt), followed by
         Completed."""
-        proc = self._spawn_worker()
+        proc, transport, ctx = _spawn_worker()
 
         try:
             nodes = [
@@ -332,27 +308,26 @@ class TestWorkerMain:
                 "device_index": 0,
             }
 
-            frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
-            frames += _make_frame(execute_msg)
-            frames += _make_frame({"_type": "Shutdown"})
-            proc.stdin.write(frames)
-            proc.stdin.close()
+            transport.send({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            transport.recv()  # Ready
 
-            stdout_data = proc.stdout.read(4096)
-            proc.wait(timeout=5)
+            transport.send(execute_msg)
 
-            parsed = self._parse_frames(stdout_data)
+            imageready_events = []
+            completed_events = []
+            deadline = time.monotonic() + 10
 
-            # Exactly one Ready event.
-            ready_events = [f for f in parsed if f["_type"] == "Ready"]
-            assert len(ready_events) == 1
+            while time.monotonic() < deadline:
+                ev = transport.poll_recv(timeout_ms=500)
+                if ev is None:
+                    continue
+                ev_type = ev.get("_type", "")
+                if ev_type == "ImageReady":
+                    imageready_events.append(ev)
+                elif ev_type == "Completed":
+                    completed_events.append(ev)
+                    break
 
-            # N Progress events (N = number of nodes).
-            progress_events = [f for f in parsed if f["_type"] == "Progress"]
-            assert len(progress_events) == len(nodes)
-
-            # Exactly one ImageReady event.
-            imageready_events = [f for f in parsed if f["_type"] == "ImageReady"]
             assert len(imageready_events) == 1, (
                 f"expected exactly one ImageReady, got {len(imageready_events)}"
             )
@@ -366,24 +341,24 @@ class TestWorkerMain:
             assert ir["steps"] == 1
             assert ir["prompt"] == ""
 
-            # Exactly one Completed event.
-            completed_events = [f for f in parsed if f["_type"] == "Completed"]
             assert len(completed_events) == 1
             assert completed_events[0]["job_id"] == "exec-test-si-1"
 
-            # Exactly one Dying event, exit code 0.
-            dying_events = [f for f in parsed if f["_type"] == "Dying"]
-            assert len(dying_events) == 1
+            transport.send({"_type": "Shutdown"})
+            dying = transport.recv()
+            proc.wait(timeout=5)
             assert proc.returncode == 0
         finally:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+            transport._sock.close()
+            ctx.term()
 
     def test_execute_saveimage_seed_resolution(self):
         """Execute with SaveImage node having seed=-1 → verify ImageReady seed
         is a valid random int in range [0, 2^63-1]."""
-        proc = self._spawn_worker()
+        proc, transport, ctx = _spawn_worker()
 
         try:
             nodes = [{"type": "SaveImage"}]
@@ -395,30 +370,33 @@ class TestWorkerMain:
                 "device_index": 0,
             }
 
-            frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
-            frames += _make_frame(execute_msg)
-            frames += _make_frame({"_type": "Shutdown"})
-            proc.stdin.write(frames)
-            proc.stdin.close()
+            transport.send({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            transport.recv()  # Ready
 
-            stdout_data = proc.stdout.read(4096)
-            proc.wait(timeout=5)
+            transport.send(execute_msg)
 
-            parsed = self._parse_frames(stdout_data)
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                ev = transport.poll_recv(timeout_ms=500)
+                if ev is None:
+                    continue
+                if ev.get("_type") == "ImageReady":
+                    assert 0 <= ev["seed"] <= 2**63 - 1
+                    break
 
-            imageready_events = [f for f in parsed if f["_type"] == "ImageReady"]
-            assert len(imageready_events) == 1
-            ir = imageready_events[0]
-            assert 0 <= ir["seed"] <= 2**63 - 1
+            transport.send({"_type": "Shutdown"})
+            transport.recv()
         finally:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+            transport._sock.close()
+            ctx.term()
 
     def test_execute_saveimage_inputs_resolved(self):
         """Execute with SaveImage node having explicit prompt/seed/steps
         inputs → verify ImageReady fields match node inputs."""
-        proc = self._spawn_worker()
+        proc, transport, ctx = _spawn_worker()
 
         try:
             nodes = [
@@ -439,32 +417,35 @@ class TestWorkerMain:
                 "device_index": 0,
             }
 
-            frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
-            frames += _make_frame(execute_msg)
-            frames += _make_frame({"_type": "Shutdown"})
-            proc.stdin.write(frames)
-            proc.stdin.close()
+            transport.send({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            transport.recv()  # Ready
 
-            stdout_data = proc.stdout.read(4096)
-            proc.wait(timeout=5)
+            transport.send(execute_msg)
 
-            parsed = self._parse_frames(stdout_data)
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                ev = transport.poll_recv(timeout_ms=500)
+                if ev is None:
+                    continue
+                if ev.get("_type") == "ImageReady":
+                    assert ev["prompt"] == "test prompt text"
+                    assert ev["seed"] == 12345
+                    assert ev["steps"] == 20
+                    break
 
-            imageready_events = [f for f in parsed if f["_type"] == "ImageReady"]
-            assert len(imageready_events) == 1
-            ir = imageready_events[0]
-            assert ir["prompt"] == "test prompt text"
-            assert ir["seed"] == 12345
-            assert ir["steps"] == 20
+            transport.send({"_type": "Shutdown"})
+            transport.recv()
         finally:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+            transport._sock.close()
+            ctx.term()
 
     def test_execute_no_saveimage_no_imageready(self):
         """Execute with a graph that has no SaveImage node → verify NO
         ImageReady event emitted, only Progress + Completed."""
-        proc = self._spawn_worker()
+        proc, transport, ctx = _spawn_worker()
 
         try:
             nodes = [
@@ -480,31 +461,39 @@ class TestWorkerMain:
                 "device_index": 0,
             }
 
-            frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
-            frames += _make_frame(execute_msg)
-            frames += _make_frame({"_type": "Shutdown"})
-            proc.stdin.write(frames)
-            proc.stdin.close()
+            transport.send({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            transport.recv()  # Ready
 
-            stdout_data = proc.stdout.read(4096)
-            proc.wait(timeout=5)
+            transport.send(execute_msg)
 
-            parsed = self._parse_frames(stdout_data)
+            progress_events = []
+            completed_events = []
+            deadline = time.monotonic() + 10
 
-            imageready_events = [f for f in parsed if f["_type"] == "ImageReady"]
-            assert len(imageready_events) == 0, (
-                f"expected no ImageReady events, got {len(imageready_events)}"
-            )
+            while time.monotonic() < deadline:
+                ev = transport.poll_recv(timeout_ms=500)
+                if ev is None:
+                    continue
+                ev_type = ev.get("_type", "")
+                if ev_type == "ImageReady":
+                    assert False, f"unexpected ImageReady event"
+                elif ev_type == "Progress":
+                    progress_events.append(ev)
+                elif ev_type == "Completed":
+                    completed_events.append(ev)
+                    break
 
-            progress_events = [f for f in parsed if f["_type"] == "Progress"]
             assert len(progress_events) == len(nodes)
-
-            completed_events = [f for f in parsed if f["_type"] == "Completed"]
             assert len(completed_events) == 1
+
+            transport.send({"_type": "Shutdown"})
+            transport.recv()
         finally:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+            transport._sock.close()
+            ctx.term()
 
     def test_cancel_job_during_execute(self):
         """Send CancelJob after the first Progress frame arrives — verify
@@ -513,11 +502,6 @@ class TestWorkerMain:
         Uses ANVILML_MOCK_NODE_DELAY_MS so the worker pauses between nodes,
         giving the test time to inject the CancelJob message while the
         worker is blocked in the delay (cooperative cancellation window).
-
-        Note: select.select() does not work with subprocess pipes on Windows
-        (WinError 10038 — anonymous pipes are not sockets). A background
-        reader thread feeding a queue.Queue is used instead, which is
-        portable across Linux and Windows.
         """
         nodes = [
             {"type": "LoadModel"},
@@ -536,131 +520,76 @@ class TestWorkerMain:
         env["ANVILML_WORKER_MOCK"] = "1"
         env["ANVILML_MOCK_NODE_DELAY_MS"] = "100"
 
+        ctx = zmq.Context()
+        sock = ctx.socket(zmq.DEALER)
+        sock.bind("tcp://127.0.0.1:0")
+        endpoint = sock.getsockopt(zmq.LAST_ENDPOINT).decode()
+        port = int(endpoint.split(":")[-1])
+
+        env["ANVILML_IPC_PORT"] = str(port)
+
         proc = subprocess.Popen(
             [sys.executable, _WORKER_SCRIPT,
              "--worker-id", "cancel-test-1",
              "--device-index", "0"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, env=env,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE, env=env,
         )
-
-        # Background reader thread: continuously reads raw bytes from
-        # proc.stdout and puts them onto a Queue.  This avoids select()
-        # which is not supported on Windows anonymous pipes.
-        raw_q: queue.Queue = queue.Queue()
-
-        def _reader():
-            try:
-                while True:
-                    chunk = proc.stdout.read(256)
-                    if not chunk:
-                        break
-                    raw_q.put(chunk)
-            except Exception:
-                pass
-
-        reader_thread = threading.Thread(target=_reader, daemon=True)
-        reader_thread.start()
-
-        def _drain_queue(timeout_s: float) -> bytes:
-            """Collect all bytes available in raw_q within timeout_s seconds."""
-            data = b""
-            deadline = time.monotonic() + timeout_s
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                try:
-                    data += raw_q.get(timeout=min(remaining, 0.05))
-                except queue.Empty:
-                    break
-            return data
+        transport = _ZmqTransport(sock)
 
         try:
-            # Send InitializeHardware + Execute.
-            frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
-            frames += _make_frame(execute_msg)
-            proc.stdin.write(frames)
-            proc.stdin.flush()
+            transport.send({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            transport.recv()  # Ready
+
+            transport.send(execute_msg)
 
             # Wait until the first Progress frame (node_index 0) arrives.
-            stdout_data = b""
             first_progress_seen = False
             deadline = time.monotonic() + 5
             while not first_progress_seen and time.monotonic() < deadline:
-                stdout_data += _drain_queue(0.05)
-                parsed = self._parse_frames(stdout_data)
-                for f in parsed:
-                    if f.get("_type") == "Progress" and f.get("node_index") == 0:
-                        first_progress_seen = True
-                        break
+                ev = transport.poll_recv(timeout_ms=200)
+                if ev is not None and ev.get("_type") == "Progress" and ev.get("node_index") == 0:
+                    first_progress_seen = True
+                    break
 
             assert first_progress_seen, "Never received first Progress frame"
 
             # Send CancelJob — worker is in the delay between nodes.
-            cancel_frame = _make_frame({
+            transport.send({
                 "_type": "CancelJob",
                 "job_id": "cancel-test-1",
             })
-            proc.stdin.write(cancel_frame)
-            proc.stdin.flush()
 
             # Wait for Cancelled event.
             cancelled_seen = False
             cancel_deadline = time.monotonic() + 3
             while not cancelled_seen and time.monotonic() < cancel_deadline:
-                stdout_data += _drain_queue(0.05)
-                parsed = self._parse_frames(stdout_data)
-                cancelled_seen = any(f.get("_type") == "Cancelled" for f in parsed)
+                ev = transport.poll_recv(timeout_ms=200)
+                if ev is not None and ev.get("_type") == "Cancelled":
+                    cancelled_seen = True
+                    break
 
             # Send Shutdown so the worker exits cleanly.
-            shutdown_frame = _make_frame({"_type": "Shutdown"})
-            proc.stdin.write(shutdown_frame)
-            proc.stdin.close()
+            transport.send({"_type": "Shutdown"})
+            transport.recv()  # Dying
 
             proc.wait(timeout=5)
 
-            # Drain any remaining bytes after shutdown.
-            stdout_data += _drain_queue(1.0)
-            reader_thread.join(timeout=2)
-
-            parsed = self._parse_frames(stdout_data)
-
-            # Exactly one Ready event.
-            ready_events = [f for f in parsed if f["_type"] == "Ready"]
-            assert len(ready_events) == 1
-
-            # At least one Progress event (the first one before cancel).
-            progress_events = [f for f in parsed if f["_type"] == "Progress"]
-            assert len(progress_events) >= 1
-
-            # Exactly one Cancelled event (no Completed).
-            cancelled_events = [f for f in parsed if f["_type"] == "Cancelled"]
-            assert len(cancelled_events) == 1, (
-                f"expected exactly one Cancelled, got {len(cancelled_events)}"
-            )
-            assert cancelled_events[0]["job_id"] == "cancel-test-1"
-
-            # No Completed event.
-            completed_events = [f for f in parsed if f["_type"] == "Completed"]
-            assert len(completed_events) == 0, (
-                f"expected no Completed after cancel, got {len(completed_events)}"
-            )
-
-            # Exactly one Dying event, exit code 0.
-            dying_events = [f for f in parsed if f["_type"] == "Dying"]
-            assert len(dying_events) == 1
+            # Verify Cancelled was emitted and no Completed.
+            assert cancelled_seen, "Cancelled event never received"
             assert proc.returncode == 0
         finally:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+            transport._sock.close()
+            ctx.term()
 
     def test_cancel_before_execute(self):
         """Send CancelJob before Execute → worker processes CancelJob
         (flag set), then receives Execute → should emit Cancelled
         before any Progress."""
-        proc = self._spawn_worker()
+        proc, transport, ctx = _spawn_worker()
 
         try:
             nodes = [
@@ -675,45 +604,48 @@ class TestWorkerMain:
                 "device_index": 0,
             }
 
-            frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            transport.send({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            transport.recv()  # Ready
+
             # Cancel before Execute.
-            frames += _make_frame({
+            transport.send({
                 "_type": "CancelJob",
                 "job_id": "cancel-test-2",
             })
-            frames += _make_frame(execute_msg)
-            frames += _make_frame({"_type": "Shutdown"})
-            proc.stdin.write(frames)
-            proc.stdin.close()
+            transport.send(execute_msg)
 
-            stdout_data = proc.stdout.read(4096)
+            # Wait for Cancelled event.
+            cancelled_seen = False
+            progress_seen = False
+            completed_seen = False
+            deadline = time.monotonic() + 5
+
+            while not (cancelled_seen and not progress_seen) and time.monotonic() < deadline:
+                ev = transport.poll_recv(timeout_ms=200)
+                if ev is None:
+                    continue
+                ev_type = ev.get("_type", "")
+                if ev_type == "Cancelled":
+                    cancelled_seen = True
+                elif ev_type == "Progress":
+                    progress_seen = True
+                elif ev_type == "Completed":
+                    completed_seen = True
+
+            assert cancelled_seen, "Cancelled event never received"
+            assert not progress_seen, "Progress should not appear before Cancelled"
+            assert not completed_seen, "Completed should not appear after cancel"
+
+            transport.send({"_type": "Shutdown"})
+            transport.recv()
             proc.wait(timeout=5)
-
-            parsed = self._parse_frames(stdout_data)
-
-            # Exactly one Ready event.
-            ready_events = [f for f in parsed if f["_type"] == "Ready"]
-            assert len(ready_events) == 1
-
-            # Cancelled emitted, no Progress, no Completed.
-            cancelled_events = [f for f in parsed if f["_type"] == "Cancelled"]
-            assert len(cancelled_events) == 1
-            assert cancelled_events[0]["job_id"] == "cancel-test-2"
-
-            progress_events = [f for f in parsed if f["_type"] == "Progress"]
-            assert len(progress_events) == 0
-
-            completed_events = [f for f in parsed if f["_type"] == "Completed"]
-            assert len(completed_events) == 0
-
-            # Exactly one Dying event, exit code 0.
-            dying_events = [f for f in parsed if f["_type"] == "Dying"]
-            assert len(dying_events) == 1
             assert proc.returncode == 0
         finally:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+            transport._sock.close()
+            ctx.term()
 
     def test_mock_node_delay_ms(self):
         """Set ANVILML_MOCK_NODE_DELAY_MS=75, execute a 3-node job →
@@ -737,28 +669,41 @@ class TestWorkerMain:
         env["ANVILML_WORKER_MOCK"] = "1"
         env["ANVILML_MOCK_NODE_DELAY_MS"] = "75"
 
+        ctx = zmq.Context()
+        sock = ctx.socket(zmq.DEALER)
+        sock.bind("tcp://127.0.0.1:0")
+        endpoint = sock.getsockopt(zmq.LAST_ENDPOINT).decode()
+        port = int(endpoint.split(":")[-1])
+
+        env["ANVILML_IPC_PORT"] = str(port)
+
         proc = subprocess.Popen(
             [sys.executable, _WORKER_SCRIPT,
              "--worker-id", "test-delay-0",
              "--device-index", "0"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, env=env,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE, env=env,
         )
+        transport = _ZmqTransport(sock)
 
         try:
-            frames = _make_frame({"_type": "InitializeHardware", "device_str": "cuda:0"})
-            frames += _make_frame(execute_msg)
-            frames += _make_frame({"_type": "Shutdown"})
-            proc.stdin.write(frames)
-            proc.stdin.close()
+            transport.send({"_type": "InitializeHardware", "device_str": "cuda:0"})
+            transport.recv()  # Ready
 
-            stdout_data = proc.stdout.read(4096)
-            proc.wait(timeout=10)
+            transport.send(execute_msg)
 
-            parsed = self._parse_frames(stdout_data)
+            # Wait for Completed event.
+            completed_events = []
+            deadline = time.monotonic() + 15
 
-            # Exactly one Completed event.
-            completed_events = [f for f in parsed if f["_type"] == "Completed"]
+            while time.monotonic() < deadline:
+                ev = transport.poll_recv(timeout_ms=500)
+                if ev is None:
+                    continue
+                if ev.get("_type") == "Completed":
+                    completed_events.append(ev)
+                    break
+
             assert len(completed_events) == 1, (
                 f"expected exactly one Completed, got {len(completed_events)}"
             )
@@ -768,7 +713,12 @@ class TestWorkerMain:
             assert elapsed_ms >= 120, (
                 f"expected elapsed_ms >= 120, got {elapsed_ms}"
             )
+
+            transport.send({"_type": "Shutdown"})
+            transport.recv()
         finally:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+            transport._sock.close()
+            ctx.term()

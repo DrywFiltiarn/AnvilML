@@ -186,16 +186,17 @@
     "P907-A1",
     "P907-A2",
     "P907-A3",
-    "P907-A4"
+    "P907-A4",
+    "P907-A5"
   ],
-  "in_progress": "P907-A5",
+  "in_progress": "P907-A6",
   "plan_approved": true,
-  "current_plan": "1. **Verify dependency**: Confirm `pyzmq>=26.0` is compatible with Python 3.12. MCP lookup confirms: `pyzmq 27.1.0` supports `>=3.8`, already listed in `base.txt`.\n\n2. **Rewrite `worker/ipc.py`**:\n   - Replace imports: remove `io`, `socket`, `struct`, `sys`; keep `os` (for env var access if needed), add `zmq`\n   - Change `_sock` type annotation from `socket.socket | None` to `zmq.Socket | None`\n   - Rewrite `connect(port: int) -> None`:\n     ```python\n     def connect(port: int) -> None:\n         global _sock\n         ctx = zmq.Context.instance()\n         _sock = ctx.socket(zmq.DEALER)\n         _sock.connect(f\"tcp://127.0.0.1:{port}\")\n     ```\n   - Rewrite `read_frame() -> object`:\n     ```python\n     def read_frame() -> object:\n         if _sock is None:\n             raise RuntimeError(\"ipc: not connected \u2014 call connect(port) first\")\n         data = _sock.recv()\n         return msgpack.unpackb(data, raw=False)\n     ```\n   - Rewrite `write_frame(data: object) -> None`:\n     ```python\n     def write_frame(data: object) -> None:\n         if _sock is None:\n             raise RuntimeError(\"ipc: not connected \u2014 call connect(port) first\")\n         _sock.send(msgpack.packb(data, use_bin_type=True))\n     ```\n   - Remove `_get_transport()`, `_StdioTransport`, `_WindowsPipeSocket` entirely\n   - Update module docstring\n\n3. **Update `worker/worker_main.py`**:\n   - In `main()`, replace lines 203-207:\n     ```python\n     # Old:\n     socket_path = os.environ.get(\"ANVILML_IPC_SOCKET\")\n     if socket_path is not None:\n         ipc.connect(socket_path)\n     \n     # New:\n     ipc.connect(int(os.environ[\"ANVILML_IPC_PORT\"]))\n     ```\n   - Update docstring to remove stdin/stdout fallback references (lines 2-3, 203-204 comment)\n\n4. **Rewrite `worker/tests/test_ipc.py`**:\n   - Replace `import socket` + `import struct` with `import zmq`\n   - New test helper `_zmq_pair()` that creates an in-process PAIR socket pair:\n     ```python\n     def _zmq_pair():\n         ctx = zmq.Context()\n         a = ctx.socket(zmq.PAIR)\n         b = ctx.socket(zmq.PAIR)\n         a.bind(\"tcp://127.0.0.1:0\")\n         addr = a.getsockopt(zmq.LAST_ENDPOINT).decode()\n         b.connect(addr)\n         return a, b, ctx\n     ```\n   - Rewrite `_monkeypatch_sock` to accept a zmq socket and patch `ipc._sock`\n   - Update `TestReadFrame` tests: replace `sock_b.sendall(length_prefix + payload)` with `sock_b.send(payload)` \u2014 PAIR sockets deliver the exact bytes sent\n   - Update `TestSocketRoundtrip` tests similarly \u2014 no length prefix needed\n   - Update `test_read_frame_eof`: close one side of PAIR pair, verify `zmq.Again` or `Error` \u2192 wrap in `pytest.raises`\n\n5. **Verify tests pass**: Run `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py -v` \u2014 must exit 0.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-13T15:15:01+0200",
-  "plan_approval_message_id": "1515343333617041491",
+  "last_updated": "2026-06-13T18:31:19+0200",
+  "plan_approval_message_id": "1515392244776177764",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1515343331834466376",
+  "plan_report_message_id": "1515392242582421556",
   "impl_report_message_id": null
 }
