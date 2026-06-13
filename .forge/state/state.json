@@ -183,16 +183,17 @@
     "P21-A5",
     "P21-A6",
     "P21-A7",
-    "P907-A1"
+    "P907-A1",
+    "P907-A2"
   ],
-  "in_progress": "P907-A2",
+  "in_progress": "P907-A3",
   "plan_approved": true,
-  "current_plan": "1. Append `pyzmq>=26.0` as a new line at the end of `worker/requirements/base.txt`.\n   - The version constraint `>=26.0` matches the Phase 907 prerequisite stated in\n     `docs/TASKS_PHASE907.md` (\"`pyzmq>=26.0` installable in the project venv before P907-A5 runs\").\n   - Verified via MCP (pypi-query): latest pyzmq is 27.1.0; 26.4.0 is the latest 26.x\n     release; `>=26.0` is compatible with Python \u22653.8 (project uses 3.12).\n2. No further file modifications.",
+  "current_plan": "1. **Read `managed.rs` lines 166\u2013180** to confirm the current `ipc_addr` construction:\n   `TcpListener::bind(\"127.0.0.1:0\")` \u2192 `local_addr()` \u2192 `to_string()` \u2192 `\"127.0.0.1:XXXX\"`.\n   The call site on line 190 passes `&ipc_addr` (a `String` like `\"127.0.0.1:XXXX\"`).\n\n2. **Modify `managed.rs` call site** (line 190): extract the port from `local_addr()`\n   before calling `build_worker_env`. Change:\n   ```rust\n   let ipc_addr = local_addr.to_string();\n   *self.ipc_socket_path.lock().unwrap() = ipc_addr.clone();\n   // ...\n   .envs(build_worker_env(device, cfg, &ipc_addr))\n   ```\n   to:\n   ```rust\n   let ipc_port = local_addr.port();\n   *self.ipc_socket_path.lock().unwrap() = format!(\"127.0.0.1:{}\", ipc_port);\n   // ...\n   .envs(build_worker_env(device, cfg, ipc_port))\n   ```\n   This preserves the `ipc_socket_path` field for logging while passing a clean `u16`\n   port to `build_worker_env`.\n\n3. **Modify `env.rs` function signature** (line 21):\n   - Change `ipc_socket_path: &str` \u2192 `ipc_port: u16`\n   - Update doc comment: replace \"IPC socket path\" with \"IPC port\"\n\n4. **Modify `env.rs` env var insertion** (lines 77\u201381):\n   - Change key from `\"ANVILML_IPC_SOCKET\"` \u2192 `\"ANVILML_IPC_PORT\"`\n   - Change value from `ipc_socket_path.to_string()` \u2192 `ipc_port.to_string()`\n\n5. **Update all 6 tests** in `env.rs`:\n   - `test_build_env_cuda` (line ~158): change `build_worker_env(&device, &cfg, \"\")` \u2192\n     `build_worker_env(&device, &cfg, 55555)` (or any valid u16)\n   - `test_build_env_rocm_linux_hsa` (line ~208): same change\n   - `test_build_env_rocm_windows_no_hsa` (line ~255): same change\n   - `test_build_env_cpu` (line ~296): same change\n   - `test_build_env_mock_propagation` (line ~342): same change\n   - `test_build_env_ipc_socket_path` (line ~355\u2013365): **rename** to\n     `test_build_env_ipc_port`, assert `ANVILML_IPC_PORT` is present with the correct\n     value, assert `ANVILML_IPC_SOCKET` is absent\n\n6. **Bump crate version** in `crates/anvilml-worker/Cargo.toml`:\n   `0.1.23` \u2192 `0.1.24`\n\n7. **Verify**:\n   - `cargo test -p anvilml-worker --features mock-hardware -- env` exits 0\n   - `cargo check --target x86_64-pc-windows-gnu --features mock-hardware` exits 0",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-13T11:23:28+0200",
-  "plan_approval_message_id": "1515285286786043935",
+  "last_updated": "2026-06-13T12:18:13+0200",
+  "plan_approval_message_id": "1515295742477209620",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1515285285372563557",
+  "plan_report_message_id": "1515295740371533935",
   "impl_report_message_id": null
 }

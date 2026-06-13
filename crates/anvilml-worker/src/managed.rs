@@ -176,7 +176,8 @@ impl ManagedWorker {
                 "failed to get local addr: {e}"
             )))
         })?;
-        let ipc_addr = local_addr.to_string();
+        let ipc_port = local_addr.port();
+        let ipc_addr = format!("127.0.0.1:{}", ipc_port);
         *self.ipc_socket_path.lock().unwrap() = ipc_addr.clone();
 
         // Build the command.
@@ -187,7 +188,7 @@ impl ManagedWorker {
             .arg("--device-index")
             .arg(self.device_index.to_string())
             .current_dir(_repo_root_for_worker())
-            .envs(build_worker_env(device, cfg, &ipc_addr))
+            .envs(build_worker_env(device, cfg, ipc_port))
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped());
