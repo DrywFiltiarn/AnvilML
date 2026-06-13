@@ -40,6 +40,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 utoipa = { version = "5.5.0", features = ["chrono", "uuid"] }
 url = { version = "2.5.8", features = ["serde"] }
 uuid = { version = "1.23.2", features = ["serde", "v4"] }
+zeromq = { version = "0.4", features = ["tokio"] }
 walkdir = "2.5.0"
 open = "5.3"
 http = "1"

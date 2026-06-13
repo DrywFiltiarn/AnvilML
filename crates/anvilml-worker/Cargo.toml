@@ -1,13 +1,13 @@
 [package]
 name = "anvilml-worker"
-version = "0.1.22"
+version = "0.1.23"
 edition = "2021"
 
 [dependencies]
 anvilml-core = { path = "../anvilml-core" }
 anvilml-hardware = { path = "../anvilml-hardware" }
 anvilml-ipc = { path = "../anvilml-ipc" }
-interprocess = { version = "2.4", features = ["tokio"] }
+zeromq = { workspace = true }
 rmp-serde = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }

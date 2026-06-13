@@ -8,12 +8,6 @@ use anvilml_core::{
     config::ServerConfig, types::worker::WorkerStatus, AnvilError, GpuDevice, WorkerInfo,
 };
 use anvilml_ipc::{framing, WorkerEvent, WorkerMessage};
-use interprocess::local_socket::tokio::prelude::*;
-#[cfg(unix)]
-use interprocess::local_socket::GenericFilePath;
-use interprocess::local_socket::{ListenerOptions, ToFsName};
-#[cfg(windows)]
-use interprocess::os::windows::local_socket::NamedPipe;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -27,10 +21,18 @@ use tracing::{debug, info, warn};
 use crate::build_worker_env;
 
 /// Shared IPC read/write handles for the writer/reader tasks.
-#[derive(Debug)]
 struct IpcHandles {
-    reader: interprocess::local_socket::tokio::RecvHalf,
-    writer: interprocess::local_socket::tokio::SendHalf,
+    reader: Box<dyn tokio::io::AsyncRead + Send + Unpin + 'static>,
+    writer: Box<dyn tokio::io::AsyncWrite + Send + Unpin + 'static>,
+}
+
+impl std::fmt::Debug for IpcHandles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IpcHandles")
+            .field("reader", &"..")
+            .field("writer", &"..")
+            .finish()
+    }
 }
 
 /// A managed Python worker process with IPC bridge.
@@ -161,10 +163,21 @@ impl ManagedWorker {
         // Resolve python interpreter path.
         let python_path = resolve_python_path(&abs_venv);
 
-        // Build socket path for IPC.
-        let socket_path = build_socket_path(self.device_index, self.worker_id.clone());
-        let socket_path_str = socket_path.to_string_lossy().into_owned();
-        *self.ipc_socket_path.lock().unwrap() = socket_path_str.clone();
+        // Bind a local TCP listener for IPC (port 0 = let OS pick an available port).
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| {
+                AnvilError::Io(std::io::Error::other(format!(
+                    "failed to bind IPC socket: {e}"
+                )))
+            })?;
+        let local_addr = listener.local_addr().map_err(|e| {
+            AnvilError::Io(std::io::Error::other(format!(
+                "failed to get local addr: {e}"
+            )))
+        })?;
+        let ipc_addr = local_addr.to_string();
+        *self.ipc_socket_path.lock().unwrap() = ipc_addr.clone();
 
         // Build the command.
         let mut cmd = Command::new(&python_path);
@@ -174,7 +187,7 @@ impl ManagedWorker {
             .arg("--device-index")
             .arg(self.device_index.to_string())
             .current_dir(_repo_root_for_worker())
-            .envs(build_worker_env(device, cfg, &socket_path_str))
+            .envs(build_worker_env(device, cfg, &ipc_addr))
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped());
@@ -199,31 +212,7 @@ impl ManagedWorker {
             cmd.creation_flags(0x0000_0200); // CREATE_NEW_PROCESS_GROUP
         }
 
-        // Create parent directory for Unix socket (Windows named pipe path
-        // doesn't require a parent directory).
-        #[cfg(unix)]
-        {
-            if let Some(parent) = socket_path.parent() {
-                tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                    AnvilError::Io(std::io::Error::other(format!(
-                        "failed to create socket dir: {e}"
-                    )))
-                })?;
-            }
-        }
-
-        // Bind the local socket listener.
-        let name = to_socket_name(&socket_path).map_err(AnvilError::Io)?;
-        let listener = ListenerOptions::new()
-            .name(name)
-            .create_tokio()
-            .map_err(|e| {
-                AnvilError::Io(std::io::Error::other(format!(
-                    "failed to bind IPC socket: {e}"
-                )))
-            })?;
-
-        info!(socket_path = %socket_path_str, "bound IPC socket");
+        info!(ipc_addr = %ipc_addr, "bound IPC socket");
 
         let mut child = cmd.spawn().map_err(|e| {
             warn!(
@@ -259,12 +248,12 @@ impl ManagedWorker {
             .and_then(|v| v.parse::<u64>().ok())
             .map(std::time::Duration::from_millis)
             .unwrap_or(std::time::Duration::from_secs(30));
-        let stream = tokio::time::timeout(connect_timeout, listener.accept())
+        let (stream, _) = tokio::time::timeout(connect_timeout, listener.accept())
             .await
             .map_err(|_| {
                 warn!(
                     worker_id = %self.worker_id,
-                    socket_path = %socket_path_str,
+                    ipc_addr = %ipc_addr,
                     connect_timeout_ms = connect_timeout.as_millis(),
                     "IPC accept timed out — worker did not connect"
                 );
@@ -281,11 +270,16 @@ impl ManagedWorker {
 
         debug!(
             worker_id = %self.worker_id,
-            socket_path = %socket_path_str,
+            ipc_addr = %ipc_addr,
             "IPC connection accepted"
         );
 
-        let (reader, writer) = stream.split();
+        let (reader, writer) = tokio::io::split(stream);
+
+        // Box the halves so they can be stored in IpcHandles (and used with
+        // inject_handles_for_test which may provide a different concrete type).
+        let reader: Box<dyn tokio::io::AsyncRead + Send + Unpin + 'static> = Box::new(reader);
+        let writer: Box<dyn tokio::io::AsyncWrite + Send + Unpin + 'static> = Box::new(writer);
 
         // Deliver IPC handles to run_loop immediately — before any data is sent.
         // This ensures the reader task registers the socket for polling (Linux) or
@@ -667,15 +661,16 @@ impl ManagedWorker {
     /// channel, bypassing the actual child process spawn. The caller is responsible
     /// for ensuring the handles are compatible with the framing protocol.
     #[cfg(test)]
-    pub async fn inject_handles_for_test(
-        &self,
-        reader: interprocess::local_socket::tokio::RecvHalf,
-        writer: interprocess::local_socket::tokio::SendHalf,
-    ) {
+    pub async fn inject_handles_for_test<S>(&self, stream: S)
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let (reader, writer) = tokio::io::split(stream);
+        let reader: Box<dyn tokio::io::AsyncRead + Send + Unpin + 'static> = Box::new(reader);
+        let writer: Box<dyn tokio::io::AsyncWrite + Send + Unpin + 'static> = Box::new(writer);
         let mut guard = self.ipc_tx.lock().unwrap();
         if let Some(tx) = guard.take() {
-            tx.send(IpcHandles { reader, writer })
-                .expect("run_loop alive");
+            tx.send(IpcHandles { reader, writer }).unwrap();
         }
     }
 
@@ -779,7 +774,7 @@ impl ManagedWorker {
 async fn writer_task(
     worker_id: String,
     mut rx: mpsc::Receiver<WorkerMessage>,
-    mut writer: interprocess::local_socket::tokio::SendHalf,
+    mut writer: Box<dyn tokio::io::AsyncWrite + Send + Unpin + 'static>,
     _status: Arc<RwLock<WorkerStatus>>,
     _event_tx: broadcast::Sender<(String, WorkerEvent)>,
 ) {
@@ -810,7 +805,7 @@ async fn reader_task(
     worker_id: String,
     status: Arc<RwLock<WorkerStatus>>,
     event_tx: broadcast::Sender<(String, WorkerEvent)>,
-    mut reader: interprocess::local_socket::tokio::RecvHalf,
+    mut reader: Box<dyn tokio::io::AsyncRead + Send + Unpin + 'static>,
 ) {
     // Default IPC payload limit: 64 MiB.
     let max_mib = 64;
@@ -916,46 +911,7 @@ fn _repo_root_for_worker() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
-/// Build the IPC socket path for a worker.
-///
-/// On Unix: `{temp_dir}/anvilml-{pid}/worker-{index}-{uid}.sock`
-/// On Windows: `\\.\pipe\anvilml-worker-{worker_id}-{index}-{pid}-{uid}`
-///
-/// A process-global atomic counter (`uid`) is appended to every path so that
-/// each call produces a name that has never been used before in this process.
-/// This prevents `CreateNamedPipe` / `bind` conflicts when a prior instance's
-/// handles have not yet been fully released by the OS (common on Windows after
-/// a worker death and respawn cycle).
-fn build_socket_path(device_index: u32, worker_id: String) -> std::path::PathBuf {
-    static PIPE_COUNTER: AtomicU64 = AtomicU64::new(0);
-    let uid = PIPE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    if cfg!(windows) {
-        std::path::PathBuf::from(format!(
-            r"\\.\pipe\anvilml-worker-{worker_id}-{device_index}-{pid}-{uid}"
-        ))
-    } else {
-        let dir = std::env::temp_dir().join(format!("anvilml-{pid}"));
-        dir.join(format!("worker-{device_index}-{uid}.sock"))
-    }
-}
-
-/// Convert a socket path to an `interprocess` local socket name.
-///
-/// On Unix, socket paths are filesystem paths and use `GenericFilePath`.
-/// On Windows, socket paths are named pipes and use `GenericNamespaced`.
-fn to_socket_name(
-    path: &std::path::Path,
-) -> Result<interprocess::local_socket::Name<'_>, std::io::Error> {
-    #[cfg(unix)]
-    {
-        path.to_fs_name::<GenericFilePath>()
-    }
-    #[cfg(windows)]
-    {
-        path.to_fs_name::<NamedPipe>()
-    }
-}
+/// (removed — spawn() now binds a TCP listener directly)
 
 #[cfg(test)]
 mod tests {
@@ -1370,56 +1326,11 @@ mod tests {
             async {
                 let worker = ManagedWorker::new("respawn-test".to_string(), 0);
 
-                // Build platform-appropriate socket paths for mock IPC handles.
-                // On Windows a plain filesystem path is not a valid named pipe path;
-                // \\.\pipe\ prefix is required. On Unix use the temp directory.
-                #[cfg(windows)]
-                let socket_path = std::path::PathBuf::from(format!(
-                    r"\\.\pipe\anvilml-test-{}-respawn",
-                    std::process::id()
-                ));
-                #[cfg(unix)]
-                let socket_path = {
-                    let p = std::env::temp_dir()
-                        .join(format!("anvilml-test-{}-respawn", std::process::id()));
-                    let _ = tokio::fs::remove_file(&p).await;
-                    if let Some(dir) = p.parent() {
-                        let _ = tokio::fs::create_dir_all(dir).await;
-                    }
-                    p
-                };
-
-                let name = to_socket_name(&socket_path).expect("convert socket path to name");
-                let listener = ListenerOptions::new()
-                    .name(name)
-                    .create_tokio()
-                    .expect("bind test socket");
-                let (server_stream, _client) = tokio::join!(
-                    async {
-                        let stream =
-                            tokio::time::timeout(Duration::from_secs(5), listener.accept())
-                                .await
-                                .expect("accept")
-                                .expect("accept ok");
-                        stream
-                    },
-                    async {
-                        tokio::time::timeout(
-                            Duration::from_secs(5),
-                            LocalSocketStream::connect(
-                                to_socket_name(&socket_path).expect("convert to name"),
-                            ),
-                        )
-                        .await
-                        .expect("connect")
-                        .expect("connect ok")
-                    },
-                );
-
-                let (reader, writer) = server_stream.split();
+                // Use a duplex pipe for mock IPC handles (works on all platforms).
+                let (pipe_a, _pipe_b) = tokio::io::duplex(4096);
 
                 // Inject mock handles so the run_loop can start.
-                worker.inject_handles_for_test(reader, writer).await;
+                worker.inject_handles_for_test(pipe_a).await;
 
                 // For testing: set status to Idle directly (simulating Ready event).
                 worker.set_status(WorkerStatus::Idle).await;
@@ -1484,54 +1395,11 @@ mod tests {
                 ));
 
                 // Create fresh mock handles for the respawned worker.
-                #[cfg(windows)]
-                let socket_path2 = std::path::PathBuf::from(format!(
-                    r"\\.\pipe\anvilml-test-{}-respawn2",
-                    std::process::id()
-                ));
-                #[cfg(unix)]
-                let socket_path2 = {
-                    let p = std::env::temp_dir()
-                        .join(format!("anvilml-test-{}-respawn2", std::process::id()));
-                    let _ = tokio::fs::remove_file(&p).await;
-                    if let Some(dir) = p.parent() {
-                        let _ = tokio::fs::create_dir_all(dir).await;
-                    }
-                    p
-                };
-
-                let name2 = to_socket_name(&socket_path2).expect("convert socket path to name");
-                let listener2 = ListenerOptions::new()
-                    .name(name2)
-                    .create_tokio()
-                    .expect("bind respawn socket");
-                let (server_stream2, _client2) = tokio::join!(
-                    async {
-                        let stream =
-                            tokio::time::timeout(Duration::from_secs(5), listener2.accept())
-                                .await
-                                .expect("accept")
-                                .expect("accept ok");
-                        stream
-                    },
-                    async {
-                        tokio::time::timeout(
-                            Duration::from_secs(5),
-                            LocalSocketStream::connect(
-                                to_socket_name(&socket_path2).expect("convert to name"),
-                            ),
-                        )
-                        .await
-                        .expect("connect")
-                        .expect("connect ok")
-                    },
-                );
-
-                let (reader2, writer2) = server_stream2.split();
+                let (pipe_a2, _pipe_b2) = tokio::io::duplex(4096);
 
                 // Reset IPC channel and inject fresh handles.
                 worker.reset_ipc_tx().await;
-                worker.inject_handles_for_test(reader2, writer2).await;
+                worker.inject_handles_for_test(pipe_a2).await;
 
                 // Set status back to Idle (simulating what Ready event would do).
                 worker.set_status(WorkerStatus::Idle).await;

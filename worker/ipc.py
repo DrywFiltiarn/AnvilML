@@ -1,12 +1,12 @@
 """Socket framing protocol for AnvilML worker IPC.
 
-Provides binary-framed msgpack serialization over a Unix domain socket
-(or Windows named pipe) for communication between the Rust server and
-Python worker processes.
+Provides binary-framed msgpack serialization over a TCP socket,
+Unix domain socket, or Windows named pipe for communication between
+the Rust server and Python worker processes.
 
-The Rust supervisor creates the socket and passes its path via the
+The Rust supervisor creates the listener and passes the address via the
 ``ANVILML_IPC_SOCKET`` environment variable.  The worker connects to
-this socket at startup.  If ``ANVILML_IPC_SOCKET`` is not set
+this address at startup.  If ``ANVILML_IPC_SOCKET`` is not set
 (e.g. during testing), the worker falls back to stdin/stdout transport.
 
 Functions
@@ -31,15 +31,25 @@ _sock: socket.socket | None = None
 def connect(path: str) -> None:
     """Connect to the IPC socket at *path*.
 
-    On Unix/macOS this opens an AF_UNIX stream socket.
-    On Windows it opens a named pipe via ``CreateFileW`` and wraps it
-    in a socket-like object.
+    Supports three transport types:
+    - TCP address (e.g. ``127.0.0.1:8488``) — uses ``AF_INET``.
+    - Unix domain socket path — uses ``AF_UNIX`` (Unix/macOS).
+    - Windows named pipe — uses ``CreateFileW`` (Windows).
 
     Args:
-        path: Filesystem path to the Unix socket (Unix) or named pipe
-            path (Windows).
+        path: TCP address, filesystem path to the Unix socket, or
+            Windows named pipe path.
     """
     global _sock
+
+    # Detect TCP address (contains a colon and digits after it).
+    if ":" in path and not path.startswith("\\\\"):
+        host, port_str = path.rsplit(":", 1)
+        port = int(port_str)
+        _sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        _sock.connect((host, port))
+        return
+
     if sys.platform == "win32":
         import ctypes
 
