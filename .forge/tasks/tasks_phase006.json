@@ -1,0 +1,57 @@
+[
+  {
+    "id": "P6-A1",
+    "description": "anvilml-registry: ModelScanner directory walk and metadata derivation",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": [
+      "P5-B1"
+    ],
+    "context": "Create crates/anvilml-registry/src/scanner.rs: pub async fn scan(dirs:&[ModelDirConfig])->Vec<ModelMeta>. Infer ModelKind from path dir component (diffusion->Diffusion, text_encoders|clip->TextEncoder, vae->Vae, loras|lora->Lora, controlnet->ControlNet, upscale->Upscale, else Unknown). ModelDtype from filename (fp8->Fp8, fp16->Fp16, bf16->Bf16, fp32->Fp32, else Unknown). id=sha256_hex(first_1mib). tracing::debug!(path,reason) skipped files. tracing::info!(count,dir) on complete. cargo test -p anvilml-registry -- scanner exits 0 >=6 tests.",
+    "tags": []
+  },
+  {
+    "id": "P6-A2",
+    "description": "anvilml-registry: ModelStore SQLite CRUD",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": [
+      "P6-A1"
+    ],
+    "context": "Create crates/anvilml-registry/src/store.rs: ModelStore{pool:SqlitePool}. Methods: upsert(meta:&ModelMeta)->Result<()>, get(id:&str)->Result<Option<ModelMeta>>, list(kind:Option<ModelKind>)->Result<Vec<ModelMeta>>, delete(id:&str)->Result<bool>. Use sqlx typed queries. Tests use open_in_memory(). cargo test -p anvilml-registry -- store exits 0 >=6 tests (upsert/get/list/delete/not-found).",
+    "tags": []
+  },
+  {
+    "id": "P6-A3",
+    "description": "anvilml-registry: DeviceCapabilityStore backed by seed table",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": [
+      "P6-A2"
+    ],
+    "context": "Create crates/anvilml-registry/src/device_store.rs: DeviceCapabilityStore{pool:SqlitePool}. pub async fn get(&self,vendor_id:u16,device_id:u16)->Result<Option<DeviceRow>,AnvilError>. DeviceRow{vendor_id,device_id,name,arch,fp8:bool,flash_attention:bool}. Query device_capabilities table seeded by SeedLoader. cargo test -p anvilml-registry -- device_store exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P6-B1",
+    "description": "anvilml-server: GET /v1/models and GET /v1/models/:id handlers",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": [
+      "P6-A3"
+    ],
+    "context": "Create crates/anvilml-server/src/handlers/models.rs: list_models(State<AppState>, Query<{kind:Option<ModelKind>}>)->Json<Vec<ModelMeta>> calling registry.list(kind). get_model(State<AppState>, Path<String>)->Result<Json<ModelMeta>,AnvilError> calling registry.get(id) returning 404 on None. Add registry:Arc<ModelStore> to AppState. Mount GET /v1/models and GET /v1/models/:id in build_router. cargo test -p anvilml-server exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P6-B2",
+    "description": "anvilml-server: POST /v1/models/rescan + startup scan",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": [
+      "P6-B1"
+    ],
+    "context": "Add rescan_models handler (POST /v1/models/rescan): responds 202 immediately, spawns tokio task to scan cfg.model_dirs and upsert results into ModelStore. In main.rs: run initial scan at startup (same logic). tracing::info!(count,dir) per scan. Place test safetensors in models/diffusion/; curl /v1/models returns item with kind=diffusion and dtype=Fp8 if filename contains fp8.",
+    "tags": []
+  }
+]

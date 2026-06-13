@@ -1,0 +1,35 @@
+[
+  {
+    "id": "P12-A1",
+    "description": "anvilml-scheduler: dag.rs validate_graph collect-all-errors mode",
+    "phase": "12",
+    "project": "anvilml",
+    "prereqs": [
+      "P11-B1"
+    ],
+    "context": "Create crates/anvilml-scheduler/src/dag.rs: pub struct ValidatedGraph(pub Value). pub async fn validate_graph(graph:&Value,registry:&NodeTypeRegistry)->Result<ValidatedGraph,Vec<String>>. Checks (collect all, non-fail-fast): 1) nodes array present; 2) no duplicate id; 3) type in NodeTypeRegistry; 4) edge refs {node_id,output_slot} reference existing nodes+slots; 5) slot_type compatibility; 6) acyclic (Kahn). Return Ok(ValidatedGraph) only when all pass. tests/dag_tests.rs >=8 tests. cargo test -p anvilml-scheduler --features mock-hardware exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P12-A2",
+    "description": "anvilml-scheduler: GraphError enum and types.rs ValidatedGraph",
+    "phase": "12",
+    "project": "anvilml",
+    "prereqs": [
+      "P12-A1"
+    ],
+    "context": "Create crates/anvilml-scheduler/src/types.rs: GraphError enum{UnknownNodeType(String),DuplicateNodeId(String),UnknownEdgeRef{node_id:String,slot:String},SlotTypeMismatch{from:SlotType,to:SlotType},CycleDetected(Vec<String>)}. ValidatedGraph newtype already in dag.rs - re-export from types.rs. Update dag.rs to use GraphError. cargo test -p anvilml-scheduler --features mock-hardware exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P12-B1",
+    "description": "anvilml-server: POST /v1/jobs validating graph, 422 on invalid",
+    "phase": "12",
+    "project": "anvilml",
+    "prereqs": [
+      "P12-A2"
+    ],
+    "context": "Create handlers/jobs.rs: submit_job(State<AppState>,Json<SubmitJobRequest>)->Result<(StatusCode,Json<SubmitJobResponse>),AnvilError>. If node_registry.is_empty: return 503 workers_unavailable. Call validate_graph(&req.graph,&node_registry).await. On Err(errors): return 422 AnvilError::InvalidGraph(errors). On Ok: return 202 with placeholder job_id. Mount POST /v1/jobs in build_router. POST unknown-type-graph -> 422; valid graph -> 202. cargo test -p anvilml-server --features mock-hardware exits 0.",
+    "tags": []
+  }
+]

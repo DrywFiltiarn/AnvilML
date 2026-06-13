@@ -1,0 +1,37 @@
+[
+  {
+    "id": "P20-A1",
+    "description": "backend: crash-recovery integration test (kill worker mid-job)",
+    "phase": "20",
+    "project": "anvilml",
+    "prereqs": [
+      "P19-B1"
+    ],
+    "context": "Create backend/tests/api_crash.rs: start server ANVILML_WORKER_MOCK=1+ANVILML_MOCK_NODE_DELAY_MS=2000; submit mock job; get worker PID via GET /v1/workers; kill PID (libc::kill unix / TerminateProcess windows cfg-gated); assert WS events: worker Dead, job Failed{error:worker_crashed}, worker Respawning, worker Idle; submit second job; assert Completed. cargo test --workspace --features mock-hardware --test api_crash exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P20-B1",
+    "description": "backend: OpenAPI regeneration + clippy clean pass",
+    "phase": "20",
+    "project": "anvilml",
+    "prereqs": [
+      "P20-A1"
+    ],
+    "context": "Run cargo run -p anvilml-openapi; if diff on backend/openapi.json commit it. Run cargo clippy --workspace --features mock-hardware -- -D warnings; fix ALL warnings in any file (pre-existing counts). Run cargo test -p backend --features mock-hardware -- config_reference. All three exit 0. No warnings remain.",
+    "tags": []
+  },
+  {
+    "id": "P20-B2",
+    "description": "docs/TESTS.md: complete test catalogue for all phases",
+    "phase": "20",
+    "project": "anvilml",
+    "prereqs": [
+      "P20-B1"
+    ],
+    "context": "Create docs/TESTS.md per ANVILML_DESIGN.md \u00a716.1 format: one entry per test file in crates/*/tests/, backend/tests/, worker/tests/. Each entry: test name, file, context (preconditions), what it verifies, inputs, expected output. ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v exits 0; cargo test --workspace --features mock-hardware exits 0.",
+    "tags": []
+  }
+]

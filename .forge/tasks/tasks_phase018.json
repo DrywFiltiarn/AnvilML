@@ -1,0 +1,101 @@
+[
+  {
+    "id": "P18-A1",
+    "description": "worker/nodes/loader.py: LoadModel generic node",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": [
+      "P17-A2"
+    ],
+    "context": "Create worker/nodes/loader.py: LoadModel @register node. INPUT_SLOTS=[SlotSpec(\"model_id\",\"STRING\")], OUTPUT_SLOTS=[SlotSpec(\"model\",\"MODEL\")]. Mock: return {\"model\":MockModel(arch=\"zit\")}. Real: safetensors.safe_open, detect arch from metadata or filename, load via pipeline_cache.get_or_load(). Every pub method has docstring; every branch has inline comment. tests/test_nodes_loader.py TestLoadModel >=4 tests. ANVILML_WORKER_MOCK=1 pytest exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P18-A2",
+    "description": "worker/nodes/loader.py: LoadVae node",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-A1"
+    ],
+    "context": "Add LoadVae @register to loader.py: INPUT_SLOTS=[SlotSpec(\"model_id\",\"STRING\")], OUTPUT_SLOTS=[SlotSpec(\"vae\",\"VAE\")]. Mock: {\"vae\":MockVae()}. Real: load VAE safetensors via pipeline_cache. LoadModel never provides VAE implicitly. tests/test_nodes_loader.py TestLoadVae >=3 tests. ANVILML_WORKER_MOCK=1 pytest worker/tests/test_nodes_loader.py exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P18-A3",
+    "description": "worker/nodes/loader.py: LoadClip node with clip_type hint",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-A2"
+    ],
+    "context": "Add LoadClip @register to loader.py: INPUT_SLOTS=[SlotSpec(\"model_id\",\"STRING\"),SlotSpec(\"clip_type\",\"STRING\",optional=True)], OUTPUT_SLOTS=[SlotSpec(\"clip\",\"CLIP\")]. Mock: {\"clip\":MockClip(clip_type=inputs.get(\"clip_type\",\"qwen3\"))}. Real: load text encoder safetensors; clip_type selects tokeniser (qwen3/clip_l/t5). tests/test_nodes_loader.py TestLoadClip >=3 tests. pytest exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P18-B1",
+    "description": "worker/nodes/encoder.py: ClipTextEncode node",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-A3"
+    ],
+    "context": "Create worker/nodes/encoder.py: ClipTextEncode @register. INPUT_SLOTS=[SlotSpec(\"clip\",\"CLIP\"),SlotSpec(\"text\",\"STRING\"),SlotSpec(\"negative_text\",\"STRING\",optional=True)], OUTPUT_SLOTS=[SlotSpec(\"conditioning\",\"CONDITIONING\")]. Mock: {\"conditioning\":MockConditioning(text)}. Real: clip_obj.encode(text, negative_text or \"\"). Docstring + inline comments on encoding branch. ANVILML_WORKER_MOCK=1 pytest worker/tests/test_nodes_encoder.py exits 0 >=3 tests.",
+    "tags": []
+  },
+  {
+    "id": "P18-B2",
+    "description": "worker/nodes/sampler.py: EmptyLatent and Sampler nodes",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-B1"
+    ],
+    "context": "Create worker/nodes/sampler.py: EmptyLatent @register INPUT_SLOTS=[width:INT,height:INT,batch_size:INT optional] OUTPUT_SLOTS=[latent:LATENT]. Sampler @register INPUT_SLOTS=[model:MODEL,conditioning:CONDITIONING,latent:LATENT,steps:INT,cfg:FLOAT,seed:INT] OUTPUT_SLOTS=[latent:LATENT,seed:INT]. Mock Sampler: seed=-1 resolve to randint; emit 3 Progress events; return MockLatent+seed. Real: arch dispatch via arch_registry.sample(). ANVILML_WORKER_MOCK=1 pytest worker/tests/test_nodes_sampler.py exits 0 >=5 tests.",
+    "tags": []
+  },
+  {
+    "id": "P18-B3",
+    "description": "worker/nodes/decode.py: VaeDecode node with explicit VAE input",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-B2"
+    ],
+    "context": "Create worker/nodes/decode.py: VaeDecode @register INPUT_SLOTS=[vae:VAE,latent:LATENT] OUTPUT_SLOTS=[image:IMAGE]. VAE is always explicit required input; no implicit propagation from model. Mock: {\"image\":MockImage()}. Real: vae_obj.decode(latent) -> PIL Image. Update worker/nodes/image.py SaveImage: mock encode 64x64 black PNG b64 + emit ImageReady event. ANVILML_WORKER_MOCK=1 pytest worker/tests/test_nodes_decode.py exits 0 >=3 tests.",
+    "tags": []
+  },
+  {
+    "id": "P18-C1",
+    "description": "worker/nodes/arch/zit.py: ZiT FP8 architecture dispatch module",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-B3"
+    ],
+    "context": "Create worker/nodes/arch/__init__.py: arch_registry list; def register_arch(module); def dispatch_sample(model,...). Create worker/nodes/arch/zit.py: def can_handle(model_obj)->bool (model_obj.arch==\"zit\"). def sample(model,conditioning,latent,steps,cfg,seed,device,cancel_flag,emit_progress)->(latent,int). Mock: return (MockLatent(),seed). Real: diffusers ZitPipeline FP8; per-step cancel_flag check; emit_progress callback. Every FP8 choice has inline comment. ANVILML_WORKER_MOCK=1 pytest worker/tests/test_arch_zit.py exits 0 >=3 tests.",
+    "tags": []
+  },
+  {
+    "id": "P18-D1",
+    "description": "worker/pipeline_cache.py: LRU model cache",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-C1"
+    ],
+    "context": "Create worker/pipeline_cache.py: PipelineCache(max_entries:int=2). get_or_load(model_id:str,dtype:str,loader_fn:Callable)->Any: return cached or call loader_fn()+cache; evict LRU when full; tracing::info on eviction. OOM handler: on torch.cuda.OutOfMemoryError evict all then retry once. ANVILML_WORKER_MOCK=1 pytest worker/tests/test_pipeline_cache.py exits 0 >=4 tests (hit/miss/eviction/OOM-skip-in-mock).",
+    "tags": []
+  },
+  {
+    "id": "P18-E1",
+    "description": "worker/tests/test_parity.py + ZiT smoke proof documentation",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-D1"
+    ],
+    "context": "Create worker/tests/test_parity.py: import NODE_REGISTRY; assert set(NODE_REGISTRY.keys())=={\"LoadModel\",\"LoadVae\",\"LoadClip\",\"ClipTextEncode\",\"EmptyLatent\",\"Sampler\",\"VaeDecode\",\"ImageResize\",\"SaveImage\"}. Create docs/example_workflows/zit_fp8.json (Appendix B workflow JSON). Create docs/PROOF_phase018.md: step-by-step commands to submit zit_fp8.json, poll job status, fetch PNG artifact on real hardware. ANVILML_WORKER_MOCK=1 pytest worker/tests/test_parity.py exits 0.",
+    "tags": []
+  }
+]

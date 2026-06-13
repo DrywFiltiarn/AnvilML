@@ -1,0 +1,46 @@
+[
+  {
+    "id": "P11-A1",
+    "description": "anvilml-scheduler: NodeTypeRegistry populated from WorkerEvent::Ready",
+    "phase": "11",
+    "project": "anvilml",
+    "prereqs": [
+      "P10-B1"
+    ],
+    "context": "Create crates/anvilml-scheduler/src/node_registry.rs: NodeTypeRegistry{types:Arc<RwLock<HashMap<String,NodeTypeDescriptor>>>}. pub async fn update_from_worker(&self,types:Vec<NodeTypeDescriptor>). pub async fn get(&self,type_name:&str)->Option<NodeTypeDescriptor>. pub async fn all_types(&self)->Vec<NodeTypeDescriptor>. pub async fn is_empty(&self)->bool. tracing::debug!(worker_id,node_count,\"node registry updated\"). cargo test -p anvilml-scheduler --features mock-hardware -- node_registry exits 0 >=4 tests.",
+    "tags": []
+  },
+  {
+    "id": "P11-A2",
+    "description": "anvilml-worker: on Ready event update NodeTypeRegistry in scheduler",
+    "phase": "11",
+    "project": "anvilml",
+    "prereqs": [
+      "P11-A1"
+    ],
+    "context": "Extend WorkerPool/ManagedWorker: when Ready event received extract node_types field; call node_registry.update_from_worker(node_types). Pass Arc<NodeTypeRegistry> into WorkerPool::spawn_all. tracing::info!(worker_id,node_count) logged on Ready per ENVIRONMENT.md \u00a79. cargo test -p anvilml-worker --features mock-hardware exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P11-A3",
+    "description": "anvilml-server: GET /v1/nodes listing registered node types",
+    "phase": "11",
+    "project": "anvilml",
+    "prereqs": [
+      "P11-A2"
+    ],
+    "context": "Create handlers/nodes.rs: list_nodes(State<AppState>)->Json<Vec<NodeTypeDescriptor>> calling node_registry.all_types().await. If registry.is_empty: return 503 workers_unavailable (registry not yet populated). Mount GET /v1/nodes in build_router. Add node_registry:Arc<NodeTypeRegistry> to AppState. curl /v1/nodes -> 200 JSON array after worker Ready (mock returns empty node_types; 200 with []). cargo test -p anvilml-server --features mock-hardware exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P11-B1",
+    "description": "worker/nodes/__init__.py: NODE_REGISTRY auto-import",
+    "phase": "11",
+    "project": "anvilml",
+    "prereqs": [
+      "P11-A3"
+    ],
+    "context": "Create worker/nodes/__init__.py: NODE_REGISTRY:dict[str,type]={} global. Auto-import all .py files in nodes/ directory via pkgutil.iter_modules to trigger @register decorators. Create worker/nodes/base.py: @register decorator adds class to NODE_REGISTRY; BaseNode ABC with execute() abstract; SlotSpec dataclass; NodeContext dataclass. Update worker_main.py _import_nodes(): import worker.nodes; build node_types list from NODE_REGISTRY; include in Ready event. ANVILML_WORKER_MOCK=1 pytest worker/tests/test_nodes_base.py exits 0 >=3 tests.",
+    "tags": []
+  }
+]

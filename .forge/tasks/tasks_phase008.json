@@ -1,0 +1,72 @@
+[
+  {
+    "id": "P8-A1",
+    "description": "anvilml-ipc: WorkerMessage and WorkerEvent enums with msgpack codecs",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": [
+      "P7-A3"
+    ],
+    "context": "Create crates/anvilml-ipc/src/messages.rs: WorkerMessage #[serde(tag=\"_type\")]: Ping{seq:u64},Shutdown,Execute{job_id:Uuid,graph:Value,settings:JobSettings,device_index:u32},CancelJob{job_id},MemoryQuery. WorkerEvent #[serde(tag=\"_type\")]: Ready{worker_id,device_index,device_name,device_type,vram_total_mib,vram_free_mib,torch_version,fp16,bf16,fp8,flash_attention,node_types:Vec<NodeTypeDescriptor>},Pong{seq},Dying{reason},Progress,ImageReady,Completed,Failed,Cancelled. encode_message+decode_event via rmp_serde flat dict. cargo test -p anvilml-ipc -- messages exits 0 >=8 roundtrip tests.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P8-A2",
+    "description": "anvilml-ipc: RouterTransport bind and send",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": [
+      "P8-A1"
+    ],
+    "context": "Create crates/anvilml-ipc/src/transport.rs: pub struct RouterTransport{socket:Arc<Mutex<zeromq::RouterSocket>>,pub port:u16}. pub async fn bind()->Result<Self>: bind \"tcp://127.0.0.1:0\", read OS-assigned port. pub async fn send(&self,worker_id:&str,msg:&WorkerMessage)->Result<()>: encode_message, send multipart [identity_bytes, empty, payload]. Add zeromq={version=\"0.6\",features=[\"tokio\"]} to workspace. cargo test -p anvilml-ipc -- transport exits 0; bind returns non-zero port.",
+    "tags": []
+  },
+  {
+    "id": "P8-A3",
+    "description": "anvilml-ipc: RouterTransport recv with identity routing",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": [
+      "P8-A2"
+    ],
+    "context": "Add pub async fn recv(&self)->Result<(String,WorkerEvent),AnvilError> to RouterTransport. recv_multipart: frames are [identity, empty_delimiter, payload]. Extract identity as UTF-8 string. decode_event(payload). Return (worker_id, event). Create tests/roundtrip_tests.rs: in-process DEALER sends WorkerEvent::Pong{seq:42}; RouterTransport.recv() returns (worker_id, Pong{seq:42}). cargo test -p anvilml-ipc exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P8-B1",
+    "description": "worker/ipc.py: ZeroMQ DEALER transport with identity",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": [
+      "P8-A3"
+    ],
+    "context": "Create worker/ipc.py per ANVILML_DESIGN.md \u00a713.2: _ctx, _sock module globals. def connect(port:int,worker_id:str): _sock=zmq.Context.instance().socket(zmq.DEALER); _sock.setsockopt(zmq.IDENTITY,worker_id.encode()); _sock.connect(f\"tcp://127.0.0.1:{port}\"). def send_event(data:dict): _sock.send(msgpack.packb(data,use_bin_type=True)). def recv_message()->dict: msgpack.unpackb(_sock.recv(),raw=False). Create worker/requirements/base.txt: pyzmq>=26.0, msgpack>=1.0, pillow>=10.0, safetensors>=0.4, pytest>=8.0. python3 -c \"from worker import ipc\" exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P8-B2",
+    "description": "worker/tests/test_ipc.py: ipc.py unit tests",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": [
+      "P8-B1"
+    ],
+    "context": "Create worker/tests/test_ipc.py and worker/tests/__init__.py. Tests: connect() sets _sock identity; send_event encodes correct msgpack dict with _type key; recv_message deserialises correctly; roundtrip via in-process zmq.PAIR sockets. All tests set ANVILML_WORKER_MOCK=1 and restore env vars unconditionally. ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py -v exits 0 >=6 tests.",
+    "tags": []
+  },
+  {
+    "id": "P8-C1",
+    "description": "anvilml-ipc: 1000-trip RouterTransport stress test",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": [
+      "P8-B2"
+    ],
+    "context": "Create crates/anvilml-ipc/tests/stress_test.rs: #[tokio::test] bind RouterTransport; spawn Python subprocess running worker/ipc_echo.py (minimal script: connect, loop recv_message/send_event Pong); send 1000 WorkerMessage::Ping{seq:i}; assert 1000 Pong responses arrive with matching seq in order; all within 30s. Create worker/ipc_echo.py. cargo test -p anvilml-ipc --features mock-hardware --test stress_test exits 0; log shows 1000/1000.",
+    "tags": [
+      "reasoning"
+    ]
+  }
+]

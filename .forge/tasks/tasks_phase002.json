@@ -1,0 +1,46 @@
+[
+  {
+    "id": "P2-A1",
+    "description": "anvilml-core: ServerConfig struct with all fields and Default impl",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": [
+      "P1-B1"
+    ],
+    "context": "Create crates/anvilml-core/src/config.rs: ServerConfig with fields host(IpAddr), port(u16), db_path(PathBuf), artifact_dir(PathBuf), num_threads(Option<usize>), venv_path(PathBuf), max_ipc_payload_mib(u32), seeds_path(PathBuf), model_dirs(Vec<ModelDirConfig>), gpu_selection(GpuSelectionConfig), limits(LimitsConfig), rocm(Option<RocmConfig>), hardware_override(Option<HardwareOverrideConfig>). All nested structs in same file. Implement Default per ENVIRONMENT.md \u00a74. Derive Serialize+Deserialize. cargo test -p anvilml-core -- config exits 0 >=3 tests.",
+    "tags": []
+  },
+  {
+    "id": "P2-A2",
+    "description": "anvilml-core: layered config loading (toml + ANVILML_* env override)",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": [
+      "P2-A1"
+    ],
+    "context": "Create crates/anvilml-core/src/config_load.rs: pub fn load(path:&Path, overrides:&ConfigOverrides)->Result<ServerConfig,AnvilError>. Read toml file if present (else defaults). Apply ANVILML_* env vars (double-underscore nesting per ENVIRONMENT.md \u00a73). Apply ConfigOverrides last. Add toml workspace dep. cargo test -p anvilml-core -- config_load exits 0 >=4 tests: missing file uses defaults, env var beats toml, CLI override beats env.",
+    "tags": []
+  },
+  {
+    "id": "P2-B1",
+    "description": "backend: clap CLI args + config wiring in main.rs",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": [
+      "P2-A2"
+    ],
+    "context": "Create backend/src/cli.rs: #[derive(Parser)] Args with --config(PathBuf), --host(Option<IpAddr>), --port(Option<u16>), --log-format(plain|json). pub fn parse()->Args. Add clap workspace dep. Modify backend/src/main.rs: call cli::parse(), build ConfigOverrides from args, call config::load(), use cfg.host/cfg.port for TcpListener bind. cargo run --features mock-hardware -- --port 9001 & curl :9001/health -> 200.",
+    "tags": []
+  },
+  {
+    "id": "P2-B2",
+    "description": "backend: cross-platform graceful shutdown signal handler",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": [
+      "P2-B1"
+    ],
+    "context": "Create backend/src/shutdown.rs: pub async fn shutdown_signal(). #[cfg(unix)]: tokio::signal::unix SIGINT|SIGTERM. #[cfg(windows)]: tokio::signal::ctrl_c(). Both log tracing::info!(\"shutdown signal received\"). Modify main.rs: axum::serve(listener, router).with_graceful_shutdown(shutdown::shutdown_signal()).await. SIGTERM on Linux exits 0 within 3s.",
+    "tags": []
+  }
+]

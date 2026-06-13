@@ -1,0 +1,35 @@
+[
+  {
+    "id": "P23-A1",
+    "description": "docs-site: mdBook setup, SUMMARY.md, Introduction chapter",
+    "phase": "23",
+    "project": "anvilml",
+    "prereqs": [
+      "P22-A2"
+    ],
+    "context": "Create docs-site/book.toml: [book] title=AnvilML, src=src. Create docs-site/src/SUMMARY.md with chapters: Introduction, Quickstart, Configuration, Models, API (REST+WebSocket), Nodes (generic node system, slot types, baseline node table), Operations, Troubleshooting. Create docs-site/src/introduction.md. mdbook build exits 0; no broken links.",
+    "tags": []
+  },
+  {
+    "id": "P23-A2",
+    "description": "docs-site: Quickstart, Configuration, Models, API chapters",
+    "phase": "23",
+    "project": "anvilml",
+    "prereqs": [
+      "P23-A1"
+    ],
+    "context": "Write docs-site/src/quickstart.md: binary download, provisioning, start server, submit ZiT job via curl, view PNG. docs-site/src/configuration.md: all ServerConfig fields, env vars, precedence per ENVIRONMENT.md \u00a73-4. docs-site/src/models.md: directory layout, ModelKind, ModelDtype, rescan. docs-site/src/api.md: all REST endpoints, WebSocket events, full example workflow curl+websocat session. mdbook build exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P23-A3",
+    "description": "docs-site: Nodes, Operations, Troubleshooting chapters",
+    "phase": "23",
+    "project": "anvilml",
+    "prereqs": [
+      "P23-A2"
+    ],
+    "context": "Write docs-site/src/nodes.md: generic node philosophy, slot types, baseline node table (9 nodes with inputs/outputs), example workflow JSON (Appendix B). docs-site/src/operations.md: graceful shutdown, ghost reset, crash recovery, backup, upgrade. docs-site/src/troubleshooting.md: preflight failures, provisioning stuck, CUDA OOM, port conflict, Windows notes. mdbook build exits 0; all internal links resolve.",
+    "tags": []
+  }
+]

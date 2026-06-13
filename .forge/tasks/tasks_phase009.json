@@ -1,0 +1,94 @@
+[
+  {
+    "id": "P9-A1",
+    "description": "anvilml-worker: env.rs WorkerEnv environment variable builder",
+    "phase": "9",
+    "project": "anvilml",
+    "prereqs": [
+      "P8-C1"
+    ],
+    "context": "Create crates/anvilml-worker/src/env.rs: pub fn build_worker_env(device:&GpuDevice,cfg:&ServerConfig,port:u16)->HashMap<String,String>. Inject ANVILML_IPC_PORT(port decimal), ANVILML_WORKER_ID(device.index as string), ANVILML_DEVICE_INDEX(u32), ANVILML_DEVICE_TYPE(cuda/rocm/cpu), ANVILML_LOG_LEVEL(cfg.log_level), ANVILML_MAX_IPC_PAYLOAD_MIB. #[cfg(feature=mock-hardware)] inject ANVILML_WORKER_MOCK=1. Tests in tests/env_tests.rs: each key present with correct value. cargo test -p anvilml-worker --features mock-hardware -- env exits 0 >=5 tests.",
+    "tags": []
+  },
+  {
+    "id": "P9-A2",
+    "description": "anvilml-worker: spawn.rs subprocess Command construction",
+    "phase": "9",
+    "project": "anvilml",
+    "prereqs": [
+      "P9-A1"
+    ],
+    "context": "Create crates/anvilml-worker/src/spawn.rs: pub fn build_command(cfg:&ServerConfig,device:&GpuDevice,port:u16)->tokio::process::Command. Python path: {cfg.venv_path}/bin/python3 (unix) or {cfg.venv_path}/Scripts/python.exe (windows). Args: worker/worker_main.py. envs: build_worker_env(). stdout/stderr: Stdio::piped() for log capture. #[cfg(unix)]: unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) } in pre_exec. cargo test -p anvilml-worker --features mock-hardware -- spawn exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P9-A3",
+    "description": "anvilml-worker: bridge.rs two independent IPC reader/writer tasks",
+    "phase": "9",
+    "project": "anvilml",
+    "prereqs": [
+      "P9-A2"
+    ],
+    "context": "Create crates/anvilml-worker/src/bridge.rs: pub fn start(transport:Arc<RouterTransport>,worker_id:String,msg_rx:mpsc::Receiver<WorkerMessage>,event_tx:broadcast::Sender<(String,WorkerEvent)>)->(JoinHandle<()>,JoinHandle<()>). writer_task: loop recv from msg_rx, transport.send(&worker_id,&msg), tracing::debug!(worker_id,msg_type). reader_task: loop transport.recv()->(id,event), event_tx.send((id,event)), tracing::debug!(worker_id,event_type). cargo test -p anvilml-worker --features mock-hardware -- bridge exits 0 >=3 tests.",
+    "tags": []
+  },
+  {
+    "id": "P9-A4",
+    "description": "anvilml-worker: keepalive.rs Ping/Pong heartbeat and pong timeout watchdog",
+    "phase": "9",
+    "project": "anvilml",
+    "prereqs": [
+      "P9-A3"
+    ],
+    "context": "Create crates/anvilml-worker/src/keepalive.rs: pub fn start(worker_id:String,msg_tx:mpsc::Sender<WorkerMessage>,event_rx:broadcast::Receiver<(String,WorkerEvent)>,ping_interval:Duration,pong_timeout:Duration,on_timeout:impl Fn()+Send+'static)->JoinHandle<()>. Every ping_interval: send Ping{seq}, set pong_deadline=now+pong_timeout. On Pong{seq} matching: reset deadline. If deadline passes without Pong: call on_timeout(). Tests in tests/keepalive_tests.rs: timeout fires within pong_timeout+100ms; pong resets deadline. cargo test -p anvilml-worker --features mock-hardware -- keepalive exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P9-A5",
+    "description": "anvilml-worker: managed.rs ManagedWorker state machine",
+    "phase": "9",
+    "project": "anvilml",
+    "prereqs": [
+      "P9-A4"
+    ],
+    "context": "Create crates/anvilml-worker/src/managed.rs per ANVILML_DESIGN.md \u00a79.3 state machine: Initializing->Ready->Idle->Busy->Dead->Respawning. pub async fn spawn(cfg,device,transport)->Result<Self>: call build_command, start child, start bridge tasks, start keepalive. Ready timeout 60s->Dead. On Dying/crash/pong-timeout: transition Dead, mark in-flight job Failed, schedule respawn via RespawnPolicy. Delegate to spawn.rs/bridge.rs/keepalive.rs/respawn.rs. tests/managed_tests.rs: >=6 tests. cargo test -p anvilml-worker --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P9-A6",
+    "description": "anvilml-worker: pool.rs WorkerPool managing Vec<ManagedWorker>",
+    "phase": "9",
+    "project": "anvilml",
+    "prereqs": [
+      "P9-A5"
+    ],
+    "context": "Create crates/anvilml-worker/src/pool.rs: WorkerPool{workers:Vec<Arc<ManagedWorker>>,transport:Arc<RouterTransport>}. pub async fn spawn_all(cfg:&ServerConfig,devices:&[GpuDevice],transport:Arc<RouterTransport>)->Result<Self>. pub async fn get_worker_infos(&self)->Vec<WorkerInfo>. pub fn broadcaster(&self)->&Arc<EventBroadcaster>. On worker status change: send WsEvent::WorkerStatusChanged. tests/pool_tests.rs: spawn N mock workers -> N Idle. cargo test -p anvilml-worker --features mock-hardware exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P9-B1",
+    "description": "worker/worker_main.py: mock mode startup, Ready event, Ping/Pong loop",
+    "phase": "9",
+    "project": "anvilml",
+    "prereqs": [
+      "P9-A6"
+    ],
+    "context": "Create worker/worker_main.py per ANVILML_DESIGN.md \u00a713.1. Read ANVILML_IPC_PORT+WORKER_ID+DEVICE_INDEX+DEVICE_TYPE from env. ipc.connect(port,worker_id). Mock mode (ANVILML_WORKER_MOCK=1): skip torch; send_event({_type:Ready,worker_id,device_index,device_name:Mock,device_type,vram_total_mib:8192,vram_free_mib:8192,torch_version:mock,fp16:True,bf16:True,fp8:True,flash_attention:True,node_types:[]}). Loop: recv_message; Ping->Pong; Shutdown->exit 0. Create worker/__init__.py. tests/test_worker_main.py >=4 tests. ANVILML_WORKER_MOCK=1 pytest exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P9-C1",
+    "description": "anvilml-server: GET /v1/workers handler + WorkerPool in AppState",
+    "phase": "9",
+    "project": "anvilml",
+    "prereqs": [
+      "P9-B1"
+    ],
+    "context": "Add workers:Arc<WorkerPool> to AppState. In main.rs: RouterTransport::bind().await; detect_all_devices for device list; WorkerPool::spawn_all(cfg,devices,transport).await. Create handlers/workers.rs: list_workers returns Json<Vec<WorkerInfo>>. Mount GET /v1/workers in build_router. Update stats_tick::start to take Arc<WorkerPool>. curl /v1/workers -> JSON array with >=1 entry status=Idle within 30s. tracing::info!(worker_id,device,torch_version,fp8,node_count) on Ready.",
+    "tags": []
+  }
+]

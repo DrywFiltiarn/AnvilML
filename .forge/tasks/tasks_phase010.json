@@ -1,0 +1,35 @@
+[
+  {
+    "id": "P10-A1",
+    "description": "anvilml-worker: respawn.rs RespawnPolicy with backoff and max-attempt guard",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": [
+      "P9-C1"
+    ],
+    "context": "Create crates/anvilml-worker/src/respawn.rs: RespawnPolicy{delay_ms:u64,max_attempts:u32,window_s:u32}. pub fn should_respawn(&self,crash_count:u32,last_crash:Instant)->bool. pub fn next_delay_ms(&self,attempt:u32)->u64 (exponential backoff capped at 30s). Tests: max_attempts exceeded->false; within window->true; delay sequence correct. cargo test -p anvilml-worker --features mock-hardware -- respawn exits 0 >=4 tests.",
+    "tags": []
+  },
+  {
+    "id": "P10-A2",
+    "description": "anvilml-worker: managed.rs crash detection and automatic respawn",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": [
+      "P10-A1"
+    ],
+    "context": "Extend managed.rs: child.wait() future in managed run loop detects unexpected exit; transition Dead; broadcast WorkerStatusChanged(Dead); if in-flight job: mark Failed with error=worker_crashed via job store callback. After respawn_delay: if RespawnPolicy::should_respawn: transition Respawning; re-run spawn(); emit WorkerStatusChanged(Respawning). tracing::info!(worker_id,exit_code) on Dead; tracing::info!(worker_id,attempt,delay_ms) on Respawning. tests/managed_tests.rs: kill worker->Dead->Idle cycle. cargo test --features mock-hardware exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P10-B1",
+    "description": "anvilml-server: POST /v1/workers/:id/restart handler",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": [
+      "P10-A2"
+    ],
+    "context": "Create handlers/workers.rs restart_worker(State<AppState>,Path<String>): lookup worker by id in WorkerPool; if not found 404; send Shutdown IPC message; force-kill after 5s; respawn. Return 202. Mount POST /v1/workers/:id/restart in build_router. Integration test: restart a worker; GET /v1/workers shows Idle within 30s. cargo test -p anvilml-server --features mock-hardware exits 0.",
+    "tags": []
+  }
+]

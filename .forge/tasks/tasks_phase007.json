@@ -1,0 +1,35 @@
+[
+  {
+    "id": "P7-A1",
+    "description": "anvilml-server: EventBroadcaster wrapping broadcast channel",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": [
+      "P6-B2"
+    ],
+    "context": "Create crates/anvilml-server/src/ws/broadcaster.rs: pub struct EventBroadcaster{tx:broadcast::Sender<WsEvent>}. pub fn new()->Self (capacity 1024). pub fn send(&self,event:WsEvent): tx.send; tracing::warn! on Err (lagged). pub fn subscribe(&self)->broadcast::Receiver<WsEvent>. Add Arc<EventBroadcaster> to AppState. Create ws/mod.rs declaring broadcaster/handler/stats_tick. cargo test -p anvilml-server -- broadcaster exits 0 >=3 tests.",
+    "tags": []
+  },
+  {
+    "id": "P7-A2",
+    "description": "anvilml-server: GET /v1/events WebSocket upgrade handler",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": [
+      "P7-A1"
+    ],
+    "context": "Create crates/anvilml-server/src/ws/handler.rs: pub async fn ws_events(ws:WebSocketUpgrade, State(state):State<AppState>)->Response. On upgrade: subscribe broadcaster. Loop: recv event -> serde_json::to_string -> ws.send(Message::Text). Close on send error. tracing::info!(\"ws client connected\") and tracing::info!(\"ws client disconnected\") at open/close. Mount GET /v1/events in build_router. websocat ws://127.0.0.1:8488/v1/events connects without error.",
+    "tags": []
+  },
+  {
+    "id": "P7-A3",
+    "description": "anvilml-server: SystemStats background tick task",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": [
+      "P7-A2"
+    ],
+    "context": "Create crates/anvilml-server/src/ws/stats_tick.rs: pub fn start(broadcaster:Arc<EventBroadcaster>) spawns tokio task that every 5s calls sysinfo to read cpu_pct+ram_used_mib and sends WsEvent::SystemStats{cpu_pct,ram_used_mib,workers:vec![]}. Call start() in main.rs after server bind. websocat ws://127.0.0.1:8488/v1/events receives {\"type\":\"system_stats\"} frame within 6s.",
+    "tags": []
+  }
+]

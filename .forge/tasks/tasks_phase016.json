@@ -1,0 +1,24 @@
+[
+  {
+    "id": "P16-A1",
+    "description": "anvilml-worker: progress reporting in executor.py + worker_main.py",
+    "phase": "16",
+    "project": "anvilml",
+    "prereqs": [
+      "P15-A3"
+    ],
+    "context": "Extend worker/executor.py: after each node executes, if step-based sampler: emit Progress{job_id,step,total_steps,preview_b64:None} via ctx.emit. In mock mode: emit 3 Progress events then ImageReady then Completed. Update worker_main.py: pass emit=ipc.send_event into NodeContext. ANVILML_WORKER_MOCK=1 pytest worker/tests/test_executor.py exits 0; test verifies Progress events emitted in order.",
+    "tags": []
+  },
+  {
+    "id": "P16-A2",
+    "description": "anvilml-scheduler: relay Progress and ImageReady events to WebSocket",
+    "phase": "16",
+    "project": "anvilml",
+    "prereqs": [
+      "P16-A1"
+    ],
+    "context": "Extend scheduler.rs: on WorkerEvent::Progress: broadcast WsEvent::JobProgress{job_id,step,total_steps,preview_b64}. On ImageReady already handled in P15-A2. Verify event order with integration test: submit mock job; collect WS events; assert order JobQueued->JobStarted->JobProgress(x3)->JobImageReady->JobCompleted. cargo test -p anvilml-scheduler --features mock-hardware exits 0.",
+    "tags": []
+  }
+]

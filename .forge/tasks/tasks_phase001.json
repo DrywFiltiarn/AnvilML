@@ -1,0 +1,46 @@
+[
+  {
+    "id": "P1-A1",
+    "description": "anvilml-server: AppState struct",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": [
+      "P0-D1"
+    ],
+    "context": "Create crates/anvilml-server/src/state.rs: pub struct AppState { start_time: std::time::Instant, version: String } with pub fn new(version: impl Into<String>) -> Self. Derive Clone. Declare in lib.rs. Add serde_json as dev-dep. cargo test -p anvilml-server exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P1-A2",
+    "description": "anvilml-server: GET /health handler",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": [
+      "P1-A1"
+    ],
+    "context": "Create crates/anvilml-server/src/handlers/mod.rs (pub mod health) and handlers/health.rs: async fn health(State(state): State<AppState>) -> Json<Value> returning {status:\"ok\",version,uptime_s}. Unit test: axum oneshot returns 200, body contains status key. cargo test -p anvilml-server -- health exits 0 with >=1 test.",
+    "tags": []
+  },
+  {
+    "id": "P1-A3",
+    "description": "anvilml-server: build_router wiring health handler",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": [
+      "P1-A2"
+    ],
+    "context": "In crates/anvilml-server/src/lib.rs declare pub mod state, pub mod handlers. Implement pub fn build_router(state: AppState) -> Router mounting GET /health. Add axum, tokio, tower-http to Cargo.toml as workspace deps. Integration test: Router::oneshot GET /health returns 200. cargo test -p anvilml-server exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P1-B1",
+    "description": "backend: main.rs bind and serve",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": [
+      "P1-A3"
+    ],
+    "context": "Implement backend/src/main.rs: #[tokio::main] async fn main(). Create AppState::new(env!(\"CARGO_PKG_VERSION\")). Call build_router(state). TcpListener::bind(\"127.0.0.1:8488\").await. tracing::info!(addr=%addr, \"listening\"). axum::serve(listener, router).await. cargo run --features mock-hardware & then curl http://127.0.0.1:8488/health returns 200.",
+    "tags": []
+  }
+]

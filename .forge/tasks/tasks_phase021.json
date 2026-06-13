@@ -1,0 +1,26 @@
+[
+  {
+    "id": "P21-A1",
+    "description": "anvilml-core: ComponentVersions type and GET /v1/system/versions",
+    "phase": "21",
+    "project": "anvilml",
+    "prereqs": [
+      "P20-B2"
+    ],
+    "context": "Create types/versions.rs in anvilml-core: ComponentVersions{anvilml:String,python:String,torch:String,worker_protocol:String}. Add GET /v1/system/versions handler in handlers/system.rs returning ComponentVersions populated from: env!(CARGO_PKG_VERSION), preflight EnvReport.python_version, EnvReport.torch_version, hardcoded IPC protocol version string. Mount route. curl /v1/system/versions -> 200 with all fields non-empty. cargo test --features mock-hardware exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P21-A2",
+    "description": "backend: auto-provisioning background task on first run",
+    "phase": "21",
+    "project": "anvilml",
+    "prereqs": [
+      "P21-A1"
+    ],
+    "context": "In main.rs: after DB open but before WorkerPool::spawn_all, check if venv exists and torch imports succeed. If not: spawn background task running install_worker_deps.sh (Linux) or .ps1 (Windows); set ProvisioningState::Provisioning; emit WsEvent::ProvisioningProgress frames. Workers::spawn_all deferred until provisioning reaches Ready. GET /v1/system/env reflects provisioning state. cargo run with no venv: server binds, /health 200, /v1/system/env shows provisioning:Provisioning.",
+    "tags": [
+      "reasoning"
+    ]
+  }
+]

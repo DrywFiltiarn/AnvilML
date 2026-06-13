@@ -1,0 +1,44 @@
+[
+  {
+    "id": "P0-A1",
+    "description": "repo: .gitignore, .gitattributes, rust-toolchain.toml",
+    "phase": "0",
+    "project": "anvilml",
+    "prereqs": [],
+    "context": "Create .gitignore (ignore target/, *.db, *.db-wal, *.db-shm, worker/.venv, artifacts/, *.log, .DS_Store), .gitattributes (*.sh/py/rs/md/toml eol=lf; *.ps1 eol=crlf), rust-toolchain.toml ([toolchain] channel=\"stable\" components=[\"rustfmt\",\"clippy\"]). Acceptance: rustc --version prints stable; git check-attr eol -- worker/ipc.py reports lf.",
+    "tags": []
+  },
+  {
+    "id": "P0-B1",
+    "description": "repo: Cargo workspace root and all 9 crate skeletons",
+    "phase": "0",
+    "project": "anvilml",
+    "prereqs": [
+      "P0-A1"
+    ],
+    "context": "Create root Cargo.toml: workspace members (backend + 8 crates), resolver=2, [workspace.package] version=0.1.0, [workspace.dependencies] with serde/serde_json/tokio/axum/tracing/zeromq/rmp-serde/sqlx/uuid/thiserror/tower-http. Stub each crate: Cargo.toml + src/lib.rs (pub fn stub(){}). anvilml-openapi uses src/main.rs. anvilml-hardware declares mock-hardware feature; all dependents forward it. cargo build --workspace --features mock-hardware exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P0-C1",
+    "description": "repo: GitHub Actions CI workflow (6 jobs)",
+    "phase": "0",
+    "project": "anvilml",
+    "prereqs": [
+      "P0-B1"
+    ],
+    "context": "Create .github/workflows/ci.yml with 6 jobs per ENVIRONMENT.md \u00a76: rust-linux (ubuntu: fmt --check + clippy + test --features mock-hardware), rust-windows (windows: clippy + test --features mock-hardware), worker-linux (ubuntu: ANVILML_WORKER_MOCK=1 pytest worker/tests/ -v), worker-windows (windows: same), openapi-drift (ubuntu: cargo run -p anvilml-openapi && git diff --exit-code backend/openapi.json), config-drift (ubuntu: cargo test -p backend --features mock-hardware -- config_reference). Valid YAML; all 6 job names present.",
+    "tags": []
+  },
+  {
+    "id": "P0-D1",
+    "description": "repo: .forge directory bootstrap",
+    "phase": "0",
+    "project": "anvilml",
+    "prereqs": [
+      "P0-C1"
+    ],
+    "context": "Create .forge/state/state.json ({\"completed\":[],\"in_progress\":null,\"failed\":[],\"needs_review\":[],\"last_updated\":\"\"}), .forge/state/CURRENT_TASK.md (Task: none, Step: none, Status: COMPLETE), .forge/reports/.gitkeep, .forge/tasks/.gitkeep. ls .forge/state/state.json exits 0; JSON valid.",
+    "tags": []
+  }
+]

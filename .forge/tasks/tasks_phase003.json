@@ -1,0 +1,90 @@
+[
+  {
+    "id": "P3-A1",
+    "description": "anvilml-core: job types (Job, JobStatus, JobSettings, SubmitJobRequest/Response)",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": [
+      "P2-B2"
+    ],
+    "context": "Create crates/anvilml-core/src/types/job.rs per ANVILML_DESIGN.md \u00a75.3: Job{id:Uuid,status:JobStatus,graph:Value,settings:JobSettings,created_at,started_at,completed_at,worker_id,error,queue_position}, JobStatus enum(Queued/Running/Completed/Failed/Cancelled), JobSettings{device_preference:Option<String>}, SubmitJobRequest{graph:Value,settings:JobSettings}, SubmitJobResponse{job_id:Uuid,queue_position:u32}. Derive Serialize+Deserialize+Clone+Debug+ToSchema. cargo test -p anvilml-core -- types::job exits 0 >=3 tests.",
+    "tags": []
+  },
+  {
+    "id": "P3-A2",
+    "description": "anvilml-core: model and artifact types",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": [
+      "P3-A1"
+    ],
+    "context": "Create types/model.rs: ModelMeta{id:String,name,path:PathBuf,kind:ModelKind,dtype:ModelDtype,format:ModelFormat,size_bytes:u64,scanned_at:DateTime<Utc>}, ModelKind(Diffusion/TextEncoder/Vae/Lora/ControlNet/Upscale/Unknown), ModelDtype(Fp32/Fp16/Bf16/Fp8/Fp4/Unknown), ModelFormat(Safetensors/Ckpt/Pt/Bin/Unknown). Create types/artifact.rs: ArtifactMeta{id,job_id,hash,path,size_bytes,created_at}. All serde snake_case. cargo test -p anvilml-core -- types::model exits 0 >=3 tests.",
+    "tags": []
+  },
+  {
+    "id": "P3-A3",
+    "description": "anvilml-core: hardware types (HardwareInfo, GpuDevice, InferenceCaps)",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": [
+      "P3-A2"
+    ],
+    "context": "Create types/hardware.rs per ANVILML_DESIGN.md \u00a75.5: HardwareInfo{host:HostInfo,gpus:Vec<GpuDevice>,inference_caps:InferenceCaps}, GpuDevice{index,name,device_type:DeviceType,vram_total_mib,vram_free_mib,driver_version,pci_vendor_id,pci_device_id,arch:Option<String>,caps:InferenceCaps,enumeration_source,capabilities_source}, DeviceType{Cuda/Rocm/Cpu}, InferenceCaps{fp32,fp16,bf16,fp8,fp4,flash_attention:bool}, EnumerationSource, CapabilitySource. cargo test -p anvilml-core -- types::hardware exits 0 >=4 tests.",
+    "tags": []
+  },
+  {
+    "id": "P3-A4",
+    "description": "anvilml-core: node and worker types",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": [
+      "P3-A3"
+    ],
+    "context": "Create types/node.rs: NodeTypeDescriptor{type_name,display_name,category,inputs/outputs:Vec<SlotDescriptor>}, SlotDescriptor{name,slot_type,optional}, SlotType enum(Model/Clip/Vae/Conditioning/Latent/Image/String/Int/Float/Bool/Any). Create types/worker.rs: WorkerInfo, WorkerStatus(Initializing/Idle/Busy/Dead/Respawning), EnvReport{python_path,python_version,torch_version,provisioning,preflight_ok,reason,node_types}, ProvisioningState(Ready/Provisioning/Failed/NotStarted). All field names per ANVILML_DESIGN.md \u00a75.6-5.7. cargo test -p anvilml-core exits 0 >=3 tests each.",
+    "tags": []
+  },
+  {
+    "id": "P3-A5",
+    "description": "anvilml-core: WsEvent enum with all variant subtypes",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": [
+      "P3-A4"
+    ],
+    "context": "Create types/events.rs per ANVILML_DESIGN.md \u00a75.8: WsEvent #[serde(tag=\"type\",rename_all=\"snake_case\")] with variants JobQueued/JobStarted/JobProgress/JobImageReady/JobCompleted/JobFailed/JobCancelled/WorkerStatusChanged/SystemStats/ProvisioningProgress and their fields. Update types/mod.rs to re-export all type modules. cargo test -p anvilml-core -- types::events exits 0 >=4 tests (roundtrip, tag field in JSON).",
+    "tags": []
+  },
+  {
+    "id": "P3-B1",
+    "description": "anvilml-core: AnvilError enum with IntoResponse for axum",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": [
+      "P3-A5"
+    ],
+    "context": "Create crates/anvilml-core/src/error.rs: AnvilError per ANVILML_DESIGN.md \u00a75.2 (Db/Io/Serde/Ipc/PayloadTooLarge/WorkerNotFound/JobNotFound/InvalidGraph/CycleDetected/ModelNotFound/WorkersUnavailable/Internal). Derive thiserror::Error. Implement IntoResponse: map each variant to HTTP status + JSON {error,message,request_id:Uuid}. Add thiserror+uuid as workspace deps. cargo test -p anvilml-core -- error exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P3-C1",
+    "description": "anvilml-server: stub GET /v1/system/env returning default EnvReport",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": [
+      "P3-B1"
+    ],
+    "context": "Create crates/anvilml-server/src/handlers/system.rs: async fn get_env(State(state):State<AppState>)->Json<EnvReport> returning EnvReport::default(). Add AppState field env_report:Arc<RwLock<EnvReport>>. Mount GET /v1/system/env in build_router. Add anvilml-core dep to anvilml-server. curl /v1/system/env -> 200 {preflight_ok:false,provisioning:\"NotStarted\"}.",
+    "tags": []
+  },
+  {
+    "id": "P3-D1",
+    "description": "backend: config_reference drift guard integration test",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": [
+      "P3-C1"
+    ],
+    "context": "Create backend/tests/config_reference.rs: serialise ServerConfig::default() to TOML via toml::to_string_pretty, parse both strings to BTreeMap, recursively compare key sets \u2014 fail if any key present in one but absent in other. Create anvilml.toml at repo root with all config keys at documented defaults per ENVIRONMENT.md \u00a74. Add toml as dev-dep to backend. cargo test -p backend --features mock-hardware -- config_reference exits 0.",
+    "tags": []
+  }
+]

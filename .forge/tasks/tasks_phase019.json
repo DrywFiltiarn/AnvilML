@@ -1,0 +1,24 @@
+[
+  {
+    "id": "P19-A1",
+    "description": "worker/nodes/arch/flux.py: Flux 2 Klein FP8 arch dispatch",
+    "phase": "19",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-E1"
+    ],
+    "context": "Create worker/nodes/arch/flux.py: def can_handle(model_obj)->bool (model_obj.arch==\"flux\"; returns False for non-Flux). def sample(model,conditioning,latent,steps,cfg,seed,device,cancel_flag,emit_progress)->(latent,int). Mock: return (MockLatent(),seed). Real: diffusers FluxPipeline components FP8; per-step cancel check; emit_progress. Inline comment on single-encoder conditioning handling. tests/test_arch_flux.py >=3 tests; can_handle returns False for ZiT model. ANVILML_WORKER_MOCK=1 pytest exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P19-B1",
+    "description": "docs: Flux workflow JSON + PROOF_phase019.md smoke documentation",
+    "phase": "19",
+    "project": "anvilml",
+    "prereqs": [
+      "P19-A1"
+    ],
+    "context": "Create docs/example_workflows/flux_klein_fp8.json: same 8-node structure as zit_fp8.json with LoadModel/LoadVae/LoadClip(clip_type=qwen3)/ClipTextEncode/EmptyLatent/Sampler/VaeDecode/SaveImage; model_id placeholders for Flux 2 Klein 9B FP8, Qwen3 8B FP8-mixed, Flux VAE. Create docs/PROOF_phase019.md: manual real-hardware steps. ANVILML_WORKER_MOCK=1 pytest worker/tests/test_parity.py exits 0 (unchanged 9 nodes).",
+    "tags": []
+  }
+]

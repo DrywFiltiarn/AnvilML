@@ -1,0 +1,46 @@
+[
+  {
+    "id": "P5-A1",
+    "description": "anvilml-registry: db.rs open/migrate/ghost-reset + initial SQL migration",
+    "phase": "5",
+    "project": "anvilml",
+    "prereqs": [
+      "P4-C1"
+    ],
+    "context": "Create backend/migrations/001_initial.sql: tables jobs(id,status,graph,settings,created_at,started_at,completed_at,worker_id,error,queue_position), models(id,name,path,kind,dtype,format,size_bytes,scanned_at), artifacts(id,job_id,hash,path,size_bytes,created_at), seed_history(file,sha256,applied_at). Create crates/anvilml-registry/src/db.rs: pub async fn open(path:&Path)->Result<SqlitePool>: WAL mode, sqlx::migrate!, ghost reset (UPDATE jobs SET status=Failed error=server_restart WHERE status IN Queued/Running). Log migrations applied+up-to-date. cargo test -p anvilml-registry -- db exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P5-A2",
+    "description": "anvilml-registry: SeedLoader SHA256-gated SQL seed runner",
+    "phase": "5",
+    "project": "anvilml",
+    "prereqs": [
+      "P5-A1"
+    ],
+    "context": "Create crates/anvilml-registry/src/seed_loader.rs: pub async fn run(pool:&SqlitePool,seeds_path:&Path)->Result<(),AnvilError>. For each .sql file in seeds_path: sha256 first 1MiB; if sha256 matches seed_history row: tracing::info!(file,status=up-to-date,\"seed skipped\") skip; else execute SQL + insert seed_history row + tracing::info!(file,sha256,\"seed applied\"). Create backend/seeds/devices.sql with 20+ device capability INSERT OR IGNORE rows. cargo test -p anvilml-registry -- seed exits 0; second run skips all.",
+    "tags": []
+  },
+  {
+    "id": "P5-A3",
+    "description": "anvilml-registry: open_in_memory for test isolation",
+    "phase": "5",
+    "project": "anvilml",
+    "prereqs": [
+      "P5-A2"
+    ],
+    "context": "Add pub async fn open_in_memory()->Result<SqlitePool,AnvilError> to db.rs: SqliteConnectOptions::from_str(\"sqlite::memory:\"), run migrations, return pool. All existing tests in anvilml-registry must call open_in_memory() \u2014 no temp files. cargo test -p anvilml-registry exits 0; no .db files left on disk after test run.",
+    "tags": []
+  },
+  {
+    "id": "P5-B1",
+    "description": "backend: SqlitePool in AppState, real DB wired in main.rs",
+    "phase": "5",
+    "project": "anvilml",
+    "prereqs": [
+      "P5-A3"
+    ],
+    "context": "Add db:SqlitePool to AppState. In main.rs: call registry::open(&cfg.db_path).await before detect_all_devices; pass real pool to detect_all_devices (replaces open_in_memory placeholder). tracing::info!(path=cfg.db_path,\"database opened\"). Config drift gate: cargo test -p backend --features mock-hardware -- config_reference exits 0. Start server; ls anvilml.db exists.",
+    "tags": []
+  }
+]

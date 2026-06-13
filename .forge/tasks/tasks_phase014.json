@@ -1,0 +1,37 @@
+[
+  {
+    "id": "P14-A1",
+    "description": "anvilml-scheduler: dispatch loop background task",
+    "phase": "14",
+    "project": "anvilml",
+    "prereqs": [
+      "P13-B1"
+    ],
+    "context": "Add to scheduler.rs: pub fn start_dispatch_loop(&self,workers:Arc<WorkerPool>)->JoinHandle<()>. Background tokio task: wake on new-job Notify or worker-Idle channel. Per wake: iterate queue; for each Queued job call select_worker (rank Idle workers by vram_free_mib desc; prefer device_preference if set); dispatch first match. tracing::info!(job_id,worker_id,\"job dispatched\"). Mark job Running, reserve VRAM, send WorkerMessage::Execute to worker. cargo test -p anvilml-scheduler --features mock-hardware -- dispatch exits 0 >=4 tests.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P14-A2",
+    "description": "anvilml-worker: mock execute in worker_main.py and executor.py",
+    "phase": "14",
+    "project": "anvilml",
+    "prereqs": [
+      "P14-A1"
+    ],
+    "context": "Create worker/executor.py: def run_graph(graph:dict,settings:dict,ctx:NodeContext)->None. Topo-sort nodes; for each node: resolve inputs from outputs; instantiate node class from NODE_REGISTRY; call execute(**inputs); store outputs. Create worker/nodes/image.py SaveImage node (mock: emit ImageReady with 64x64 black PNG b64). In worker_main.py handle Execute message: run_graph; send Completed{job_id,elapsed_ms}. ANVILML_WORKER_MOCK=1 pytest worker/tests/test_executor.py exits 0 >=4 tests.",
+    "tags": []
+  },
+  {
+    "id": "P14-A3",
+    "description": "anvilml-scheduler: handle Completed/Failed events, update job status",
+    "phase": "14",
+    "project": "anvilml",
+    "prereqs": [
+      "P14-A2"
+    ],
+    "context": "Extend scheduler.rs: subscribe to worker event broadcast. On Completed{job_id}: UPDATE jobs SET status=Completed,completed_at=now; release VRAM; broadcast WsEvent::JobCompleted; tracing::info!(job_id,elapsed_ms). On Failed{job_id,error}: UPDATE jobs SET status=Failed,error; release VRAM; broadcast WsEvent::JobFailed; tracing::info!(job_id,error). cargo test -p anvilml-scheduler --features mock-hardware exits 0; submit mock job -> Completed within 10s.",
+    "tags": []
+  }
+]

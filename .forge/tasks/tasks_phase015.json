@@ -1,0 +1,35 @@
+[
+  {
+    "id": "P15-A1",
+    "description": "anvilml-server: artifact/store.rs content-addressed PNG storage",
+    "phase": "15",
+    "project": "anvilml",
+    "prereqs": [
+      "P14-A3"
+    ],
+    "context": "Create crates/anvilml-server/src/artifact/store.rs: ArtifactStore{dir:PathBuf,db:SqlitePool}. pub async fn save(&self,job_id:Uuid,image_bytes:&[u8])->Result<ArtifactMeta>: sha256 hash; write to {dir}/{hash}.png; INSERT into artifacts table. pub async fn get(&self,hash:&str)->Result<Option<PathBuf>>. pub async fn list(&self,job_id:Option<Uuid>)->Result<Vec<ArtifactMeta>>. tests: save+get roundtrip, hash deterministic. cargo test -p anvilml-server --features mock-hardware exits 0 >=4 tests.",
+    "tags": []
+  },
+  {
+    "id": "P15-A2",
+    "description": "anvilml-scheduler: persist ImageReady artifact and update job",
+    "phase": "15",
+    "project": "anvilml",
+    "prereqs": [
+      "P15-A1"
+    ],
+    "context": "Extend scheduler.rs event handler: on WorkerEvent::ImageReady{job_id,image_b64,...}: base64 decode; call artifact_store.save(job_id,bytes); broadcast WsEvent::JobImageReady{job_id,artifact_hash,...}. Add artifact_store:Arc<ArtifactStore> to scheduler and AppState. cargo test -p anvilml-scheduler --features mock-hardware exits 0; mock job produces artifact.",
+    "tags": []
+  },
+  {
+    "id": "P15-A3",
+    "description": "anvilml-server: GET /v1/artifacts and GET /v1/artifacts/:hash",
+    "phase": "15",
+    "project": "anvilml",
+    "prereqs": [
+      "P15-A2"
+    ],
+    "context": "Create handlers/artifacts.rs: list_artifacts(Query<{job_id:Option<Uuid>}>) returns Vec<ArtifactMeta>. serve_artifact(Path<String>) reads file bytes from ArtifactStore, returns Response with Content-Type image/png. Mount routes in build_router. After completed mock job: curl /v1/artifacts/:hash returns image/png bytes. cargo test -p anvilml-server --features mock-hardware exits 0.",
+    "tags": []
+  }
+]

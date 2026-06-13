@@ -1,0 +1,28 @@
+[
+  {
+    "id": "P17-A1",
+    "description": "anvilml-scheduler: cancel queued job (immediate) and cancel running job (IPC)",
+    "phase": "17",
+    "project": "anvilml",
+    "prereqs": [
+      "P16-A2"
+    ],
+    "context": "Add to scheduler.rs: pub async fn cancel_job(&self,id:Uuid)->Result<(),AnvilError>. If Queued: mark Cancelled in queue+DB; broadcast JobCancelled; return Ok. If Running: send WorkerMessage::CancelJob{job_id} to owning worker; return Ok (actual cancellation confirmed via WorkerEvent::Cancelled). If terminal: return AnvilError::InvalidOperation (409). On WorkerEvent::Cancelled{job_id}: mark Cancelled in DB; release VRAM; broadcast JobCancelled. tests/scheduler_cancel_tests.rs >=4 tests. cargo test --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P17-A2",
+    "description": "anvilml-server: POST /v1/jobs/:id/cancel + DELETE endpoints",
+    "phase": "17",
+    "project": "anvilml",
+    "prereqs": [
+      "P17-A1"
+    ],
+    "context": "Add to handlers/jobs.rs: cancel_job(State<AppState>,Path<Uuid>): call scheduler.cancel_job(); 202 on Ok; 409 on InvalidOperation; 404 if not found. delete_job(Path<Uuid>): only if terminal; DELETE from DB+artifacts. bulk_clear(Query<{status}>): DELETE matching terminal jobs+artifacts. Mount POST /v1/jobs/:id/cancel, DELETE /v1/jobs/:id, DELETE /v1/jobs in build_router. Integration test: cancel queued job -> 202 -> status Cancelled. cargo test --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  }
+]

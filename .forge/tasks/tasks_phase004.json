@@ -1,0 +1,83 @@
+[
+  {
+    "id": "P4-A1",
+    "description": "anvilml-hardware: DeviceDetector trait + CpuDetector",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": [
+      "P3-D1"
+    ],
+    "context": "Create crates/anvilml-hardware/src/cpu.rs: CpuDetector implementing DeviceDetector. detect() returns Vec<GpuDevice> with one synthetic CPU entry using sysinfo for HostInfo fields. refresh_vram returns (0,0). Define pub trait DeviceDetector: Send+Sync { fn detect(&self)->Result<Vec<GpuDevice>,AnvilError>; fn refresh_vram(&self,idx:u32)->Result<(u32,u32),AnvilError>; } in lib.rs. cargo test -p anvilml-hardware -- cpu exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P4-A2",
+    "description": "anvilml-hardware: VulkanDetector SDK-free GPU enumeration",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": [
+      "P4-A1"
+    ],
+    "context": "Create crates/anvilml-hardware/src/vulkan.rs: VulkanDetector. Entry::load() for runtime loader. Enumerate physical devices via vkEnumeratePhysicalDevices. Read KHR_driver_properties (name/driver) + EXT_memory_budget (VRAM). VRAM: largest DEVICE_LOCAL heap heapSize. Return Ok(vec![]) if loader absent or entry creation fails. Map pci vendorID 0x10DE->Cuda 0x1002->Rocm else Cpu. cargo test -p anvilml-hardware -- vulkan exits 0 (never panics).",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P4-A3",
+    "description": "anvilml-hardware: DXGI (Windows) and sysfs+NVML (Linux) fallback detectors",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": [
+      "P4-A2"
+    ],
+    "context": "Create dxgi.rs (#[cfg(windows)]): DxgiDetector using windows crate IDXGIFactory1::EnumAdapters1 -> DXGI_ADAPTER_DESC1. Create sysfs.rs (#[cfg(unix)]): SysfsPciDetector reading /sys/bus/pci/devices/*/vendor|device. Create nvml.rs (#[cfg(unix)]): NvmlDetector for VRAM via libnvidia-ml if present else None. Both implement DeviceDetector. cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P4-A4",
+    "description": "anvilml-hardware: device_db.rs PCI-ID capability table",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": [
+      "P4-A3"
+    ],
+    "context": "Create crates/anvilml-hardware/src/device_db.rs: hardcoded const table of (vendor_id,device_id)->DeviceRow{name,arch,fp8,flash_attention}. pub fn resolve_caps_from_row(dev:&mut GpuDevice, row:Option<&DeviceRow>). VRAM never in table. tracing::debug!(vendor_id,device_id,source) on hit or miss. cargo test -p anvilml-hardware -- device_db exits 0 >=6 tests.",
+    "tags": []
+  },
+  {
+    "id": "P4-A5",
+    "description": "anvilml-hardware: detect_all_devices orchestration function",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": [
+      "P4-A4"
+    ],
+    "context": "Implement pub async fn detect_all_devices(cfg:&ServerConfig, pool:&SqlitePool)->Result<HardwareInfo,AnvilError> in lib.rs. Priority: hardware_override branch -> #[cfg(mock-hardware)] MockDetector -> VulkanDetector (empty? platform fallback) -> CpuDetector always added. Resolve caps via device_db for each GPU. Populate HostInfo via sysinfo. tracing::info!(index,name,device_type,vram_total_mib,fp8) per device. cargo test -p anvilml-hardware --features mock-hardware exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P4-B1",
+    "description": "anvilml-hardware: MockDetector + comprehensive mock test suite",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": [
+      "P4-A5"
+    ],
+    "context": "Create crates/anvilml-hardware/src/mock.rs #[cfg(feature=\"mock-hardware\")]: MockDetector reads ANVILML_MOCK_DEVICE_TYPE(cuda/rocm/cpu default cpu), ANVILML_MOCK_VRAM_MIB(default 8192), ANVILML_MOCK_DEVICE_NAME. Create tests/mock_tests.rs: >=8 tests using #[serial] from serial_test crate; each test captures pre-existing env var value and restores unconditionally per ENVIRONMENT.md \u00a711.3 pattern. cargo test -p anvilml-hardware --features mock-hardware exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P4-C1",
+    "description": "anvilml-server: GET /v1/system wired to real HardwareInfo",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": [
+      "P4-B1"
+    ],
+    "context": "Add handlers/system.rs get_system handler returning Json<HardwareInfo> from AppState.hardware Arc<RwLock<HardwareInfo>>. Mount GET /v1/system in build_router. In backend/src/main.rs: call detect_all_devices(cfg, pool) at startup (pass open_in_memory() pool placeholder until Phase 005). Populate AppState.hardware. tracing::info per detected device. curl /v1/system returns 200 with gpus array >=1 entry.",
+    "tags": []
+  }
+]
