@@ -693,24 +693,33 @@ connection. Tests must never share a database connection.
    **unconditional final step** outside any conditional or assertion block, so
    teardown runs even on panic or early return.
 3. Never rely on inherited env state from a prior test in the same runner process.
+4. Be annotated `#[serial]` (Rust, via the `serial_test` crate) or placed in a
+   `serial` pytest group (Python) — because `std::env` and `os.environ` are
+   process-global. Capture-and-restore prevents leaking state between *sequential*
+   tests but does not prevent a *concurrent* test thread from observing the mutated
+   value mid-flight. `#[serial]` serialises execution of all tests in the same binary
+   that share this annotation, eliminating the race window.
 
 ```rust
 // Correct Rust pattern:
-let prior = std::env::var("ANVILML_MOCK_VRAM_MIB").ok();
-std::env::set_var("ANVILML_MOCK_VRAM_MIB", "16384");
-// ... test body ...
-match prior {
-    Some(v) => std::env::set_var("ANVILML_MOCK_VRAM_MIB", v),
-    None => std::env::remove_var("ANVILML_MOCK_VRAM_MIB"),
+#[serial]  // required — env vars are process-global; concurrent tests race on set_var
+fn test_example() {
+    let prior = std::env::var("ANVILML_MOCK_VRAM_MIB").ok();
+    std::env::set_var("ANVILML_MOCK_VRAM_MIB", "16384");
+    // ... test body ...
+    match prior {
+        Some(v) => std::env::set_var("ANVILML_MOCK_VRAM_MIB", v),
+        None => std::env::remove_var("ANVILML_MOCK_VRAM_MIB"),
+    }
 }
 ```
 
-**Port isolation:** every test that binds a network socket must use port `0`
-(OS-assigned) and read the actual bound port after bind. Never hardcode a port in a test.
-
-**`#[serial]` usage:** permitted only when the shared resource is physically singular
-(e.g. a hardware device detected from the OS). It must not be used to paper over
-isolation defects. When used, it must be justified in `## Deviations from Plan`.
+**`#[serial]` usage:** mandatory for any test that mutates process-global state
+(env vars, process-wide signal handlers, global singletons). Also permitted for tests
+where the shared resource is physically singular (e.g. a hardware device detected from
+the OS). It must not be used for any other reason — port conflicts, database locks, and
+temp file collisions are isolation defects that must be fixed structurally. When used,
+it must be justified in `## Deviations from Plan`.
 
 **`#[ignore]`:** not permitted in committed code. A test that cannot pass is either
 fixed or deleted. An ignored test is a silent failure and will be treated as a

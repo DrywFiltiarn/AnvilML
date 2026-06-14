@@ -7,5 +7,14 @@
     "prereqs": ["P3-A3"],
     "context": "backend/tests/cli_tests.rs uses lsof/ss unconditionally; both are absent on Windows, causing NotFound panic in rust-windows CI. Replace the port-detection block with cfg-gated branches: #[cfg(unix)] keeps lsof+ss chain; #[cfg(windows)] uses netstat -ano filtered by child.id() PID to extract the listening port. No logic changes outside port-detection. cargo test -p anvilml --features mock-hardware --test cli_tests exits 0 on Windows.",
     "tags": []
-  }
+  },
+  {
+    "id": "P901-A2",
+    "description": "anvilml-core: add #[serial] to env-var-mutating config_load tests",
+    "phase": "901",
+    "project": "anvilml",
+    "prereqs": ["P900-A1"],
+    "context": "config_load_tests.rs has three tests that call std::env::set_var (test_env_var_beats_toml, test_cli_override_beats_env, test_nested_env_var). Cargo runs tests concurrently; capture-and-restore alone does not prevent concurrent threads observing mutated env vars mid-flight. Add serial_test as dev-dep to anvilml-core Cargo.toml. Annotate all three tests with #[serial]. Update docs/TESTS.md entries for those three tests. cargo test -p anvilml-core --test config_load_tests exits 0 under 50 parallel runs: for i in $(seq 1 50); do cargo test -p anvilml-core --test config_load_tests || exit 1; done",
+    "tags": []
+  }  
 ]

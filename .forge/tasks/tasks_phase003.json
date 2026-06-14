@@ -39,7 +39,8 @@
     "project": "anvilml",
     "prereqs": [
       "P3-A3",
-      "P900-A1"
+      "P900-A1",
+      "P900-A2"
     ],
     "context": "Create types/node.rs: NodeTypeDescriptor{type_name,display_name,category,inputs/outputs:Vec<SlotDescriptor>}, SlotDescriptor{name,slot_type,optional}, SlotType enum(Model/Clip/Vae/Conditioning/Latent/Image/String/Int/Float/Bool/Any). Create types/worker.rs: WorkerInfo, WorkerStatus(Initializing/Idle/Busy/Dead/Respawning), EnvReport{python_path,python_version,torch_version,provisioning,preflight_ok,reason,node_types}, ProvisioningState(Ready/Provisioning/Failed/NotStarted). All field names per ANVILML_DESIGN.md \u00a75.6-5.7. cargo test -p anvilml-core exits 0 >=3 tests each.",
     "tags": []
