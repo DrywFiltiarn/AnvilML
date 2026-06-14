@@ -15,11 +15,16 @@ pub use state::AppState;
 
 use axum::routing::get;
 use axum::Router;
+use tower_http::cors::CorsLayer;
+use tower_http::trace::TraceLayer;
 
 /// Build the HTTP router with all registered handlers.
 ///
 /// Creates a new `Router`, mounts the health handler at `GET /health`,
-/// and applies the shared `AppState` for injection into handlers.
+/// applies the shared `AppState` for injection into handlers, and wraps
+/// the router with middleware per ANVILML_DESIGN.md §12.3 (outermost-first):
+/// 1. `CorsLayer::permissive()` — allows all origins for local-only use.
+/// 2. `TraceLayer` — structured request/response logging via `tracing`.
 ///
 /// # Arguments
 ///
@@ -34,4 +39,6 @@ pub fn build_router(state: AppState) -> Router {
         // directly rather than via the external crate name.
         .route("/health", get(health))
         .with_state(state)
+        .layer(TraceLayer::new_for_http())
+        .layer(CorsLayer::permissive())
 }
