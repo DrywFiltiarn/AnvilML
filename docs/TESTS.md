@@ -36,6 +36,7 @@
 
 **File:** `crates/anvilml-core/tests/config_load_tests.rs`
 **Context:** Environment variable overrides take precedence over TOML file values for the same field.
+Process-global `std::env` is non-atomic; concurrent threads can observe `set_var` mid-flight. Annotated with `#[serial]` to serialise execution and eliminate the race window.
 **Tests:** A TOML file with `port = 9001` is loaded while `ANVILML_PORT=8080` is set; the env var value wins.
 **Inputs:** TOML file with `port = 9001`, `ANVILML_PORT=8080`, `overrides = ConfigOverrides::default()`.
 **Expected output:** `cfg.port == 8080` (env beats toml).
@@ -44,6 +45,7 @@
 
 **File:** `crates/anvilml-core/tests/config_load_tests.rs`
 **Context:** CLI overrides take precedence over environment variables, which take precedence over TOML.
+Process-global `std::env` is non-atomic; concurrent threads can observe `set_var` mid-flight. Annotated with `#[serial]` to serialise execution and eliminate the race window.
 **Tests:** A TOML file with `port = 9001`, env `ANVILML_PORT=8080`, and `overrides.port = Some(7070)` — the CLI override wins.
 **Inputs:** TOML `port = 9001`, `ANVILML_PORT=8080`, `overrides.port = Some(7070)`.
 **Expected output:** `cfg.port == 7070` (CLI beats env beats toml).
@@ -52,6 +54,7 @@
 
 **File:** `crates/anvilml-core/tests/config_load_tests.rs`
 **Context:** Double-underscore nesting in env vars correctly maps to nested config fields.
+Process-global `std::env` is non-atomic; concurrent threads can observe `set_var` mid-flight. Annotated with `#[serial]` to serialise execution and eliminate the race window.
 **Tests:** A TOML file without a `gpu_selection` section is loaded with `ANVILML_GPU_SELECTION__DEFAULT_DEVICE=cpu`; the nested field is set via the env var.
 **Inputs:** TOML without `gpu_selection`, `ANVILML_GPU_SELECTION__DEFAULT_DEVICE=cpu`.
 **Expected output:** `cfg.gpu_selection.default_device == "cpu"`.

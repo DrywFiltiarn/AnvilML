@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-core"
-version = "0.1.5"
+version = "0.1.6"
 edition.workspace = true
 
 [dependencies]
@@ -13,4 +13,5 @@ chrono = { workspace = true }
 utoipa = { workspace = true }
 
 [dev-dependencies]
+serial_test = "3.1"
 tempfile = { workspace = true }

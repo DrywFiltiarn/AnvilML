@@ -5,6 +5,7 @@
 /// defaults → TOML file → env vars → CLI overrides.
 use anvilml_core::config::ServerConfig;
 use anvilml_core::{load, ConfigOverrides};
+use serial_test::serial;
 
 /// Verifies that when the TOML file does not exist, `load()` returns
 /// `ServerConfig::default()` with all compiled-in defaults intact.
@@ -40,6 +41,7 @@ fn test_missing_file_uses_defaults() {
 ///
 /// Writes a TOML file with `port = 9001`, sets `ANVILML_PORT=8080`,
 /// and asserts that the final config has `port == 8080`.
+#[serial]
 #[test]
 fn test_env_var_beats_toml() {
     let prior = std::env::var("ANVILML_PORT").ok();
@@ -70,6 +72,7 @@ fn test_env_var_beats_toml() {
 ///
 /// Writes a TOML file with `port = 9001`, sets `ANVILML_PORT=8080`,
 /// and passes `overrides.port = Some(7070)`. Asserts final port is 7070.
+#[serial]
 #[test]
 fn test_cli_override_beats_env() {
     let prior = std::env::var("ANVILML_PORT").ok();
@@ -102,6 +105,7 @@ fn test_cli_override_beats_env() {
 /// Writes a TOML file without a `gpu_selection` section, sets
 /// `ANVILML_GPU_SELECTION__DEFAULT_DEVICE=cpu`, and asserts that
 /// `cfg.gpu_selection.default_device == "cpu"`.
+#[serial]
 #[test]
 fn test_nested_env_var() {
     let prior = std::env::var("ANVILML_GPU_SELECTION__DEFAULT_DEVICE").ok();
