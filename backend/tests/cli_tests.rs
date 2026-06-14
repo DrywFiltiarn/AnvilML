@@ -210,9 +210,7 @@ fn test_custom_port_health() {
                     .expect("failed to run netstat");
 
                 let netstat_output = String::from_utf8_lossy(&output.stdout);
-                let pid_str = child_pid
-                    .expect("child PID should be Some after successful spawn")
-                    .to_string();
+                let pid_str = child_pid.to_string();
 
                 // Parse netstat output line-by-line.
                 // Skip the header line (starts with "Proto") and find the line
