@@ -8,5 +8,5 @@
 //! **Hard constraints:** No business logic. All handlers delegate to
 //! the scheduler, worker pool, and model registry.
 
-#[allow(dead_code)]
-pub fn stub() {}
+pub mod state;
+pub use state::AppState;
