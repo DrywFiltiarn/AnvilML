@@ -189,3 +189,51 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Tests:** All 6 `EnumerationSource` variants (`Vulkan`, `Dxgi`, `Sysfs`, `Nvml`, `Mock`, `Override`) and all 3 `CapabilitySource` variants (`PyTorch`, `DeviceTable`, `Fallback`) serialise to their snake_case strings and deserialise back.
 **Inputs:** Each of the 9 enum variants individually.
 **Expected output:** Each variant survives `to_string` → `from_str` roundtrip unchanged.
+
+## test_node_type_descriptor_json_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/node_tests.rs`
+**Context:** `NodeTypeDescriptor` derives `Serialize` and `Deserialize` correctly; all fields including nested `SlotDescriptor` vectors with mixed optional flags round-trip through JSON.
+**Tests:** A fully-populated `NodeTypeDescriptor` (with `type_name`, `display_name`, `category`, `description`, 3 inputs including one optional, and 2 outputs) serialises to JSON and deserialises back to an identical value.
+**Inputs:** `NodeTypeDescriptor` constructed with inputs `samples` (Latent, required), `model` (Model, required), `positive` (Conditioning, optional) and outputs `samples` (Latent, required), `denoised` (Latent, required).
+**Expected output:** `from_str(&to_string(&node)) == node` — every field matches the original exactly.
+
+## test_slot_type_variants (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/node_tests.rs`
+**Context:** `SlotType` enum derives `Serialize` and `Deserialize` correctly with `#[serde(rename_all = "SCREAMING_SNAKE_CASE")]`; all 11 variants round-trip through JSON with correct uppercase keys matching the Python worker's convention.
+**Tests:** Each of the 11 variants (`Model`, `Clip`, `Vae`, `Conditioning`, `Latent`, `Image`, `String`, `Int`, `Float`, `Bool`, `Any`) serialises to its SCREAMING_SNAKE_CASE string and deserialises back to the same variant.
+**Inputs:** Each `SlotType` variant individually.
+**Expected output:** Each variant survives `to_string` → `from_str` roundtrip unchanged.
+
+## test_slot_descriptor_optional_field (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/node_tests.rs`
+**Context:** `SlotDescriptor` derives `Serialize` and `Deserialize` correctly; the `optional` boolean field is preserved through JSON roundtrip.
+**Tests:** A `SlotDescriptor` with `optional: true` roundtrips through JSON, and the restored `optional` field equals `true`.
+**Inputs:** `SlotDescriptor{name="seed", slot_type=Int, optional=true}`.
+**Expected output:** `restored.optional == true` — the optional flag survives JSON roundtrip unchanged.
+
+## test_worker_info_json_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/worker_tests.rs`
+**Context:** `WorkerInfo` derives `Serialize` and `Deserialize` correctly; all fields including `Option` variants with `Some` values round-trip through JSON.
+**Tests:** A fully-populated `WorkerInfo` (with `id`, `device_index=0`, `device_name`, `status=Busy`, `current_job_id=Some(uuid)`, `vram_used_mib=Some(12288)`) serialises to JSON and deserialises back to an identical value.
+**Inputs:** `WorkerInfo` constructed with all fields set to non-trivial values.
+**Expected output:** `from_str(&to_string(&worker)) == worker` — every field matches the original exactly.
+
+## test_worker_status_variants (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/worker_tests.rs`
+**Context:** `WorkerStatus` enum derives `Serialize` and `Deserialize` correctly with `#[serde(rename_all = "snake_case")]`; all 5 variants round-trip through JSON without data loss.
+**Tests:** Each of the 5 variants (`Initializing`, `Idle`, `Busy`, `Dead`, `Respawning`) serialises to its snake_case string and deserialises back to the same variant.
+**Inputs:** Each `WorkerStatus` variant individually.
+**Expected output:** Each variant survives `to_string` → `from_str` roundtrip unchanged.
+
+## test_env_report_default_preflight (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/worker_tests.rs`
+**Context:** `EnvReport` derives `Serialize` and `Deserialize` correctly; all `Option` fields with `None` values and the `provisioning` enum round-trip through JSON.
+**Tests:** An `EnvReport` with `preflight_ok=false`, `provisioning=NotStarted`, `reason=Some("Python not yet launched")`, and empty `node_types` vector roundtrips correctly.
+**Inputs:** `EnvReport{python_path: None, python_version: None, torch_version: None, provisioning: NotStarted, preflight_ok: false, reason: Some("Python not yet launched"), node_types: []}`.
+**Expected output:** `from_str(&to_string(&report)) == report` — every field matches, and `node_types` is an empty vec.

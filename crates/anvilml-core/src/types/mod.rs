@@ -10,6 +10,8 @@ pub mod artifact;
 pub mod hardware;
 pub mod job;
 pub mod model;
+pub mod node;
+pub mod worker;
 
 pub use artifact::ArtifactMeta;
 pub use hardware::{
@@ -18,3 +20,5 @@ pub use hardware::{
 };
 pub use job::{Job, JobSettings, JobStatus, SubmitJobRequest, SubmitJobResponse};
 pub use model::{ModelDtype, ModelFormat, ModelKind, ModelMeta};
+pub use node::{NodeTypeDescriptor, SlotDescriptor, SlotType};
+pub use worker::{EnvReport, ProvisioningState, WorkerInfo, WorkerStatus};

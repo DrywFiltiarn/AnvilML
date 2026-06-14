@@ -78,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-core"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "chrono",
  "serde",

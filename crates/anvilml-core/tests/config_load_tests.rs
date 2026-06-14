@@ -12,6 +12,11 @@ use serial_test::serial;
 ///
 /// This is the baseline test — it confirms the function does not panic
 /// or error on a missing file, and that defaults are preserved.
+///
+/// Process-global `std::env` is non-atomic; concurrent threads can observe
+/// `set_var` mid-flight. Annotated with `#[serial]` to serialise execution
+/// and eliminate the race window.
+#[serial]
 #[test]
 fn test_missing_file_uses_defaults() {
     // Clear ANVILML_PORT to ensure the test sees the compiled-in default
