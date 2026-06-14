@@ -61,9 +61,11 @@ jobs:
           ${{ matrix.activate }}
           pip install pytest pyzmq msgpack
       - name: Run worker tests
+        env:
+          ANVILML_WORKER_MOCK: "1"
         run: |
           ${{ matrix.activate }}
-          ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v
+          python -m pytest worker/tests -v
 
   openapi-drift:
     runs-on: ubuntu-latest
