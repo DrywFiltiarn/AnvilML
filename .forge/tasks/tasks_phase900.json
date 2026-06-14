@@ -9,12 +9,12 @@
     "tags": []
   },
   {
-    "id": "P901-A2",
+    "id": "P900-A2",
     "description": "anvilml-core: add #[serial] to env-var-mutating config_load tests",
-    "phase": "901",
+    "phase": "900",
     "project": "anvilml",
     "prereqs": ["P900-A1"],
-    "context": "config_load_tests.rs has three tests that call std::env::set_var (test_env_var_beats_toml, test_cli_override_beats_env, test_nested_env_var). Cargo runs tests concurrently; capture-and-restore alone does not prevent concurrent threads observing mutated env vars mid-flight. Add serial_test as dev-dep to anvilml-core Cargo.toml. Annotate all three tests with #[serial]. Update docs/TESTS.md entries for those three tests. cargo test -p anvilml-core --test config_load_tests exits 0 under 50 parallel runs: for i in $(seq 1 50); do cargo test -p anvilml-core --test config_load_tests || exit 1; done",
+    "context": "config_load_tests.rs has three tests calling std::env::set_var (test_env_var_beats_toml, test_cli_override_beats_env, test_nested_env_var). Cargo runs tests concurrently; capture-and-restore alone does not prevent concurrent threads observing mutated env vars mid-flight. Add serial_test as dev-dep to anvilml-core Cargo.toml. Annotate all three tests with #[serial]; add use serial_test::serial. Do not annotate test_missing_file_uses_defaults. Update docs/TESTS.md entries for the three annotated tests. Acceptance: for i in $(seq 1 50); do cargo test -p anvilml-core --test config_load_tests || exit 1; done",
     "tags": []
-  }  
+  }
 ]
