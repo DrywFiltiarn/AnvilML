@@ -154,3 +154,35 @@
 **Tests:** An `ArtifactMeta` with a 64-character lowercase hex hash roundtrips through JSON, and the restored hash matches the original exactly.
 **Inputs:** `ArtifactMeta` with `hash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"`.
 **Expected output:** `restored.hash == original.hash` — the SHA-256 hex string survives JSON roundtrip unchanged.
+
+## test_hardware_info_json_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/hardware_tests.rs`
+**Context:** `HardwareInfo` derives `Serialize` and `Deserialize` correctly; all fields including nested `GpuDevice`, `HostInfo`, and `InferenceCaps` structs round-trip through JSON.
+**Tests:** A fully-populated `HardwareInfo` (with `host` containing OS/CPU/RAM, two `GpuDevice` entries with mixed `Option<String>` values for `arch`, and `inference_caps` as the union of per-device capabilities) serialises to JSON and deserialises back to an identical value.
+**Inputs:** `HardwareInfo` constructed with two `GpuDevice` entries, one with `fp8=true`, one with `fp8=false`, to test the union logic.
+**Expected output:** `from_str(&to_string(&hardware)) == hardware` — every field matches the original exactly.
+
+## test_device_type_variants (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/hardware_tests.rs`
+**Context:** `DeviceType` enum derives `Serialize` and `Deserialize` correctly with `#[serde(rename_all = "snake_case")]`; all three variants round-trip through JSON without data loss.
+**Tests:** Each of the three variants (`Cuda`, `Rocm`, `Cpu`) serialises to its snake_case string and deserialises back to the same variant.
+**Inputs:** Each `DeviceType` variant individually.
+**Expected output:** Each variant survives `to_string` → `from_str` roundtrip unchanged.
+
+## test_inference_caps_default (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/hardware_tests.rs`
+**Context:** `InferenceCaps` derives `Default` correctly, producing all-false bool fields representing the "unknown" initial state before the Python worker reports actual capabilities.
+**Tests:** `InferenceCaps::default()` has all six bool fields (`fp32`, `fp16`, `bf16`, `fp8`, `fp4`, `flash_attention`) set to `false`.
+**Inputs:** `InferenceCaps::default()`.
+**Expected output:** All six bool fields are `false`.
+
+## test_enum_variants_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/hardware_tests.rs`
+**Context:** `EnumerationSource` and `CapabilitySource` enums derive `Serialize` and `Deserialize` correctly with `#[serde(rename_all = "snake_case")]`; all variants round-trip through JSON.
+**Tests:** All 6 `EnumerationSource` variants (`Vulkan`, `Dxgi`, `Sysfs`, `Nvml`, `Mock`, `Override`) and all 3 `CapabilitySource` variants (`PyTorch`, `DeviceTable`, `Fallback`) serialise to their snake_case strings and deserialise back.
+**Inputs:** Each of the 9 enum variants individually.
+**Expected output:** Each variant survives `to_string` → `from_str` roundtrip unchanged.

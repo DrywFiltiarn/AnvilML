@@ -20,6 +20,7 @@ pub use config::{
 pub use config_load::{load, ConfigOverrides};
 pub use error::AnvilError;
 pub use types::{
-    ArtifactMeta, Job, JobSettings, JobStatus, ModelDtype, ModelFormat, ModelKind, ModelMeta,
-    SubmitJobRequest, SubmitJobResponse,
+    ArtifactMeta, CapabilitySource, DeviceType, EnumerationSource, GpuDevice, HardwareInfo,
+    HostInfo, InferenceCaps, Job, JobSettings, JobStatus, ModelDtype, ModelFormat, ModelKind,
+    ModelMeta, SubmitJobRequest, SubmitJobResponse,
 };
