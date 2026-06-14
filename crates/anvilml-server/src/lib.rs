@@ -11,6 +11,7 @@
 pub mod handlers;
 pub mod state;
 pub use handlers::health::health;
+pub use handlers::system::get_env;
 pub use state::AppState;
 
 use axum::routing::get;
@@ -38,6 +39,9 @@ pub fn build_router(state: AppState) -> Router {
         // Health handler is re-exported at the crate root, so reference it
         // directly rather than via the external crate name.
         .route("/health", get(health))
+        // System env stub — returns default EnvReport until future tasks
+        // populate it from actual worker probe results.
+        .route("/v1/system/env", get(get_env))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())

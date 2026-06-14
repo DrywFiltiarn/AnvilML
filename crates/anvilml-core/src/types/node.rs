@@ -15,7 +15,7 @@ use utoipa::ToSchema;
 /// pipelines. The `SCREAMING_SNAKE_CASE` JSON representation matches the Python
 /// worker's `SlotType` convention exactly — this is critical for cross-language
 /// compatibility between the Rust supervisor and Python worker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SlotType {
     /// A diffusion model (e.g. UNet, DiT).
@@ -39,6 +39,7 @@ pub enum SlotType {
     /// A boolean flag.
     Bool,
     /// Any data type — used for slots that accept multiple types.
+    #[default]
     Any,
 }
 
@@ -49,7 +50,7 @@ pub enum SlotType {
 /// (relevant for inputs). The optional flag is preserved through JSON
 /// serialisation so the Python worker can distinguish required from optional
 /// connections.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct SlotDescriptor {
     /// Human-readable slot name (e.g. `"samples"`, `"prompt"`).
     pub name: String,
@@ -67,7 +68,7 @@ pub struct SlotDescriptor {
 /// its full input/output signature as lists of `SlotDescriptor`. The scheduler
 /// uses this information to validate job graphs before dispatching them to
 /// workers.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct NodeTypeDescriptor {
     /// Unique type identifier used by the node registry (e.g. `"KSampler"`).
     pub type_name: String,

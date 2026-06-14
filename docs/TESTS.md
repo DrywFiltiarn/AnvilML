@@ -405,3 +405,45 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Tests:** Converts `SqlxError::PoolTimedOut` into `AnvilError` and asserts the result is `AnvilError::Db(SqlxError::PoolTimedOut)`.
 **Inputs:** `SqlxError::PoolTimedOut`.
 **Expected output:** `AnvilError::Db(SqlxError::PoolTimedOut)`.
+
+## test_system_env_returns_200_with_default_report (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/system_tests.rs`
+**Context:** The `GET /v1/system/env` handler returns the default `EnvReport` stub via the production `build_router` path. Uses `Router::oneshot` to exercise the full handler pipeline without a live TCP listener.
+**Tests:** Builds the router with a default `AppState`, sends a GET request to `/v1/system/env`, asserts HTTP 200, parses the JSON response, and verifies `preflight_ok` is `false` and `provisioning` is `"not_started"`.
+**Inputs:** GET `/v1/system/env`, `AppState::new("test-version")`.
+**Expected output:** HTTP 200 with JSON body `{"preflight_ok":false,"provisioning":"not_started",...}`.
+**Acceptance command:** `cargo test -p anvilml-server --test system_tests -- --nocapture` exits 0.
+
+## test_app_state_new (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/state_tests.rs`
+**Context:** `AppState::new()` sets `start_time` to a recent instant and stores the version string correctly. No I/O, no subprocess, no network.
+**Tests:** Constructs `AppState::new("0.1.0")` and verifies `version == "0.1.0"` and `start_time` is within one second of the construction call.
+**Inputs:** `"0.1.0"`.
+**Expected output:** `version == "0.1.0"` and elapsed time between `Instant::now()` calls is less than 1 second.
+
+## test_app_state_clone (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/state_tests.rs`
+**Context:** `AppState` derives `Clone` correctly — the cloned `version` field must match the original.
+**Tests:** Clones an `AppState` and verifies `version` is identical. `Instant` does not compare equal across clones, so only the String field is checked.
+**Inputs:** `AppState::new("0.1.0")`.
+**Expected output:** `cloned.version == state.version`.
+
+## test_app_state_version_from_env (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/state_tests.rs`
+**Context:** `AppState::new()` accepts a `&'static str` from `CARGO_PKG_VERSION` via `impl Into<String>` and stores it correctly.
+**Tests:** Constructs `AppState` using `env!("CARGO_PKG_VERSION")` and asserts the stored version matches.
+**Inputs:** `env!("CARGO_PKG_VERSION")` (a compile-time constant).
+**Expected output:** `state.version == crate_version`.
+
+## test_health_returns_200_with_status_key (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/health_tests.rs`
+**Context:** The health handler returns HTTP 200 with a JSON body containing a `status` key set to `"ok"`. Exercises the production `build_router` path via `Router::oneshot`.
+**Tests:** Builds the router with `AppState::new("test-version")`, sends GET `/health`, asserts HTTP 200, parses JSON, and verifies `status == "ok"`.
+**Inputs:** GET `/health`, `AppState::new("test-version")`.
+**Expected output:** HTTP 200 with JSON body containing `"status":"ok"`.
+**Acceptance command:** `cargo test -p anvilml-server --test health_tests -- --nocapture` exits 0.

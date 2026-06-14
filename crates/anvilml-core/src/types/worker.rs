@@ -53,6 +53,17 @@ pub enum ProvisioningState {
     Failed,
 }
 
+impl Default for ProvisioningState {
+    /// Return `NotStarted` as the default provisioning state.
+    ///
+    /// When an `EnvReport` is constructed without provisioning context
+    /// (e.g. as a stub for the `/v1/system/env` endpoint), the default
+    /// state is `NotStarted` — no provisioning has been attempted.
+    fn default() -> Self {
+        Self::NotStarted
+    }
+}
+
 /// A snapshot of a single worker's state and identity.
 ///
 /// Maintained by the Rust supervisor. Contains the worker's stable identity
@@ -84,7 +95,7 @@ pub struct WorkerInfo {
 /// check result, and the list of all `NodeTypeDescriptor` values registered
 /// in the worker's `NODE_REGISTRY`. The Rust supervisor uses this to validate
 /// the worker's environment and populate the scheduler's node registry.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct EnvReport {
     /// Path to the Python interpreter used by this worker.
     pub python_path: Option<String>,
