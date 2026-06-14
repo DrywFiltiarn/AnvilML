@@ -28,7 +28,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
       - name: Format check
         if: matrix.fmt
         run: cargo fmt --all -- --check
@@ -69,7 +71,9 @@ jobs:
     needs: [rust]
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
       - name: Regenerate openapi.json
         run: cargo run -p anvilml-openapi
       - name: Check for drift
@@ -81,6 +85,8 @@ jobs:
     needs: [rust]
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
       - name: Config surface sync
         run: cargo test -p backend --features mock-hardware -- config_reference
