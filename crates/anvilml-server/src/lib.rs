@@ -8,5 +8,7 @@
 //! **Hard constraints:** No business logic. All handlers delegate to
 //! the scheduler, worker pool, and model registry.
 
+pub mod handlers;
 pub mod state;
+pub use handlers::health::health;
 pub use state::AppState;

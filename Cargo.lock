@@ -143,7 +143,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-server"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
@@ -152,6 +152,8 @@ dependencies = [
  "anvilml-worker",
  "axum",
  "serde_json",
+ "tokio",
+ "tower",
  "tower-http",
  "tracing",
 ]

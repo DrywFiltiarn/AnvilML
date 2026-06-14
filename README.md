@@ -16,7 +16,7 @@ AnvilML is **headless only**. It is a pure API server. It does not serve a web U
 
 ```
 SindriStudio (launcher)
-├── anvilml          ← this repo; Rust API server + Python worker supervisor
+├── AnvilML          ← this repo; Rust API server + Python worker supervisor
 └── BloomeryUI       ← separate repo; reference web frontend
 ```
 
@@ -51,7 +51,7 @@ Python worker (per GPU)
 | GPU backend | Linux | Windows |
 |-------------|:-----:|:-------:|
 | NVIDIA CUDA | ✓ | ✓ |
-| AMD ROCm | ✓ | ✓ (ROCm ≥ 7.2 via AMD PyTorch-on-Windows) |
+| AMD ROCm | ✓ | ✓ |
 | CPU (fallback) | ✓ | ✓ |
 
 Hardware detection is SDK-free. No `nvidia-smi`, `rocm-smi`, or CUDA/ROCm toolkits are required. The Vulkan loader (bundled with every modern GPU driver) is sufficient.
