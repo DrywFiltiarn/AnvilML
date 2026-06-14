@@ -91,4 +91,4 @@ jobs:
         with:
           rustflags: ""
       - name: Config surface sync
-        run: cargo test -p backend --features mock-hardware -- config_reference
+        run: cargo test -p anvilml --features mock-hardware -- config_reference
