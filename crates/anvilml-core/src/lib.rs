@@ -8,5 +8,9 @@
 //! This crate is pure data — serialisable, clonable, and testable
 //! without any external dependencies.
 
-#[allow(dead_code)]
-pub fn stub() {}
+pub mod config;
+
+pub use config::{
+    GpuSelectionConfig, HardwareOverrideConfig, LimitsConfig, ModelDirConfig, RocmConfig,
+    ServerConfig,
+};
