@@ -1,5 +1,7 @@
 # AnvilML
 
+[![CI AnvilML v3](https://github.com/DrywFiltiarn/AnvilML/actions/workflows/ci.yml/badge.svg)](https://github.com/DrywFiltiarn/AnvilML/actions/workflows/ci.yml)
+
 **AnvilML** is the Rust backend binary of the [SindriStudio](https://github.com/DrywFiltiarn/SindriStudio) image-generation platform. It spawns and supervises Python inference workers (one per GPU), exposes a versioned REST + WebSocket API, and manages job scheduling, model registry, and artifact storage via SQLite.
 
 AnvilML is **headless only**. It is a pure API server. It does not serve a web UI and does not embed BloomeryUI. SindriStudio is the separate launcher that starts AnvilML and BloomeryUI as independent sibling processes.
@@ -16,7 +18,7 @@ AnvilML is **headless only**. It is a pure API server. It does not serve a web U
 
 ```
 SindriStudio (launcher)
-├── AnvilML          ← this repo; Rust API server + Python worker supervisor
+├── anvilml          ← this repo; Rust API server + Python worker supervisor
 └── BloomeryUI       ← separate repo; reference web frontend
 ```
 
@@ -51,7 +53,7 @@ Python worker (per GPU)
 | GPU backend | Linux | Windows |
 |-------------|:-----:|:-------:|
 | NVIDIA CUDA | ✓ | ✓ |
-| AMD ROCm | ✓ | ✓ |
+| AMD ROCm | ✓ | ✓ (ROCm ≥ 7.2 via AMD PyTorch-on-Windows) |
 | CPU (fallback) | ✓ | ✓ |
 
 Hardware detection is SDK-free. No `nvidia-smi`, `rocm-smi`, or CUDA/ROCm toolkits are required. The Vulkan loader (bundled with every modern GPU driver) is sufficient.
@@ -71,73 +73,9 @@ The generic node graph is identical for both — only `model_id` values change.
 
 ---
 
-## Quick start
-
-### Prerequisites
-
-- Rust stable toolchain (installed via `rustup` — `rust-toolchain.toml` pins the version automatically)
-- Python 3.12.x (user-managed; AnvilML does not install Python)
-- GPU driver with Vulkan support (for GPU inference; CPU fallback requires no driver)
-
-### Build and run
-
-```bash
-# Clone
-git clone https://github.com/DrywFiltiarn/AnvilML.git
-cd AnvilML
-
-# Provision Python worker venv (detects CUDA/ROCm/CPU automatically)
-bash backend/scripts/install_worker_deps.sh          # Linux / macOS
-# powershell -ExecutionPolicy Bypass -File backend\scripts\install_worker_deps.ps1  # Windows
-
-# Build
-cargo build --release
-
-# Place model files
-mkdir -p models/diffusion models/text_encoders models/vae
-# Copy your .safetensors files into the appropriate subdirectory
-
-# Run
-./target/release/anvilml
-# Server binds http://127.0.0.1:8488 by default
-
-# Test
-curl http://127.0.0.1:8488/health
-curl http://127.0.0.1:8488/v1/workers
-curl http://127.0.0.1:8488/v1/nodes
-curl http://127.0.0.1:8488/v1/models
-```
-
-### Submit a job
-
-```bash
-curl -X POST http://127.0.0.1:8488/v1/jobs \
-  -H 'Content-Type: application/json' \
-  -d @docs/example_workflows/zit_fp8.json
-
-# Poll status
-curl http://127.0.0.1:8488/v1/jobs/<job_id>
-
-# Fetch result
-curl http://127.0.0.1:8488/v1/artifacts/<hash> --output result.png
-```
-
-### Watch events in real time
-
-```bash
-websocat ws://127.0.0.1:8488/v1/events
-```
-
----
-
 ## Configuration
 
-AnvilML reads configuration from (lowest to highest precedence):
-
-1. Compiled-in defaults
-2. `anvilml.toml` (path set by `--config`, default `./anvilml.toml`)
-3. `ANVILML_*` environment variables
-4. CLI flags (`--host`, `--port`, `--config`)
+CLI flags (`--host`, `--port`, `--config`)
 
 Key options:
 
@@ -220,16 +158,18 @@ This gate catches Windows-incompatible code without a Windows runner. The target
 
 ### CI
 
-GitHub Actions runs 6 jobs on every push to `main`:
+GitHub Actions runs on every push to `main` and every pull request. The Rust toolchain is pinned to `1.95.0`.
 
-| Job | Runner |
-|-----|--------|
-| `rust-linux` | Ubuntu latest |
-| `rust-windows` | Windows latest |
-| `worker-linux` | Ubuntu latest |
-| `worker-windows` | Windows latest |
-| `openapi-drift` | Ubuntu latest |
-| `config-drift` | Ubuntu latest |
+| Job | Runner | Steps |
+|-----|--------|-------|
+| `rust` (ubuntu-latest) | Ubuntu | fmt check + clippy + test |
+| `rust` (windows-latest) | Windows | clippy + test |
+| `worker` (ubuntu-latest) | Ubuntu | pytest worker/tests/ |
+| `worker` (windows-latest) | Windows | pytest worker/tests/ |
+| `openapi-drift` | Ubuntu | regenerate + diff check |
+| `config-drift` | Ubuntu | config_reference test |
+
+`openapi-drift` and `config-drift` run only after both `rust` matrix entries pass.
 
 ---
 
