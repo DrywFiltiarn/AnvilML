@@ -19,4 +19,7 @@ pub use config::{
 };
 pub use config_load::{load, ConfigOverrides};
 pub use error::AnvilError;
-pub use types::{Job, JobSettings, JobStatus, SubmitJobRequest, SubmitJobResponse};
+pub use types::{
+    ArtifactMeta, Job, JobSettings, JobStatus, ModelDtype, ModelFormat, ModelKind, ModelMeta,
+    SubmitJobRequest, SubmitJobResponse,
+};

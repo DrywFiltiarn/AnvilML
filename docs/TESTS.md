@@ -106,3 +106,51 @@
 **Acceptance command:** `cargo test -p anvilml --features mock-hardware -- cli_tests` exits 0.
 
 **Environment isolation:** The test clears all `ANVILML_*` env vars at startup and restores them at teardown to prevent pollution of parallel test runs. The subprocess is killed unconditionally on test exit.
+
+## test_model_meta_json_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/model_tests.rs`
+**Context:** `ModelMeta` derives `Serialize` and `Deserialize` correctly; all fields including `PathBuf`, `DateTime<Utc>`, and enum types round-trip through JSON.
+**Tests:** A fully-populated `ModelMeta` (with `id`, `name`, `path`, `kind=Diffusion`, `dtype=Fp32`, `format=Safetensors`, `size_bytes`, `scanned_at`) serialises to JSON and deserialises back to an identical value.
+**Inputs:** `ModelMeta` constructed with all fields set to non-trivial values.
+**Expected output:** `from_str(&to_string(&meta)) == meta` — every field matches the original exactly.
+
+## test_model_kind_variants (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/model_tests.rs`
+**Context:** `ModelKind` enum derives `Serialize` and `Deserialize` correctly with `#[serde(rename_all = "snake_case")]`; all seven variants round-trip through JSON without data loss.
+**Tests:** Each of the seven variants (`Diffusion`, `TextEncoder`, `Vae`, `Lora`, `ControlNet`, `Upscale`, `Unknown`) serialises to its snake_case string and deserialises back to the same variant.
+**Inputs:** Each `ModelKind` variant individually.
+**Expected output:** Each variant survives `to_string` → `from_str` roundtrip unchanged.
+
+## test_model_dtype_format_variants (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/model_tests.rs`
+**Context:** `ModelDtype` and `ModelFormat` enums derive `Serialize` and `Deserialize` correctly with `#[serde(rename_all = "snake_case")]`; all variants round-trip through JSON.
+**Tests:** All `ModelDtype` variants (`Fp32`, `Fp16`, `Bf16`, `Fp8`, `Fp4`, `Unknown`) and all `ModelFormat` variants (`Safetensors`, `Ckpt`, `Pt`, `Bin`, `Unknown`) serialise to their snake_case strings and deserialise back.
+**Inputs:** Each `ModelDtype` and `ModelFormat` variant individually.
+**Expected output:** Each variant survives `to_string` → `from_str` roundtrip unchanged.
+
+## test_artifact_meta_json_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/artifact_tests.rs`
+**Context:** `ArtifactMeta` derives `Serialize` and `Deserialize` correctly; all fields including `Uuid`, `PathBuf`, `DateTime<Utc>`, and the SHA-256 hash string round-trip through JSON.
+**Tests:** A fully-populated `ArtifactMeta` (with `id`, `job_id`, `hash` (64 hex chars), `path`, `size_bytes`, `created_at`) serialises to JSON and deserialises back to an identical value.
+**Inputs:** `ArtifactMeta` constructed with all fields set to non-trivial values.
+**Expected output:** `from_str(&to_string(&artifact)) == artifact` — every field matches the original exactly.
+
+## test_artifact_meta_default (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/artifact_tests.rs`
+**Context:** `ArtifactMeta` derives `Default` correctly, producing a well-formed struct with zero/empty defaults.
+**Tests:** `ArtifactMeta::default()` produces `id = ""`, `job_id = Uuid::default()`, `hash = ""`, `path = PathBuf::new()`, `size_bytes = 0`.
+**Inputs:** `ArtifactMeta::default()`.
+**Expected output:** All default fields are zero/empty as documented.
+
+## test_artifact_hash_format (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/artifact_tests.rs`
+**Context:** The `hash: String` field correctly serialises and deserialises a SHA-256 hex digest (64 lowercase hex characters) without any unexpected escaping, truncation, or case transformation.
+**Tests:** An `ArtifactMeta` with a 64-character lowercase hex hash roundtrips through JSON, and the restored hash matches the original exactly.
+**Inputs:** `ArtifactMeta` with `hash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"`.
+**Expected output:** `restored.hash == original.hash` — the SHA-256 hex string survives JSON roundtrip unchanged.
