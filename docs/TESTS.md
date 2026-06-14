@@ -56,6 +56,46 @@
 **Inputs:** TOML without `gpu_selection`, `ANVILML_GPU_SELECTION__DEFAULT_DEVICE=cpu`.
 **Expected output:** `cfg.gpu_selection.default_device == "cpu"`.
 
+## test_job_json_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/job_tests.rs`
+**Context:** `Job` derives `Serialize` and `Deserialize` correctly; all fields including `Option` variants and nested `JobSettings` round-trip through JSON.
+**Tests:** A fully-populated `Job` (with `id`, `status=Running`, graph JSON, `settings={device_preference: Some("cuda")}`, `created_at`, `started_at`, `completed_at=None`, `worker_id=Some("worker-0")`, `error=None`, `queue_position=Some(1)`) serialises to JSON and deserialises back to an identical value.
+**Inputs:** `Job` constructed with all fields set to non-trivial values.
+**Expected output:** `from_str(&to_string(&job)) == job` — every field matches the original exactly.
+
+## test_job_settings_default (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/job_tests.rs`
+**Context:** `JobSettings::default()` implements `Default` correctly, producing `device_preference: None` which means auto-select by VRAM.
+**Tests:** `JobSettings::default().device_preference` is `None`.
+**Inputs:** `JobSettings::default()`.
+**Expected output:** `device_preference == None`.
+
+## test_job_status_variants (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/job_tests.rs`
+**Context:** `JobStatus` enum derives `Serialize` and `Deserialize` correctly; all five variants round-trip through JSON without data loss.
+**Tests:** Each of the five variants (`Queued`, `Running`, `Completed`, `Failed`, `Cancelled`) serialises to its snake_case string and deserialises back to the same variant.
+**Inputs:** Each `JobStatus` variant individually.
+**Expected output:** Each variant survives `to_string` → `from_str` roundtrip unchanged.
+
+## test_submit_job_request_default (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/job_tests.rs`
+**Context:** `SubmitJobRequest::default()` produces a well-formed request with `graph = Null` and `settings.device_preference = None`.
+**Tests:** Default `SubmitJobRequest` has a null graph and no device preference.
+**Inputs:** `SubmitJobRequest::default()`.
+**Expected output:** `graph.is_null() == true` and `settings.device_preference.is_none() == true`.
+
+## test_submit_job_response_default (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/job_tests.rs`
+**Context:** `SubmitJobResponse::default()` produces a well-formed response with `job_id` as the UUID zero value and `queue_position = 0`.
+**Tests:** Default `SubmitJobResponse` has a zero UUID and zero queue position.
+**Inputs:** `SubmitJobResponse::default()`.
+**Expected output:** `job_id == Uuid::default()` and `queue_position == 0`.
+
 ## test_custom_port_health (anvilml)
 
 **File:** `backend/tests/cli_tests.rs`

@@ -11,6 +11,7 @@
 pub mod config;
 pub mod config_load;
 pub mod error;
+pub mod types;
 
 pub use config::{
     GpuSelectionConfig, HardwareOverrideConfig, LimitsConfig, ModelDirConfig, RocmConfig,
@@ -18,3 +19,4 @@ pub use config::{
 };
 pub use config_load::{load, ConfigOverrides};
 pub use error::AnvilError;
+pub use types::{Job, JobSettings, JobStatus, SubmitJobRequest, SubmitJobResponse};
