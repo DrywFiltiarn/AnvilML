@@ -60,7 +60,7 @@ pub enum ProvisioningState {
 /// lifecycle state (`status`), and optional job tracking fields
 /// (`current_job_id`, `vram_used_mib`). The `current_job_id` is `None`
 /// when the worker is idle and set to the active job's UUID when busy.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct WorkerInfo {
     /// Stable worker identity string (e.g. `"worker-0"`).
     pub id: String,

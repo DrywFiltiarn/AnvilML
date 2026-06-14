@@ -7,6 +7,7 @@
 //! supporting enums for hardware detection and reporting.
 
 pub mod artifact;
+pub mod events;
 pub mod hardware;
 pub mod job;
 pub mod model;
@@ -14,6 +15,7 @@ pub mod node;
 pub mod worker;
 
 pub use artifact::ArtifactMeta;
+pub use events::WsEvent;
 pub use hardware::{
     CapabilitySource, DeviceType, EnumerationSource, GpuDevice, HardwareInfo, HostInfo,
     InferenceCaps,

@@ -237,3 +237,35 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Tests:** An `EnvReport` with `preflight_ok=false`, `provisioning=NotStarted`, `reason=Some("Python not yet launched")`, and empty `node_types` vector roundtrips correctly.
 **Inputs:** `EnvReport{python_path: None, python_version: None, torch_version: None, provisioning: NotStarted, preflight_ok: false, reason: Some("Python not yet launched"), node_types: []}`.
 **Expected output:** `from_str(&to_string(&report)) == report` — every field matches, and `node_types` is an empty vec.
+
+## test_ws_event_roundtrip_job_image_ready (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/events_tests.rs`
+**Context:** `WsEvent::JobImageReady` is the most data-rich variant with 6 fields (`job_id`, `artifact_hash`, `width`, `height`, `seed`, `steps`). Verifies all fields survive JSON serialisation.
+**Tests:** A fully-populated `WsEvent::JobImageReady` serialises to JSON and deserialises back to an identical value. Each field is individually asserted for equality.
+**Inputs:** `WsEvent::JobImageReady{job_id: 550e8400-e29b-41d4-a716-446655440000, artifact_hash: "a1b2c3d4e5f6", width: 1024, height: 768, seed: 42, steps: 30}`.
+**Expected output:** All 6 fields match after `to_string` → `from_str` roundtrip.
+
+## test_ws_event_tag_field_present (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/events_tests.rs`
+**Context:** The `#[serde(tag = "type", rename_all = "snake_case")]` attribute on `WsEvent` causes each variant to serialise with a `"type"` key whose value is the snake_case variant name. This verifies the discriminator key is `"type"` (not `"_type"`).
+**Tests:** Serialise `WsEvent::JobQueued` to JSON, parse as generic JSON value, and assert that `"type"` key exists with value `"job_queued"`.
+**Inputs:** `WsEvent::JobQueued{job_id: 550e8400-e29b-41d4-a716-446655440000, queue_position: 1}`.
+**Expected output:** `parsed["type"] == "job_queued"`.
+
+## test_ws_event_all_variants_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/events_tests.rs`
+**Context:** All 10 `WsEvent` enum variants must survive JSON roundtrip. This tests every variant in a single loop, ensuring no serde mapping bug in any variant.
+**Tests:** Each of the 10 variants is constructed with minimal but non-default values, serialised to JSON, deserialised back, and asserted for equality.
+**Inputs:** One instance of each variant: `JobQueued`, `JobStarted`, `JobProgress`, `JobImageReady`, `JobCompleted`, `JobFailed`, `JobCancelled`, `WorkerStatusChanged`, `SystemStats`, `ProvisioningProgress`.
+**Expected output:** All 10 deserialised events equal their originals.
+
+## test_ws_event_system_stats_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/events_tests.rs`
+**Context:** `WsEvent::SystemStats` contains a `Vec<WorkerInfo>` — this tests that the enum correctly handles cross-type references and nested serialisation. `WorkerInfo` must implement `Serialize`/`Deserialize` for this to compile and pass.
+**Tests:** A `WsEvent::SystemStats` with two `WorkerInfo` entries (one idle, one busy with a job) roundtrips through JSON. All nested fields of both workers are individually verified.
+**Inputs:** `WsEvent::SystemStats{cpu_pct: 67.3, ram_used_mib: 16384, workers: [WorkerInfo{worker-0, idle}, WorkerInfo{worker-1, busy, job=550e8400-e29b-41d4-a716-446655440001}]}`.
+**Expected output:** All fields including nested workers match after roundtrip.
