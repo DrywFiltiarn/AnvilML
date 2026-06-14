@@ -9,8 +9,12 @@
 //! without any external dependencies.
 
 pub mod config;
+pub mod config_load;
+pub mod error;
 
 pub use config::{
     GpuSelectionConfig, HardwareOverrideConfig, LimitsConfig, ModelDirConfig, RocmConfig,
     ServerConfig,
 };
+pub use config_load::{load, ConfigOverrides};
+pub use error::AnvilError;

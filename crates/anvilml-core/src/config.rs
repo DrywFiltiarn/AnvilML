@@ -161,6 +161,7 @@ impl Default for HardwareOverrideConfig {
 /// that serve as the base layer in the config precedence chain:
 /// defaults < `anvilml.toml` < env vars < CLI flags.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ServerConfig {
     /// Bind address. Default: `"127.0.0.1"`.
     pub host: String,
