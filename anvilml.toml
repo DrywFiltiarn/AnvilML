@@ -1,0 +1,15 @@
+host = "127.0.0.1"
+port = 8488
+db_path = "./anvilml.db"
+artifact_dir = "./artifacts"
+venv_path = "./worker/.venv"
+max_ipc_payload_mib = 256
+model_dirs = []
+seeds_path = "./backend/seeds"
+
+[gpu_selection]
+default_device = "auto"
+
+[limits]
+max_queued_jobs = 100
+max_concurrent_jobs = 1

@@ -1,6 +1,6 @@
 [package]
 name = "anvilml"
-version = "0.1.5"
+version = "0.1.6"
 edition.workspace = true
 
 [[bin]]
@@ -20,6 +20,9 @@ axum = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+toml = { workspace = true }
 
 [features]
 # Forward mock-hardware to all crates that transitively depend on anvilml-hardware.

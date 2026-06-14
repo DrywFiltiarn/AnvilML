@@ -110,6 +110,15 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 
 **Environment isolation:** The test clears all `ANVILML_*` env vars at startup and restores them at teardown to prevent pollution of parallel test runs. The subprocess is killed unconditionally on test exit.
 
+## test_config_reference (anvilml)
+
+**File:** `backend/tests/config_reference.rs`
+**Context:** The checked-in `anvilml.toml` has the same key set as `ServerConfig::default()` serialised to TOML. This is the config drift guard (Gate 1).
+**Tests:** Serialises `ServerConfig::default()` to a TOML string via `toml::to_string_pretty`, reads `anvilml.toml` from the repo root, parses both into `toml::Value`, recursively collects all keys from each tree into a `BTreeSet<String>`, and asserts the two key sets are equal.
+**Inputs:** `ServerConfig::default()` serialised to TOML; file content of `anvilml.toml`.
+**Expected output:** Both key sets are equal — the test exits 0.
+**Acceptance command:** `cargo test -p anvilml --features mock-hardware -- config_reference` exits 0.
+
 ## test_model_meta_json_roundtrip (anvilml-core)
 
 **File:** `crates/anvilml-core/tests/model_tests.rs`
