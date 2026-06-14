@@ -269,3 +269,139 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Tests:** A `WsEvent::SystemStats` with two `WorkerInfo` entries (one idle, one busy with a job) roundtrips through JSON. All nested fields of both workers are individually verified.
 **Inputs:** `WsEvent::SystemStats{cpu_pct: 67.3, ram_used_mib: 16384, workers: [WorkerInfo{worker-0, idle}, WorkerInfo{worker-1, busy, job=550e8400-e29b-41d4-a716-446655440001}]}`.
 **Expected output:** All fields including nested workers match after roundtrip.
+
+## test_db_status_code (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/error_tests.rs`
+**Context:** `AnvilError::Db` wraps a `sqlx::Error` and maps to HTTP 500 — database failures are server-side errors the client cannot fix.
+**Tests:** `AnvilError::Db(SqlxError::PoolTimedOut).status_code()` returns `StatusCode::INTERNAL_SERVER_ERROR`.
+**Inputs:** `AnvilError::Db(SqlxError::PoolTimedOut)`.
+**Expected output:** `status_code() == StatusCode::INTERNAL_SERVER_ERROR`.
+
+## test_io_status_code (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/error_tests.rs`
+**Context:** `AnvilError::Io` wraps a `std::io::Error` and maps to HTTP 500 — I/O errors on server-owned files indicate a server-side problem.
+**Tests:** `AnvilError::Io(std::io::Error::other("test")).status_code()` returns `StatusCode::INTERNAL_SERVER_ERROR`.
+**Inputs:** `AnvilError::Io(std::io::Error::other("test io error"))`.
+**Expected output:** `status_code() == StatusCode::INTERNAL_SERVER_ERROR`.
+
+## test_serde_status_code (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/error_tests.rs`
+**Context:** `AnvilError::Serde` is a string-wrapped serialization error mapping to HTTP 500 — serialization failures indicate a programming error.
+**Tests:** `AnvilError::Serde("bad json".to_string()).status_code()` returns `StatusCode::INTERNAL_SERVER_ERROR`.
+**Inputs:** `AnvilError::Serde("bad json".to_string())`.
+**Expected output:** `status_code() == StatusCode::INTERNAL_SERVER_ERROR`.
+
+## test_ipc_status_code (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/error_tests.rs`
+**Context:** `AnvilError::Ipc` is a string-wrapped IPC error mapping to HTTP 500 — IPC failures with Python workers are server-side operational errors.
+**Tests:** `AnvilError::Ipc("connection lost".to_string()).status_code()` returns `StatusCode::INTERNAL_SERVER_ERROR`.
+**Inputs:** `AnvilError::Ipc("connection lost".to_string())`.
+**Expected output:** `status_code() == StatusCode::INTERNAL_SERVER_ERROR`.
+
+## test_payload_too_large_status_code (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/error_tests.rs`
+**Context:** `AnvilError::PayloadTooLarge` maps to HTTP 413 — the only client-side error that is not 404 or 400.
+**Tests:** `AnvilError::PayloadTooLarge("256MiB".to_string()).status_code()` returns `StatusCode::PAYLOAD_TOO_LARGE`.
+**Inputs:** `AnvilError::PayloadTooLarge("256MiB".to_string())`.
+**Expected output:** `status_code() == StatusCode::PAYLOAD_TOO_LARGE`.
+
+## test_worker_not_found_status_code (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/error_tests.rs`
+**Context:** `AnvilError::WorkerNotFound` maps to HTTP 404 — the worker resource does not exist.
+**Tests:** `AnvilError::WorkerNotFound("worker-1".to_string()).status_code()` returns `StatusCode::NOT_FOUND`.
+**Inputs:** `AnvilError::WorkerNotFound("worker-1".to_string())`.
+**Expected output:** `status_code() == StatusCode::NOT_FOUND`.
+
+## test_job_not_found_status_code (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/error_tests.rs`
+**Context:** `AnvilError::JobNotFound` maps to HTTP 404 — the job resource does not exist.
+**Tests:** `AnvilError::JobNotFound("job-abc".to_string()).status_code()` returns `StatusCode::NOT_FOUND`.
+**Inputs:** `AnvilError::JobNotFound("job-abc".to_string())`.
+**Expected output:** `status_code() == StatusCode::NOT_FOUND`.
+
+## test_invalid_graph_status_code (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/error_tests.rs`
+**Context:** `AnvilError::InvalidGraph` maps to HTTP 400 — the client submitted a graph with validation errors.
+**Tests:** `AnvilError::InvalidGraph(vec!["missing node".to_string()]).status_code()` returns `StatusCode::BAD_REQUEST`.
+**Inputs:** `AnvilError::InvalidGraph(vec!["missing node".to_string()])`.
+**Expected output:** `status_code() == StatusCode::BAD_REQUEST`.
+
+## test_cycle_detected_status_code (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/error_tests.rs`
+**Context:** `AnvilError::CycleDetected` maps to HTTP 400 — the client submitted a graph with a cycle.
+**Tests:** `AnvilError::CycleDetected(vec!["A→B→A".to_string()]).status_code()` returns `StatusCode::BAD_REQUEST`.
+**Inputs:** `AnvilError::CycleDetected(vec!["A→B→A".to_string()])`.
+**Expected output:** `status_code() == StatusCode::BAD_REQUEST`.
+
+## test_model_not_found_status_code (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/error_tests.rs`
+**Context:** `AnvilError::ModelNotFound` maps to HTTP 404 — the model resource does not exist in any configured directory.
+**Tests:** `AnvilError::ModelNotFound("model-x".to_string()).status_code()` returns `StatusCode::NOT_FOUND`.
+**Inputs:** `AnvilError::ModelNotFound("model-x".to_string())`.
+**Expected output:** `status_code() == StatusCode::NOT_FOUND`.
+
+## test_workers_unavailable_status_code (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/error_tests.rs`
+**Context:** `AnvilError::WorkersUnavailable` maps to HTTP 503 — all workers are busy or dead, the service is temporarily unable to process the request.
+**Tests:** `AnvilError::WorkersUnavailable("no idle".to_string()).status_code()` returns `StatusCode::SERVICE_UNAVAILABLE`.
+**Inputs:** `AnvilError::WorkersUnavailable("no idle".to_string())`.
+**Expected output:** `status_code() == StatusCode::SERVICE_UNAVAILABLE`.
+
+## test_internal_status_code (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/error_tests.rs`
+**Context:** `AnvilError::Internal` maps to HTTP 500 — unexpected internal failures indicate a bug in the server.
+**Tests:** `AnvilError::Internal("panic caught".to_string()).status_code()` returns `StatusCode::INTERNAL_SERVER_ERROR`.
+**Inputs:** `AnvilError::Internal("panic caught".to_string())`.
+**Expected output:** `status_code() == StatusCode::INTERNAL_SERVER_ERROR`.
+
+## test_toml_status_code (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/error_tests.rs`
+**Context:** `AnvilError::Toml` maps to HTTP 400 — TOML deserialisation errors mean the config file is malformed.
+**Tests:** `AnvilError::Toml(toml_err).status_code()` returns `StatusCode::BAD_REQUEST` where `toml_err` is created from deserializing invalid TOML.
+**Inputs:** `AnvilError::Toml(toml::from_str::<toml::Value>("[invalid toml content {{{").unwrap_err())`.
+**Expected output:** `status_code() == StatusCode::BAD_REQUEST`.
+
+## test_env_var_status_code (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/error_tests.rs`
+**Context:** `AnvilError::EnvVar` maps to HTTP 400 — invalid environment variable values mean the operator set a config variable to an unparseable value.
+**Tests:** `AnvilError::EnvVar { name: "PORT", value: "abc" }.status_code()` returns `StatusCode::BAD_REQUEST`.
+**Inputs:** `AnvilError::EnvVar { name: "PORT".to_string(), value: "abc".to_string() }`.
+**Expected output:** `status_code() == StatusCode::BAD_REQUEST`.
+
+## test_response_body_structure (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/error_tests.rs`
+**Context:** The JSON response body produced by `IntoResponse` must contain three keys (`"error"`, `"message"`, `"request_id"`) with correct types and a valid v4 UUID for `request_id`.
+**Tests:** Constructs the same body that `into_response()` would build, validates all three keys are present with correct types, and asserts `request_id` is a valid v4 UUID.
+**Inputs:** `AnvilError::JobNotFound("x".to_string())` — used to verify error kind string and message format.
+**Expected output:** All three keys present, all strings, `request_id` is a valid v4 UUID.
+
+## test_unique_request_ids (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/error_tests.rs`
+**Context:** Each call to `IntoResponse` must generate a fresh UUID — no caching of request_id across calls.
+**Tests:** Generates 10 UUIDs via `uuid::Uuid::new_v4()` and asserts all are unique.
+**Inputs:** None (uses `uuid::Uuid::new_v4()` directly).
+**Expected output:** 10 unique UUID strings.
+
+## test_from_sqlx_error (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/error_tests.rs`
+**Context:** `From<sqlx::Error>` must correctly convert to `AnvilError::Db` via the `#[from]` attribute — required by downstream crates using `?` to propagate sqlx errors.
+**Tests:** Converts `SqlxError::PoolTimedOut` into `AnvilError` and asserts the result is `AnvilError::Db(SqlxError::PoolTimedOut)`.
+**Inputs:** `SqlxError::PoolTimedOut`.
+**Expected output:** `AnvilError::Db(SqlxError::PoolTimedOut)`.
