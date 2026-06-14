@@ -7,6 +7,7 @@
 //! terminated.
 
 mod cli;
+mod shutdown;
 
 // Re-export config loading from anvilml-core under a local `config` module.
 // This keeps the main.rs imports clean and matches the established convention
@@ -101,5 +102,8 @@ async fn main() {
 
     // Run the server until a fatal error occurs. The .expect() provides a
     // user-visible error message if the server encounters a fatal error during serving.
-    axum::serve(listener, router).await.expect("server error");
+    axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown::shutdown_signal())
+        .await
+        .expect("server error");
 }
