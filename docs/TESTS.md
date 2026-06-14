@@ -55,3 +55,14 @@
 **Tests:** A TOML file without a `gpu_selection` section is loaded with `ANVILML_GPU_SELECTION__DEFAULT_DEVICE=cpu`; the nested field is set via the env var.
 **Inputs:** TOML without `gpu_selection`, `ANVILML_GPU_SELECTION__DEFAULT_DEVICE=cpu`.
 **Expected output:** `cfg.gpu_selection.default_device == "cpu"`.
+
+## test_custom_port_health (anvilml)
+
+**File:** `backend/tests/cli_tests.rs`
+**Context:** The server binary accepts `--port` CLI override, binds to the OS-assigned port, and the health endpoint returns HTTP 200.
+**Tests:** Spawns the pre-built anvilml binary with `--port 0` (OS-assigned port), detects the bound port via `lsof`, sends `GET /health`, and asserts HTTP 200 with `{"status":"ok"}`.
+**Inputs:** Binary path from `CARGO_TARGET_DIR` (or `target/debug/anvilml`), `--port 0`, `--log-format plain`.
+**Expected output:** HTTP 200 response with JSON body containing `"status":"ok"`.
+**Acceptance command:** `cargo test -p anvilml --features mock-hardware -- cli_tests` exits 0.
+
+**Environment isolation:** The test clears all `ANVILML_*` env vars at startup and restores them at teardown to prevent pollution of parallel test runs. The subprocess is killed unconditionally on test exit.
