@@ -1,6 +1,6 @@
 [package]
 name = "anvilml"
-version.workspace = true
+version = "0.1.1"
 edition.workspace = true
 
 [[bin]]
@@ -16,6 +16,9 @@ anvilml-worker = { path = "../crates/anvilml-worker" }
 anvilml-scheduler = { path = "../crates/anvilml-scheduler" }
 anvilml-server = { path = "../crates/anvilml-server" }
 clap = { version = "4.5.54", features = ["derive"] }
+axum = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
 
 [features]
 # Forward mock-hardware to all crates that transitively depend on anvilml-hardware.

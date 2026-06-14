@@ -5,16 +5,17 @@
     "P0-C1",
     "P0-D1",
     "P1-A1",
-    "P1-A2"
+    "P1-A2",
+    "P1-A3"
   ],
-  "in_progress": "P1-A3",
+  "in_progress": "P1-B1",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-14T10:37:09+0200",
+  "last_updated": "2026-06-14T11:12:08+0200",
   "plan_approved": true,
-  "current_plan": "1. **Add `build_router` function to `lib.rs`**: Implement `pub fn build_router(state: AppState) -> Router` that:\n   - Creates a new `Router` via `Router::new()`\n   - Mounts the health handler at path `/health` using `.route(\"/health\", get(anvilml_server::health))`\n   - Applies shared state with `.with_state(state)`\n   - Returns the configured `Router`\n   - Adds `use axum::routing::get;` to the imports\n   - Adds a `///` doc comment describing the function's purpose, the `state` parameter, and the `Router` return type\n\n   Rationale: Using `Router::new().route().with_state()` follows the exact pattern already established in `tests/health_tests.rs`, ensuring consistency. The `get` import from `axum::routing` is the standard axum 0.8 way to create route handlers.\n\n2. **Update integration test in `tests/health_tests.rs`**: Replace the manual `Router::new().route(...).with_state(state)` construction with a call to `build_router(state)`. This verifies that `build_router` produces a router that behaves identically to the hand-crafted one. The test assertion logic (HTTP 200, JSON body with `status == \"ok\"`) remains unchanged.\n\n   Rationale: Using `build_router` in the test exercises the actual production code path rather than duplicating the routing logic inline. It also ensures that any future route additions to `build_router` are automatically tested.\n\n3. **Verify compilation and tests**: Run `cargo test -p anvilml-server` to confirm all tests pass. This exercise the full compilation including dev-dependencies and the integration test crate.",
-  "plan_approval_message_id": "1515635973541597206",
+  "current_plan": "1. **Add `tokio` and `tracing` to `backend/Cargo.toml` dependencies.**\n   Add two lines under `[dependencies]`:\n   ```toml\n   tokio = { workspace = true }\n   tracing = { workspace = true }\n   ```\n   Rationale: `#[tokio::main]` requires the `macros` feature from the `tokio` crate.\n   The workspace declares `tokio` with `features = [\"full\"]` which includes macros,\n   runtime, and sync \u2014 the simplest correct approach. `tracing` is needed for the\n   `tracing::info!` macro used at the bind address log point. Using workspace-pinned\n   versions ensures version consistency across the workspace.\n\n2. **Implement `backend/src/main.rs`.**\n   Replace the stub `fn main() {}` with:\n   ```rust\n   use anvilml_server::{build_router, AppState};\n   use std::net::TcpListener;\n   use tokio::net::ToSocketAddrs;\n\n   #[tokio::main]\n   async fn main() {\n       let state = AppState::new(env!(\"CARGO_PKG_VERSION\"));\n       let router = build_router(state);\n       let addr = \"127.0.0.1:8488\";\n       let listener = TcpListener::bind(addr).expect(\"failed to bind listener\");\n       tracing::info!(addr = %addr, \"listening\");\n       axum::serve(listener, router).await.expect(\"server error\");\n   }\n   ```\n   Rationale notes:\n   - `TcpListener::bind` (std) is used rather than `tokio::net::TcpListener::bind`\n     because `axum::serve` accepts a standard library `TcpListener` \u2014 it handles the\n     async conversion internally. This avoids an unnecessary dependency on\n     `tokio::net`.\n   - `env!(\"CARGO_PKG_VERSION\")` is a compile-time string literal (`&'static str`)\n     which implements `Into<String>`, matching `AppState::new`'s signature.\n   - `tracing::info!(addr = %addr, \"listening\")` uses structured field notation per\n     the mandatory INFO log points table (ENVIRONMENT.md \u00a79.2: \"Bind address on\n     successful listen\" requires `addr=`).\n   - `axum::serve(listener, router).await` is the axum 0.8 serve function. The\n     `.expect()` provides a user-visible error message if the server encounters a\n     fatal error during serving.\n\n3. **Verify the build compiles.**\n   Run `cargo build --features mock-hardware -p anvilml` to confirm the new dependencies\n   resolve and the binary compiles. This is a verification step, not a deliverable.",
+  "plan_approval_message_id": "1515642571207217284",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1515635971838709814",
+  "plan_report_message_id": "1515642569843806354",
   "impl_report_message_id": null
 }

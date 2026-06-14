@@ -69,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
@@ -78,7 +78,10 @@ dependencies = [
  "anvilml-scheduler",
  "anvilml-server",
  "anvilml-worker",
+ "axum",
  "clap",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
