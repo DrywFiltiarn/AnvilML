@@ -1,4 +1,4 @@
-name: CI
+name: CI AnvilML v3
 
 on:
   push:
@@ -15,73 +15,61 @@ defaults:
     shell: bash --noprofile --norc -eo pipefail {0}
 
 jobs:
-  rust-linux:
-    runs-on: ubuntu-latest
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            fmt: true
+          - os: windows-latest
+            fmt: false
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.95.0
       - name: Format check
+        if: matrix.fmt
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --features mock-hardware -- -D warnings
       - name: Test
         run: cargo test --workspace --features mock-hardware
 
-  rust-windows:
-    runs-on: windows-latest
+  worker:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            activate: . .venv/bin/activate
+          - os: windows-latest
+            activate: .venv\Scripts\activate
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Clippy
-        run: cargo clippy --workspace --features mock-hardware -- -D warnings
-      - name: Test
-        run: cargo test --workspace --features mock-hardware
-
-  worker-linux:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install test dependencies
         run: |
           python -m venv .venv
-          . .venv/bin/activate
+          ${{ matrix.activate }}
           pip install pytest pyzmq msgpack
       - name: Run worker tests
         run: |
-          . .venv/bin/activate
-          ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v
-
-  worker-windows:
-    runs-on: windows-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install test dependencies
-        run: |
-          python -m venv .venv
-          .venv\Scripts\activate
-          pip install pytest pyzmq msgpack
-      - name: Run worker tests
-        run: |
-          .venv\Scripts\activate
+          ${{ matrix.activate }}
           ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v
 
   openapi-drift:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [rust-linux]
+    needs: [rust]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.95.0
       - name: Regenerate openapi.json
         run: cargo run -p anvilml-openapi
       - name: Check for drift
@@ -90,9 +78,9 @@ jobs:
   config-drift:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [rust-linux]
+    needs: [rust]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.95.0
       - name: Config surface sync
         run: cargo test -p backend --features mock-hardware -- config_reference
