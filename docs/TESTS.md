@@ -456,3 +456,27 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** GET `/health`, `AppState::new("test-version")`.
 **Expected output:** HTTP 200 with JSON body containing `"status":"ok"`.
 **Acceptance command:** `cargo test -p anvilml-server --test health_tests -- --nocapture` exits 0.
+
+## test_cpu_detector_detect_returns_one_device (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/cpu_tests.rs`
+**Context:** `CpuDetector` implements `DeviceDetector` and uses `sysinfo` to read host-level information. All tests in this file are annotated with `#[serial]` because sysinfo reads process-global system state.
+**Tests:** Creates a `CpuDetector`, calls `detect()`, and verifies the returned vec has exactly one element with `device_type == DeviceType::Cpu` and `index == 0`.
+**Inputs:** None (uses `CpuDetector::new()`).
+**Expected output:** `devices.len() == 1`, `devices[0].device_type == DeviceType::Cpu`, `devices[0].index == 0`.
+
+## test_cpu_detector_refresh_vram_returns_zero (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/cpu_tests.rs`
+**Context:** CPUs have no dedicated video memory, so `refresh_vram` always returns `(0, 0)`.
+**Tests:** Creates a `CpuDetector`, calls `refresh_vram(0)`, and verifies both total and free VRAM are zero.
+**Inputs:** `index = 0`.
+**Expected output:** `(total, free) == (0, 0)`.
+
+## test_cpu_detector_is_send_sync (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/cpu_tests.rs`
+**Context:** The `DeviceDetector` trait requires `Send + Sync`. This is a compile-time check that verifies the impl satisfies the trait bounds.
+**Tests:** Defines a generic function `fn assert_send_sync<T: Send + Sync>() {}` and calls it with `CpuDetector`. If `CpuDetector` does not implement `Send + Sync`, this will not compile.
+**Inputs:** None (zero-cost compile-time assertion).
+**Expected output:** Compiles successfully.
