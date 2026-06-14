@@ -100,7 +100,7 @@
 
 **File:** `backend/tests/cli_tests.rs`
 **Context:** The server binary accepts `--port` CLI override, binds to the OS-assigned port, and the health endpoint returns HTTP 200.
-**Tests:** Spawns the pre-built anvilml binary with `--port 0` (OS-assigned port), detects the bound port via `lsof`, sends `GET /health`, and asserts HTTP 200 with `{"status":"ok"}`.
+**Tests:** Spawns the pre-built anvilml binary with `--port 0` (OS-assigned port), detects the bound port via platform-specific tooling (`lsof` on Unix, `netstat` on Windows), sends `GET /health`, and asserts HTTP 200 with `{"status":"ok"}`.
 **Inputs:** Binary path from `CARGO_TARGET_DIR` (or `target/debug/anvilml`), `--port 0`, `--log-format plain`.
 **Expected output:** HTTP 200 response with JSON body containing `"status":"ok"`.
 **Acceptance command:** `cargo test -p anvilml --features mock-hardware -- cli_tests` exits 0.

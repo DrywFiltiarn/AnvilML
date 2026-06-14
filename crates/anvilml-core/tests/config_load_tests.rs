@@ -13,6 +13,12 @@ use anvilml_core::{load, ConfigOverrides};
 /// or error on a missing file, and that defaults are preserved.
 #[test]
 fn test_missing_file_uses_defaults() {
+    // Clear ANVILML_PORT to ensure the test sees the compiled-in default
+    // rather than a value leaked from a sibling test binary.
+    // Capture the prior state so we can restore it unconditionally.
+    let prior = std::env::var("ANVILML_PORT").ok();
+    std::env::remove_var("ANVILML_PORT");
+
     let cfg = load(
         std::path::Path::new("/nonexistent/path.toml"),
         &ConfigOverrides::default(),
@@ -21,6 +27,12 @@ fn test_missing_file_uses_defaults() {
     assert!(cfg.is_ok());
     let result = cfg.unwrap();
     assert_eq!(result, ServerConfig::default());
+
+    // Restore prior env state unconditionally.
+    match prior {
+        Some(v) => std::env::set_var("ANVILML_PORT", v),
+        None => std::env::remove_var("ANVILML_PORT"),
+    }
 }
 
 /// Verifies that an `ANVILML_*` environment variable overrides the same
