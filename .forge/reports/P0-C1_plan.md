@@ -28,7 +28,7 @@ that ensures all subsequent phases build on verified, tested code.
   - `worker-linux`: ubuntu-latest — Python 3.12 setup, `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v`
   - `worker-windows`: windows-latest — Python 3.12 setup, `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v`
   - `openapi-drift`: ubuntu-latest — `cargo run -p anvilml-openapi && git diff --exit-code backend/openapi.json`
-  - `config-drift`: ubuntu-latest — `cargo test -p backend --features mock-hardware -- config_reference`
+  - `config-drift`: ubuntu-latest — `cargo test -p anvilml --features mock-hardware -- config_reference`
 - Use `ubuntu-latest` and `windows-latest` as runner images
 - Use `actions/checkout@v6` for source checkout
 - Use `dtolnay/rust-toolchain@stable` for Rust toolchain setup (respects `rust-toolchain.toml`)
@@ -125,7 +125,7 @@ and standard `actions/*` GitHub Actions, which are managed by GitHub.
    - **`config-drift` job** (runs on `ubuntu-latest`):
      - Step 1: `actions/checkout@v6`
      - Step 2: `dtolnay/rust-toolchain@stable`
-     - Step 3: `cargo test -p backend --features mock-hardware -- config_reference` —
+     - Step 3: `cargo test -p anvilml --features mock-hardware -- config_reference` —
        assert config surface sync
      - Sets `needs: [rust-linux]` to ensure the Rust project builds first
    - Use a `concurrency` group per branch to cancel redundant runs on the same branch

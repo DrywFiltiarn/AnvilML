@@ -61,13 +61,13 @@ Phase 004 complete: `AnvilError` and `ServerConfig` exist. `backend/seeds/device
 
 **Goal:** Add `db: SqlitePool` to `AppState`. In `main.rs` open the DB with `registry::open(cfg.db_path)`, wire real pool into `detect_all_devices`. Update `anvilml.toml` and `config_reference` test if any new config key is added.
 
-**Acceptance criterion:** Start server; verify `anvilml.db` created; restart server; verify ghost-job reset log message visible; `cargo test -p backend --features mock-hardware -- config_reference` exits 0.
+**Acceptance criterion:** Start server; verify `anvilml.db` created; restart server; verify ghost-job reset log message visible; `cargo test -p anvilml --features mock-hardware -- config_reference` exits 0.
 
 ## Phase Acceptance Criteria
 
 ```bash
 cargo test -p anvilml-registry
-cargo test -p backend --features mock-hardware -- config_reference
+cargo test -p anvilml --features mock-hardware -- config_reference
 cargo run --features mock-hardware &
 sleep 2
 ls anvilml.db

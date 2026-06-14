@@ -20,7 +20,7 @@
     "prereqs": [
       "P20-A1"
     ],
-    "context": "Run cargo run -p anvilml-openapi; if diff on backend/openapi.json commit it. Run cargo clippy --workspace --features mock-hardware -- -D warnings; fix ALL warnings in any file (pre-existing counts). Run cargo test -p backend --features mock-hardware -- config_reference. All three exit 0. No warnings remain.",
+    "context": "Run cargo run -p anvilml-openapi; if diff on backend/openapi.json commit it. Run cargo clippy --workspace --features mock-hardware -- -D warnings; fix ALL warnings in any file (pre-existing counts). Run cargo test -p anvilml --features mock-hardware -- config_reference. All three exit 0. No warnings remain.",
     "tags": []
   },
   {

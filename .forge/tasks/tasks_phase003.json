@@ -86,7 +86,7 @@
     "prereqs": [
       "P3-C1"
     ],
-    "context": "Create backend/tests/config_reference.rs: serialise ServerConfig::default() to TOML via toml::to_string_pretty, parse both strings to BTreeMap, recursively compare key sets \u2014 fail if any key present in one but absent in other. Create anvilml.toml at repo root with all config keys at documented defaults per ENVIRONMENT.md \u00a74. Add toml as dev-dep to backend. cargo test -p backend --features mock-hardware -- config_reference exits 0.",
+    "context": "Create backend/tests/config_reference.rs: serialise ServerConfig::default() to TOML via toml::to_string_pretty, parse both strings to BTreeMap, recursively compare key sets \u2014 fail if any key present in one but absent in other. Create anvilml.toml at repo root with all config keys at documented defaults per ENVIRONMENT.md \u00a74. Add toml as dev-dep to backend. cargo test -p anvilml --features mock-hardware -- config_reference exits 0.",
     "tags": []
   }
 ]

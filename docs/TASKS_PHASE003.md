@@ -100,13 +100,13 @@ Phase 002 complete: `ServerConfig` and config loading exist. `anvilml-core/src/l
 - `backend/tests/config_reference.rs`
 - `anvilml.toml` at repo root with all config keys at their documented defaults
 
-**Acceptance criterion:** `cargo test -p backend --features mock-hardware -- config_reference` exits 0.
+**Acceptance criterion:** `cargo test -p anvilml --features mock-hardware -- config_reference` exits 0.
 
 ## Phase Acceptance Criteria
 
 ```bash
 cargo test -p anvilml-core
-cargo test -p backend --features mock-hardware -- config_reference
+cargo test -p anvilml --features mock-hardware -- config_reference
 cargo run --features mock-hardware &
 sleep 2
 curl -s http://127.0.0.1:8488/v1/system/env | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'preflight_ok' in d"

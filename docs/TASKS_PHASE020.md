@@ -35,7 +35,7 @@ This phase also closes any gaps opened by earlier phases: the `openapi.json` is 
 
 #### P20-B1: OpenAPI regeneration and config drift clean pass
 
-**Goal:** Run `cargo run -p anvilml-openapi` and commit the result to `backend/openapi.json`. Run `cargo test -p backend --features mock-hardware -- config_reference` and fix any drift. Run `cargo clippy --workspace --features mock-hardware -- -D warnings` and fix any accumulated warnings.
+**Goal:** Run `cargo run -p anvilml-openapi` and commit the result to `backend/openapi.json`. Run `cargo test -p anvilml --features mock-hardware -- config_reference` and fix any drift. Run `cargo clippy --workspace --features mock-hardware -- -D warnings` and fix any accumulated warnings.
 
 **Acceptance criterion:** All three commands exit 0 with no output diff on `openapi.json`.
 
@@ -52,7 +52,7 @@ cargo test --workspace --features mock-hardware
 ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v
 cargo clippy --workspace --features mock-hardware -- -D warnings
 cargo run -p anvilml-openapi && git diff --exit-code backend/openapi.json
-cargo test -p backend --features mock-hardware -- config_reference
+cargo test -p anvilml --features mock-hardware -- config_reference
 ```
 
 All five must exit 0. After this phase all 6 GitHub CI jobs pass.

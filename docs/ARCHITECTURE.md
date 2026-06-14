@@ -397,7 +397,7 @@ See `docs/ENVIRONMENT.md §6–8` for full commands.
 | `worker-linux` | Ubuntu latest | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` |
 | `worker-windows` | Windows latest | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` |
 | `openapi-drift` | Ubuntu latest | Regenerate `openapi.json`, assert no diff |
-| `config-drift` | Ubuntu latest | `cargo test -p backend --features mock-hardware -- config_reference` |
+| `config-drift` | Ubuntu latest | `cargo test -p anvilml --features mock-hardware -- config_reference` |
 
 **Local WSL2 pre-push gate** (not a CI job — run before every push):
 ```bash

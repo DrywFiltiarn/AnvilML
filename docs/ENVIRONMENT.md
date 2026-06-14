@@ -383,7 +383,7 @@ validates and can write tasks that account for all four runners.
 | `worker-linux` | Ubuntu latest | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` |
 | `worker-windows` | Windows latest | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` |
 | `openapi-drift` | Ubuntu latest | `cargo run -p anvilml-openapi && git diff --exit-code backend/openapi.json` |
-| `config-drift` | Ubuntu latest | `cargo test -p backend --features mock-hardware -- config_reference` |
+| `config-drift` | Ubuntu latest | `cargo test -p anvilml --features mock-hardware -- config_reference` |
 
 `worker-windows` is required because the Python worker runs on Windows in production
 (ROCm on Windows is a mandatory MVP backend). Pytest failures on Windows that do not
@@ -430,7 +430,7 @@ nested config struct.
 3. Run the gate and confirm it passes.
 
 ```bash
-cargo test -p backend --features mock-hardware -- config_reference
+cargo test -p anvilml --features mock-hardware -- config_reference
 ```
 
 Must exit 0. This test asserts that the key set of `ServerConfig::default()` (serialised

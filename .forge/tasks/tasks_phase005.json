@@ -40,7 +40,7 @@
     "prereqs": [
       "P5-A3"
     ],
-    "context": "Add db:SqlitePool to AppState. In main.rs: call registry::open(&cfg.db_path).await before detect_all_devices; pass real pool to detect_all_devices (replaces open_in_memory placeholder). tracing::info!(path=cfg.db_path,\"database opened\"). Config drift gate: cargo test -p backend --features mock-hardware -- config_reference exits 0. Start server; ls anvilml.db exists.",
+    "context": "Add db:SqlitePool to AppState. In main.rs: call registry::open(&cfg.db_path).await before detect_all_devices; pass real pool to detect_all_devices (replaces open_in_memory placeholder). tracing::info!(path=cfg.db_path,\"database opened\"). Config drift gate: cargo test -p anvilml --features mock-hardware -- config_reference exits 0. Start server; ls anvilml.db exists.",
     "tags": []
   }
 ]

@@ -140,7 +140,7 @@ The test spawns the binary as a subprocess, waits for the "listening" log line t
 
 ## CI Impact
 
-No CI changes required. The new `backend/tests/cli_tests.rs` file is picked up automatically by the existing `cargo test --workspace --features mock-hardware` CI job (both `rust-linux` and `rust-windows` runners). The `config-drift` CI job (`cargo test -p backend --features mock-hardware -- config_reference`) is unaffected since this task does not modify `ServerConfig` fields or `anvilml.toml`.
+No CI changes required. The new `backend/tests/cli_tests.rs` file is picked up automatically by the existing `cargo test --workspace --features mock-hardware` CI job (both `rust-linux` and `rust-windows` runners). The `config-drift` CI job (`cargo test -p anvilml --features mock-hardware -- config_reference`) is unaffected since this task does not modify `ServerConfig` fields or `anvilml.toml`.
 
 ## Platform Considerations
 

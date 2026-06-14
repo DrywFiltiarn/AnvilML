@@ -1675,7 +1675,7 @@ GitHub CI runs on two real target platforms only. There is no emulated or cross-
 | `rust-windows` | Windows latest | `cargo clippy --workspace --features mock-hardware -- -D warnings`, `cargo test --workspace --features mock-hardware` |
 | `python-worker` | Ubuntu latest | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` |
 | `openapi-drift` | Ubuntu latest | Re-generate `openapi.json`, `git diff --exit-code backend/openapi.json` |
-| `config-drift` | Ubuntu latest | `cargo test -p backend --features mock-hardware -- config_reference` |
+| `config-drift` | Ubuntu latest | `cargo test -p anvilml --features mock-hardware -- config_reference` |
 
 **Windows cross-compilation check (local gate only).** The command `cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu` is run locally in WSL2 before pushing to `main`. It is **not** a GitHub CI job. Its purpose is to catch Windows-incompatible code (platform-specific imports, `#[cfg(unix)]` guards that have no `#[cfg(windows)]` counterpart, etc.) without requiring a Windows runner on every push. The `x86_64-pc-windows-gnu` target must be installed in the WSL2 toolchain via `rustup target add x86_64-pc-windows-gnu`. Failure of this local gate blocks the push; it is documented in `docs/ENVIRONMENT.md` as a required pre-push step.
 
