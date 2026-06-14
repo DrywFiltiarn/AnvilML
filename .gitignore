@@ -12,6 +12,9 @@ target/
 worker/.venv
 worker/venv
 
+# Python caches
+__pycache__
+
 # Model director
 models/
 
