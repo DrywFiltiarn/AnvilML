@@ -8,7 +8,12 @@ target/
 
 # Python virtual environments
 *.venv
+*venv
 worker/.venv
+worker/venv
+
+# Model director
+models/
 
 # Generated artifacts
 artifacts/
