@@ -29,7 +29,7 @@
     "prereqs": [
       "P6-A2"
     ],
-    "context": "Create crates/anvilml-registry/src/device_store.rs: DeviceCapabilityStore{pool:SqlitePool}. pub async fn get(&self,vendor_id:u16,device_id:u16)->Result<Option<DeviceRow>,AnvilError>. DeviceRow{vendor_id,device_id,name,arch,fp8:bool,flash_attention:bool}. Query device_capabilities table seeded by SeedLoader. cargo test -p anvilml-registry -- device_store exits 0.",
+    "context": "Create crates/anvilml-registry/src/device_store.rs: DeviceCapabilityStore{pool:SqlitePool}. pub async fn get(&self,vendor_id:u16,device_id:u16)->Result<Option<DeviceRow>,AnvilError>. DeviceRow{vendor_id:u16,device_id:u16,name:String,arch:String,fp32:bool,fp16:bool,bf16:bool,fp8:bool,fp4:bool,flash_attention:bool}. Query device_capabilities table seeded by SeedLoader. Booleans stored as INTEGER 0/1; map via field!=0. cargo test -p anvilml-registry -- device_store exits 0.",
     "tags": []
   },
   {

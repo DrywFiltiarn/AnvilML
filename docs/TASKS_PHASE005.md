@@ -34,7 +34,7 @@ Phase 004 complete: `AnvilError` and `ServerConfig` exist. `backend/seeds/device
 **Goal:** Implement `pub async fn open(path: &Path) -> Result<SqlitePool>` in `crates/anvilml-registry/src/db.rs`. Enable WAL mode. Run `sqlx::migrate!("../backend/migrations")`. Reset ghost jobs. Log each migration applied and the "up-to-date" message when none apply.
 
 **Files to create:**
-- `backend/migrations/001_initial.sql` — tables: `jobs`, `models`, `artifacts`, `seed_history`
+- `backend/migrations/001_initial.sql` — tables: `jobs`, `models`, `artifacts`, `seed_history`, `device_capabilities` (schema per `docs/SUPPORTED_DEVICES_DB.md §Migration DDL`)
 - `crates/anvilml-registry/src/db.rs` — `open()`, `open_in_memory()`, ghost reset logic
 
 **Acceptance criterion:** `cargo test -p anvilml-registry -- db` exits 0; DB file created on first call, tables present.
@@ -45,7 +45,7 @@ Phase 004 complete: `AnvilError` and `ServerConfig` exist. `backend/seeds/device
 
 **Files to create:**
 - `crates/anvilml-registry/src/seed_loader.rs`
-- `backend/seeds/devices.sql` — `INSERT OR IGNORE INTO device_capabilities` rows for major NVIDIA and AMD GPUs
+- `backend/seeds/devices.sql` — `INSERT OR IGNORE INTO device_capabilities` rows generated from all entries in `docs/SUPPORTED_DEVICES_DB.md`
 
 **Acceptance criterion:** `cargo test -p anvilml-registry -- seed` exits 0; running twice skips on second run (hash match).
 
@@ -79,5 +79,6 @@ kill %1
 
 - `sqlx` requires the `sqlite` and `runtime-tokio` features. Add to workspace dependencies.
 - The `seed_history` table must be part of `001_initial.sql` — it is needed before seeds can run.
+- `device_capabilities` must also be created in `001_initial.sql` alongside the other tables — the seed runner (P5-A2) inserts into it immediately after migrations run. The exact DDL is in `docs/SUPPORTED_DEVICES_DB.md §Migration DDL`.
 - `open_in_memory()` uses `sqlite::memory:` URL with `sqlx::SqliteConnectOptions`. Run migrations the same way as the file-backed pool.
 - Ghost-job reset: `UPDATE jobs SET status='Failed', error='server_restart' WHERE status IN ('Queued','Running')`. Run this after migrations, before workers start.

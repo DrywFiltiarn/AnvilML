@@ -43,7 +43,7 @@ Phase 005 complete: `SqlitePool` available via `open()` and `open_in_memory()`.
 
 #### P6-A3: anvilml-registry: DeviceCapabilityStore
 
-**Goal:** Implement `DeviceCapabilityStore` in `device_store.rs` with `get(vendor_id, device_id) -> Option<DeviceRow>`. Backed by the `device_capabilities` table populated by `SeedLoader`.
+**Goal:** Implement `DeviceCapabilityStore` in `device_store.rs` with `get(vendor_id: u16, device_id: u16) -> Option<DeviceRow>`. `DeviceRow` carries the full capability set matching `InferenceCaps`: `vendor_id: u16`, `device_id: u16`, `name: String`, `arch: String`, `fp32: bool`, `fp16: bool`, `bf16: bool`, `fp8: bool`, `fp4: bool`, `flash_attention: bool`. Booleans are stored as `INTEGER 0/1` in SQLite; map at the store boundary via `value != 0`. Backed by the `device_capabilities` table populated by `SeedLoader`.
 
 **Acceptance criterion:** `cargo test -p anvilml-registry -- device_store` exits 0.
 
@@ -77,3 +77,4 @@ kill %1
 - SHA256 computation reads only the first 1 MiB to keep scanning fast for large model files.
 - `ModelDtype` inference checks filename substrings case-insensitively: `fp8_e4m3fn` and `fp8_e5m2` both map to `Fp8`. The check order matters — check `fp8` before `fp16` to avoid false matches on filenames like `fp16_fp8_quantized`.
 - The `POST /v1/models/rescan` handler should respond 202 immediately and run the scan in a `tokio::spawn` background task, not block the HTTP thread.
+- `DeviceRow` carries all six `InferenceCaps`-aligned capability fields (`fp32`, `fp16`, `bf16`, `fp8`, `fp4`, `flash_attention`). These are pre-spawn scheduling hints loaded from the seed table; the Python worker overwrites them with authoritative values at the `Ready` event. `fp4 = true` means native 4-bit matrix compute is available regardless of vendor format (AMD MXFP4 or NVIDIA NVFP4); the worker resolves the vendor-specific execution path.
