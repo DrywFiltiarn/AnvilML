@@ -2,12 +2,14 @@
 ///
 /// This module contains the full hardware detection pipeline that
 /// enumerates GPUs and CPUs from the host machine, resolves device
-/// capabilities from a PCI-ID lookup table, and assembles a
+/// capabilities from a PCI-ID lookup table, enriches them from the
+/// `device_capabilities` SQLite table, and assembles a
 /// `HardwareInfo` snapshot.
 use anvilml_core::{
     AnvilError, CapabilitySource, DeviceType, EnumerationSource, GpuDevice, HardwareInfo, HostInfo,
     InferenceCaps, ServerConfig,
 };
+use anvilml_registry::DeviceCapabilityStore;
 use sqlx::SqlitePool;
 use tracing::instrument;
 
@@ -27,16 +29,17 @@ use crate::{resolve_caps_from_row, CpuDetector, DeviceDetector, VulkanDetector};
 /// 5. **CPU fallback** — always synthesise one CPU device.
 ///
 /// After detection, the function resolves per-device inference capabilities
-/// from the PCI-ID device table, populates `HostInfo` from `sysinfo`,
+/// from the PCI-ID device table, enriches each device from the
+/// `device_capabilities` SQLite table, populates `HostInfo` from `sysinfo`,
 /// and computes the union of all GPU capabilities as `inference_caps`.
 ///
-/// The `pool` parameter is accepted for future device capability seeding
-/// (the actual SQL seeding is deferred to the registry task).
+/// The `pool` parameter is used for device capability enrichment via
+/// `DeviceCapabilityStore`.
 ///
 /// # Arguments
 ///
 /// * `cfg` — Server configuration, which may include a hardware override.
-/// * `pool` — SQLite connection pool for future device capability seeding.
+/// * `pool` — SQLite connection pool for device capability enrichment.
 ///
 /// # Returns
 ///
@@ -48,10 +51,10 @@ use crate::{resolve_caps_from_row, CpuDetector, DeviceDetector, VulkanDetector};
 /// This function never returns `Err` under normal circumstances.
 /// Detection failures are treated as "no device detected" rather than
 /// hard errors — the CPU fallback always produces at least one device.
-#[instrument(name = "detect_all_devices", skip(cfg, _pool))]
+#[instrument(name = "detect_all_devices", skip(cfg, pool))]
 pub async fn detect_all_devices(
     cfg: &ServerConfig,
-    _pool: &SqlitePool,
+    pool: &SqlitePool,
 ) -> Result<HardwareInfo, AnvilError> {
     let mut devices: Vec<GpuDevice> = Vec::new();
 
@@ -216,6 +219,78 @@ pub async fn detect_all_devices(
         resolve_caps_from_row(dev, None);
     }
 
+    // ── Step e2: SQLite capability enrichment ────────────────────────
+    // Look up each non-CPU device in the device_capabilities table
+    // to populate full capability data (arch, all six inference caps,
+    // db_name) from the seeded database. This is a non-fatal lookup —
+    // if the table doesn't exist or a query fails, the device retains
+    // the capabilities resolved in step e from the PCI-ID table.
+    let store = DeviceCapabilityStore::new(pool.clone()).await;
+
+    for dev in devices.iter_mut() {
+        // Skip CPU devices — they have no real PCI IDs and won't
+        // match any entry in the device_capabilities table.
+        if dev.device_type == DeviceType::Cpu {
+            continue;
+        }
+
+        let vendor_id = dev.pci_vendor_id;
+        let device_id = dev.pci_device_id;
+
+        // Look up the device in the seeded capability table.
+        // Ok(None) means the device isn't in the seed data —
+        // the step-e resolution from DEVICE_DB is the final word.
+        // Err is non-fatal: a DB query failure must not abort
+        // hardware detection. The device keeps its step-e caps.
+        match store.get(vendor_id, device_id).await {
+            Ok(Some(row)) => {
+                // Overwrite arch, all six inference capability fields,
+                // capabilities_source, and db_name from the DB row.
+                // Never overwrite dev.name — the enumerator-reported
+                // name is the specific installed SKU and must be preserved.
+                dev.arch = Some(row.arch.clone());
+                dev.caps.fp32 = row.fp32;
+                dev.caps.fp16 = row.fp16;
+                dev.caps.bf16 = row.bf16;
+                dev.caps.fp8 = row.fp8;
+                dev.caps.fp4 = row.fp4;
+                dev.caps.flash_attention = row.flash_attention;
+                dev.capabilities_source = CapabilitySource::DeviceTable;
+                dev.db_name = Some(row.name.clone());
+
+                tracing::debug!(
+                    vendor_id = vendor_id,
+                    device_id = device_id,
+                    arch = %row.arch,
+                    source = "sqlite",
+                    "device capability enriched from device_capabilities table"
+                );
+            }
+            Ok(None) => {
+                // No matching row in the device_capabilities table.
+                // The device retains its step-e resolution from DEVICE_DB.
+                tracing::warn!(
+                    vendor_id = vendor_id,
+                    device_id = device_id,
+                    name = %dev.name,
+                    "device not found in device_capabilities table"
+                );
+            }
+            Err(e) => {
+                // DB query failed — non-fatal. Log the error and continue
+                // with step-e resolved capabilities. This prevents a
+                // corrupted or missing seed table from blocking hardware
+                // detection entirely.
+                tracing::error!(
+                    vendor_id = vendor_id,
+                    device_id = device_id,
+                    error = %e,
+                    "device_capabilities lookup failed, using step-e resolution"
+                );
+            }
+        }
+    }
+
     // ── Step f: Populate HostInfo ────────────────────────────────────
     // Read host-level information using sysinfo — the same approach
     // as CpuDetector::detect(). This gives us OS version, CPU brand,
@@ -268,18 +343,6 @@ pub async fn detect_all_devices(
         gpus: devices,
         inference_caps,
     };
-
-    // ── Step h: Seed device DB (deferred) ────────────────────────────
-    // The pool parameter is accepted here for future device capability
-    // seeding. The actual SQL seeding (INSERT OR IGNORE for known PCI
-    // IDs into a device_capabilities table) is deferred to the registry
-    // task. For now, we log that the pool was passed and devices were
-    // detected. If the table doesn't exist yet, the registry task will
-    // create it.
-    tracing::debug!(
-        device_count = hardware_info.gpus.len(),
-        "detect_all_devices completed, pool seeding deferred"
-    );
 
     Ok(hardware_info)
 }

@@ -1,10 +1,11 @@
 [package]
 name = "anvilml-hardware"
-version = "0.1.7"
+version = "0.1.8"
 edition.workspace = true
 
 [dependencies]
 anvilml-core = { path = "../anvilml-core" }
+anvilml-registry = { path = "../anvilml-registry" }
 sqlx = { workspace = true }
 ash = { version = "0.38", default-features = false, features = ["loaded"] }
 sysinfo = "0.33"

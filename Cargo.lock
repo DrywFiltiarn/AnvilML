@@ -115,9 +115,10 @@ dependencies = [
 
 [[package]]
 name = "anvilml-hardware"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anvilml-core",
+ "anvilml-registry",
  "ash",
  "libloading",
  "serial_test",
