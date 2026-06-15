@@ -480,3 +480,35 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Tests:** Defines a generic function `fn assert_send_sync<T: Send + Sync>() {}` and calls it with `CpuDetector`. If `CpuDetector` does not implement `Send + Sync`, this will not compile.
 **Inputs:** None (zero-cost compile-time assertion).
 **Expected output:** Compiles successfully.
+
+## test_vulkan_detector_new (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/vulkan_tests.rs`
+**Context:** `VulkanDetector::new()` constructs a zero-sized unit struct with no allocation, no I/O, and no system calls.
+**Tests:** Constructs `VulkanDetector::new()` and verifies construction succeeds without panic.
+**Inputs:** None (zero-cost unit struct construction).
+**Expected output:** `VulkanDetector` value constructed successfully.
+
+## test_vulkan_detector_detect_returns_empty_or_devices (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/vulkan_tests.rs`
+**Context:** `VulkanDetector::detect()` loads the Vulkan loader at runtime and enumerates physical GPUs. On systems without Vulkan (CI, WSL2), it returns `Ok(vec![])`. On systems with Vulkan GPUs, it returns detected devices. The key invariant is that the method never panics or returns `Err`.
+**Tests:** Calls `detect()` and asserts the result is `Ok`. The device list may be empty (no Vulkan loader) or populated (Vulkan GPUs present).
+**Inputs:** None (uses `VulkanDetector::new()`).
+**Expected output:** `Ok(vec![])` on systems without Vulkan; `Ok([devices...])` on systems with Vulkan GPUs. Never `Err`.
+
+## test_vulkan_detector_refresh_vram_returns_zero (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/vulkan_tests.rs`
+**Context:** Live VRAM refresh requires a Vulkan device context (queue, command buffer) which this task does not create. Returns `(0, 0)` as a best-effort placeholder.
+**Tests:** Calls `refresh_vram(0)` and verifies both total and free VRAM are zero.
+**Inputs:** `index = 0`.
+**Expected output:** `(total, free) == (0, 0)`.
+
+## test_vulkan_detector_is_send_sync (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/vulkan_tests.rs`
+**Context:** The `DeviceDetector` trait requires `Send + Sync`. This is a compile-time check that verifies the impl satisfies the trait bounds.
+**Tests:** Defines a generic function `fn assert_send_sync<T: Send + Sync>() {}` and calls it with `VulkanDetector`. If `VulkanDetector` does not implement `Send + Sync`, this will not compile.
+**Inputs:** None (zero-cost compile-time assertion).
+**Expected output:** Compiles successfully.

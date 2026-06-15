@@ -1,10 +1,11 @@
 [package]
 name = "anvilml-hardware"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 
 [dependencies]
 anvilml-core = { path = "../anvilml-core" }
+ash = { version = "0.38", default-features = false, features = ["loaded"] }
 sysinfo = "0.33"
 tracing = { workspace = true }
 

@@ -11,6 +11,7 @@
 //! least one CPU device. Return `Err` for detection failures — never crash.
 
 pub mod cpu;
+pub mod vulkan;
 
 use anvilml_core::{AnvilError, GpuDevice};
 
@@ -44,3 +45,4 @@ pub trait DeviceDetector: Send + Sync {
 }
 
 pub use cpu::CpuDetector;
+pub use vulkan::VulkanDetector;
