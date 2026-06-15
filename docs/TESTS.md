@@ -935,3 +935,66 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Empty temp directory.
 **Expected output:** `Vec::new()` — empty results, no errors.
 **Acceptance command:** `cargo test -p anvilml-registry --test scanner_tests test_scan_empty_dir` exits 0.
+
+## test_upsert_and_get (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/store_tests.rs`
+**Context:** `ModelStore::upsert()` persists a model record via `INSERT OR REPLACE`, and `ModelStore::get()` retrieves it by ID via parameterised query. Each test uses its own `open_in_memory()` pool — no shared connections.
+**Tests:** Constructs a `ModelMeta` for a diffusion model, upserts it via `store.upsert()`, then retrieves it via `store.get("model-1")` and asserts all 8 fields match the original.
+**Inputs:** `ModelMeta{id="model-1", name="stable-diffusion-v1-5", kind=Diffusion, dtype=Fp16, format=Safetensors, size_bytes=1_073_741_824}`.
+**Expected output:** `get()` returns `Some(meta)` with all fields matching the upserted record.
+**Acceptance command:** `cargo test -p anvilml-registry --test store_tests test_upsert_and_get` exits 0.
+
+## test_upsert_overwrites (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/store_tests.rs`
+**Context:** `INSERT OR REPLACE` semantics: when the same model ID is upserted twice with different data, the second upsert overwrites the first. This is the correct behavior for the model scanner which re-scans directories and may produce updated metadata.
+**Tests:** Upserts a model with name `"original-name"`, then upserts the same ID with name `"updated-name"`. Calls `get()` and asserts the returned name is `"updated-name"`.
+**Inputs:** Two `ModelMeta` records with same ID `"model-1"` but different names.
+**Expected output:** `get()` returns the second upserted version (name="updated-name").
+**Acceptance command:** `cargo test -p anvilml-registry --test store_tests test_upsert_overwrites` exits 0.
+
+## test_get_not_found (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/store_tests.rs`
+**Context:** `get()` must return `None` (not an error) for a non-existent model ID. This distinguishes "not found" from "database error".
+**Tests:** Creates a fresh in-memory database with no models, calls `get("non-existent-id")`, and asserts the result is `None`.
+**Inputs:** Non-existent ID string `"non-existent-id"`.
+**Expected output:** `get()` returns `None`.
+**Acceptance command:** `cargo test -p anvilml-registry --test store_tests test_get_not_found` exits 0.
+
+## test_list_all (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/store_tests.rs`
+**Context:** `list(None)` returns all model records without filtering. Uses `SELECT * FROM models` when no kind filter is specified.
+**Tests:** Upserts three models with different kinds (Diffusion, Vae, TextEncoder), calls `list(None)`, and asserts the returned vec has exactly 3 elements.
+**Inputs:** Three `ModelMeta` records with distinct IDs and kinds.
+**Expected output:** `list(None)` returns a vec of length 3.
+**Acceptance command:** `cargo test -p anvilml-registry --test store_tests test_list_all` exits 0.
+
+## test_list_filter_by_kind (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/store_tests.rs`
+**Context:** `list(Some(kind))` appends `WHERE kind = ?` to the SELECT query, filtering results to only models of the specified kind. The kind is serialised to its snake_case string form.
+**Tests:** Upserts two Diffusion models and one Vae model, calls `list(Some(ModelKind::Vae))`, and asserts exactly one model is returned with `kind == Vae`.
+**Inputs:** Three `ModelMeta` records (2 Diffusion, 1 Vae), filter `Some(ModelKind::Vae)`.
+**Expected output:** `list(Some(Vae))` returns a vec of length 1 containing only the Vae model.
+**Acceptance command:** `cargo test -p anvilml-registry --test store_tests test_list_filter_by_kind` exits 0.
+
+## test_delete_existing (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/store_tests.rs`
+**Context:** `delete()` executes `DELETE FROM models WHERE id = ?` and checks `rows_affected() > 0`. Returns `true` when a row was deleted, `false` when no row matched. After deletion, `get()` must return `None`.
+**Tests:** Upserts a model, calls `delete("model-1")` and asserts it returns `true`, then calls `get("model-1")` and asserts it returns `None`.
+**Inputs:** One `ModelMeta` record with ID `"model-1"`.
+**Expected output:** `delete()` returns `true`, `get()` returns `None`.
+**Acceptance command:** `cargo test -p anvilml-registry --test store_tests test_delete_existing` exits 0.
+
+## test_delete_not_found (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/store_tests.rs`
+**Context:** `delete()` for a non-existent ID must return `false` without raising an error. SQLite's `DELETE` with a non-matching WHERE clause returns 0 rows affected.
+**Tests:** Creates a fresh in-memory database with no models, calls `delete("non-existent-id")`, and asserts it returns `false`.
+**Inputs:** Non-existent ID string `"non-existent-id"`.
+**Expected output:** `delete()` returns `false`.
+**Acceptance command:** `cargo test -p anvilml-registry --test store_tests test_delete_not_found` exits 0.

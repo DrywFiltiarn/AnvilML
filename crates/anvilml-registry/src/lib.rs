@@ -10,7 +10,9 @@
 pub mod db;
 pub mod scanner;
 pub mod seed_loader;
+pub mod store;
 
 pub use db::{open, open_in_memory};
 pub use scanner::ModelScanner;
 pub use seed_loader::run;
+pub use store::ModelStore;

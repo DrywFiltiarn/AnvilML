@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
+use sqlx::{pool::PoolOptions, sqlite::SqliteConnectOptions, SqlitePool};
 use tracing::info;
 
 use anvilml_core::AnvilError;
@@ -87,9 +87,14 @@ pub async fn open(path: &Path) -> Result<SqlitePool, AnvilError> {
 /// touching the filesystem. Each test gets its own pool — no shared
 /// connections — ensuring test isolation.
 pub async fn open_in_memory() -> Result<SqlitePool, AnvilError> {
-    // Connect to in-memory database. The URL "sqlite::memory:" creates a
-    // fresh, private database that is discarded when the pool is dropped.
-    let pool = SqlitePool::connect("sqlite::memory:").await?;
+    // Use max_connections(1) because SQLite's ":memory:" URL creates a
+    // private database per connection. With more than one connection in
+    // the pool, different pool members would see different databases.
+    // A single-connection pool ensures all operations see the same data.
+    let pool = PoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await?;
 
     // Run the same migrations as file-backed open.
     run_migrations(&pool).await?;
