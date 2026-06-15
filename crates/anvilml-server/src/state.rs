@@ -8,7 +8,8 @@ use std::sync::Arc;
 /// `env_report` is the stub environment report returned by the `/v1/system/env`
 /// endpoint (populated by future tasks); `hardware` is the hardware snapshot
 /// populated by `detect_all_devices()` at startup (Phase 004); `db` is the
-/// file-backed SQLite connection pool wired at startup (Phase 005).
+/// file-backed SQLite connection pool wired at startup (Phase 005);
+/// `registry` is the model store for CRUD operations on model metadata.
 #[derive(Clone)]
 pub struct AppState {
     /// Instant at which this server instance was created.
@@ -30,6 +31,11 @@ pub struct AppState {
     /// Opened at server startup via `anvilml_registry::open()` and
     /// shared across all handlers that need database access.
     pub db: sqlx::SqlitePool,
+
+    /// Model store for CRUD operations on model metadata.
+    /// Shared via `Arc` so all handlers can access the model registry
+    /// without cloning the pool or the store.
+    pub registry: Arc<anvilml_registry::ModelStore>,
 }
 
 impl AppState {
@@ -46,6 +52,14 @@ impl AppState {
     /// use `new_with_hardware` instead. The `db` field is initialised with
     /// an in-memory pool.
     pub async fn new(version: impl Into<String>) -> Self {
+        // Use open_in_memory() to create an in-memory pool with migrations
+        // already applied. This is critical — the ModelStore queries tables
+        // that only exist after migrations run. Using raw SqlitePool::connect
+        // would result in 500 errors on any database operation.
+        let pool = anvilml_registry::open_in_memory()
+            .await
+            .expect("in-memory pool for stub AppState");
+
         Self {
             start_time: std::time::Instant::now(),
             version: version.into(),
@@ -53,18 +67,16 @@ impl AppState {
             hardware: Arc::new(tokio::sync::RwLock::new(
                 anvilml_core::types::HardwareInfo::default(),
             )),
-            // Create an in-memory pool for the stub AppState.
-            // This is only used by tests that call `new()` directly —
-            // production code always calls `new_with_hardware` with a
-            // real file-backed pool.
-            db: sqlx::SqlitePool::connect("sqlite::memory:")
-                .await
-                .expect("in-memory pool for stub AppState"),
+            db: pool.clone(),
+            // Construct the model store from the in-memory pool.
+            // This is only used by tests — production code constructs the
+            // ModelStore separately and passes it via new_with_hardware.
+            registry: Arc::new(anvilml_registry::ModelStore::new(pool).await),
         }
     }
 
-    /// Create a new AppState with hardware detection results and a database
-    /// connection pool.
+    /// Create a new AppState with hardware detection results, a database
+    /// connection pool, and a model store.
     ///
     /// This constructor is used at server startup after `detect_all_devices()`
     /// has populated the hardware snapshot and `anvilml_registry::open()` has
@@ -79,10 +91,14 @@ impl AppState {
     ///   hardware snapshot from `detect_all_devices()`.
     /// * `db` — A file-backed `SqlitePool` opened via `anvilml_registry::open()`
     ///   at the path specified in server configuration.
+    /// * `registry` — A pre-built `Arc<ModelStore>` for model metadata CRUD.
+    ///   The caller constructs this after opening the pool, avoiding the
+    ///   sync/async boundary in this synchronous constructor.
     pub fn new_with_hardware(
         version: impl Into<String>,
         hardware: Arc<tokio::sync::RwLock<anvilml_core::types::HardwareInfo>>,
         db: sqlx::SqlitePool,
+        registry: Arc<anvilml_registry::ModelStore>,
     ) -> Self {
         Self {
             start_time: std::time::Instant::now(),
@@ -90,6 +106,7 @@ impl AppState {
             env_report: anvilml_core::types::EnvReport::default(),
             hardware,
             db,
+            registry,
         }
     }
 }

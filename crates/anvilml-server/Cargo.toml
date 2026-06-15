@@ -1,15 +1,17 @@
 [package]
 name = "anvilml-server"
-version = "0.1.7"
+version = "0.1.8"
 edition.workspace = true
 
 [dependencies]
 anvilml-core = { path = "../anvilml-core" }
 anvilml-hardware = { path = "../anvilml-hardware" }
 anvilml-ipc = { path = "../anvilml-ipc" }
+anvilml-registry = { path = "../anvilml-registry" }
 anvilml-scheduler = { path = "../anvilml-scheduler" }
 anvilml-worker = { path = "../anvilml-worker" }
 axum = { workspace = true }
+serde = { workspace = true }
 sqlx = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
@@ -18,6 +20,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 anvilml-registry = { path = "../anvilml-registry" }
+chrono = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tower = { version = "0.5", features = ["util"] }

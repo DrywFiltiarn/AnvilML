@@ -1034,3 +1034,30 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Raw SQL INSERT with `fp32=0, fp16=0, bf16=0, fp8=0, fp4=0, flash_attention=0`.
 **Expected output:** All 6 boolean fields are `false`.
 **Acceptance command:** `cargo test -p anvilml-registry --test device_store_tests test_get_all_caps_false` exits 0.
+
+## test_list_models_empty (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/models_tests.rs`
+**Context:** The `GET /v1/models` handler returns an empty JSON array when the model registry contains zero models. Exercises the production `build_router` path via `AppState::new()` which constructs an in-memory `ModelStore` with no models. Uses `Router::oneshot` to exercise the full handler pipeline without a live TCP listener.
+**Tests:** Builds `AppState` with an empty in-memory database, sends a GET request to `/v1/models`, asserts HTTP 200, parses the JSON response, and verifies the body is an empty JSON array.
+**Inputs:** GET `/v1/models`, `AppState::new("test-version")`.
+**Expected output:** HTTP 200 with JSON body `[]`.
+**Acceptance command:** `cargo test -p anvilml-server --test models_tests test_list_models_empty` exits 0.
+
+## test_list_models_with_kind_filter (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/models_tests.rs`
+**Context:** The `GET /v1/models?kind=` query parameter filters results to models of the specified kind. This test inserts a single diffusion model into an in-memory database, then verifies that `?kind=diffusion` returns the one model and `?kind=vae` returns an empty array. Uses `AppState::new_with_hardware` with a pre-built `Arc<ModelStore>` to avoid the sync/async boundary in the constructor.
+**Tests:** Opens an in-memory pool, constructs a `ModelStore`, upserts one diffusion model, builds `AppState` with the registry, sends GET `/v1/models?kind=diffusion` (asserts 200 with 1 model), then sends GET `/v1/models?kind=vae` (asserts 200 with empty array).
+**Inputs:** In-memory pool with one diffusion model; GET `/v1/models?kind=diffusion`, GET `/v1/models?kind=vae`.
+**Expected output:** First request returns HTTP 200 with array of length 1 (id="diff-model-001"); second request returns HTTP 200 with empty array `[]`.
+**Acceptance command:** `cargo test -p anvilml-server --test models_tests test_list_models_with_kind_filter` exits 0.
+
+## test_get_model_not_found (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/models_tests.rs`
+**Context:** The `GET /v1/models/:id` handler returns HTTP 404 with `{"error":"model_not_found"}` when the model ID does not exist in the registry. Uses `AppState::new()` with an empty in-memory database. Exercises the production `build_router` path via `Router::oneshot`.
+**Tests:** Builds `AppState` with an empty in-memory database, sends a GET request to `/v1/models/nonexistent-id`, asserts HTTP 404, parses the JSON response, and verifies `error == "model_not_found"`.
+**Inputs:** GET `/v1/models/nonexistent-id`, `AppState::new("test-version")`.
+**Expected output:** HTTP 404 with JSON body `{"error":"model_not_found","message":"model not found: nonexistent-id","request_id":"<uuid>"}`.
+**Acceptance command:** `cargo test -p anvilml-server --test models_tests test_get_model_not_found` exits 0.

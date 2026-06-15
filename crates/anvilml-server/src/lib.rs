@@ -20,19 +20,23 @@ use axum::Router;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
+use handlers::models::{get_model, list_models};
+
 /// Build the HTTP router with all registered handlers.
 ///
 /// Creates a new `Router`, mounts the health handler at `GET /health`,
 /// the system hardware info handler at `GET /v1/system`, the system env
-/// stub at `GET /v1/system/env`, applies the shared `AppState` for
-/// injection into handlers, and wraps the router with middleware per
-/// ANVILML_DESIGN.md §12.3 (outermost-first):
+/// stub at `GET /v1/system/env`, the model list handler at `GET /v1/models`,
+/// and the model detail handler at `GET /v1/models/:id`, applies the shared
+/// `AppState` for injection into handlers, and wraps the router with
+/// middleware per ANVILML_DESIGN.md §12.3 (outermost-first):
 /// 1. `CorsLayer::permissive()` — allows all origins for local-only use.
 /// 2. `TraceLayer` — structured request/response logging via `tracing`.
 ///
 /// # Arguments
 ///
-/// * `state` — The shared application state (version, start time, hardware).
+/// * `state` — The shared application state (version, start time, hardware,
+///   model registry).
 ///
 /// # Returns
 ///
@@ -48,6 +52,10 @@ pub fn build_router(state: AppState) -> Router {
         // System env stub — returns default EnvReport until future tasks
         // populate it from actual worker probe results.
         .route("/v1/system/env", get(get_env))
+        // Model list — returns all models, optionally filtered by kind.
+        .route("/v1/models", get(list_models))
+        // Model detail — returns a single model by ID, or 404 if not found.
+        .route("/v1/models/{id}", get(get_model))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())

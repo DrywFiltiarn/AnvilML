@@ -1,8 +1,9 @@
-use anvilml_registry::open_in_memory;
+use anvilml_registry::{open_in_memory, ModelStore};
 use anvilml_server::{build_router, AppState};
 use axum::body::to_bytes;
 use axum::http::{Method, Request};
 use serde_json::Value;
+use std::sync::Arc;
 use tower::util::ServiceExt;
 
 /// Verify that the system env handler returns HTTP 200 with a JSON body
@@ -103,7 +104,11 @@ async fn test_system_returns_200_with_hardware_info() {
     // db_path. Using `open_in_memory()` ensures test isolation.
     let pool = open_in_memory().await.unwrap();
 
-    let state = AppState::new_with_hardware("test-version", hardware, pool);
+    // Construct the ModelStore from the pool — needed because
+    // new_with_hardware now requires a registry parameter.
+    let registry = Arc::new(ModelStore::new(pool.clone()).await);
+
+    let state = AppState::new_with_hardware("test-version", hardware, pool, registry);
 
     // Build the router via the production `build_router` function.
     let router = build_router(state);

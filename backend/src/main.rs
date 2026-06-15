@@ -17,7 +17,7 @@ mod config {
 }
 
 use anvilml_hardware::detect_all_devices;
-use anvilml_registry::open;
+use anvilml_registry::{open, ModelStore};
 use anvilml_server::{build_router, AppState};
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -87,7 +87,7 @@ async fn main() {
     anvilml_registry::seed_loader::run(&pool, &cfg.seeds_path)
         .await
         .expect("seed loading failed");
-        
+
     // Detect all hardware devices at startup. The real database pool is now
     // available for future device capability seeding.
     // detect_all_devices never panics and always returns at least one device.
@@ -111,10 +111,14 @@ async fn main() {
     // Create shared application state with hardware detection results and
     // the real database pool. env!("CARGO_PKG_VERSION") is a compile-time
     // literal that implements Into<String>, matching the constructor's type.
+    // Construct the ModelStore from the pool — it only stores the pool
+    // reference (no I/O), but the constructor is async for API consistency.
+    let registry = Arc::new(ModelStore::new(pool.clone()).await);
     let state = AppState::new_with_hardware(
         env!("CARGO_PKG_VERSION"),
         Arc::new(tokio::sync::RwLock::new(hardware_info)),
         pool,
+        registry,
     );
 
     // Build the axum router with all registered handlers wired to their routes.
