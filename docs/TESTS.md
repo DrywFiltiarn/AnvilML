@@ -719,3 +719,84 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** None (uses the `DEVICE_DB` constant directly).
 **Expected output:** `DEVICE_DB.len() >= 12`.
 **Acceptance command:** `cargo test -p anvilml-hardware --test device_db_tests test_device_db_non_empty` exits 0.
+
+## test_mock_detect_cuda (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/mock_tests.rs`
+**Context:** `MockDetector` synthesises a single `GpuDevice` from environment variables. This test verifies the CUDA path: setting `ANVILML_MOCK_DEVICE_TYPE=cuda` produces a device with `DeviceType::Cuda`, correct VRAM, and `EnumerationSource::Mock`. All tests in this file are annotated with `#[serial]` because they mutate process-global env vars.
+**Tests:** Creates `MockDetector::new()`, sets env vars `ANVILML_MOCK_DEVICE_TYPE=cuda`, `ANVILML_MOCK_VRAM_MIB=16384`, `ANVILML_MOCK_DEVICE_NAME=Mock CUDA`, calls `detect()`, and asserts one device with correct fields.
+**Inputs:** Env vars: `ANVILML_MOCK_DEVICE_TYPE=cuda`, `ANVILML_MOCK_VRAM_MIB=16384`, `ANVILML_MOCK_DEVICE_NAME=Mock CUDA`.
+**Expected output:** `devices.len()==1`, `devices[0].device_type==Cuda`, `vram_total_mib==16384`, `enumeration_source==Mock`, `name=="Mock CUDA"`.
+**Acceptance command:** `cargo test -p anvilml-hardware --features mock-hardware mock_tests::test_mock_detect_cuda` exits 0.
+
+## test_mock_detect_rocm (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/mock_tests.rs`
+**Context:** `MockDetector` with `ANVILML_MOCK_DEVICE_TYPE=rocm` produces a ROCm device. Verifies the ROCm mapping path.
+**Tests:** Sets env vars `ANVILML_MOCK_DEVICE_TYPE=rocm`, `ANVILML_MOCK_VRAM_MIB=8192`, `ANVILML_MOCK_DEVICE_NAME=Mock ROCm`, calls `detect()`, and asserts one ROCm device.
+**Inputs:** Env vars: `ANVILML_MOCK_DEVICE_TYPE=rocm`, `ANVILML_MOCK_VRAM_MIB=8192`, `ANVILML_MOCK_DEVICE_NAME=Mock ROCm`.
+**Expected output:** `devices.len()==1`, `devices[0].device_type==Rocm`, `vram_total_mib==8192`.
+**Acceptance command:** `cargo test -p anvilml-hardware --features mock-hardware mock_tests::test_mock_detect_rocm` exits 0.
+
+## test_mock_detect_cpu (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/mock_tests.rs`
+**Context:** `MockDetector` with `ANVILML_MOCK_DEVICE_TYPE=cpu` produces a CPU-type mock device. Verifies the CPU mapping path.
+**Tests:** Sets env vars `ANVILML_MOCK_DEVICE_TYPE=cpu`, `ANVILML_MOCK_VRAM_MIB=0`, `ANVILML_MOCK_DEVICE_NAME=Mock CPU`, calls `detect()`, and asserts one CPU device.
+**Inputs:** Env vars: `ANVILML_MOCK_DEVICE_TYPE=cpu`, `ANVILML_MOCK_VRAM_MIB=0`, `ANVILML_MOCK_DEVICE_NAME=Mock CPU`.
+**Expected output:** `devices.len()==1`, `devices[0].device_type==Cpu`, `vram_total_mib==0`.
+**Acceptance command:** `cargo test -p anvilml-hardware --features mock-hardware mock_tests::test_mock_detect_cpu` exits 0.
+
+## test_mock_detect_invalid_type (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/mock_tests.rs`
+**Context:** `MockDetector` with an invalid device type string returns an empty list (graceful fallback, no error). This verifies the error-handling path.
+**Tests:** Sets env var `ANVILML_MOCK_DEVICE_TYPE=invalid`, calls `detect()`, and asserts the returned list is empty.
+**Inputs:** Env var: `ANVILML_MOCK_DEVICE_TYPE=invalid`.
+**Expected output:** `devices.is_empty()==true` — empty list, no error.
+**Acceptance command:** `cargo test -p anvilml-hardware --features mock-hardware mock_tests::test_mock_detect_invalid_type` exits 0.
+
+## test_detect_all_devices_mock_cuda (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/mock_tests.rs`
+**Context:** Full pipeline: `detect_all_devices` with mock-hardware + cuda env var produces one CUDA GPU and one CPU device. Verifies the complete detection chain from mock through CPU fallback.
+**Tests:** Sets env vars for mock CUDA, creates `ServerConfig::default()`, connects an in-memory SQLite pool, calls `detect_all_devices()`, and asserts the result has at least one GPU (CUDA) and one CPU, with correct host info.
+**Inputs:** Env: `ANVILML_MOCK_DEVICE_TYPE=cuda`, `ANVILML_MOCK_VRAM_MIB=16384`, `ANVILML_MOCK_DEVICE_NAME=Mock CUDA`.
+**Expected output:** `HardwareInfo` with `gpus.len() >= 2` (1 CUDA GPU + 1 CPU), `host.os` non-empty, `host.cpu` non-empty, `host.ram_total_mib > 0`.
+**Acceptance command:** `cargo test -p anvilml-hardware --features mock-hardware mock_tests::test_detect_all_devices_mock_cuda` exits 0.
+
+## test_detect_all_devices_hardware_override (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/mock_tests.rs`
+**Context:** Hardware override takes priority over mock detector. When `ServerConfig.hardware_override` is set, the function returns the override device instead of attempting mock detection.
+**Tests:** Sets `ANVILML_MOCK_DEVICE_TYPE=cuda` (but override should take priority), creates `ServerConfig` with `hardware_override: Some(Rocm, 32768 MiB)`, calls `detect_all_devices()`, and asserts the result has one ROCm override GPU + one CPU.
+**Inputs:** Env: `ANVILML_MOCK_DEVICE_TYPE=cuda`. Config: `hardware_override = { device_type: "rocm", vram_total_mib: 32768 }`.
+**Expected output:** `gpus.len()==2` (ROCm override + CPU), override device has `device_type==Rocm`, `vram_total_mib==32768`, `enumeration_source==Override`.
+**Acceptance command:** `cargo test -p anvilml-hardware --features mock-hardware mock_tests::test_detect_all_devices_hardware_override` exits 0.
+
+## test_detect_all_devices_cpu_fallback (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/mock_tests.rs`
+**Context:** CPU device is always present even when GPU detection returns empty. When mock returns empty (invalid type), the CPU fallback still produces one device.
+**Tests:** Sets `ANVILML_MOCK_DEVICE_TYPE=invalid` (mock returns empty), calls `detect_all_devices()`, and asserts at least one CPU device is present.
+**Inputs:** Env: `ANVILML_MOCK_DEVICE_TYPE=invalid`.
+**Expected output:** At least one `GpuDevice` with `device_type==Cpu`.
+**Acceptance command:** `cargo test -p anvilml-hardware --features mock-hardware mock_tests::test_detect_all_devices_cpu_fallback` exits 0.
+
+## test_detect_all_devices_inference_caps_union (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/mock_tests.rs`
+**Context:** `inference_caps` is the union of all GPU caps. With mock devices (PCI IDs = 0), no device table match occurs, so caps remain at defaults. The test verifies the union logic produces a valid `InferenceCaps` struct.
+**Tests:** Sets mock CUDA, calls `detect_all_devices()`, and asserts `inference_caps` is a well-formed struct (all fields are valid bools).
+**Inputs:** Env: `ANVILML_MOCK_DEVICE_TYPE=cuda`, `ANVILML_MOCK_VRAM_MIB=8192`.
+**Expected output:** `inference_caps` has valid bool fields (all `false` for mock devices with PCI ID 0).
+**Acceptance command:** `cargo test -p anvilml-hardware --features mock-hardware mock_tests::test_detect_all_devices_inference_caps_union` exits 0.
+
+## test_detect_all_devices_returns_ok (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/mock_tests.rs`
+**Context:** `detect_all_devices` always returns `Ok` (never `Err`) under the mock-hardware feature. Detection failures are treated as "no device detected" rather than hard errors.
+**Tests:** Calls `detect_all_devices()` with default config and in-memory pool, asserts the result is `Ok`.
+**Inputs:** `ServerConfig::default()`, in-memory SQLite pool.
+**Expected output:** `Result::Ok(HardwareInfo)`.
+**Acceptance command:** `cargo test -p anvilml-hardware --features mock-hardware mock_tests::test_detect_all_devices_returns_ok` exits 0.

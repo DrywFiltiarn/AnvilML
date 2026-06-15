@@ -1,10 +1,11 @@
 [package]
 name = "anvilml-hardware"
-version = "0.1.4"
+version = "0.1.5"
 edition.workspace = true
 
 [dependencies]
 anvilml-core = { path = "../anvilml-core" }
+sqlx = { workspace = true }
 ash = { version = "0.38", default-features = false, features = ["loaded"] }
 sysinfo = "0.33"
 tracing = { workspace = true }
@@ -13,6 +14,7 @@ libloading = { version = "0.8", optional = true }
 
 [dev-dependencies]
 serial_test = "3.5"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [features]
 # Replace GPU detection with MockDetector driven by ANVILML_MOCK_* env vars.

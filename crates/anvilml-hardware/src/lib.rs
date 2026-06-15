@@ -4,6 +4,9 @@
 //! concrete implementations: `CpuDetector` (synthesises a CPU device using
 //! `sysinfo`), `VulkanDetector` (enumerates GPUs via the Vulkan loader),
 //! and platform-specific detectors (DXGI on Windows, sysfs/NVML on Linux).
+//! The `detect_all_devices` function orchestrates the full detection
+//! pipeline with a defined priority chain: hardware override → mock →
+//! Vulkan → platform fallbacks → CPU.
 //! When the `mock-hardware` feature is active, `MockDetector` provides
 //! deterministic device lists driven by environment variables.
 //!
@@ -11,8 +14,12 @@
 //! least one CPU device. Return `Err` for detection failures — never crash.
 
 pub mod cpu;
+pub mod detect;
 pub mod device_db;
 pub mod vulkan;
+
+#[cfg(feature = "mock-hardware")]
+pub mod mock;
 
 #[cfg(windows)]
 pub mod dxgi;
@@ -53,8 +60,12 @@ pub trait DeviceDetector: Send + Sync {
 }
 
 pub use cpu::CpuDetector;
+pub use detect::detect_all_devices;
 pub use device_db::{resolve_caps_from_row, DeviceRow, DEVICE_DB};
 pub use vulkan::VulkanDetector;
+
+#[cfg(feature = "mock-hardware")]
+pub use mock::MockDetector;
 
 #[cfg(windows)]
 pub use dxgi::DxgiDetector;
