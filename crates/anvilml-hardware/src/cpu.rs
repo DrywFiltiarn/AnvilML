@@ -101,7 +101,7 @@ impl DeviceDetector for CpuDetector {
             pci_device_id: 0,
             arch: None,
             caps: InferenceCaps::default(),
-            enumeration_source: EnumerationSource::Override,
+            enumeration_source: EnumerationSource::Cpu,
             capabilities_source: CapabilitySource::Fallback,
         };
 

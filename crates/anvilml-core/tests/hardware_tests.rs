@@ -198,6 +198,7 @@ fn test_enum_variants_roundtrip() {
         EnumerationSource::Dxgi,
         EnumerationSource::Sysfs,
         EnumerationSource::Nvml,
+        EnumerationSource::Cpu,
         EnumerationSource::Mock,
         EnumerationSource::Override,
     ];

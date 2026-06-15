@@ -1,9 +1,8 @@
 //! Vulkan-based GPU enumeration using the `ash` crate.
 //!
 //! This detector loads the Vulkan loader at runtime via `dlopen` (no SDK
-//! required), creates a minimal Vulkan instance with the extensions needed
-//! for driver properties and memory budget queries, enumerates physical
-//! devices, and extracts device metadata (name, driver version, VRAM).
+//! required), creates a minimal Vulkan instance with no extensions, enumerates
+//! physical devices, and extracts device metadata (name, driver version, VRAM).
 //!
 //! The detector is the primary GPU detection path on both Linux and Windows.
 //! It returns `Ok(vec![])` gracefully when the Vulkan loader is absent or
@@ -73,23 +72,6 @@ impl DeviceDetector for VulkanDetector {
             _marker: std::marker::PhantomData,
         };
 
-        // Enable device-level extensions that provide driver properties
-        // and memory budget information. These are queried per-physical-
-        // device after instance creation, not at instance creation time.
-        // The extension names are static constants from ash::vk.
-        let khr_driver_properties_name = ash::vk::KHR_DRIVER_PROPERTIES_NAME;
-        let ext_memory_budget_name = ash::vk::EXT_MEMORY_BUDGET_NAME;
-
-        // Create the Vulkan instance with the two required extensions.
-        // If extension creation fails (e.g. driver does not support them),
-        // fall back to basic property queries without driver name or VRAM.
-        // ash 0.38 uses struct literal syntax (no builder pattern).
-        // The extension names must be stored in an array with a stable address
-        // so the pointer remains valid for the duration of create_instance().
-        let extension_names = [
-            khr_driver_properties_name.as_ptr(),
-            ext_memory_budget_name.as_ptr(),
-        ];
         let create_info = vk::InstanceCreateInfo {
             s_type: vk::StructureType::INSTANCE_CREATE_INFO,
             p_next: std::ptr::null(),
@@ -97,8 +79,8 @@ impl DeviceDetector for VulkanDetector {
             p_application_info: &app_info,
             enabled_layer_count: 0,
             pp_enabled_layer_names: std::ptr::null(),
-            enabled_extension_count: 2,
-            pp_enabled_extension_names: extension_names.as_ptr(),
+            enabled_extension_count: 0,
+            pp_enabled_extension_names: std::ptr::null(),
             _marker: std::marker::PhantomData,
         };
 

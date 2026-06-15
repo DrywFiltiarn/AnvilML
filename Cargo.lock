@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-core"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "axum",
  "chrono",
@@ -115,7 +115,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-hardware"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anvilml-core",
  "ash",

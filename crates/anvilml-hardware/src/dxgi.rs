@@ -114,6 +114,20 @@ impl DeviceDetector for DxgiDetector {
                 break;
             }
 
+            // Skip software adapters (e.g. Microsoft Basic Render Driver).
+            // DXGI_ADAPTER_FLAG_SOFTWARE = 2 identifies any software/render-only
+            // adapter that has no physical GPU backing it. These are not valid
+            // inference devices and must be excluded.
+            if desc.Flags & 2 != 0 {
+                tracing::debug!(
+                    index,
+                    name = %wstring_to_string(&desc.Description),
+                    "skipping software adapter"
+                );
+                index += 1;
+                continue;
+            }
+
             // Convert the wide-character description string to a Rust String.
             // DXGI descriptions are null-terminated UTF-16LE.
             // Strip trailing nulls and decode.

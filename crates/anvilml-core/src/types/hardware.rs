@@ -43,6 +43,9 @@ pub enum EnumerationSource {
     /// NVIDIA NVML enumeration — uses the NVIDIA Management Library for
     /// detailed GPU telemetry.
     Nvml,
+    /// CPU synthesis — device was synthesised by `CpuDetector` as the
+    /// always-available fallback when no GPU is detected.
+    Cpu,
     /// Mock enumeration — device info was synthesised by the mock-hardware
     /// feature for CI testing.
     Mock,
