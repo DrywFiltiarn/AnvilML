@@ -854,3 +854,21 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** `sqlite::memory:` pool with two manually inserted job rows (status='Completed', status='Failed').
 **Expected output:** Completed job remains `status='Completed'`, Failed job remains `status='Failed'` with original error message.
 **Acceptance command:** `cargo test -p anvilml-registry --features mock-hardware -- db_tests::test_ghost_job_noop` exits 0.
+
+## test_seed_loader_applies_new_seed (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/seed_loader_tests.rs`
+**Context:** The SHA256-gated seed loader discovers `.sql` files in a directory, computes SHA256 of each file, and either skips (up-to-date) or executes + records (new/changed). This test verifies the apply path: first run executes the seed SQL and records it in `seed_history`. Each test uses its own `open_in_memory()` pool and a unique temp directory for complete isolation.
+**Tests:** Creates a temp directory with a `.sql` seed file containing 3 `INSERT OR IGNORE INTO device_capabilities` rows, calls `run()`, verifies `seed_history` has exactly 1 row, `device_capabilities` has 3 rows, the stored SHA256 matches the computed SHA256 of the seed content, and `applied_at` is a valid RFC3339 timestamp.
+**Inputs:** In-memory pool, temp directory with one `.sql` file (3 INSERT statements).
+**Expected output:** `seed_history` has 1 row, `device_capabilities` has 3 rows, SHA256 matches, `applied_at` parses as RFC3339.
+**Acceptance command:** `cargo test -p anvilml-registry --features mock-hardware -- seed_loader_tests::test_seed_loader_applies_new_seed` exits 0.
+
+## test_seed_loader_skips_up_to_date (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/seed_loader_tests.rs`
+**Context:** The SHA256-gated seed loader skips seed files whose content hash matches the stored hash. This test verifies the skip path: second run on the same directory should not create duplicate entries in `seed_history` and should not re-execute the seed SQL. Each test uses its own `open_in_memory()` pool and a unique temp directory for complete isolation.
+**Tests:** Creates a temp directory with a `.sql` seed file, runs `run()` twice, verifies `seed_history` still has exactly 1 row after both runs, and `device_capabilities` has exactly 1 row (the seed was not re-executed on the second run).
+**Inputs:** In-memory pool, same temp directory with one `.sql` file, two sequential `run()` calls.
+**Expected output:** `seed_history` has 1 row (no duplicate), `device_capabilities` has 1 row (seed skipped on second run).
+**Acceptance command:** `cargo test -p anvilml-registry --features mock-hardware -- seed_loader_tests::test_seed_loader_skips_up_to_date` exits 0.

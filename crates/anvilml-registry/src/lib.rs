@@ -8,5 +8,7 @@
 //! All model metadata is persisted to SQLite and re-read on startup.
 
 pub mod db;
+pub mod seed_loader;
 
 pub use db::{open, open_in_memory};
+pub use seed_loader::run;
