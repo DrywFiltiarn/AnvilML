@@ -19,11 +19,26 @@ use serial_test::serial;
 #[serial]
 #[test]
 fn test_missing_file_uses_defaults() {
-    // Clear ANVILML_PORT to ensure the test sees the compiled-in default
-    // rather than a value leaked from a sibling test binary.
-    // Capture the prior state so we can restore it unconditionally.
-    let prior = std::env::var("ANVILML_PORT").ok();
-    std::env::remove_var("ANVILML_PORT");
+    // All vars read by apply_env_overrides must be cleared to prevent
+    // leakage from the shell or sibling tests.
+    let vars = [
+        "ANVILML_HOST",
+        "ANVILML_PORT",
+        "ANVILML_DB_PATH",
+        "ANVILML_ARTIFACT_DIR",
+        "ANVILML_VENV_PATH",
+        "ANVILML_SEEDS_PATH",
+        "ANVILML_MAX_IPC_PAYLOAD_MIB",
+        "ANVILML_NUM_THREADS",
+        "ANVILML_GPU_SELECTION__DEFAULT_DEVICE",
+    ];
+
+    // Capture prior state and clear all vars.
+    let prior: Vec<(&str, Option<String>)> =
+        vars.iter().map(|&k| (k, std::env::var(k).ok())).collect();
+    for &k in &vars {
+        std::env::remove_var(k);
+    }
 
     let cfg = load(
         std::path::Path::new("/nonexistent/path.toml"),
@@ -35,9 +50,11 @@ fn test_missing_file_uses_defaults() {
     assert_eq!(result, ServerConfig::default());
 
     // Restore prior env state unconditionally.
-    match prior {
-        Some(v) => std::env::set_var("ANVILML_PORT", v),
-        None => std::env::remove_var("ANVILML_PORT"),
+    for (k, v) in prior {
+        match v {
+            Some(val) => std::env::set_var(k, val),
+            None => std::env::remove_var(k),
+        }
     }
 }
 
