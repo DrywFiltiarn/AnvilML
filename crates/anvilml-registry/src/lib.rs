@@ -8,11 +8,13 @@
 //! All model metadata is persisted to SQLite and re-read on startup.
 
 pub mod db;
+pub mod device_store;
 pub mod scanner;
 pub mod seed_loader;
 pub mod store;
 
 pub use db::{open, open_in_memory};
+pub use device_store::{DeviceCapabilityStore, DeviceRow};
 pub use scanner::ModelScanner;
 pub use seed_loader::run;
 pub use store::ModelStore;

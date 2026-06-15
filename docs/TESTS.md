@@ -998,3 +998,39 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Non-existent ID string `"non-existent-id"`.
 **Expected output:** `delete()` returns `false`.
 **Acceptance command:** `cargo test -p anvilml-registry --test store_tests test_delete_not_found` exits 0.
+
+## test_get_existing_device (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/device_store_tests.rs`
+**Context:** `DeviceCapabilityStore::get()` returns `Some(DeviceRow)` with all fields matching the database row for a known PCI vendor/device pair. Uses raw SQL INSERT to guarantee the row exists (independent of seed data coverage). Each test uses its own `open_in_memory()` pool with `max_connections(1)` — cloned pool is used for raw SQL inserts while the store also holds a reference to the same pool.
+**Tests:** Inserts a device row via raw SQL (`vendor_id=4318, device_id=8994, name="NVIDIA H100-SXM5-80GB", arch="9.0", fp32=1, fp16=1, bf16=1, fp8=1, fp4=0, flash_attention=1`), calls `get(4318, 8994)`, and asserts all 10 fields match.
+**Inputs:** Raw SQL INSERT into `device_capabilities` with H100 PCI pair.
+**Expected output:** `get()` returns `Some(DeviceRow)` with `vendor_id=4318, device_id=8994, name="NVIDIA H100-SXM5-80GB", arch="9.0", fp32=true, fp16=true, bf16=true, fp8=true, fp4=false, flash_attention=true`.
+**Acceptance command:** `cargo test -p anvilml-registry --test device_store_tests test_get_existing_device` exits 0.
+
+## test_get_not_found (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/device_store_tests.rs`
+**Context:** `DeviceCapabilityStore::get()` must return `Ok(None)` (not an error) for a vendor/device pair that has no matching row. This distinguishes "not found" from "database error".
+**Tests:** Creates a fresh in-memory database with no device rows, calls `get(9999, 9999)`, and asserts the result is `None`.
+**Inputs:** Non-existent PCI pair `(vendor_id=9999, device_id=9999)`.
+**Expected output:** `get()` returns `Ok(None)`.
+**Acceptance command:** `cargo test -p anvilml-registry --test device_store_tests test_get_not_found` exits 0.
+
+## test_get_all_caps_true (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/device_store_tests.rs`
+**Context:** Boolean flags stored as `INTEGER 1` in SQLite must map to `true` in the `DeviceRow` struct. This verifies the `row.get::<i64, _>("col") != 0` mapping pattern works correctly for all 6 boolean columns.
+**Tests:** Inserts a device row with all capability flags set to `1`, calls `get()`, and asserts every boolean field is `true`.
+**Inputs:** Raw SQL INSERT with `fp32=1, fp16=1, bf16=1, fp8=1, fp4=1, flash_attention=1`.
+**Expected output:** All 6 boolean fields are `true`.
+**Acceptance command:** `cargo test -p anvilml-registry --test device_store_tests test_get_all_caps_true` exits 0.
+
+## test_get_all_caps_false (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/device_store_tests.rs`
+**Context:** Boolean flags stored as `INTEGER 0` in SQLite must map to `false` in the `DeviceRow` struct. This is the inverse of `test_get_all_caps_true` and verifies the mapping works in both directions.
+**Tests:** Inserts a device row with all capability flags set to `0`, calls `get()`, and asserts every boolean field is `false`.
+**Inputs:** Raw SQL INSERT with `fp32=0, fp16=0, bf16=0, fp8=0, fp4=0, flash_attention=0`.
+**Expected output:** All 6 boolean fields are `false`.
+**Acceptance command:** `cargo test -p anvilml-registry --test device_store_tests test_get_all_caps_false` exits 0.
