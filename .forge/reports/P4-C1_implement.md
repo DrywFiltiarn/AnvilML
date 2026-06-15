@@ -110,7 +110,7 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 ### Gate 2 — OpenAPI Drift
 ```
      Running `target/debug/anvilml-openapi`
-git diff --exit-code backend/openapi.json → exit 0 (no drift)
+git diff --exit-code api/openapi.json → exit 0 (no drift)
 ```
 
 ## Public API Delta

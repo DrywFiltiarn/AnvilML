@@ -106,7 +106,7 @@ All four cross-checks exit 0.
 
 Gate 1 (Config Surface Sync): Not triggered — task does not modify `ServerConfig` or nested config fields.
 
-Gate 2 (OpenAPI Drift): Not triggered — the `backend/openapi.json` file does not yet exist in this repository (per ENVIRONMENT.md §8, the gate is skipped when the file does not exist).
+Gate 2 (OpenAPI Drift): Not triggered — the `api/openapi.json` file does not yet exist in this repository (per ENVIRONMENT.md §8, the gate is skipped when the file does not exist).
 
 Gate 3 (Node Parity): Not triggered — task does not add, remove, or rename node types.
 

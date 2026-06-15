@@ -29,30 +29,26 @@ use std::time::Duration;
 /// The subprocess is killed unconditionally at the end of the test.
 #[test]
 fn test_custom_port_health() {
-    // Find the path to the built binary.
-    // The binary is at CARGO_TARGET_DIR/debug/anvilml (set by cargo).
-    // CARGO_TARGET_DIR may be absolute or relative to the workspace root.
-    // If not set, fall back to the workspace-relative path.
+    // Resolve the workspace root once — used for both binary path resolution
+    // and as the working directory for the spawned server process, so that
+    // all ./‑relative config defaults (db_path, seeds_path, etc.) resolve
+    // correctly against the workspace root rather than backend/.
+    let ws_root = std::env::current_dir()
+        .expect("failed to get cwd")
+        .parent()
+        .expect("parent of backend/")
+        .to_path_buf();
+
     let binary = match std::env::var("CARGO_TARGET_DIR") {
         Ok(target_dir) => {
             let path = std::path::Path::new(&target_dir);
             if path.is_absolute() {
                 format!("{}/debug/anvilml", target_dir)
             } else {
-                let ws_root = std::env::current_dir()
-                    .expect("failed to get cwd")
-                    .parent()
-                    .expect("parent of backend/")
-                    .to_path_buf();
                 format!("{}", ws_root.join(target_dir).display())
             }
         }
         Err(_) => {
-            let ws_root = std::env::current_dir()
-                .expect("failed to get cwd")
-                .parent()
-                .expect("parent of backend/")
-                .to_path_buf();
             format!("{}", ws_root.join("target/debug/anvilml").display())
         }
     };
@@ -62,6 +58,7 @@ fn test_custom_port_health() {
     // Using the pre-built binary avoids cargo's output buffering issues.
     let mut child = Command::new(&binary)
         .args(["--port", "0", "--log-format", "plain"])
+        .current_dir(&ws_root)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()

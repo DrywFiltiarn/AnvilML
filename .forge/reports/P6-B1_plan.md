@@ -122,7 +122,7 @@ No handler files for jobs, models, workers, artifacts, or nodes exist yet. The `
 
 ## CI Impact
 
-No CI changes required. The new handler module and test file are picked up by the existing `cargo test --workspace --features mock-hardware` CI job. The `openapi-drift` gate may need updating if the OpenAPI generator is sensitive to new handler routes — but since the task only adds routes and the OpenAPI generator (`anvilml-openapi`) will pick up the new `ToSchema` derives on `ModelMeta` automatically, the gate should produce identical output if `openapi.json` is already up-to-date with these routes. If it produces a diff, the ACT agent must regenerate `backend/openapi.json` via `cargo run -p anvilml-openapi`.
+No CI changes required. The new handler module and test file are picked up by the existing `cargo test --workspace --features mock-hardware` CI job. The `openapi-drift` gate may need updating if the OpenAPI generator is sensitive to new handler routes — but since the task only adds routes and the OpenAPI generator (`anvilml-openapi`) will pick up the new `ToSchema` derives on `ModelMeta` automatically, the gate should produce identical output if `openapi.json` is already up-to-date with these routes. If it produces a diff, the ACT agent must regenerate `api/openapi.json` via `cargo run -p anvilml-openapi`.
 
 ## Platform Considerations
 

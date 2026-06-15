@@ -39,7 +39,7 @@ Create `crates/anvilml-registry/src/store.rs` implementing `ModelStore{pool: Sql
 
 The `anvilml-registry` crate already has `db.rs` (providing `open()` and `open_in_memory()`), `scanner.rs` (directory walk producing `Vec<ModelMeta>`), and `seed_loader.rs` (SHA256-gated SQL seed runner). The `lib.rs` declares three modules: `db`, `scanner`, `seed_loader`. No `store.rs` exists yet.
 
-The `models` table is already defined in `backend/migrations/001_initial.sql` with columns matching `ModelMeta` exactly: `id TEXT PRIMARY KEY`, `name TEXT NOT NULL`, `path TEXT NOT NULL`, `kind TEXT NOT NULL`, `dtype TEXT NOT NULL`, `format TEXT NOT NULL`, `size_bytes INTEGER NOT NULL`, `scanned_at TEXT NOT NULL`.
+The `models` table is already defined in `database/migrations/001_initial.sql` with columns matching `ModelMeta` exactly: `id TEXT PRIMARY KEY`, `name TEXT NOT NULL`, `path TEXT NOT NULL`, `kind TEXT NOT NULL`, `dtype TEXT NOT NULL`, `format TEXT NOT NULL`, `size_bytes INTEGER NOT NULL`, `scanned_at TEXT NOT NULL`.
 
 Test patterns established in `db_tests.rs` and `scanner_tests.rs`:
 - Tests are async `#[tokio::test]` functions with doc comments explaining what they verify.

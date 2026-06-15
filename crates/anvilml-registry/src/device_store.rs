@@ -2,7 +2,7 @@
 //!
 //! This module provides `DeviceCapabilityStore`, the persistent storage layer
 //! for device capability rows. It reads from the `device_capabilities` table
-//! which is populated by `SeedLoader` from `backend/seeds/devices.sql`.
+//! which is populated by `SeedLoader` from `database/seeds/devices.sql`.
 //!
 //! The `device_capabilities` table schema (from `001_initial.sql`):
 //! - `vendor_id INTEGER PRIMARY KEY` — PCI vendor ID (e.g. 4318 = NVIDIA)
@@ -54,7 +54,7 @@ pub struct DeviceRow {
 ///
 /// Wraps a `SqlitePool` and provides lookup by PCI vendor/device ID pair.
 /// The underlying `device_capabilities` table is populated by `SeedLoader`
-/// from `backend/seeds/devices.sql`.
+/// from `database/seeds/devices.sql`.
 pub struct DeviceCapabilityStore {
     pool: SqlitePool,
 }

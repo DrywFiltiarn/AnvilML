@@ -112,7 +112,7 @@ All routes are under `/v1/` except `/health`.
 | GET | `/v1/artifacts/:hash` | Fetch generated image |
 | GET | `/v1/events` | WebSocket event stream |
 
-Full OpenAPI spec: `backend/openapi.json`
+Full OpenAPI spec: `api/openapi.json`
 
 ---
 

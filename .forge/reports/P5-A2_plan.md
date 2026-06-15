@@ -12,14 +12,14 @@
 
 ## Objective
 
-Implement a SHA256-gated SQL seed loader in `crates/anvilml-registry/src/seed_loader.rs` that discovers `.sql` files in a configurable directory (`backend/seeds/`), computes SHA256 of each file's content, compares against the `seed_history` table, and either skips (up-to-date) or executes + records (changed or new). Create the initial seed file `backend/seeds/devices.sql` with `INSERT OR IGNORE INTO device_capabilities` rows for every entry in `docs/SUPPORTED_DEVICES_DB.md`. The observable outcome is that `cargo test -p anvilml-registry -- seed` exits 0 on first run (applies seeds) and exits 0 on second run (skips all seeds via SHA256 match).
+Implement a SHA256-gated SQL seed loader in `crates/anvilml-registry/src/seed_loader.rs` that discovers `.sql` files in a configurable directory (`database/seeds/`), computes SHA256 of each file's content, compares against the `seed_history` table, and either skips (up-to-date) or executes + records (changed or new). Create the initial seed file `database/seeds/devices.sql` with `INSERT OR IGNORE INTO device_capabilities` rows for every entry in `docs/SUPPORTED_DEVICES_DB.md`. The observable outcome is that `cargo test -p anvilml-registry -- seed` exits 0 on first run (applies seeds) and exits 0 on second run (skips all seeds via SHA256 match).
 
 ## Scope
 
 ### In Scope
 - Create `crates/anvilml-registry/src/seed_loader.rs` with `pub async fn run(pool: &SqlitePool, seeds_path: &Path) -> Result<(), AnvilError>`
 - Create `crates/anvilml-registry/tests/seed_loader_tests.rs` with tests
-- Create `backend/seeds/devices.sql` with `INSERT OR IGNORE INTO device_capabilities` rows for all entries in `docs/SUPPORTED_DEVICES_DB.md`
+- Create `database/seeds/devices.sql` with `INSERT OR IGNORE INTO device_capabilities` rows for all entries in `docs/SUPPORTED_DEVICES_DB.md`
 - Update `crates/anvilml-registry/Cargo.toml` to add `sha2 = "0.10"` dependency and bump patch version (0.1.1 → 0.1.2)
 - Update `crates/anvilml-registry/src/lib.rs` to `pub mod seed_loader;` and `pub use seed_loader::run;`
 
@@ -60,7 +60,7 @@ The `sha2` crate 0.10.9 is already present in `Cargo.lock` as a transitive depen
 
 3. **Update `crates/anvilml-registry/src/lib.rs`.** Add `pub mod seed_loader;` and `pub use seed_loader::run;` to expose the new module and function. This keeps lib.rs under 80 lines.
 
-4. **Create `backend/seeds/devices.sql`.** Generate `INSERT OR IGNORE INTO device_capabilities` rows for every entry in `docs/SUPPORTED_DEVICES_DB.md`. Convert each Markdown table row into a SQL INSERT statement:
+4. **Create `database/seeds/devices.sql`.** Generate `INSERT OR IGNORE INTO device_capabilities` rows for every entry in `docs/SUPPORTED_DEVICES_DB.md`. Convert each Markdown table row into a SQL INSERT statement:
    - `vendor_id` and `device_id` from the hex values (strip `0x` prefix, parse as decimal INTEGER).
    - `name` from the `name` column.
    - `arch` from the `arch` column.
@@ -89,7 +89,7 @@ No new structs, enums, or traits. The function is the sole public API.
 |--------|------|-------------|
 | CREATE | `crates/anvilml-registry/src/seed_loader.rs` | SeedLoader: SHA256-gated SQL seed runner |
 | CREATE | `crates/anvilml-registry/tests/seed_loader_tests.rs` | Tests for seed_loader: apply and skip behavior |
-| CREATE | `backend/seeds/devices.sql` | Device capability seed data from SUPPORTED_DEVICES_DB.md |
+| CREATE | `database/seeds/devices.sql` | Device capability seed data from SUPPORTED_DEVICES_DB.md |
 | MODIFY | `crates/anvilml-registry/src/lib.rs` | Add `pub mod seed_loader;` and `pub use seed_loader::run;` |
 | MODIFY | `crates/anvilml-registry/Cargo.toml` | Add `sha2 = "0.10"` dependency; bump version 0.1.1 → 0.1.2 |
 

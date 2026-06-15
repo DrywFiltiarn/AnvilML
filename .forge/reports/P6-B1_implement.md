@@ -95,7 +95,7 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
 Gate 2 (OpenAPI Drift):
 ```
-(cargo run -p anvilml-openapi && git diff --exit-code backend/openapi.json exited 0 — no drift)
+(cargo run -p anvilml-openapi && git diff --exit-code api/openapi.json exited 0 — no drift)
 ```
 
 ## Public API Delta

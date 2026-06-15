@@ -79,8 +79,8 @@ Running unittests src/main.rs (target/debug/deps/anvilml-796997a6b6f01477)
 running 0 tests
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
-Gate 2 — OpenAPI Drift: Skipped — backend/openapi.json does not yet exist (Phase 0 skeleton).
-Per ENVIRONMENT.md §8: "Skip only if backend/openapi.json does not yet exist."
+Gate 2 — OpenAPI Drift: Skipped — api/openapi.json does not yet exist (Phase 0 skeleton).
+Per ENVIRONMENT.md §8: "Skip only if api/openapi.json does not yet exist."
 
 Gate 3 — Node Parity: Skipped — worker/tests/ does not yet exist (Phase 0 skeleton).
 

@@ -197,7 +197,7 @@ async fn test_delete_existing() {
         .expect("connect to in-memory DB");
 
     // Run migrations on the pool.
-    sqlx::migrate!("../../backend/migrations")
+    sqlx::migrate!("../../database/migrations")
         .run(&pool)
         .await
         .expect("run migrations");

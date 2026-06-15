@@ -121,7 +121,7 @@ Gate not applicable — this task does not modify `ServerConfig`. No `config_ref
 
 ### Gate 2 — OpenAPI Drift
 ```
-cargo run -p anvilml-openapi && git diff --exit-code backend/openapi.json
+cargo run -p anvilml-openapi && git diff --exit-code api/openapi.json
 → Exit 0 — no diff (openapi.json is up to date)
 ```
 Gate passed — no OpenAPI drift.

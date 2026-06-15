@@ -12,7 +12,7 @@
 
 Phase 005 implements the SQLite layer that all subsequent persistent features depend on. The database is opened via `sqlx` with WAL mode enabled, migrations are run automatically at startup, and ghost jobs (jobs left in Queued or Running state from a prior run) are reset to Failed.
 
-The `SeedLoader` in `anvilml-registry` runs SHA256-gated SQL seed files from `backend/seeds/`. On first run it inserts the device capability rows; on subsequent runs it skips files whose SHA256 hash has not changed. This prevents re-seeding on every restart while still applying updates when seed files are modified.
+The `SeedLoader` in `anvilml-registry` runs SHA256-gated SQL seed files from `database/seeds/`. On first run it inserts the device capability rows; on subsequent runs it skips files whose SHA256 hash has not changed. This prevents re-seeding on every restart while still applying updates when seed files are modified.
 
 ## Group Reference
 
@@ -23,7 +23,7 @@ The `SeedLoader` in `anvilml-registry` runs SHA256-gated SQL seed files from `ba
 
 ## Prerequisites
 
-Phase 004 complete: `AnvilError` and `ServerConfig` exist. `backend/seeds/devices.sql` will be created in this phase.
+Phase 004 complete: `AnvilError` and `ServerConfig` exist. `database/seeds/devices.sql` will be created in this phase.
 
 ## Task Descriptions
 
@@ -31,10 +31,10 @@ Phase 004 complete: `AnvilError` and `ServerConfig` exist. `backend/seeds/device
 
 #### P5-A1: anvilml-registry: db.rs open, migrate, ghost reset
 
-**Goal:** Implement `pub async fn open(path: &Path) -> Result<SqlitePool>` in `crates/anvilml-registry/src/db.rs`. Enable WAL mode. Run `sqlx::migrate!("../backend/migrations")`. Reset ghost jobs. Log each migration applied and the "up-to-date" message when none apply.
+**Goal:** Implement `pub async fn open(path: &Path) -> Result<SqlitePool>` in `crates/anvilml-registry/src/db.rs`. Enable WAL mode. Run `sqlx::migrate!("../database/migrations")`. Reset ghost jobs. Log each migration applied and the "up-to-date" message when none apply.
 
 **Files to create:**
-- `backend/migrations/001_initial.sql` — tables: `jobs`, `models`, `artifacts`, `seed_history`, `device_capabilities` (schema per `docs/SUPPORTED_DEVICES_DB.md §Migration DDL`)
+- `database/migrations/001_initial.sql` — tables: `jobs`, `models`, `artifacts`, `seed_history`, `device_capabilities` (schema per `docs/SUPPORTED_DEVICES_DB.md §Migration DDL`)
 - `crates/anvilml-registry/src/db.rs` — `open()`, `open_in_memory()`, ghost reset logic
 
 **Acceptance criterion:** `cargo test -p anvilml-registry -- db` exits 0; DB file created on first call, tables present.
@@ -45,7 +45,7 @@ Phase 004 complete: `AnvilError` and `ServerConfig` exist. `backend/seeds/device
 
 **Files to create:**
 - `crates/anvilml-registry/src/seed_loader.rs`
-- `backend/seeds/devices.sql` — `INSERT OR IGNORE INTO device_capabilities` rows generated from all entries in `docs/SUPPORTED_DEVICES_DB.md`
+- `database/seeds/devices.sql` — `INSERT OR IGNORE INTO device_capabilities` rows generated from all entries in `docs/SUPPORTED_DEVICES_DB.md`
 
 **Acceptance criterion:** `cargo test -p anvilml-registry -- seed` exits 0; running twice skips on second run (hash match).
 

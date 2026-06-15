@@ -112,7 +112,7 @@ pub async fn run(pool: &SqlitePool, seeds_path: &Path) -> Result<(), AnvilError>
                 // statements (e.g. batch INSERTs) which SQLite handles natively.
                 // `AssertSqlSafe` wraps the dynamic SQL string to assert it has
                 // been manually audited for injection — seed files are trusted
-                // SQL text from the project's backend/seeds/ directory.
+                // SQL text from the project's database/seeds/ directory.
                 let sql_text = std::str::from_utf8(&content)
                     .map_err(|e| AnvilError::Internal(e.to_string()))?;
                 sqlx::query(sqlx::AssertSqlSafe(sql_text))

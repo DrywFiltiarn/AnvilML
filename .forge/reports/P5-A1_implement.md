@@ -10,7 +10,7 @@
 
 ## Summary
 
-Created the initial SQLite migration (`backend/migrations/001_initial.sql`) with five tables: `jobs`, `models`, `artifacts`, `seed_history`, and `device_capabilities`. Implemented `pub async fn open(path: &Path)` and `pub async fn open_in_memory()` in `crates/anvilml-registry/src/db.rs` that enable WAL mode, run compile-time migrations, and reset ghost jobs. Added five integration tests in `crates/anvilml-registry/tests/db_tests.rs` verifying file creation, WAL mode, in-memory pool, and ghost-job reset behavior. All 90 workspace tests pass.
+Created the initial SQLite migration (`database/migrations/001_initial.sql`) with five tables: `jobs`, `models`, `artifacts`, `seed_history`, and `device_capabilities`. Implemented `pub async fn open(path: &Path)` and `pub async fn open_in_memory()` in `crates/anvilml-registry/src/db.rs` that enable WAL mode, run compile-time migrations, and reset ghost jobs. Added five integration tests in `crates/anvilml-registry/tests/db_tests.rs` verifying file creation, WAL mode, in-memory pool, and ghost-job reset behavior. All 90 workspace tests pass.
 
 ## Resolved Dependencies
 
@@ -26,7 +26,7 @@ Created the initial SQLite migration (`backend/migrations/001_initial.sql`) with
 
 | Action | Path | Description |
 |--------|------|-------------|
-| CREATE | `backend/migrations/001_initial.sql` | SQL DDL for 5 tables with indexes |
+| CREATE | `database/migrations/001_initial.sql` | SQL DDL for 5 tables with indexes |
 | CREATE | `crates/anvilml-registry/src/db.rs` | `open()`, `open_in_memory()`, `run_migrations()`, `reset_ghost_jobs()` |
 | CREATE | `crates/anvilml-registry/tests/db_tests.rs` | 5 integration tests |
 | MODIFY | `crates/anvilml-registry/src/lib.rs` | Added `pub mod db;` and `pub use db::{open, open_in_memory};`; removed stub |
@@ -40,7 +40,7 @@ Created the initial SQLite migration (`backend/migrations/001_initial.sql`) with
  .forge/state/CURRENT_TASK.md              |   6 +-
  .forge/state/state.json                   |  13 +-
  Cargo.lock                                |   5 +-
- backend/migrations/001_initial.sql        |  86 ++++++++++
+ database/migrations/001_initial.sql        |  86 ++++++++++
  crates/anvilml-registry/Cargo.toml        |   7 +-
  crates/anvilml-registry/src/db.rs         | 168 +++++++++++++++++++
  crates/anvilml-registry/src/lib.rs        |   5 +-
@@ -122,7 +122,7 @@ New pub items:
 
 ## Deviations from Plan
 
-1. **Migration path**: The plan specified `sqlx::migrate!("./../../backend/migrations")` (relative to src/). The `migrate!` macro actually resolves paths relative to `CARGO_MANIFEST_DIR` (the crate root, `crates/anvilml-registry/`), so the correct path is `"../../backend/migrations"`. Verified by testing: `./../../backend/migrations` from `CARGO_MANIFEST_DIR` resolves to `crates/backend/migrations/` (wrong), while `../../backend/migrations` resolves to `backend/migrations/` (correct).
+1. **Migration path**: The plan specified `sqlx::migrate!("./../../database/migrations")` (relative to src/). The `migrate!` macro actually resolves paths relative to `CARGO_MANIFEST_DIR` (the crate root, `crates/anvilml-registry/`), so the correct path is `"../../database/migrations"`. Verified by testing: `./../../database/migrations` from `CARGO_MANIFEST_DIR` resolves to `crates/database/migrations/` (wrong), while `../../database/migrations` resolves to `database/migrations/` (correct).
 
 2. **sqlx 0.9.0 API differences**: The plan assumed a `MigrationReport` with `migrations()` method returned by `runner.run()`. In sqlx 0.9.0, `run()` returns `Result<(), MigrateError>` (unit type on success). The migration count is obtained from `runner.migrations.len()` before calling `run()`. Also, `MigrateError::NoMigration` variant does not exist in sqlx 0.9.0 — error handling was simplified to use `map_err(|e| AnvilError::Db(e.into()))`.
 

@@ -7,7 +7,7 @@
     "prereqs": [
       "P4-C1"
     ],
-    "context": "Create backend/migrations/001_initial.sql: tables jobs(id,status,graph,settings,created_at,started_at,completed_at,worker_id,error,queue_position), models(id,name,path,kind,dtype,format,size_bytes,scanned_at), artifacts(id,job_id,hash,path,size_bytes,created_at), seed_history(file,sha256,applied_at), device_capabilities(see SUPPORTED_DEVICES_DB.md). Create crates/anvilml-registry/src/db.rs: open(path)->Result<SqlitePool>: WAL mode, sqlx::migrate!, ghost-reset (SET status=Failed WHERE status IN Queued/Running). Log migrations applied+up-to-date. cargo test -p anvilml-registry -- db exits 0.",
+    "context": "Create database/migrations/001_initial.sql: tables jobs(id,status,graph,settings,created_at,started_at,completed_at,worker_id,error,queue_position), models(id,name,path,kind,dtype,format,size_bytes,scanned_at), artifacts(id,job_id,hash,path,size_bytes,created_at), seed_history(file,sha256,applied_at), device_capabilities(see SUPPORTED_DEVICES_DB.md). Create crates/anvilml-registry/src/db.rs: open(path)->Result<SqlitePool>: WAL mode, sqlx::migrate!, ghost-reset (SET status=Failed WHERE status IN Queued/Running). Log migrations applied+up-to-date. cargo test -p anvilml-registry -- db exits 0.",
     "tags": []
   },
   {
@@ -18,7 +18,7 @@
     "prereqs": [
       "P5-A1"
     ],
-    "context": "Create crates/anvilml-registry/src/seed_loader.rs: pub async fn run(pool:&SqlitePool,seeds_path:&Path)->Result<(),AnvilError>. For each .sql file in seeds_path: sha256 first 1MiB; if sha256 matches seed_history row: tracing::info!(file,status=up-to-date,\"seed skipped\") skip; else execute SQL + insert seed_history row + tracing::info!(file,sha256,\"seed applied\"). Create backend/seeds/devices.sql: generate INSERT OR IGNORE INTO device_capabilities rows from all entries in docs/SUPPORTED_DEVICES_DB.md. cargo test -p anvilml-registry -- seed exits 0; second run skips all.",
+    "context": "Create crates/anvilml-registry/src/seed_loader.rs: pub async fn run(pool:&SqlitePool,seeds_path:&Path)->Result<(),AnvilError>. For each .sql file in seeds_path: sha256 first 1MiB; if sha256 matches seed_history row: tracing::info!(file,status=up-to-date,\"seed skipped\") skip; else execute SQL + insert seed_history row + tracing::info!(file,sha256,\"seed applied\"). Create database/seeds/devices.sql: generate INSERT OR IGNORE INTO device_capabilities rows from all entries in docs/SUPPORTED_DEVICES_DB.md. cargo test -p anvilml-registry -- seed exits 0; second run skips all.",
     "tags": []
   },
   {

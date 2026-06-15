@@ -12,7 +12,7 @@
 
 ## Objective
 
-Create `DeviceCapabilityStore` in `crates/anvilml-registry/src/device_store.rs`, a SQLite-backed store that reads device capability rows from the `device_capabilities` table (populated by `SeedLoader` from `backend/seeds/devices.sql`). The store exposes `pub async fn get(&self, vendor_id: u16, device_id: u16) -> Result<Option<DeviceRow>, AnvilError>`. `DeviceRow` mirrors `InferenceCaps` with the addition of `vendor_id`, `device_id`, `name`, and `arch`. Boolean columns stored as `INTEGER 0/1` in SQLite are mapped to Rust `bool` at the store boundary via `value != 0`. The acceptance criterion is that `cargo test -p anvilml-registry -- device_store` exits 0.
+Create `DeviceCapabilityStore` in `crates/anvilml-registry/src/device_store.rs`, a SQLite-backed store that reads device capability rows from the `device_capabilities` table (populated by `SeedLoader` from `database/seeds/devices.sql`). The store exposes `pub async fn get(&self, vendor_id: u16, device_id: u16) -> Result<Option<DeviceRow>, AnvilError>`. `DeviceRow` mirrors `InferenceCaps` with the addition of `vendor_id`, `device_id`, `name`, and `arch`. Boolean columns stored as `INTEGER 0/1` in SQLite are mapped to Rust `bool` at the store boundary via `value != 0`. The acceptance criterion is that `cargo test -p anvilml-registry -- device_store` exits 0.
 
 ## Scope
 
@@ -33,7 +33,7 @@ Create `DeviceCapabilityStore` in `crates/anvilml-registry/src/device_store.rs`,
 
 ## Existing Codebase Assessment
 
-The `anvilml-registry` crate already has `ModelStore` (in `store.rs`) as the reference pattern for SQLite-backed stores: it wraps a `SqlitePool`, uses raw `sqlx::query()` (not `query_as!`), applies `#[tracing::instrument]` annotations, and converts SQL rows into domain structs using `row.get::<T, _>("column_name")`. The `device_capabilities` table already exists in the `001_initial.sql` migration with the exact schema needed: `vendor_id INTEGER`, `device_id INTEGER`, `name TEXT`, `arch TEXT`, `fp32 INTEGER`, `fp16 INTEGER`, `bf16 INTEGER`, `fp8 INTEGER`, `fp4 INTEGER`, `flash_attention INTEGER`. Seed data is populated via `SeedLoader` from `backend/seeds/devices.sql`. Tests in `tests/store_tests.rs` use `open_in_memory()` from `db.rs`, construct helper types, and assert field-by-field equality. The `lib.rs` currently declares `pub mod db`, `scanner`, `seed_loader`, `store` — it already mentions `device_store` in its crate-level doc comment but does not yet declare the module.
+The `anvilml-registry` crate already has `ModelStore` (in `store.rs`) as the reference pattern for SQLite-backed stores: it wraps a `SqlitePool`, uses raw `sqlx::query()` (not `query_as!`), applies `#[tracing::instrument]` annotations, and converts SQL rows into domain structs using `row.get::<T, _>("column_name")`. The `device_capabilities` table already exists in the `001_initial.sql` migration with the exact schema needed: `vendor_id INTEGER`, `device_id INTEGER`, `name TEXT`, `arch TEXT`, `fp32 INTEGER`, `fp16 INTEGER`, `bf16 INTEGER`, `fp8 INTEGER`, `fp4 INTEGER`, `flash_attention INTEGER`. Seed data is populated via `SeedLoader` from `database/seeds/devices.sql`. Tests in `tests/store_tests.rs` use `open_in_memory()` from `db.rs`, construct helper types, and assert field-by-field equality. The `lib.rs` currently declares `pub mod db`, `scanner`, `seed_loader`, `store` — it already mentions `device_store` in its crate-level doc comment but does not yet declare the module.
 
 ## Resolved Dependencies
 
@@ -98,7 +98,7 @@ pub struct DeviceRow {
 ///
 /// Wraps a `SqlitePool` and provides lookup by PCI vendor/device ID
 /// pair. The underlying `device_capabilities` table is populated by
-/// `SeedLoader` from `backend/seeds/devices.sql`.
+/// `SeedLoader` from `database/seeds/devices.sql`.
 pub struct DeviceCapabilityStore {
     pool: SqlitePool,
 }

@@ -77,7 +77,7 @@ No new external dependencies are introduced. `serde` and `serde_json` are alread
                limits: LimitsConfig::default(),
                rocm: None,
                hardware_override: None,
-               seeds_path: PathBuf::from("./backend/seeds"),
+               seeds_path: PathBuf::from("./database/seeds"),
            }
        }
    }

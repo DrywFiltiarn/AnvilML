@@ -10,7 +10,7 @@
 
 ## Summary
 
-Implemented the SHA256-gated SQL seed loader in `crates/anvilml-registry/src/seed_loader.rs` that discovers `.sql` files in a configurable directory, computes SHA256 of each file's content, compares against the `seed_history` table, and either skips (up-to-date) or executes + records (changed or new). Created the initial seed file `backend/seeds/devices.sql` with 353 `INSERT OR IGNORE INTO device_capabilities` rows for all entries in `docs/SUPPORTED_DEVICES_DB.md`. Added `sha2` and `chrono` dependencies to the crate. Both new tests pass: first-run applies seeds, second-run skips them.
+Implemented the SHA256-gated SQL seed loader in `crates/anvilml-registry/src/seed_loader.rs` that discovers `.sql` files in a configurable directory, computes SHA256 of each file's content, compares against the `seed_history` table, and either skips (up-to-date) or executes + records (changed or new). Created the initial seed file `database/seeds/devices.sql` with 353 `INSERT OR IGNORE INTO device_capabilities` rows for all entries in `docs/SUPPORTED_DEVICES_DB.md`. Added `sha2` and `chrono` dependencies to the crate. Both new tests pass: first-run applies seeds, second-run skips them.
 
 ## Resolved Dependencies
 
@@ -27,7 +27,7 @@ The `sha2` crate 0.10.9 was already present in `Cargo.lock` as a transitive depe
 |--------|------|-------------|
 | CREATE | `crates/anvilml-registry/src/seed_loader.rs` | SeedLoader: SHA256-gated SQL seed runner with `pub async fn run()` |
 | CREATE | `crates/anvilml-registry/tests/seed_loader_tests.rs` | Tests: apply-new-seed and skip-up-to-date |
-| CREATE | `backend/seeds/devices.sql` | Device capability seed data (353 INSERT statements from SUPPORTED_DEVICES_DB.md) |
+| CREATE | `database/seeds/devices.sql` | Device capability seed data (353 INSERT statements from SUPPORTED_DEVICES_DB.md) |
 | MODIFY | `crates/anvilml-registry/src/lib.rs` | Added `pub mod seed_loader;` and `pub use seed_loader::run;` |
 | MODIFY | `crates/anvilml-registry/Cargo.toml` | Added `sha2 = "0.10"`, `chrono` dep; bumped version 0.1.1 → 0.1.2 |
 | MODIFY | `docs/TESTS.md` | Added entries for `test_seed_loader_applies_new_seed` and `test_seed_loader_skips_up_to_date` |
@@ -39,7 +39,7 @@ The `sha2` crate 0.10.9 was already present in `Cargo.lock` as a transitive depe
  .forge/state/CURRENT_TASK.md                       |   6 +-
  .forge/state/state.json                            |  13 +-
  Cargo.lock                                         |   4 +-
- backend/seeds/devices.sql                          | 362 +++++++++++++++++++++
+ database/seeds/devices.sql                         | 362 +++++++++++++++++++++
  crates/anvilml-registry/Cargo.toml                 |   8 +-
  crates/anvilml-registry/src/lib.rs                 |   2 +
  crates/anvilml-registry/src/seed_loader.rs         | 142 ++++++++

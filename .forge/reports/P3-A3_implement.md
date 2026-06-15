@@ -96,7 +96,7 @@ All four cross-checks passed.
 
 Gate 1 (Config Surface Sync): Not applicable — task does not modify `ServerConfig` fields or nested config structs.
 
-Gate 2 (OpenAPI Drift): Not applicable — `backend/openapi.json` does not yet exist in the repository (prior to the phase that introduces the `anvilml-openapi` binary).
+Gate 2 (OpenAPI Drift): Not applicable — `api/openapi.json` does not yet exist in the repository (prior to the phase that introduces the `anvilml-openapi` binary).
 
 Gate 3 (Node Parity): Not applicable — task does not add, remove, or rename node types.
 

@@ -486,7 +486,7 @@ to add them here.
 ## Migration DDL reference
 
 The `device_capabilities` table is created as part of
-`backend/migrations/001_initial.sql`:
+`database/migrations/001_initial.sql`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS device_capabilities (

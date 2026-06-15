@@ -7,12 +7,12 @@
     "prereqs": [
       "P21-A2"
     ],
-    "context": "Create .github/workflows/release.yml: triggered on tag push v*.*.*. Jobs: build-linux (cargo build --release, tar worker/ + binary + anvilml.toml + backend/seeds/), build-windows (cross-compile or windows runner, zip). Upload artifacts. Create release notes from CHANGELOG. Generate SHA256SUMS file. cargo build --release exits 0; release zip contains anvilml binary + worker/ directory + anvilml.toml.",
+    "context": "Create .github/workflows/release.yml: triggered on tag push v*.*.*. Jobs: build-linux (cargo build --release, tar worker/ + binary + anvilml.toml + database/seeds/), build-windows (cross-compile or windows runner, zip). Upload artifacts. Create release notes from CHANGELOG. Generate SHA256SUMS file. cargo build --release exits 0; release zip contains anvilml binary + worker/ directory + anvilml.toml.",
     "tags": []
   },
   {
     "id": "P22-A2",
-    "description": "backend/scripts: install_worker_deps.sh and .ps1 validated",
+    "description": "scripts: install_worker_deps.sh and .ps1 validated",
     "phase": "22",
     "project": "anvilml",
     "prereqs": [

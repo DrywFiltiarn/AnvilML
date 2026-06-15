@@ -81,7 +81,7 @@ All four cross-checks exit 0.
 ## Project Gates
 
 Gate 1 (config_reference): Not applicable — `anvilml.toml` does not yet exist and the `config_reference` test is created in Phase 003.
-Gate 2 (OpenAPI drift): Not applicable — `backend/openapi.json` does not yet exist.
+Gate 2 (OpenAPI drift): Not applicable — `api/openapi.json` does not yet exist.
 Gate 3 (Node parity): Not applicable — task does not touch node types or scheduler node registry.
 
 ## Public API Delta

@@ -12,12 +12,12 @@
 
 ## Objective
 
-Create the initial SQLite migration SQL (`backend/migrations/001_initial.sql`) with tables for jobs, models, artifacts, seed_history, and device_capabilities. Implement `pub async fn open(path: &Path) -> Result<SqlitePool>` in `crates/anvilml-registry/src/db.rs` that opens a file-backed SQLite connection with WAL mode enabled, runs `sqlx::migrate!` from the migrations directory, logs each migration applied (or an up-to-date message when none apply), and resets ghost jobs. Also implement `pub async fn open_in_memory() -> Result<SqlitePool>` for test use. The observable outcome: `cargo test -p anvilml-registry -- db` exits 0, a real DB file is created on first call with all tables present, and in-memory pools work for tests.
+Create the initial SQLite migration SQL (`database/migrations/001_initial.sql`) with tables for jobs, models, artifacts, seed_history, and device_capabilities. Implement `pub async fn open(path: &Path) -> Result<SqlitePool>` in `crates/anvilml-registry/src/db.rs` that opens a file-backed SQLite connection with WAL mode enabled, runs `sqlx::migrate!` from the migrations directory, logs each migration applied (or an up-to-date message when none apply), and resets ghost jobs. Also implement `pub async fn open_in_memory() -> Result<SqlitePool>` for test use. The observable outcome: `cargo test -p anvilml-registry -- db` exits 0, a real DB file is created on first call with all tables present, and in-memory pools work for tests.
 
 ## Scope
 
 ### In Scope
-- **CREATE** `backend/migrations/001_initial.sql` — SQL DDL for five tables: `jobs`, `models`, `artifacts`, `seed_history`, `device_capabilities` (with indexes), per the DDL in `SUPPORTED_DEVICES_DB.md §Migration DDL` and the `Job`/`ModelMeta`/`ArtifactMeta` types from `anvilml-core`.
+- **CREATE** `database/migrations/001_initial.sql` — SQL DDL for five tables: `jobs`, `models`, `artifacts`, `seed_history`, `device_capabilities` (with indexes), per the DDL in `SUPPORTED_DEVICES_DB.md §Migration DDL` and the `Job`/`ModelMeta`/`ArtifactMeta` types from `anvilml-core`.
 - **CREATE** `crates/anvilml-registry/src/db.rs` — module with:
   - `pub async fn open(path: &Path) -> Result<SqlitePool>` — file-backed pool with WAL mode, migration runner, ghost-job reset.
   - `pub async fn open_in_memory() -> Result<SqlitePool>` — in-memory pool with migrations.
@@ -33,7 +33,7 @@ Create the initial SQLite migration SQL (`backend/migrations/001_initial.sql`) w
 
 ## Existing Codebase Assessment
 
-The `anvilml-registry` crate exists at `crates/anvilml-registry/` with only a stub `lib.rs` containing `pub fn stub() {}`. No source modules (`db.rs`, `scanner.rs`, etc.) have been created yet. The `backend/migrations/` directory does not exist. The `crates/anvilml-registry/tests/` directory also does not exist.
+The `anvilml-registry` crate exists at `crates/anvilml-registry/` with only a stub `lib.rs` containing `pub fn stub() {}`. No source modules (`db.rs`, `scanner.rs`, etc.) have been created yet. The `database/migrations/` directory does not exist. The `crates/anvilml-registry/tests/` directory also does not exist.
 
 The workspace already declares `sqlx` with features `["runtime-tokio", "sqlite", "json"]` at version 0.9.0 in `Cargo.toml`, and `anvilml-registry/Cargo.toml` already lists `sqlx = { workspace = true }` as a dependency. The `anvilml-core` crate exports `Job`, `JobStatus`, `JobSettings`, `ModelMeta`, `ModelKind`, `ModelDtype`, `ModelFormat`, and `ArtifactMeta` — all types needed for the migration DDL.
 
@@ -57,9 +57,9 @@ The `rust-docs` MCP server (`mcp-package-docs`) is unavailable (crashed on impor
 
 ## Approach
 
-1. **Create `backend/migrations/` directory.** This is the directory the `sqlx::migrate!` macro will scan. It must exist before migrations can run.
+1. **Create `database/migrations/` directory.** This is the directory the `sqlx::migrate!` macro will scan. It must exist before migrations can run.
 
-2. **Create `backend/migrations/001_initial.sql`** with five table definitions:
+2. **Create `database/migrations/001_initial.sql`** with five table definitions:
    - `jobs` table: columns `id` (TEXT PRIMARY KEY, UUID hex), `status` (TEXT NOT NULL), `graph` (TEXT NOT NULL), `settings` (TEXT NOT NULL), `created_at` (TEXT NOT NULL, ISO8601), `started_at` (TEXT), `completed_at` (TEXT), `worker_id` (TEXT), `error` (TEXT), `queue_position` (INTEGER). Add index on `status` for filtering.
    - `models` table: columns `id` (TEXT PRIMARY KEY, SHA256 hex), `name` (TEXT NOT NULL), `path` (TEXT NOT NULL), `kind` (TEXT NOT NULL), `dtype` (TEXT NOT NULL), `format` (TEXT NOT NULL), `size_bytes` (INTEGER NOT NULL), `scanned_at` (TEXT NOT NULL).
    - `artifacts` table: columns `id` (INTEGER PRIMARY KEY AUTOINCREMENT), `job_id` (TEXT NOT NULL, FK→jobs.id), `hash` (TEXT NOT NULL UNIQUE), `path` (TEXT NOT NULL), `size_bytes` (INTEGER NOT NULL), `created_at` (TEXT NOT NULL). Add index on `job_id`.
@@ -72,10 +72,10 @@ The `rust-docs` MCP server (`mcp-package-docs`) is unavailable (crashed on impor
      a. Build `SqliteConnectOptions` with the path, enable WAL mode via `.journal_mode(JournalMode::Wal)`, and set `.create_if_missing(true)`.
      b. Connect via `SqlitePool::connect_with(opts)`.
      c. Log "database created" at INFO if the file did not exist before (check with `path.exists()` before connecting; log `path=` field).
-     d. Run `sqlx::migrate!("./../../backend/migrations")` — this is a compile-time macro that applies all numbered migrations. The path is relative to the crate source directory (`crates/anvilml-registry/src/`), so `./../../backend/migrations` resolves to `backend/migrations/`.
+     d. Run `sqlx::migrate!("./../../database/migrations")` — this is a compile-time macro that applies all numbered migrations. The path is relative to the crate source directory (`crates/anvilml-registry/src/`), so `./../../database/migrations` resolves to `database/migrations/`.
      e. After migrations, run the ghost-job reset: `UPDATE jobs SET status = 'Failed', error = 'server_restart' WHERE status IN ('Queued', 'Running')`. Count affected rows and log at INFO with `ghost_jobs_reset=`.
      f. Return the pool.
-     g. Rationale for `sqlx::migrate!` path: the macro embeds the migration directory path at compile time. The relative path from the crate's src/ directory to backend/migrations/ is `./../../backend/migrations`. This is the same pattern used by the workspace convention.
+     g. Rationale for `sqlx::migrate!` path: the macro embeds the migration directory path at compile time. The relative path from the crate's src/ directory to database/migrations/ is `./../../database/migrations`. This is the same pattern used by the workspace convention.
      h. Rationale for using `JournalMode::Wal`: WAL mode provides better concurrent read performance and prevents the "database is locked" errors that plague journal mode under concurrent access from multiple tasks.
    - `pub async fn open_in_memory() -> Result<SqlitePool, AnvilError>`:
      a. Connect to `"sqlite::memory:"` via `SqlitePool::connect`.
@@ -120,7 +120,7 @@ Both functions:
 
 | Action | Path | Description |
 |--------|------|-------------|
-| CREATE | `backend/migrations/001_initial.sql` | Initial migration: jobs, models, artifacts, seed_history, device_capabilities tables with indexes |
+| CREATE | `database/migrations/001_initial.sql` | Initial migration: jobs, models, artifacts, seed_history, device_capabilities tables with indexes |
 | CREATE | `crates/anvilml-registry/src/db.rs` | `open()`, `open_in_memory()` — pool creation, migration runner, ghost-job reset |
 | CREATE | `crates/anvilml-registry/tests/db_tests.rs` | Integration tests for `open()` and `open_in_memory()` |
 | MODIFY | `crates/anvilml-registry/src/lib.rs` | Add `pub mod db;` and `pub use db::{open, open_in_memory};`; remove stub |
@@ -138,7 +138,7 @@ Both functions:
 
 ## CI Impact
 
-No CI changes required. The new tests are picked up automatically by `cargo test --workspace --features mock-hardware`. The new migration file is in the `backend/migrations/` directory which is scanned by `sqlx::migrate!` at compile time — no CI configuration changes needed. The `serial_test` dev-dependency is only compiled for tests, not for the release binary.
+No CI changes required. The new tests are picked up automatically by `cargo test --workspace --features mock-hardware`. The new migration file is in the `database/migrations/` directory which is scanned by `sqlx::migrate!` at compile time — no CI configuration changes needed. The `serial_test` dev-dependency is only compiled for tests, not for the release binary.
 
 ## Platform Considerations
 
@@ -148,7 +148,7 @@ None identified. The SQLite database path uses `std::path::Path`, which is platf
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
-| `sqlx::migrate!` macro path is incorrect — the embedded path from `crates/anvilml-registry/src/` to `backend/migrations/` may not resolve correctly at compile time, causing a build error. | Medium | High | Use the absolute path via `env!("CARGO_MANIFEST_DIR")` to compute the migrations path at compile time: `sqlx::migrate!(env!("CARGO_MANIFEST_DIR").replace("crates/anvilml-registry", "backend/migrations"))`. If this is too complex, use the relative path `./../../backend/migrations` and verify with `cargo check`. |
+| `sqlx::migrate!` macro path is incorrect — the embedded path from `crates/anvilml-registry/src/` to `database/migrations/` may not resolve correctly at compile time, causing a build error. | Medium | High | Use the absolute path via `env!("CARGO_MANIFEST_DIR")` to compute the migrations path at compile time: `sqlx::migrate!(env!("CARGO_MANIFEST_DIR").replace("crates/anvilml-registry", "database/migrations"))`. If this is too complex, use the relative path `./../../database/migrations` and verify with `cargo check`. |
 | Ghost-job reset runs before any jobs exist — the `UPDATE jobs SET ... WHERE status IN (...)` on a freshly created table will affect 0 rows, which is correct but could produce a warning or error if the table doesn't exist yet. | Low | Medium | The `open_in_memory()` function runs migrations first (creating the jobs table), then runs the ghost reset. Since migrations run before the UPDATE, the table exists. For `open()`, same ordering applies. No risk. |
 | `serial_test` dev-dependency version may not be available or may conflict with existing dev-dependencies. | Low | Low | Use the latest stable version from crates.io (3.2.0 as of current date). If unavailable, fall back to `--test-threads=1` CLI flag in the acceptance command. |
 | The migration SQL uses `sqlite_master` queries in tests — if the table names differ from expectations, tests will fail silently or with confusing errors. | Medium | Medium | Use `SELECT name FROM sqlite_master WHERE type='table' ORDER BY name` and assert the exact set of expected table names. This provides a clear assertion message if tables are missing. |
@@ -159,7 +159,7 @@ None identified. The SQLite database path uses `std::path::Path`, which is platf
 - [ ] `cargo build -p anvilml-registry --features mock-hardware` exits 0 (migration macro compiles)
 - [ ] `cargo fmt --all -- --check` exits 0 (format gate)
 - [ ] `cargo clippy -p anvilml-registry --features mock-hardware -- -D warnings` exits 0 (lint gate)
-- [ ] File `backend/migrations/001_initial.sql` exists and contains CREATE TABLE statements for all five tables: jobs, models, artifacts, seed_history, device_capabilities
+- [ ] File `database/migrations/001_initial.sql` exists and contains CREATE TABLE statements for all five tables: jobs, models, artifacts, seed_history, device_capabilities
 - [ ] Function `open()` creates a real file on disk when given a non-memory path
 - [ ] Function `open_in_memory()` creates an in-memory pool that passes migration and ghost-reset logic
 - [ ] Ghost-job reset changes Queued/Running jobs to Failed with error='server_restart'

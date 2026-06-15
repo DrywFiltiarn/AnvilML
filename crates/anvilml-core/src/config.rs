@@ -190,7 +190,7 @@ pub struct ServerConfig {
     pub rocm: Option<RocmConfig>,
     /// Hardware override for CI/testing. `None` in production builds.
     pub hardware_override: Option<HardwareOverrideConfig>,
-    /// SQL seed files directory. Default: `"./backend/seeds"`.
+    /// SQL seed files directory. Default: `"./database/seeds"`.
     #[serde(with = "path_as_string")]
     pub seeds_path: PathBuf,
 }
@@ -210,7 +210,7 @@ impl Default for ServerConfig {
             limits: LimitsConfig::default(),
             rocm: None,
             hardware_override: None,
-            seeds_path: PathBuf::from("./backend/seeds"),
+            seeds_path: PathBuf::from("./database/seeds"),
         }
     }
 }

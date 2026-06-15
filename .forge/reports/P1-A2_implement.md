@@ -100,7 +100,7 @@ All four cross-checks exit 0.
 ## Project Gates
 
 - **Gate 1 (Config Surface Sync):** Not applicable — this task does not add, rename, or remove any `ServerConfig` field.
-- **Gate 2 (OpenAPI Drift):** Not applicable — `backend/openapi.json` does not yet exist (per ENVIRONMENT.md §8 skip condition).
+- **Gate 2 (OpenAPI Drift):** Not applicable — `api/openapi.json` does not yet exist (per ENVIRONMENT.md §8 skip condition).
 - **Gate 3 (Node Parity):** Not applicable — this task does not touch `worker/nodes/` or `node_registry.rs`.
 
 ## Public API Delta

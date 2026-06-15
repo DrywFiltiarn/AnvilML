@@ -23,7 +23,7 @@ fn test_default_values() {
     assert_eq!(cfg.num_threads, None);
     assert_eq!(cfg.venv_path, std::path::PathBuf::from("./worker/.venv"));
     assert_eq!(cfg.max_ipc_payload_mib, 256);
-    assert_eq!(cfg.seeds_path, std::path::PathBuf::from("./backend/seeds"));
+    assert_eq!(cfg.seeds_path, std::path::PathBuf::from("./database/seeds"));
 
     // model_dirs is empty — no directories configured by default
     assert!(cfg.model_dirs.is_empty());

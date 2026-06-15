@@ -27,7 +27,7 @@ that ensures all subsequent phases build on verified, tested code.
   - `rust-windows`: windows-latest — `cargo clippy --workspace --features mock-hardware -- -D warnings`, `cargo test --workspace --features mock-hardware`
   - `worker-linux`: ubuntu-latest — Python 3.12 setup, `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v`
   - `worker-windows`: windows-latest — Python 3.12 setup, `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v`
-  - `openapi-drift`: ubuntu-latest — `cargo run -p anvilml-openapi && git diff --exit-code backend/openapi.json`
+  - `openapi-drift`: ubuntu-latest — `cargo run -p anvilml-openapi && git diff --exit-code api/openapi.json`
   - `config-drift`: ubuntu-latest — `cargo test -p anvilml --features mock-hardware -- config_reference`
 - Use `ubuntu-latest` and `windows-latest` as runner images
 - Use `actions/checkout@v6` for source checkout
@@ -58,7 +58,7 @@ The workspace is fully configured with 9 members (backend + 8 crates) declared i
 including `serde`, `tokio`, `axum`, `tracing`, `zeromq`, `rmp-serde`, `sqlx`, `uuid`,
 `thiserror`, and `tower-http`. The workspace resolver is set to `"2"`.
 
-The `backend/scripts/` directory does not yet exist — the `install_worker_deps.sh` and
+The `scripts/` directory does not yet exist — the `install_worker_deps.sh` and
 `install_worker_deps.ps1` provisioning scripts will be created in a later phase. For this
 task's CI workflow, the Python worker jobs will use a minimal setup: create a venv, install
 pytest and pyzmq (the minimal dependencies needed for the worker test harness), and run
@@ -120,7 +120,7 @@ and standard `actions/*` GitHub Actions, which are managed by GitHub.
      - Step 1: `actions/checkout@v6`
      - Step 2: `dtolnay/rust-toolchain@stable`
      - Step 3: `cargo run -p anvilml-openapi` — regenerate openapi.json
-     - Step 4: `git diff --exit-code backend/openapi.json` — assert no drift
+     - Step 4: `git diff --exit-code api/openapi.json` — assert no drift
      - Sets `needs: [rust-linux]` to ensure the Rust project builds first
    - **`config-drift` job** (runs on `ubuntu-latest`):
      - Step 1: `actions/checkout@v6`
@@ -142,7 +142,7 @@ Key implementation choices and rationale:
   This avoids redundant CI time and matches the documented matrix exactly.
 - **`mock-hardware` on all Rust jobs**: Per ARCHITECTURE.md §5, all CI builds must use
   `--features mock-hardware` to avoid requiring GPU hardware on CI runners.
-- **Minimal Python deps for worker jobs**: Since `backend/scripts/install_worker_deps.sh`
+- **Minimal Python deps for worker jobs**: Since `scripts/install_worker_deps.sh`
   does not exist yet (Phase 0), the worker jobs install only pytest, pyzmq, and msgpack.
   When the provisioning scripts are created in a later phase, the CI job can be updated
   to use them. The `ANVILML_WORKER_MOCK=1` flag ensures tests run without torch.
@@ -189,7 +189,7 @@ variable works identically on both platforms.
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
 | `worker-linux` and `worker-windows` fail because `worker/tests/` does not yet exist (Phase 0 skeleton) | High | Medium | The CI jobs are defined correctly per ENVIRONMENT.md §6. They will fail until a future task creates `worker/tests/` with actual test files. This is expected for Phase 0 — the CI infrastructure is created first, tests follow. Document this as an acceptable interim state. |
-| `openapi-drift` and `config-drift` fail because `backend/openapi.json` and `config_reference` test do not exist yet | High | Medium | Same as above — these jobs reference artifacts that will be created in later phases. The workflow is structurally correct and will work once the underlying code exists. |
+| `openapi-drift` and `config-drift` fail because `api/openapi.json` and `config_reference` test do not exist yet | High | Medium | Same as above — these jobs reference artifacts that will be created in later phases. The workflow is structurally correct and will work once the underlying code exists. |
 | `dtolnay/rust-toolchain@stable` action resolves to a Rust version that conflicts with `rust-toolchain.toml` | Low | High | The action reads `rust-toolchain.toml` from the repository root. If the toolchain file is present (created by P0-A1), the correct version will be used. Verify the toolchain file exists before staging. |
 | Python `pyzmq` or `msgpack` installation fails on Windows runner | Low | Medium | These are standard PyPI packages with Windows wheels. If installation fails, fall back to installing from the worker's `requirements/base.txt` (once created in a later phase). |
 

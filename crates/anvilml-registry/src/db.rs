@@ -59,7 +59,7 @@ pub async fn open(path: &Path) -> Result<SqlitePool, AnvilError> {
 
     // Run migrations — the compile-time macro embeds the migration directory
     // path relative to CARGO_MANIFEST_DIR. From crates/anvilml-registry/,
-    // the migrations live at ../backend/migrations/.
+    // the migrations live at ../database/migrations/.
     run_migrations(&pool).await?;
 
     // Reset ghost jobs: jobs left in Queued or Running state from an
@@ -116,8 +116,8 @@ pub async fn open_in_memory() -> Result<SqlitePool, AnvilError> {
 async fn run_migrations(pool: &SqlitePool) -> Result<(), AnvilError> {
     // The migrate! macro embeds the migration directory path relative to
     // CARGO_MANIFEST_DIR at compile time. From crates/anvilml-registry/,
-    // the migrations live at ../../backend/migrations/.
-    let runner = sqlx::migrate!("../../backend/migrations");
+    // the migrations live at ../../database/migrations/.
+    let runner = sqlx::migrate!("../../database/migrations");
 
     // Log each migration that will be applied. The runner.migrations field
     // is public on the Migrator struct and contains all migrations resolved

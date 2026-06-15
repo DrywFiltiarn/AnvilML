@@ -99,7 +99,7 @@ Phase 005 complete: `SqlitePool` available via `open()` and `open_in_memory()`.
 - `anvilml-registry` has no `mock-hardware` feature and does not depend on `anvilml-hardware`, so no dependency cycle and no feature forwarding change is required.
 - Existing mock tests pass an in-memory pool with an empty `device_capabilities` table; step e2 produces `Ok(None)` for all mock devices (PCI IDs = 0), which is the correct no-op path. No test changes required.
 
-**Acceptance criterion:** `cargo test --workspace --features mock-hardware` exits 0; `GET /v1/system` for a device present in `backend/seeds/devices.sql` returns `capabilities_source: "device_table"`, correct non-false capability flags, and `db_name` set to the group name from the seed (e.g. `"AMD Radeon RX 9070/RX 9070 XT/RX 9070 GRE"` alongside `name: "AMD Radeon RX 9070"`).
+**Acceptance criterion:** `cargo test --workspace --features mock-hardware` exits 0; `GET /v1/system` for a device present in `database/seeds/devices.sql` returns `capabilities_source: "device_table"`, correct non-false capability flags, and `db_name` set to the group name from the seed (e.g. `"AMD Radeon RX 9070/RX 9070 XT/RX 9070 GRE"` alongside `name: "AMD Radeon RX 9070"`).
 
 ## Phase Acceptance Criteria
 

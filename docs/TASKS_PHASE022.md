@@ -38,7 +38,7 @@ See context field.
 
 ```bash
 cargo build --release
-bash -n backend/scripts/install_worker_deps.sh
+bash -n scripts/install_worker_deps.sh
 ```
 
 ## Known Constraints and Gotchas

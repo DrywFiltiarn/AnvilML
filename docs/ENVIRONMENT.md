@@ -74,10 +74,10 @@ Provisioning scripts create and populate it:
 
 ```bash
 # Linux / macOS
-bash backend/scripts/install_worker_deps.sh
+bash scripts/install_worker_deps.sh
 
 # Windows (PowerShell)
-powershell -ExecutionPolicy Bypass -File backend\scripts\install_worker_deps.ps1
+powershell -ExecutionPolicy Bypass -File scripts\install_worker_deps.ps1
 ```
 
 These scripts detect the available hardware backend (CUDA / ROCm / CPU) and install
@@ -105,7 +105,7 @@ cargo build --workspace --features mock-hardware
 cargo test --workspace --features mock-hardware
 
 # 3. Provision the Python worker venv
-bash backend/scripts/install_worker_deps.sh     # Linux
+bash scripts/install_worker_deps.sh     # Linux
 # powershell ... install_worker_deps.ps1        # Windows
 
 # 4. Run Python tests
@@ -132,7 +132,7 @@ underscores (`__`). All variables are optional; compiled-in defaults apply when 
 | `ANVILML_DB_PATH` | `db_path` | `./anvilml.db` | SQLite database path |
 | `ANVILML_ARTIFACT_DIR` | `artifact_dir` | `./artifacts` | Generated image storage |
 | `ANVILML_VENV_PATH` | `venv_path` | `./worker/.venv` | Python venv root |
-| `ANVILML_SEEDS_PATH` | `seeds_path` | `./backend/seeds` | SQL seed files directory |
+| `ANVILML_SEEDS_PATH` | `seeds_path` | `./database/seeds` | SQL seed files directory |
 | `ANVILML_MAX_IPC_PAYLOAD_MIB` | `max_ipc_payload_mib` | `256` | Max IPC message size |
 
 ### 3.2 GPU Selection
@@ -204,7 +204,7 @@ Config precedence (lowest to highest):
 | `num_threads` | u32? | `null` (= num_cpus) | Tokio worker thread count |
 | `venv_path` | path | `"./worker/.venv"` | Python venv root |
 | `max_ipc_payload_mib` | u32 | `256` | Maximum IPC message payload in MiB |
-| `seeds_path` | path | `"./backend/seeds"` | SQL seed files directory |
+| `seeds_path` | path | `"./database/seeds"` | SQL seed files directory |
 
 ### `[[model_dirs]]` (array of tables)
 
@@ -382,7 +382,7 @@ validates and can write tasks that account for all four runners.
 | `rust-windows` | Windows latest | `cargo clippy --workspace --features mock-hardware -- -D warnings && cargo test --workspace --features mock-hardware` |
 | `worker-linux` | Ubuntu latest | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` |
 | `worker-windows` | Windows latest | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` |
-| `openapi-drift` | Ubuntu latest | `cargo run -p anvilml-openapi && git diff --exit-code backend/openapi.json` |
+| `openapi-drift` | Ubuntu latest | `cargo run -p anvilml-openapi && git diff --exit-code api/openapi.json` |
 | `config-drift` | Ubuntu latest | `cargo test -p anvilml --features mock-hardware -- config_reference` |
 
 `worker-windows` is required because the Python worker runs on Windows in production
@@ -444,19 +444,19 @@ to TOML) exactly matches the key set of the checked-in `anvilml.toml`.
 - `AppState` fields used in response types
 
 ```bash
-cargo run -p anvilml-openapi && git diff --exit-code backend/openapi.json
+cargo run -p anvilml-openapi && git diff --exit-code api/openapi.json
 ```
 
 If `git diff` is non-empty, the `openapi.json` is stale. Regenerate and stage:
 
 ```bash
 cargo run -p anvilml-openapi
-git add backend/openapi.json
+git add api/openapi.json
 ```
 
 Re-run the gate to confirm idempotency (must exit 0).
 
-**Skip only if** `backend/openapi.json` does not yet exist (prior to the phase that
+**Skip only if** `api/openapi.json` does not yet exist (prior to the phase that
 introduces the `anvilml-openapi` binary). Once it exists, the gate is always required
 when the trigger conditions are met.
 

@@ -183,7 +183,7 @@ All four platform cross-checks exit 0. Stub files contain no platform-specific c
 ## Project Gates
 
 Gate 1 (`config_reference`): Not applicable — `ServerConfig` has not been implemented yet. Running `cargo test -p anvilml -- config_reference` exits 0 with 0 tests.
-Gate 2 (`openapi-drift`): Not applicable — `backend/openapi.json` has not been generated yet.
+Gate 2 (`openapi-drift`): Not applicable — `api/openapi.json` has not been generated yet.
 Gate 3 (`node-parity`): Not applicable — Python worker nodes have not been implemented yet.
 
 ## Public API Delta

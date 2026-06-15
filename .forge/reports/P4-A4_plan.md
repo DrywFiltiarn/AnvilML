@@ -29,7 +29,7 @@ When the task completes, `cargo test -p anvilml-hardware -- device_db` exits 0 w
 - **MODIFY** `crates/anvilml-hardware/Cargo.toml` — bump patch version from `0.1.3` to `0.1.4`.
 
 ### Out of Scope
-- Writing the SQL seed file `backend/seeds/devices.sql` (handled by a later task in Phase 005).
+- Writing the SQL seed file `database/seeds/devices.sql` (handled by a later task in Phase 005).
 - Populating `device_db.rs` from the SQL seed at runtime (no SQLite dependency for this task).
 - Modifying any detector (Vulkan, CPU, DXGI, sysfs) to call `resolve_caps_from_row` (handled by P4-A5).
 - Adding or removing entries from `DEVICE_DB` beyond the ≥ 12 curated baseline.
