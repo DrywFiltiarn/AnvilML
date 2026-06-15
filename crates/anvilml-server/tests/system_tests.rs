@@ -108,7 +108,7 @@ async fn test_system_returns_200_with_hardware_info() {
     // new_with_hardware now requires a registry parameter.
     let registry = Arc::new(ModelStore::new(pool.clone()).await);
 
-    let state = AppState::new_with_hardware("test-version", hardware, pool, registry);
+    let state = AppState::new_with_hardware("test-version", hardware, pool, registry, Vec::new());
 
     // Build the router via the production `build_router` function.
     let router = build_router(state);

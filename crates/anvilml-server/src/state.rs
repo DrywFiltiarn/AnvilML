@@ -36,6 +36,13 @@ pub struct AppState {
     /// Shared via `Arc` so all handlers can access the model registry
     /// without cloning the pool or the store.
     pub registry: Arc<anvilml_registry::ModelStore>,
+
+    /// Configured model directories to scan.
+    ///
+    /// Populated from `cfg.model_dirs` at server startup. The rescan
+    /// handler reads these paths to know which directories to scan.
+    /// Cloned into each handler via axum's `State` extractor.
+    pub model_dirs: Vec<anvilml_core::ModelDirConfig>,
 }
 
 impl AppState {
@@ -72,6 +79,10 @@ impl AppState {
             // This is only used by tests — production code constructs the
             // ModelStore separately and passes it via new_with_hardware.
             registry: Arc::new(anvilml_registry::ModelStore::new(pool).await),
+            // Empty model_dirs for tests — the rescan handler will scan
+            // no directories when model_dirs is empty, which is the
+            // correct behavior (202 response with no models found).
+            model_dirs: Vec::new(),
         }
     }
 
@@ -94,11 +105,14 @@ impl AppState {
     /// * `registry` — A pre-built `Arc<ModelStore>` for model metadata CRUD.
     ///   The caller constructs this after opening the pool, avoiding the
     ///   sync/async boundary in this synchronous constructor.
+    /// * `model_dirs` — Configured model directories for the scanner.
+    ///   Passed from `cfg.model_dirs` at server startup.
     pub fn new_with_hardware(
         version: impl Into<String>,
         hardware: Arc<tokio::sync::RwLock<anvilml_core::types::HardwareInfo>>,
         db: sqlx::SqlitePool,
         registry: Arc<anvilml_registry::ModelStore>,
+        model_dirs: Vec<anvilml_core::ModelDirConfig>,
     ) -> Self {
         Self {
             start_time: std::time::Instant::now(),
@@ -107,6 +121,7 @@ impl AppState {
             hardware,
             db,
             registry,
+            model_dirs,
         }
     }
 }

@@ -1,16 +1,18 @@
 //! Integration tests for the model metadata HTTP handlers.
 //!
-//! Tests cover: empty model list, kind-filtered listing, and 404 on
-//! missing model ID. Each test uses an in-memory database via
-//! `open_in_memory()` to ensure test isolation.
+//! Tests cover: empty model list, kind-filtered listing, 404 on
+//! missing model ID, and the rescan endpoint (POST /v1/models/rescan).
+//! Each test uses an in-memory database via `open_in_memory()` to
+//! ensure test isolation.
 
-use anvilml_core::{ModelKind, ModelMeta};
+use anvilml_core::{ModelDirConfig, ModelKind, ModelMeta};
 use anvilml_registry::{open_in_memory, ModelStore};
 use anvilml_server::{build_router, AppState};
 use axum::body::to_bytes;
 use axum::http::{Method, Request};
 use chrono::Utc;
 use serde_json::Value;
+use std::path::PathBuf;
 use tower::util::ServiceExt;
 
 /// Verify that GET /v1/models returns HTTP 200 with an empty JSON array
@@ -95,6 +97,7 @@ async fn test_list_models_with_kind_filter() {
         hardware,
         pool.clone(),
         std::sync::Arc::new(store),
+        Vec::new(),
     );
 
     let router = build_router(state);
@@ -179,4 +182,219 @@ async fn test_get_model_not_found() {
     let json: Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(json["error"], "model_not_found");
+}
+
+/// Verify that POST /v1/models/rescan returns HTTP 202 with
+/// `{"status": "scanning"}` body, even when model_dirs is empty.
+///
+/// Uses `AppState::new()` which has an empty `model_dirs` vec.
+/// The rescan handler should respond 202 immediately and spawn a
+/// background task that scans zero directories.
+#[tokio::test]
+async fn test_rescan_returns_202() {
+    // Build AppState with empty model_dirs (the default from AppState::new).
+    let state = AppState::new("test-version").await;
+
+    let router = build_router(state);
+
+    // Dispatch a POST request to /v1/models/rescan.
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/models/rescan")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let response = router.oneshot(request).await.unwrap();
+
+    // Assert HTTP 202 Accepted status.
+    assert_eq!(response.status(), 202);
+
+    // Read and parse the response body as JSON.
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    // Assert the body contains status: "scanning".
+    assert_eq!(json["status"], "scanning");
+}
+
+/// Verify that after POST /v1/models/rescan with model files on disk,
+/// GET /v1/models returns the scanned models.
+///
+/// Creates a temporary directory containing a `.safetensors` file,
+/// configures `AppState` with that directory, triggers a rescan,
+/// then verifies the model appears in the list.
+#[tokio::test]
+async fn test_rescan_populates_registry() {
+    // Create a temporary directory with a model file.
+    // The TempDir guard ensures cleanup even on test panic.
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let model_file = tmp_dir.path().join("test-model.safetensors");
+    // Write minimal binary content — the scanner reads the first 1 MiB
+    // for hashing, so any content works.
+    std::fs::write(&model_file, b"test safetensors content").unwrap();
+
+    // Build AppState with the temp directory as a model directory.
+    // Using new_with_hardware to inject a custom model_dirs vec.
+    let pool = open_in_memory().await.unwrap();
+    let store = ModelStore::new(pool.clone()).await;
+    let hardware = std::sync::Arc::new(tokio::sync::RwLock::new(
+        anvilml_core::types::HardwareInfo::default(),
+    ));
+    let model_dirs = vec![ModelDirConfig {
+        path: PathBuf::from(tmp_dir.path()),
+        recursive: false,
+        max_depth: None,
+    }];
+    let state = AppState::new_with_hardware(
+        "test-version",
+        hardware,
+        pool,
+        std::sync::Arc::new(store),
+        model_dirs,
+    );
+
+    let router = build_router(state);
+
+    // Trigger the rescan via POST.
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/models/rescan")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), 202);
+
+    // Wait for the background scan task to complete.
+    // The rescan of a single small file should be nearly instantaneous,
+    // but we give a small grace period for the spawned task to finish.
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+    // Query the model list — the scanned model should appear.
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/models")
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), 200);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    assert!(json.is_array());
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "should find exactly 1 model after rescan");
+    assert_eq!(arr[0]["name"], "test-model.safetensors");
+    assert_eq!(arr[0]["kind"], "unknown");
+}
+
+/// Verify that scanned models have correct `kind` (from directory name)
+/// and `dtype` (from filename).
+///
+/// Creates two temporary directories: one named `diffusion` with a
+/// `model_fp8.safetensors` file, and one named `vae` with a
+/// `model.safetensors` file. After rescan, verifies that:
+/// - the diffusion model has kind=diffusion, dtype=fp8
+/// - the vae model has kind=vae, dtype=unknown
+#[tokio::test]
+async fn test_rescan_infer_kind_and_dtype() {
+    // Create a temp directory containing subdirectories for different
+    // model kinds. Each subdirectory is a model_dir that the scanner
+    // will walk. The scanner does not recurse, so we pass each subdir
+    // as a separate ModelDirConfig entry.
+    let tmp_dir = tempfile::tempdir().unwrap();
+
+    // Create a diffusion model directory with an fp8 file.
+    let diffusion_dir = tmp_dir.path().join("diffusion");
+    std::fs::create_dir_all(&diffusion_dir).unwrap();
+    std::fs::write(
+        diffusion_dir.join("model_fp8.safetensors"),
+        b"diffusion fp8 content",
+    )
+    .unwrap();
+
+    // Create a vae model directory with a non-dtype file.
+    let vae_dir = tmp_dir.path().join("vae");
+    std::fs::create_dir_all(&vae_dir).unwrap();
+    std::fs::write(vae_dir.join("model.safetensors"), b"vae content").unwrap();
+
+    // Configure AppState with two model_dir entries — one per kind
+    // subdirectory. This matches how the scanner works: it walks each
+    // configured directory at its top level only (no recursion).
+    let pool = open_in_memory().await.unwrap();
+    let store = ModelStore::new(pool.clone()).await;
+    let hardware = std::sync::Arc::new(tokio::sync::RwLock::new(
+        anvilml_core::types::HardwareInfo::default(),
+    ));
+    let model_dirs = vec![
+        ModelDirConfig {
+            path: PathBuf::from(diffusion_dir),
+            recursive: false,
+            max_depth: None,
+        },
+        ModelDirConfig {
+            path: PathBuf::from(vae_dir),
+            recursive: false,
+            max_depth: None,
+        },
+    ];
+    let state = AppState::new_with_hardware(
+        "test-version",
+        hardware,
+        pool,
+        std::sync::Arc::new(store),
+        model_dirs,
+    );
+
+    let router = build_router(state);
+
+    // Trigger the rescan.
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/models/rescan")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), 202);
+
+    // Wait for the background scan task.
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+    // Query the model list.
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/models")
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), 200);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 2, "should find exactly 2 models after rescan");
+
+    // Find the diffusion model and verify kind + dtype.
+    let diffusion = arr
+        .iter()
+        .find(|m| m["kind"] == "diffusion")
+        .expect("should find a diffusion model");
+    assert_eq!(diffusion["dtype"], "fp8");
+    assert_eq!(diffusion["name"], "model_fp8.safetensors");
+
+    // Find the vae model and verify kind + dtype.
+    let vae = arr
+        .iter()
+        .find(|m| m["kind"] == "vae")
+        .expect("should find a vae model");
+    assert_eq!(vae["dtype"], "unknown");
+    assert_eq!(vae["name"], "model.safetensors");
 }

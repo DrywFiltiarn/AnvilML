@@ -4,8 +4,10 @@
 //! for querying the model registry via HTTP.
 
 use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use axum::Json;
 use serde::Deserialize;
+use serde_json::Value;
 
 use anvilml_core::AnvilError;
 use anvilml_core::ModelKind;
@@ -76,4 +78,70 @@ pub(crate) async fn get_model(
         Some(meta) => Ok(Json(meta)),
         None => Err(AnvilError::ModelNotFound(id)),
     }
+}
+
+/// POST /v1/models/rescan — trigger a model directory rescan.
+///
+/// Responds with HTTP 202 Accepted immediately, then spawns a background
+/// task that scans all configured model directories (from `AppState::model_dirs`)
+/// and upserts discovered models into the registry. The HTTP thread is not
+/// blocked during the (potentially slow) directory scan.
+///
+/// The scanner logs completion at INFO with `count=` and `dir=` fields.
+/// Errors during the background scan are logged at ERROR.
+///
+/// # Returns
+///
+/// * `202 Accepted` with `{"status": "scanning"}` body.
+pub(crate) async fn rescan_models(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
+    // Clone model_dirs for the background task. PathBuf clone is cheap
+    // (just a pointer + length + capacity copy) and the vec is typically
+    // small (< 10 entries), so this is O(n) with negligible overhead.
+    let model_dirs = state.model_dirs.clone();
+
+    // Clone the registry Arc for the background task. Arc::clone is
+    // a cheap pointer increment, not a deep copy.
+    let registry = state.registry.clone();
+
+    // Spawn a fire-and-forget background task for the scan.
+    // The 202 response is already sent to the client — this task
+    // runs independently. Tokio panics in the spawned task are
+    // captured by the JoinHandle, but we intentionally discard it
+    // because the tracing::error! log on failure provides observability.
+    // This follows the fire-and-forget pattern from ANVILML_DESIGN.md §4.7.
+    tokio::spawn(async move {
+        // Use a mutable binding to capture the count from scan_and_upsert.
+        // The scanner already logs the mandatory INFO "model scan completed"
+        // log point with count= and dir= fields (ENVIRONMENT.md §9).
+        match registry.scan_and_upsert(&model_dirs).await {
+            Ok(count) => {
+                // Join the directory paths into a single string for the
+                // structured log field. This is the same dirs_string pattern
+                // used by the startup scan in main.rs.
+                let dirs_string: Vec<String> = model_dirs
+                    .iter()
+                    .map(|d| d.path.to_string_lossy().into_owned())
+                    .collect();
+
+                tracing::info!(
+                    count = count,
+                    dir = %dirs_string.join(","),
+                    "rescan completed"
+                );
+            }
+            Err(e) => {
+                // Log the error so the operator knows the rescan failed.
+                // The scanner's INFO log may or may not have fired depending
+                // on whether the error occurred before or after scan() returned.
+                tracing::error!(error = %e, "rescan failed");
+            }
+        }
+    });
+
+    // Respond immediately with 202 Accepted. The client knows the scan
+    // is in progress and can poll GET /v1/models to see results.
+    (
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({"status": "scanning"})),
+    )
 }

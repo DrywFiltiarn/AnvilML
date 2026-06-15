@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-server"
-version = "0.1.8"
+version = "0.1.9"
 edition.workspace = true
 
 [dependencies]
@@ -22,6 +22,7 @@ tracing = { workspace = true }
 anvilml-registry = { path = "../anvilml-registry" }
 chrono = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 

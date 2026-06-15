@@ -15,12 +15,12 @@ pub use handlers::system::get_env;
 pub use handlers::system::get_system;
 pub use state::AppState;
 
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
-use handlers::models::{get_model, list_models};
+use handlers::models::{get_model, list_models, rescan_models};
 
 /// Build the HTTP router with all registered handlers.
 ///
@@ -56,6 +56,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/models", get(list_models))
         // Model detail — returns a single model by ID, or 404 if not found.
         .route("/v1/models/{id}", get(get_model))
+        // Model rescan — triggers a background directory scan.
+        // Returns 202 Accepted immediately; the scan runs in a spawned task.
+        .route("/v1/models/rescan", post(rescan_models))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())

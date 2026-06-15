@@ -17,7 +17,9 @@
 use sqlx::{Row, SqlitePool};
 use tracing::{debug, instrument};
 
-use anvilml_core::{AnvilError, ModelKind, ModelMeta};
+use anvilml_core::{AnvilError, ModelDirConfig, ModelKind, ModelMeta};
+
+use crate::scanner::ModelScanner;
 
 /// Persistent storage for model metadata backed by SQLite.
 ///
@@ -240,5 +242,90 @@ impl ModelStore {
         // SQLite DELETE returns 0 rows affected when the WHERE clause
         // matches no rows (non-existent ID).
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Scan configured model directories and upsert all discovered models.
+    ///
+    /// This is the combined scan-and-upsert operation used by the startup
+    /// scan in `main.rs` and the `rescan_models` handler. It delegates
+    /// directory walking to `ModelScanner::scan()` and then upserts each
+    /// discovered `ModelMeta` into the database.
+    ///
+    /// Per-model upsert errors are caught individually (logged at WARN,
+    /// scan continues) rather than propagating a single failure. This
+    /// ensures a corrupt or unreadable model file does not prevent all
+    /// other models from being registered.
+    ///
+    /// # Arguments
+    ///
+    /// * `dirs` — Slice of `ModelDirConfig` specifying directories to scan.
+    ///
+    /// # Returns
+    ///
+    /// The number of models successfully upserted (may be less than the
+    /// total scanned if individual upserts failed).
+    ///
+    /// # Errors
+    ///
+    /// Returns `AnvilError::Db` only if the scanner itself fails (e.g.
+    /// I/O error on directory walk). Per-model database errors are
+    /// logged at WARN and do not propagate.
+    #[tracing::instrument(skip(self, dirs))]
+    pub async fn scan_and_upsert(&self, dirs: &[ModelDirConfig]) -> Result<usize, AnvilError> {
+        debug!(dir_count = dirs.len(), "starting model scan");
+
+        // Delegate directory walking and metadata derivation to the scanner.
+        // The scanner already logs per-file DEBUG entries and a completion
+        // INFO log with count= and dir= fields (mandatory per ENVIRONMENT.md §9).
+        // Construct the unit-value scanner and call scan() on it.
+        // ModelScanner is a zero-size unit struct — constructing it is
+        // a no-op and does not allocate.
+        let models = ModelScanner.scan(dirs).await;
+        let total = models.len();
+
+        debug!(count = total, "scanner produced model metadata");
+
+        // Upsert each model individually. Per-model errors are caught and
+        // logged at WARN so a single bad model does not abort the entire
+        // scan. This is intentional — the scanner may encounter files that
+        // are readable enough to derive metadata from but fail on hash
+        // computation or database write due to transient conditions.
+        let mut success_count = 0usize;
+
+        for meta in &models {
+            // Check if we've already upserted this model (duplicate ID from
+            // two directories pointing to the same file). The upsert itself
+            // is idempotent via INSERT OR REPLACE, but we skip the DB round
+            // trip to reduce write load during rescans.
+            if success_count > 0 && models[..success_count].iter().any(|m| m.id == meta.id) {
+                debug!(id = %meta.id, "skipping duplicate model");
+                continue;
+            }
+
+            match self.upsert(meta).await {
+                Ok(()) => {
+                    success_count += 1;
+                }
+                Err(e) => {
+                    // Per-model upsert failure — log and continue.
+                    // The scanner already logged a DEBUG for the file, so
+                    // this WARN adds the database-specific error context.
+                    tracing::warn!(
+                        id = %meta.id,
+                        name = %meta.name,
+                        error = %e,
+                        "failed to upsert model"
+                    );
+                }
+            }
+        }
+
+        debug!(
+            success = success_count,
+            total = total,
+            "scan-and-upsert complete"
+        );
+
+        Ok(success_count)
     }
 }

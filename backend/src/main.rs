@@ -119,7 +119,34 @@ async fn main() {
         Arc::new(tokio::sync::RwLock::new(hardware_info)),
         pool,
         registry,
+        cfg.model_dirs.clone(),
     );
+
+    // Run the initial model directory scan at startup. This populates the
+    // model registry before the server starts accepting requests, so models
+    // are available immediately without requiring a manual POST to /v1/models/rescan.
+    // The scanner logs completion at INFO with count= and dir= fields.
+    // If the scan fails (e.g. all directories missing), we log WARN but
+    // continue — models will be picked up on the first manual rescan.
+    let dirs_string: Vec<String> = cfg
+        .model_dirs
+        .iter()
+        .map(|d| d.path.to_string_lossy().into_owned())
+        .collect();
+    match state.registry.scan_and_upsert(&cfg.model_dirs).await {
+        Ok(n) => {
+            tracing::info!(
+                count = n,
+                dir = %dirs_string.join(","),
+                "initial scan completed"
+            );
+        }
+        Err(e) => {
+            // Initial scan failure is non-fatal — the server can still
+            // start and models will be discovered on the first manual rescan.
+            tracing::warn!(error = %e, "initial scan failed, will retry on first rescan");
+        }
+    }
 
     // Build the axum router with all registered handlers wired to their routes.
     let router = build_router(state);

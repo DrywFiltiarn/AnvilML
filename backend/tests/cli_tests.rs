@@ -111,69 +111,43 @@ fn test_custom_port_health() {
             std::env::remove_var(name);
         }
 
-        // Give the server time to start and bind.
-        thread::sleep(Duration::from_millis(500));
-
         // Capture the child PID before port detection — needed by the Windows
         // netstat branch to filter listening sockets by owning process.
         // child.id() is always Some(u32) after a successful spawn().
         #[allow(unused_variables)]
         let child_pid = child.id();
 
-        // Detect the bound port using platform-specific tooling.
-        // Both branches produce the same `port: u16` variable, so the
-        // downstream HTTP request code is unchanged.
+        // Poll for the bound port in 200ms increments, up to 5 seconds total.
+        // A fixed sleep is insufficient — startup time varies significantly by
+        // platform: WSL2 Linux ~120ms, native Windows ~1000ms (sysinfo CPU
+        // detection adds ~800ms). Polling makes the test robust to both.
+        const POLL_INTERVAL_MS: u64 = 200;
+        const POLL_MAX_ATTEMPTS: u32 = 25; // 25 × 200ms = 5 seconds
+
         let port: u16 = {
-            #[cfg(unix)]
-            {
-                // Detect the bound port using `lsof`.
-                // `lsof -i TCP -sTCP:LISTEN -P -n` lists all TCP listeners with
-                // numeric ports (no DNS resolution). We filter for the anvilml
-                // process and extract its port.
-                let output = Command::new("lsof")
-                    .args(["-i", "TCP", "-sTCP:LISTEN", "-P", "-n"])
-                    .output()
-                    .expect("failed to run lsof");
+            let mut port: Option<u16> = None;
 
-                let lsof_output = String::from_utf8_lossy(&output.stdout);
+            for _ in 0..POLL_MAX_ATTEMPTS {
+                thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
 
-                // Find the anvilml process's port.
-                // lsof output format: COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
-                // We look for lines containing "anvilml" and extract the port from
-                // the NAME column (e.g., "127.0.0.1:12345 (LISTEN)").
-                let mut port: Option<u16> = None;
-                for line in lsof_output.lines() {
-                    if line.contains("anvilml") && line.contains("LISTEN") {
-                        // Extract the port from the NAME field.
-                        // Format: 127.0.0.1:PORT (LISTEN)
-                        // split_whitespace().last() gives "(LISTEN)", so we use
-                        // the second-to-last field which is the address:port.
-                        let fields: Vec<&str> = line.split_whitespace().collect();
-                        if fields.len() >= 2 {
-                            let addr_port = fields[fields.len() - 2]; // e.g. "127.0.0.1:PORT"
-                            if let Some(colon) = addr_port.rfind(':') {
-                                if let Ok(p) = addr_port[colon + 1..].parse::<u16>() {
-                                    port = Some(p);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Fallback: if lsof didn't work, try ss as an alternative.
-                if port.is_none() {
-                    let ss_output = Command::new("ss")
-                        .args(["-tlnp"])
+                #[cfg(unix)]
+                {
+                    // `lsof -i TCP -sTCP:LISTEN -P -n` lists all TCP listeners
+                    // with numeric ports. Filter for lines containing "anvilml"
+                    // and extract the port from the NAME column:
+                    //   COMMAND  PID  USER  FD  TYPE  DEVICE  SIZE/OFF  NODE  NAME
+                    //   anvilml  NNN  ...   ..  IPv4  ...     ...       TCP   127.0.0.1:PORT (LISTEN)
+                    // The address:port is at fields[len-2]; "(LISTEN)" is last.
+                    if let Ok(output) = Command::new("lsof")
+                        .args(["-i", "TCP", "-sTCP:LISTEN", "-P", "-n"])
                         .output()
-                        .ok()
-                        .map(|o| String::from_utf8_lossy(&o.stdout).to_string());
-
-                    if let Some(ss_out) = ss_output {
-                        for line in ss_out.lines() {
-                            if line.contains("anvilml") {
-                                // ss -tlnp format: State Recv-Q Send-Q Local Address:Port Peer Address:Port
-                                if let Some(addr_port) = line.split_whitespace().nth(4) {
+                    {
+                        let lsof_output = String::from_utf8_lossy(&output.stdout);
+                        for line in lsof_output.lines() {
+                            if line.contains("anvilml") && line.contains("LISTEN") {
+                                let fields: Vec<&str> = line.split_whitespace().collect();
+                                if fields.len() >= 2 {
+                                    let addr_port = fields[fields.len() - 2];
                                     if let Some(colon) = addr_port.rfind(':') {
                                         if let Ok(p) = addr_port[colon + 1..].parse::<u16>() {
                                             port = Some(p);
@@ -184,69 +158,75 @@ fn test_custom_port_health() {
                             }
                         }
                     }
-                }
 
-                port.expect(
-                    "could not detect server port via lsof/ss — server may not have started. \
-                     Check that mock-hardware feature is available and the binary runs correctly.",
-                )
-            }
-
-            #[cfg(windows)]
-            {
-                // Execute `netstat -ano -p TCP` to list all TCP listeners with
-                // owning PIDs. Flags: -a=all connections, -n=numeric addresses,
-                // -o=owning PID, -p TCP=TCP protocol only.
-                // Output format (columns separated by whitespace):
-                //   Proto  Local Address          Foreign Address        State           PID
-                //   TCP    0.0.0.0:PORT           0.0.0.0:0              LISTENING       PID
-                // Local Address is column index 1; PID is the last column (index 4+).
-                let output = Command::new("netstat")
-                    .args(["-ano", "-p", "TCP"])
-                    .output()
-                    .expect("failed to run netstat");
-
-                let netstat_output = String::from_utf8_lossy(&output.stdout);
-                let pid_str = child_pid.to_string();
-
-                // Parse netstat output line-by-line.
-                // Skip the header line (starts with "Proto") and find the line
-                // whose PID matches our child process.
-                let mut port: Option<u16> = None;
-                for line in netstat_output.lines() {
-                    // Skip header and empty lines.
-                    if line.starts_with("Proto") || line.trim().is_empty() {
-                        continue;
-                    }
-
-                    // Split by whitespace to get columns.
-                    let fields: Vec<&str> = line.split_whitespace().collect();
-                    if fields.len() < 5 {
-                        // Skip malformed lines (need at least Proto, LocalAddr, ForeignAddr, State, PID).
-                        continue;
-                    }
-
-                    // Check if PID (last column) matches our child process.
-                    if fields[fields.len() - 1] != pid_str {
-                        continue;
-                    }
-
-                    // Extract port from Local Address column (index 1).
-                    // Format: 0.0.0.0:PORT or 127.0.0.1:PORT
-                    let local_addr = fields[1];
-                    if let Some(colon) = local_addr.rfind(':') {
-                        if let Ok(p) = local_addr[colon + 1..].parse::<u16>() {
-                            port = Some(p);
-                            break;
+                    // Fallback: try ss if lsof matched nothing this iteration.
+                    // ss -tlnp format: State Recv-Q Send-Q Local Address:Port ...
+                    // The address:port is at field index 4.
+                    if port.is_none() {
+                        if let Some(ss_out) = Command::new("ss")
+                            .args(["-tlnp"])
+                            .output()
+                            .ok()
+                            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                        {
+                            for line in ss_out.lines() {
+                                if line.contains("anvilml") {
+                                    if let Some(addr_port) = line.split_whitespace().nth(4) {
+                                        if let Some(colon) = addr_port.rfind(':') {
+                                            if let Ok(p) = addr_port[colon + 1..].parse::<u16>() {
+                                                port = Some(p);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
 
-                port.expect(
-                    "could not detect server port via netstat — server may not have started. \
-                     Check that mock-hardware feature is available and the binary runs correctly.",
-                )
+                #[cfg(windows)]
+                {
+                    // `netstat -ano -p TCP` lists all TCP connections with owning
+                    // PIDs. Output format (whitespace-separated columns):
+                    //   Proto  Local Address    Foreign Address  State      PID
+                    //   TCP    127.0.0.1:PORT   0.0.0.0:0        LISTENING  NNN
+                    // Filter by PID (last column) to isolate our child process.
+                    if let Ok(output) = Command::new("netstat").args(["-ano", "-p", "TCP"]).output()
+                    {
+                        let netstat_output = String::from_utf8_lossy(&output.stdout);
+                        let pid_str = child_pid.to_string();
+                        for line in netstat_output.lines() {
+                            if line.starts_with("Proto") || line.trim().is_empty() {
+                                continue;
+                            }
+                            let fields: Vec<&str> = line.split_whitespace().collect();
+                            if fields.len() < 5 {
+                                continue;
+                            }
+                            if fields[fields.len() - 1] != pid_str {
+                                continue;
+                            }
+                            let local_addr = fields[1];
+                            if let Some(colon) = local_addr.rfind(':') {
+                                if let Ok(p) = local_addr[colon + 1..].parse::<u16>() {
+                                    port = Some(p);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if port.is_some() {
+                    break;
+                }
             }
+
+            port.expect(
+                "could not detect server port after 5s — server may not have started. \
+                 Check that mock-hardware feature is available and the binary runs correctly.",
+            )
         };
 
         // Send a raw HTTP GET /health request over TCP.

@@ -78,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-registry"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anvilml-core",
  "chrono",
@@ -178,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-server"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
@@ -191,6 +191,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "tempfile",
  "tokio",
  "tower",
  "tower-http",

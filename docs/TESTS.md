@@ -1061,3 +1061,30 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** GET `/v1/models/nonexistent-id`, `AppState::new("test-version")`.
 **Expected output:** HTTP 404 with JSON body `{"error":"model_not_found","message":"model not found: nonexistent-id","request_id":"<uuid>"}`.
 **Acceptance command:** `cargo test -p anvilml-server --test models_tests test_get_model_not_found` exits 0.
+
+## test_rescan_returns_202 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/models_tests.rs`
+**Context:** The `POST /v1/models/rescan` handler responds with HTTP 202 Accepted immediately and spawns a background task. Uses `AppState::new()` which has an empty `model_dirs` vec — the scanner scans zero directories.
+**Tests:** Sends POST to `/v1/models/rescan`, asserts HTTP 202 status, parses JSON body, and verifies `status == "scanning"`.
+**Inputs:** POST `/v1/models/rescan`, `AppState::new("test-version")`.
+**Expected output:** HTTP 202 with JSON body `{"status":"scanning"}`.
+**Acceptance command:** `cargo test -p anvilml-server --test models_tests -- rescan_returns_202` exits 0.
+
+## test_rescan_populates_registry (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/models_tests.rs`
+**Context:** After POST /v1/models/rescan with model files on disk, GET /v1/models returns the scanned models. Uses a temporary directory with a `.safetensors` file and configures `AppState` with that directory via `new_with_hardware`.
+**Tests:** Creates a temp dir with `test-model.safetensors`, builds `AppState` with that dir, triggers rescan, waits for background task, then verifies the model appears in `GET /v1/models` with correct name and kind=unknown.
+**Inputs:** Temp dir with `test-model.safetensors`, POST `/v1/models/rescan`, GET `/v1/models`.
+**Expected output:** 200 response with JSON array containing one model with `name="test-model.safetensors"`, `kind="unknown"`.
+**Acceptance command:** `cargo test -p anvilml-server --test models_tests -- rescan_populates` exits 0.
+
+## test_rescan_infer_kind_and_dtype (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/models_tests.rs`
+**Context:** Scanned models have correct `kind` (from directory name) and `dtype` (from filename). Creates two temp subdirectories (`diffusion/` with `model_fp8.safetensors`, `vae/` with `model.safetensors`) and passes each as a separate `ModelDirConfig`.
+**Tests:** After rescan, verifies the diffusion model has `kind=diffusion, dtype=fp8` and the vae model has `kind=vae, dtype=unknown`.
+**Inputs:** Two temp dirs with model files, POST `/v1/models/rescan`, GET `/v1/models`.
+**Expected output:** 200 response with JSON array of 2 models with correct kind/dtype fields.
+**Acceptance command:** `cargo test -p anvilml-server --test models_tests -- infer_kind_and_dtype` exits 0.
