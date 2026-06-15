@@ -512,3 +512,147 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Tests:** Defines a generic function `fn assert_send_sync<T: Send + Sync>() {}` and calls it with `VulkanDetector`. If `VulkanDetector` does not implement `Send + Sync`, this will not compile.
 **Inputs:** None (zero-cost compile-time assertion).
 **Expected output:** Compiles successfully.
+
+## test_dxgi_detector_new (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/dxgi_sysfs_tests.rs`
+**Context:** `DxgiDetector::new()` constructs a zero-sized unit struct on Windows. This is a zero-cost check — no allocation, no I/O, no system calls.
+**Tests:** Constructs `DxgiDetector::new()` and verifies construction succeeds without panic.
+**Inputs:** None (zero-cost unit struct construction).
+**Expected output:** `DxgiDetector` value constructed successfully.
+**Platform:** Windows only (`#[cfg(windows)]`).
+
+## test_dxgi_detector_default (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/dxgi_sysfs_tests.rs`
+**Context:** `DxgiDetector::default()` constructs a zero-sized unit struct via the `Default` trait.
+**Tests:** Constructs `DxgiDetector::default()` and verifies construction succeeds.
+**Inputs:** None (zero-cost unit struct construction).
+**Expected output:** `DxgiDetector` value constructed successfully.
+**Platform:** Windows only (`#[cfg(windows)]`).
+
+## test_dxgi_detect_no_panic (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/dxgi_sysfs_tests.rs`
+**Context:** `DxgiDetector::detect()` initialises COM, creates a DXGI factory, and enumerates adapters. On Windows systems without GPUs, it returns `Ok(vec![])`. On systems with GPUs, it returns detected devices. The key invariant is that the method never panics or returns `Err`.
+**Tests:** Calls `detect()` and asserts the result is `Ok`.
+**Inputs:** None (uses `DxgiDetector::new()`).
+**Expected output:** `Ok(vec![])` on systems without GPUs; `Ok([devices...])` on systems with GPUs. Never `Err`.
+**Platform:** Windows only (`#[cfg(windows)]`).
+
+## test_dxgi_detector_is_send_sync (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/dxgi_sysfs_tests.rs`
+**Context:** The `DeviceDetector` trait requires `Send + Sync`. This is a compile-time check that verifies the impl satisfies the trait bounds.
+**Tests:** Defines a generic function `fn assert_send_sync<T: Send + Sync>() {}` and calls it with `DxgiDetector`.
+**Inputs:** None (zero-cost compile-time assertion).
+**Expected output:** Compiles successfully.
+**Platform:** Windows only (`#[cfg(windows)]`).
+
+## test_sysfs_detector_new (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/dxgi_sysfs_tests.rs`
+**Context:** `SysfsPciDetector::new()` constructs a zero-sized unit struct on Unix. This is a zero-cost check — no allocation, no I/O, no system calls.
+**Tests:** Constructs `SysfsPciDetector::new()` and verifies construction succeeds without panic.
+**Inputs:** None (zero-cost unit struct construction).
+**Expected output:** `SysfsPciDetector` value constructed successfully.
+**Platform:** Unix only (`#[cfg(unix)]`).
+
+## test_sysfs_detector_default (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/dxgi_sysfs_tests.rs`
+**Context:** `SysfsPciDetector::default()` constructs a zero-sized unit struct via the `Default` trait.
+**Tests:** Constructs `SysfsPciDetector::default()` and verifies construction succeeds.
+**Inputs:** None (zero-cost unit struct construction).
+**Expected output:** `SysfsPciDetector` value constructed successfully.
+**Platform:** Unix only (`#[cfg(unix)]`).
+
+## test_sysfs_detect_no_panic (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/dxgi_sysfs_tests.rs`
+**Context:** `SysfsPciDetector::detect()` walks `/sys/bus/pci/devices/` and reads vendor/device files. On systems with PCI GPUs, it returns detected devices. On systems without PCI (WSL2, some VMs), it returns `Ok(vec![])`. The key invariant is that the method never panics or returns `Err`.
+**Tests:** Calls `detect()` and asserts the result is `Ok`.
+**Inputs:** None (uses `SysfsPciDetector::new()`).
+**Expected output:** `Ok(vec![])` on systems without PCI; `Ok([devices...])` on systems with PCI GPUs. Never `Err`.
+**Platform:** Unix only (`#[cfg(unix)]`).
+
+## test_sysfs_refresh_vram_returns_zero (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/dxgi_sysfs_tests.rs`
+**Context:** Sysfs doesn't provide live VRAM data — VRAM is queried via NVML on NVIDIA systems. `refresh_vram` always returns `(0, 0)`.
+**Tests:** Calls `refresh_vram(0)` and verifies both total and free VRAM are zero.
+**Inputs:** `index = 0`.
+**Expected output:** `(total, free) == (0, 0)`.
+**Platform:** Unix only (`#[cfg(unix)]`).
+
+## test_sysfs_detect_vendor_mapping (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/dxgi_sysfs_tests.rs`
+**Context:** The sysfs detector maps PCI vendor IDs to `DeviceType` variants: `0x10de` → `Cuda`, `0x1002` → `Rocm`. This test verifies the mapping is correct by checking the `device_type` field of any detected PCI devices.
+**Tests:** Calls `detect()`, iterates detected devices, and asserts that NVIDIA GPUs have `DeviceType::Cuda` and AMD GPUs have `DeviceType::Rocm`.
+**Inputs:** None (uses `SysfsPciDetector::new()`).
+**Expected output:** All detected NVIDIA GPUs (vendor 0x10de) have `device_type == Cuda`; all detected AMD GPUs (vendor 0x1002) have `device_type == Rocm`.
+**Platform:** Unix only (`#[cfg(unix)]`).
+
+## test_sysfs_detector_is_send_sync (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/dxgi_sysfs_tests.rs`
+**Context:** The `DeviceDetector` trait requires `Send + Sync`. This is a compile-time check that verifies the impl satisfies the trait bounds.
+**Tests:** Defines a generic function `fn assert_send_sync<T: Send + Sync>() {}` and calls it with `SysfsPciDetector`.
+**Inputs:** None (zero-cost compile-time assertion).
+**Expected output:** Compiles successfully.
+**Platform:** Unix only (`#[cfg(unix)]`).
+
+## test_nvml_detector_new (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/dxgi_sysfs_tests.rs`
+**Context:** `NvmlDetector::new()` constructs a zero-sized unit struct on Unix. This is a zero-cost check — no allocation, no I/O, no system calls.
+**Tests:** Constructs `NvmlDetector::new()` and verifies construction succeeds without panic.
+**Inputs:** None (zero-cost unit struct construction).
+**Expected output:** `NvmlDetector` value constructed successfully.
+**Platform:** Unix only (`#[cfg(unix)]`).
+
+## test_nvml_detector_default (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/dxgi_sysfs_tests.rs`
+**Context:** `NvmlDetector::default()` constructs a zero-sized unit struct via the `Default` trait.
+**Tests:** Constructs `NvmlDetector::default()` and verifies construction succeeds.
+**Inputs:** None (zero-cost unit struct construction).
+**Expected output:** `NvmlDetector` value constructed successfully.
+**Platform:** Unix only (`#[cfg(unix)]`).
+
+## test_nvml_detect_returns_empty (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/dxgi_sysfs_tests.rs`
+**Context:** NVML is a VRAM refresh supplement, not a device enumerator. `detect()` always returns an empty list.
+**Tests:** Calls `detect()` and asserts the returned list is empty.
+**Inputs:** None (uses `NvmlDetector::new()`).
+**Expected output:** `Ok(vec![])` — always empty.
+**Platform:** Unix only (`#[cfg(unix)]`).
+
+## test_nvml_refresh_vram_no_library (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/dxgi_sysfs_tests.rs`
+**Context:** On systems without `libnvidia-ml.so` (non-NVIDIA systems), `refresh_vram()` returns `(0, 0)` gracefully. On NVIDIA systems, it returns actual VRAM values. The key invariant is that the method never returns an error.
+**Tests:** Calls `refresh_vram(0)` and asserts the result is `Ok` with valid VRAM values.
+**Inputs:** `index = 0`.
+**Expected output:** `(total, free) == (0, 0)` on non-NVIDIA systems; actual VRAM values on NVIDIA systems. Never `Err`.
+**Platform:** Unix only (`#[cfg(unix)]`).
+
+## test_nvml_refresh_vram_no_panic (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/dxgi_sysfs_tests.rs`
+**Context:** `NvmlDetector::refresh_vram()` must never panic regardless of system state.
+**Tests:** Calls `refresh_vram(0)` and verifies no panic occurs.
+**Inputs:** `index = 0`.
+**Expected output:** No panic, method returns `Ok`.
+**Platform:** Unix only (`#[cfg(unix)]`).
+
+## test_nvml_detector_is_send_sync (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/dxgi_sysfs_tests.rs`
+**Context:** The `DeviceDetector` trait requires `Send + Sync`. This is a compile-time check that verifies the impl satisfies the trait bounds.
+**Tests:** Defines a generic function `fn assert_send_sync<T: Send + Sync>() {}` and calls it with `NvmlDetector`.
+**Inputs:** None (zero-cost compile-time assertion).
+**Expected output:** Compiles successfully.
+**Platform:** Unix only (`#[cfg(unix)]`).

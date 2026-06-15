@@ -10,8 +10,27 @@
 //! **Hard constraints:** Never panic on missing drivers. Always return at
 //! least one CPU device. Return `Err` for detection failures — never crash.
 
+//! GPU and CPU hardware detection for AnvilML.
+//!
+//! This crate owns device enumeration via the `DeviceDetector` trait, with
+//! concrete implementations: `CpuDetector` (synthesises a CPU device using
+//! `sysinfo`), `VulkanDetector` (enumerates GPUs via the Vulkan loader),
+//! and platform-specific detectors (DXGI on Windows, sysfs/NVML on Linux).
+//! When the `mock-hardware` feature is active, `MockDetector` provides
+//! deterministic device lists driven by environment variables.
+//!
+//! **Hard constraints:** Never panic on missing drivers. Always return at
+//! least one CPU device. Return `Err` for detection failures — never crash.
+
 pub mod cpu;
 pub mod vulkan;
+
+#[cfg(all(windows, feature = "dxgi"))]
+pub mod dxgi;
+#[cfg(all(unix, feature = "nvml"))]
+pub mod nvml;
+#[cfg(unix)]
+pub mod sysfs;
 
 use anvilml_core::{AnvilError, GpuDevice};
 
@@ -46,3 +65,10 @@ pub trait DeviceDetector: Send + Sync {
 
 pub use cpu::CpuDetector;
 pub use vulkan::VulkanDetector;
+
+#[cfg(all(windows, feature = "dxgi"))]
+pub use dxgi::DxgiDetector;
+#[cfg(all(unix, feature = "nvml"))]
+pub use nvml::NvmlDetector;
+#[cfg(unix)]
+pub use sysfs::SysfsPciDetector;
