@@ -151,10 +151,13 @@ dependencies = [
 
 [[package]]
 name = "anvilml-registry"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anvilml-core",
+ "serial_test",
  "sqlx",
+ "tempfile",
+ "tokio",
  "tracing",
  "uuid",
 ]

@@ -809,3 +809,48 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** `ServerConfig::default()`, in-memory SQLite pool.
 **Expected output:** `Result::Ok(HardwareInfo)`.
 **Acceptance command:** `cargo test -p anvilml-hardware --features mock-hardware mock_tests::test_detect_all_devices_returns_ok` exits 0.
+
+## test_open_creates_file (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/db_tests.rs`
+**Context:** `open()` creates a file-backed SQLite database at the given path, enables WAL mode, runs all migrations, and resets ghost jobs. Uses a unique temp directory for isolation.
+**Tests:** Calls `open()` with a temp dir path, verifies the DB file is created on disk, queries `sqlite_master` and asserts all five tables (jobs, models, artifacts, seed_history, device_capabilities) exist.
+**Inputs:** Path to a unique temp directory (via `tempfile::tempdir()`).
+**Expected output:** DB file exists on disk, `sqlite_master` contains exactly 5 tables matching expected names.
+**Acceptance command:** `cargo test -p anvilml-registry --features mock-hardware -- db_tests::test_open_creates_file` exits 0.
+
+## test_open_wal_mode (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/db_tests.rs`
+**Context:** `open()` enables WAL (Write-Ahead Logging) journal mode via `SqliteConnectOptions::journal_mode(Wal)`. WAL mode provides better concurrent read performance and prevents "database is locked" errors.
+**Tests:** Calls `open()` with a temp dir path, queries `PRAGMA journal_mode`, and asserts the result is `"wal"`.
+**Inputs:** Path to a unique temp directory (via `tempfile::tempdir()`).
+**Expected output:** `PRAGMA journal_mode` returns `"wal"`.
+**Acceptance command:** `cargo test -p anvilml-registry --features mock-hardware -- db_tests::test_open_wal_mode` exits 0.
+
+## test_open_in_memory (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/db_tests.rs`
+**Context:** `open_in_memory()` creates a transient in-memory SQLite pool that is discarded when the pool is dropped. Runs the same migrations and ghost-job reset as `open()`.
+**Tests:** Calls `open_in_memory()`, queries `sqlite_master`, and asserts all five tables exist.
+**Inputs:** None (uses `sqlite::memory:` URL).
+**Expected output:** `sqlite_master` contains exactly 5 tables matching expected names.
+**Acceptance command:** `cargo test -p anvilml-registry --features mock-hardware -- db_tests::test_open_in_memory` exits 0.
+
+## test_ghost_job_reset (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/db_tests.rs`
+**Context:** Ghost-job reset targets jobs left in `Queued` or `Running` state from an unclean server shutdown. Sets them to `Failed` with `error = 'server_restart'` so the scheduler can re-queue or discard them. Each test creates its own pool — no shared connections.
+**Tests:** Inserts a job with status `'Queued'` into a pool, creates a fresh pool (which triggers ghost-job reset), then queries the job and verifies status changed to `'Failed'` with error `'server_restart'`.
+**Inputs:** `sqlite::memory:` pool with a manually inserted job row (status='Queued').
+**Expected output:** Job status is `'Failed'`, error is `'server_restart'`.
+**Acceptance command:** `cargo test -p anvilml-registry --features mock-hardware -- db_tests::test_ghost_job_reset` exits 0.
+
+## test_ghost_job_noop (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/db_tests.rs`
+**Context:** Ghost-job reset only targets `Queued` and `Running` statuses. Jobs with `Completed` or `Failed` status must be left unchanged. Each test creates its own pool — no shared connections.
+**Tests:** Inserts jobs with status `'Completed'` and `'Failed'` into a pool, creates a fresh pool (which triggers ghost-job reset), then queries both jobs and verifies they are unchanged.
+**Inputs:** `sqlite::memory:` pool with two manually inserted job rows (status='Completed', status='Failed').
+**Expected output:** Completed job remains `status='Completed'`, Failed job remains `status='Failed'` with original error message.
+**Acceptance command:** `cargo test -p anvilml-registry --features mock-hardware -- db_tests::test_ghost_job_noop` exits 0.

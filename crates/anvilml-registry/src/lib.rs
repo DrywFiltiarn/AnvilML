@@ -7,5 +7,6 @@
 //! **Hard constraints:** Never cache model file contents in memory.
 //! All model metadata is persisted to SQLite and re-read on startup.
 
-#[allow(dead_code)]
-pub fn stub() {}
+pub mod db;
+
+pub use db::{open, open_in_memory};

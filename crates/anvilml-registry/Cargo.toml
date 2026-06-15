@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-registry"
-version.workspace = true
+version = "0.1.1"
 edition.workspace = true
 
 [dependencies]
@@ -8,3 +8,8 @@ anvilml-core = { path = "../anvilml-core" }
 sqlx = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+serial_test = "3.5"
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
