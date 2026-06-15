@@ -97,7 +97,7 @@ pub struct InferenceCaps {
 /// inventory: operating system identity, CPU model, and total system
 /// RAM. This is reported alongside GPU information to provide a
 /// complete picture of the machine's capabilities.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct HostInfo {
     /// Operating system identity string (e.g. `"Linux 6.1.0"`, `"Windows 11"`).
     pub os: String,
@@ -150,7 +150,7 @@ pub struct GpuDevice {
 /// field is the union of all `GpuDevice.caps` values, as stated in the
 /// design doc — it represents the best capabilities available across
 /// all devices on the system.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct HardwareInfo {
     /// Host-level hardware information (OS, CPU, RAM).
     pub host: HostInfo,

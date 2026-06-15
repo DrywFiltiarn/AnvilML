@@ -424,6 +424,15 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Expected output:** HTTP 200 with JSON body `{"preflight_ok":false,"provisioning":"not_started",...}`.
 **Acceptance command:** `cargo test -p anvilml-server --test system_tests -- --nocapture` exits 0.
 
+## test_system_returns_200_with_hardware_info (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/system_tests.rs`
+**Context:** The `GET /v1/system` handler returns the full `HardwareInfo` snapshot from `AppState.hardware` via the production `build_router` path. Uses `Router::oneshot` to exercise the full handler pipeline without a live TCP listener. `AppState` is constructed with `new_with_hardware` which accepts a pre-wrapped `Arc<RwLock<HardwareInfo>>`.
+**Tests:** Builds `AppState` with `new_with_hardware` using a default `HardwareInfo`, sends a GET request to `/v1/system`, asserts HTTP 200, parses the JSON response, verifies `gpus` is a JSON array with at least one entry.
+**Inputs:** GET `/v1/system`, `AppState::new_with_hardware("test-version", Arc<RwLock<HardwareInfo::default()>>)`.
+**Expected output:** HTTP 200 with JSON body containing `gpus` array of length >= 1.
+**Acceptance command:** `cargo test -p anvilml-server --test system_tests -- test_system_returns_200_with_hardware_info` exits 0.
+
 ## test_app_state_new (anvilml-server)
 
 **File:** `crates/anvilml-server/tests/state_tests.rs`

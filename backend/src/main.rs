@@ -16,7 +16,9 @@ mod config {
     pub use anvilml_core::{load, ConfigOverrides};
 }
 
+use anvilml_hardware::detect_all_devices;
 use anvilml_server::{build_router, AppState};
+use std::sync::Arc;
 use tokio::net::TcpListener;
 
 #[tokio::main]
@@ -66,10 +68,41 @@ async fn main() {
         }
     }
 
-    // Create shared application state with the workspace version string.
+    // Create an in-memory SQLite pool as a placeholder for the real database
+    // connection (Phase 005 will wire the actual pool). This is sufficient
+    // because detect_all_devices only needs a pool reference — it does not
+    // execute SQL against it in Phase 004.
+    let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("failed to create in-memory pool for hardware detection");
+
+    // Detect all hardware devices at startup. The pool is a placeholder
+    // (in-memory) until Phase 005 wires the real database connection.
+    // detect_all_devices never panics and always returns at least one device.
+    let hardware_info = detect_all_devices(&cfg, &pool)
+        .await
+        .expect("hardware detection failed");
+
+    // Log each detected device at INFO level (mandatory log point per
+    // ENVIRONMENT.md §9 — Hardware subsystem, "each detected device" event).
+    for dev in &hardware_info.gpus {
+        tracing::info!(
+            index = dev.index,
+            name = %dev.name,
+            device_type = ?dev.device_type,
+            vram_total_mib = dev.vram_total_mib,
+            fp8 = dev.caps.fp8,
+            "hardware detected"
+        );
+    }
+
+    // Create shared application state with hardware detection results.
     // env!("CARGO_PKG_VERSION") is a compile-time literal that implements
-    // Into<String>, matching AppState::new's `impl Into<String>` parameter.
-    let state = AppState::new(env!("CARGO_PKG_VERSION"));
+    // Into<String>, matching AppState::new_with_hardware's parameter type.
+    let state = AppState::new_with_hardware(
+        env!("CARGO_PKG_VERSION"),
+        Arc::new(tokio::sync::RwLock::new(hardware_info)),
+    );
 
     // Build the axum router with all registered handlers wired to their routes.
     let router = build_router(state);
