@@ -81,6 +81,13 @@ async fn main() {
     // which database path the server is using at startup.
     tracing::info!(path = %cfg.db_path.display(), "database opened");
 
+    // Run SHA256-gated SQL seed files. On first run this populates
+    // device_capabilities (and any future seed tables). Subsequent
+    // runs skip unchanged files via hash comparison.
+    anvilml_registry::seed_loader::run(&pool, &cfg.seeds_path)
+        .await
+        .expect("seed loading failed");
+        
     // Detect all hardware devices at startup. The real database pool is now
     // available for future device capability seeding.
     // detect_all_devices never panics and always returns at least one device.
