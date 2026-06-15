@@ -656,3 +656,66 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** None (zero-cost compile-time assertion).
 **Expected output:** Compiles successfully.
 **Platform:** Unix only (`#[cfg(unix)]`).
+
+## test_resolve_nvidia_ampere (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/device_db_tests.rs`
+**Context:** `resolve_caps_from_row` looks up a known NVIDIA A100 (Ampere, PCI ID 0x10de/0x2204) in `DEVICE_DB` and verifies that `arch`, `fp8`, `flash_attention`, and `capabilities_source` are correctly populated.
+**Tests:** Constructs a `GpuDevice` with `pci_vendor_id=0x10de`, `pci_device_id=0x2204`, calls `resolve_caps_from_row`, and asserts `arch=Some("Ampere")`, `caps.fp8=true`, `caps.flash_attention=true`, `capabilities_source=DeviceTable`.
+**Inputs:** `GpuDevice{pci_vendor_id: 0x10de, pci_device_id: 0x2204, caps: InferenceCaps::default()}`.
+**Expected output:** All capability fields correctly populated from DEVICE_DB entry.
+**Acceptance command:** `cargo test -p anvilml-hardware --test device_db_tests test_resolve_nvidia_ampere` exits 0.
+
+## test_resolve_amd_rdna3 (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/device_db_tests.rs`
+**Context:** `resolve_caps_from_row` looks up a known AMD RX 7900 XTX (RDNA3, PCI ID 0x1002/0x74AF) in `DEVICE_DB` and verifies correct capability population.
+**Tests:** Constructs a `GpuDevice` with `pci_vendor_id=0x1002`, `pci_device_id=0x74AF`, calls `resolve_caps_from_row`, and asserts `arch=Some("RDNA3")`, `caps.fp8=false`, `caps.flash_attention=true`.
+**Inputs:** `GpuDevice{pci_vendor_id: 0x1002, pci_device_id: 0x74AF, caps: InferenceCaps::default()}`.
+**Expected output:** `arch=Some("RDNA3")`, `fp8=false`, `flash_attention=true`.
+**Acceptance command:** `cargo test -p anvilml-hardware --test device_db_tests test_resolve_amd_rdna3` exits 0.
+
+## test_resolve_unknown_device (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/device_db_tests.rs`
+**Context:** `resolve_caps_from_row` with an unknown PCI ID pair (0x9999/0x9999) is a no-op — it leaves `arch=None`, `caps` unchanged, and `capabilities_source` unchanged.
+**Tests:** Constructs a `GpuDevice` with fabricated PCI IDs not in `DEVICE_DB`, calls `resolve_caps_from_row`, and asserts all fields remain at their initial values.
+**Inputs:** `GpuDevice{pci_vendor_id: 0x9999, pci_device_id: 0x9999, caps: InferenceCaps::default(), capabilities_source: Fallback}`.
+**Expected output:** `arch=None`, `caps` unchanged, `capabilities_source=Fallback`.
+**Acceptance command:** `cargo test -p anvilml-hardware --test device_db_tests test_resolve_unknown_device` exits 0.
+
+## test_resolve_cpu_fallback (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/device_db_tests.rs`
+**Context:** CPU devices synthesised by `CpuDetector` have PCI IDs of zero (0x0/0x0). These must not match any entry in `DEVICE_DB`.
+**Tests:** Constructs a `GpuDevice` with `pci_vendor_id=0`, `pci_device_id=0`, calls `resolve_caps_from_row`, and asserts `arch=None` and `caps` unchanged.
+**Inputs:** `GpuDevice{pci_vendor_id: 0, pci_device_id: 0}`.
+**Expected output:** No match in DEVICE_DB, all fields unchanged.
+**Acceptance command:** `cargo test -p anvilml-hardware --test device_db_tests test_resolve_cpu_fallback` exits 0.
+
+## test_resolve_vram_untouched (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/device_db_tests.rs`
+**Context:** `resolve_caps_from_row` must never modify VRAM fields — they are set by the detector and must be preserved.
+**Tests:** Constructs a `GpuDevice` with known RTX 4090 PCI IDs and specific VRAM values (24576 total, 20000 free), calls `resolve_caps_from_row`, and asserts VRAM values are unchanged.
+**Inputs:** `GpuDevice{pci_vendor_id: 0x10de, pci_device_id: 0x2488, vram_total_mib: 24576, vram_free_mib: 20000}`.
+**Expected output:** `vram_total_mib=24576`, `vram_free_mib=20000` after resolve.
+**Acceptance command:** `cargo test -p anvilml-hardware --test device_db_tests test_resolve_vram_untouched` exits 0.
+
+## test_resolve_name_overwrite (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/device_db_tests.rs`
+**Context:** Resolving a known device overwrites the `name` field with the canonical name from `DEVICE_DB`.
+**Tests:** Constructs a `GpuDevice` with `name="Unknown GPU"` and RTX 4090 PCI IDs, calls `resolve_caps_from_row`, and asserts the name changes to `"NVIDIA RTX 4090"`.
+**Inputs:** `GpuDevice{name: "Unknown GPU", pci_vendor_id: 0x10de, pci_device_id: 0x2488}`.
+**Expected output:** `name == "NVIDIA RTX 4090"` after resolve.
+**Acceptance command:** `cargo test -p anvilml-hardware --test device_db_tests test_resolve_name_overwrite` exits 0.
+
+## test_device_db_non_empty (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/device_db_tests.rs`
+**Context:** `DEVICE_DB` is a compile-time constant table that must contain at least 12 curated entries covering NVIDIA, AMD, and Intel GPUs.
+**Tests:** Asserts `DEVICE_DB.len() >= 12`.
+**Inputs:** None (uses the `DEVICE_DB` constant directly).
+**Expected output:** `DEVICE_DB.len() >= 12`.
+**Acceptance command:** `cargo test -p anvilml-hardware --test device_db_tests test_device_db_non_empty` exits 0.

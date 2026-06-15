@@ -2,18 +2,6 @@
 //!
 //! This crate owns device enumeration via the `DeviceDetector` trait, with
 //! concrete implementations: `CpuDetector` (synthesises a CPU device using
-//! `sysinfo`), and platform-specific detectors (Vulkan, DXGI, sysfs) that
-//! will be added in subsequent phases. When the `mock-hardware` feature is
-//! active, `MockDetector` provides deterministic device lists driven by
-//! environment variables.
-//!
-//! **Hard constraints:** Never panic on missing drivers. Always return at
-//! least one CPU device. Return `Err` for detection failures — never crash.
-
-//! GPU and CPU hardware detection for AnvilML.
-//!
-//! This crate owns device enumeration via the `DeviceDetector` trait, with
-//! concrete implementations: `CpuDetector` (synthesises a CPU device using
 //! `sysinfo`), `VulkanDetector` (enumerates GPUs via the Vulkan loader),
 //! and platform-specific detectors (DXGI on Windows, sysfs/NVML on Linux).
 //! When the `mock-hardware` feature is active, `MockDetector` provides
@@ -23,6 +11,7 @@
 //! least one CPU device. Return `Err` for detection failures — never crash.
 
 pub mod cpu;
+pub mod device_db;
 pub mod vulkan;
 
 #[cfg(windows)]
@@ -64,6 +53,7 @@ pub trait DeviceDetector: Send + Sync {
 }
 
 pub use cpu::CpuDetector;
+pub use device_db::{resolve_caps_from_row, DeviceRow, DEVICE_DB};
 pub use vulkan::VulkanDetector;
 
 #[cfg(windows)]
