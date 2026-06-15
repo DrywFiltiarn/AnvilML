@@ -872,3 +872,66 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** In-memory pool, same temp directory with one `.sql` file, two sequential `run()` calls.
 **Expected output:** `seed_history` has 1 row (no duplicate), `device_capabilities` has 1 row (seed skipped on second run).
 **Acceptance command:** `cargo test -p anvilml-registry --features mock-hardware -- seed_loader_tests::test_seed_loader_skips_up_to_date` exits 0.
+
+## test_infer_kind_diffusion (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/scanner_tests.rs`
+**Context:** `ModelScanner::infer_kind()` maps directory names to `ModelKind` variants via case-insensitive matching. This test verifies the simplest mapping: `"diffusion"` → `ModelKind::Diffusion`.
+**Tests:** Constructs `ModelScanner`, calls `infer_kind("diffusion")`, and asserts the result is `ModelKind::Diffusion`.
+**Inputs:** `"diffusion"`.
+**Expected output:** `ModelKind::Diffusion`.
+**Acceptance command:** `cargo test -p anvilml-registry --test scanner_tests test_infer_kind_diffusion` exits 0.
+
+## test_infer_kind_text_encoder (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/scanner_tests.rs`
+**Context:** `ModelScanner::infer_kind()` maps both `"text_encoders"` and `"clip"` directory names to `ModelKind::TextEncoder` (the match arm uses `|` for multiple patterns). This test verifies both aliases.
+**Tests:** Constructs `ModelScanner`, calls `infer_kind("text_encoders")` and `infer_kind("clip")`, and asserts both return `ModelKind::TextEncoder`.
+**Inputs:** `"text_encoders"`, `"clip"`.
+**Expected output:** Both calls return `ModelKind::TextEncoder`.
+**Acceptance command:** `cargo test -p anvilml-registry --test scanner_tests test_infer_kind_text_encoder` exits 0.
+
+## test_infer_dtype_fp8_before_fp16 (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/scanner_tests.rs`
+**Context:** `ModelScanner::infer_dtype()` performs case-insensitive substring matching on filenames. The check order is critical: `fp8` must be checked before `fp16` to correctly handle filenames containing both substrings (e.g. `"model_fp16_fp8.safetensors"`).
+**Tests:** Constructs `ModelScanner`, calls `infer_dtype()` with filenames containing `"fp16_fp8"`, `"fp16"`, `"bf16"`, `"fp32"`, and no precision indicator. Asserts `Fp8` for the combined filename (fp8 checked first), and correct variants for the others.
+**Inputs:** `"model_fp16_fp8.safetensors"`, `"model_fp16.safetensors"`, `"model_bf16.safetensors"`, `"model_fp32.safetensors"`, `"model.safetensors"`.
+**Expected output:** `Fp8`, `Fp16`, `Bf16`, `Fp32`, `Unknown` respectively.
+**Acceptance command:** `cargo test -p anvilml-registry --test scanner_tests test_infer_dtype_fp8_before_fp16` exits 0.
+
+## test_compute_id_deterministic (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/scanner_tests.rs`
+**Context:** `ModelScanner::scan()` computes each model's ID by hashing the first 1 MiB of file content with SHA256. This test verifies that the ID is deterministic (same file → same ID across multiple scans) and has the correct format (64-character lowercase hex).
+**Tests:** Creates a temp file with known content, scans it twice via `scan()`, and asserts both results have the same 64-character lowercase hex ID.
+**Inputs:** Temp directory with one `.safetensors` file containing known bytes.
+**Expected output:** Two `ModelMeta` entries with identical 64-char hex IDs.
+**Acceptance command:** `cargo test -p anvilml-registry --test scanner_tests test_compute_id_deterministic` exits 0.
+
+## test_scan_nonexistent_dir (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/scanner_tests.rs`
+**Context:** When a configured model directory does not exist on disk, the scanner logs a DEBUG message and skips it without panicking or returning an error. This tests graceful degradation.
+**Tests:** Calls `scan()` with a `ModelDirConfig` pointing to a non-existent path, and asserts the result is an empty vec.
+**Inputs:** `ModelDirConfig{path: "/nonexistent/path/that/does/not/exist"}`.
+**Expected output:** `Vec::new()` — empty results, no panic.
+**Acceptance command:** `cargo test -p anvilml-registry --test scanner_tests test_scan_nonexistent_dir` exits 0.
+
+## test_scan_with_files (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/scanner_tests.rs`
+**Context:** Full scan path: creates temp directories with `.safetensors` files and a non-`.safetensors` file, scans both directories, and verifies each `ModelMeta` entry has the correct kind (from directory name), dtype (from filename), format (from extension), and a valid 64-char hex ID. Non-`.safetensors` files are skipped.
+**Tests:** Creates `diffusion/` and `text_encoders/` dirs, writes `.safetensors` and `.pt` files, scans both dirs, asserts 2 results (`.pt` skipped), and verifies each result's kind, dtype, format, ID length, and timestamp freshness.
+**Inputs:** Temp dirs with `diffusion/model_fp8.safetensors`, `text_encoders/clip_text.safetensors`, `diffusion/model.pt`.
+**Expected output:** 2 `ModelMeta` entries: one with `kind=Diffusion, dtype=Fp8`, one with `kind=TextEncoder, dtype=Unknown`, both with valid IDs and recent timestamps.
+**Acceptance command:** `cargo test -p anvilml-registry --test scanner_tests test_scan_with_files` exits 0.
+
+## test_scan_empty_dir (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/scanner_tests.rs`
+**Context:** An empty directory (exists but contains no files) should return an empty vec without errors. This tests the zero-file edge case.
+**Tests:** Creates an empty temp directory, passes it to `scan()`, and asserts the result is an empty vec.
+**Inputs:** Empty temp directory.
+**Expected output:** `Vec::new()` — empty results, no errors.
+**Acceptance command:** `cargo test -p anvilml-registry --test scanner_tests test_scan_empty_dir` exits 0.
