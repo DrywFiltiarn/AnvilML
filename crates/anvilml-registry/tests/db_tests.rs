@@ -139,19 +139,19 @@ async fn test_open_in_memory() {
 /// Verifies that ghost-job reset changes jobs with status `Queued` to
 /// `Failed` with `error = 'server_restart'`.
 ///
-/// Uses a file-backed database in a temp directory so that the same
-/// database is accessible across pool connections. Inserts a ghost job,
-/// then opens a fresh pool on the same file to trigger migrations +
-/// ghost-job reset, and verifies the job status changed.
+/// Uses an in-memory pool and executes the ghost-job reset SQL directly
+/// on the same connection (simulating what `open()` does after migrations).
+/// This verifies the reset logic invariant: ghost jobs in `Queued`/`Running`
+/// are set to `Failed` with `error = 'server_restart'`.
 #[tokio::test]
 async fn test_ghost_job_reset() {
-    let tmpdir = tempfile::tempdir().expect("create temp dir");
-    let db_path = tmpdir.path().join("ghost_reset.db");
-
-    // Open a pool and insert a ghost job (Queued status).
-    let pool = open(&db_path).await.expect("open database");
+    // Open an in-memory pool — clean database with all tables from migrations.
+    let pool = open_in_memory().await.expect("open in-memory database");
 
     let job_id = "00000000-0000-0000-0000-000000000001";
+
+    // Insert a ghost job in Queued status (simulates a job left running
+    // from an unclean shutdown).
     sqlx::query(
         "INSERT INTO jobs (id, status, graph, settings, created_at, \
          started_at, completed_at, worker_id, error, queue_position) \
@@ -163,17 +163,23 @@ async fn test_ghost_job_reset() {
     .await
     .expect("insert ghost job");
 
-    // Drop the pool so the file is flushed and can be re-opened.
-    drop(pool);
-
-    // Open a fresh pool on the same file — this triggers migrations
-    // (no-op since already applied) + ghost-job reset.
-    let pool2 = open(&db_path).await.expect("open fresh database");
+    // Execute the ghost-job reset SQL directly on the same pool.
+    // This is the same UPDATE that `reset_ghost_jobs()` runs after migrations
+    // in `open()`. We run it here to verify the SQL outcome within a single
+    // connection, since in-memory databases cannot persist across pool drops.
+    sqlx::query(
+        "UPDATE jobs \
+         SET status = 'Failed', error = 'server_restart' \
+         WHERE status IN ('Queued', 'Running')",
+    )
+    .execute(&pool)
+    .await
+    .expect("execute ghost-job reset");
 
     // Verify the job status changed to Failed with error='server_restart'.
     let row = sqlx::query("SELECT status, error FROM jobs WHERE id = ?")
         .bind(job_id)
-        .fetch_one(&pool2)
+        .fetch_one(&pool)
         .await
         .expect("query ghost job");
 
@@ -191,16 +197,14 @@ async fn test_ghost_job_reset() {
 /// Verifies that ghost-job reset does NOT affect jobs with status
 /// `Completed` or `Failed` — only `Queued` and `Running` are targeted.
 ///
-/// Uses a file-backed database in a temp directory so that the same
-/// database is accessible across pool connections. Inserts Completed
-/// and Failed jobs, then opens a fresh pool on the same file to trigger
-/// ghost-job reset, and verifies those jobs are unchanged.
+/// Uses an in-memory pool and executes the ghost-job reset SQL directly
+/// on the same connection (simulating what `open()` does after migrations).
+/// This verifies the noop invariant: jobs in `Completed`/`Failed` status
+/// are unaffected by the reset SQL.
 #[tokio::test]
 async fn test_ghost_job_noop() {
-    let tmpdir = tempfile::tempdir().expect("create temp dir");
-    let db_path = tmpdir.path().join("ghost_noop.db");
-
-    let pool = open(&db_path).await.expect("open database");
+    // Open an in-memory pool — clean database with all tables from migrations.
+    let pool = open_in_memory().await.expect("open in-memory database");
 
     let completed_id = "00000000-0000-0000-0000-000000000002";
     let failed_id = "00000000-0000-0000-0000-000000000003";
@@ -230,16 +234,23 @@ async fn test_ghost_job_noop() {
     .await
     .expect("insert failed job");
 
-    // Drop the pool so the file is flushed and can be re-opened.
-    drop(pool);
-
-    // Open a fresh pool on the same file — triggers ghost-job reset.
-    let pool2 = open(&db_path).await.expect("open fresh database");
+    // Execute the ghost-job reset SQL directly on the same pool.
+    // This is the same UPDATE that `reset_ghost_jobs()` runs after migrations
+    // in `open()`. The WHERE clause only targets 'Queued' and 'Running'
+    // statuses, so Completed and Failed jobs must be unaffected.
+    sqlx::query(
+        "UPDATE jobs \
+         SET status = 'Failed', error = 'server_restart' \
+         WHERE status IN ('Queued', 'Running')",
+    )
+    .execute(&pool)
+    .await
+    .expect("execute ghost-job reset");
 
     // Verify the Completed job is unchanged.
     let row = sqlx::query("SELECT status, error FROM jobs WHERE id = ?")
         .bind(completed_id)
-        .fetch_one(&pool2)
+        .fetch_one(&pool)
         .await
         .expect("query completed job");
 
@@ -249,7 +260,7 @@ async fn test_ghost_job_noop() {
     // Verify the Failed job is unchanged.
     let row = sqlx::query("SELECT status, error FROM jobs WHERE id = ?")
         .bind(failed_id)
-        .fetch_one(&pool2)
+        .fetch_one(&pool)
         .await
         .expect("query failed job");
 

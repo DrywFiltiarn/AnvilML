@@ -840,18 +840,18 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 ## test_ghost_job_reset (anvilml-registry)
 
 **File:** `crates/anvilml-registry/tests/db_tests.rs`
-**Context:** Ghost-job reset targets jobs left in `Queued` or `Running` state from an unclean server shutdown. Sets them to `Failed` with `error = 'server_restart'` so the scheduler can re-queue or discard them. Each test creates its own pool — no shared connections.
-**Tests:** Inserts a job with status `'Queued'` into a pool, creates a fresh pool (which triggers ghost-job reset), then queries the job and verifies status changed to `'Failed'` with error `'server_restart'`.
-**Inputs:** `sqlite::memory:` pool with a manually inserted job row (status='Queued').
+**Context:** Ghost-job reset targets jobs left in `Queued` or `Running` state from an unclean server shutdown. Sets them to `Failed` with `error = 'server_restart'` so the scheduler can re-queue or discard them. Uses `open_in_memory()` for a clean in-memory pool and executes the ghost-job reset SQL directly on the same connection (simulating what `open()` does after migrations). Each test uses its own in-memory pool — no shared connections.
+**Tests:** Opens an in-memory pool, inserts a job with status `'Queued'`, executes the ghost-job reset SQL (`UPDATE jobs SET status = 'Failed', error = 'server_restart' WHERE status IN ('Queued', 'Running')`), then queries the job and verifies status changed to `'Failed'` with error `'server_restart'`.
+**Inputs:** In-memory pool with a manually inserted job row (status='Queued').
 **Expected output:** Job status is `'Failed'`, error is `'server_restart'`.
 **Acceptance command:** `cargo test -p anvilml-registry --features mock-hardware -- db_tests::test_ghost_job_reset` exits 0.
 
 ## test_ghost_job_noop (anvilml-registry)
 
 **File:** `crates/anvilml-registry/tests/db_tests.rs`
-**Context:** Ghost-job reset only targets `Queued` and `Running` statuses. Jobs with `Completed` or `Failed` status must be left unchanged. Each test creates its own pool — no shared connections.
-**Tests:** Inserts jobs with status `'Completed'` and `'Failed'` into a pool, creates a fresh pool (which triggers ghost-job reset), then queries both jobs and verifies they are unchanged.
-**Inputs:** `sqlite::memory:` pool with two manually inserted job rows (status='Completed', status='Failed').
+**Context:** Ghost-job reset only targets `Queued` and `Running` statuses. Jobs with `Completed` or `Failed` status must be left unchanged. Uses `open_in_memory()` for a clean in-memory pool and executes the ghost-job reset SQL directly on the same connection (simulating what `open()` does after migrations). Each test uses its own in-memory pool — no shared connections.
+**Tests:** Opens an in-memory pool, inserts jobs with status `'Completed'` and `'Failed'`, executes the ghost-job reset SQL (`UPDATE jobs SET status = 'Failed', error = 'server_restart' WHERE status IN ('Queued', 'Running')`), then queries both jobs and verifies they are unchanged.
+**Inputs:** In-memory pool with two manually inserted job rows (status='Completed', status='Failed').
 **Expected output:** Completed job remains `status='Completed'`, Failed job remains `status='Failed'` with original error message.
 **Acceptance command:** `cargo test -p anvilml-registry --features mock-hardware -- db_tests::test_ghost_job_noop` exits 0.
 
