@@ -53,5 +53,27 @@
     ],
     "context": "Add rescan_models handler (POST /v1/models/rescan): responds 202 immediately, spawns tokio task to scan cfg.model_dirs and upsert results into ModelStore. In main.rs: run initial scan at startup (same logic). tracing::info!(count,dir) per scan. Place test safetensors in models/diffusion/; curl /v1/models returns item with kind=diffusion and dtype=Fp8 if filename contains fp8.",
     "tags": []
+  },
+  {
+    "id": "P6-C1",
+    "description": "anvilml-core: add db_name field to GpuDevice",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": [
+      "P6-B2"
+    ],
+    "context": "Add pub db_name:Option<String> to GpuDevice in crates/anvilml-core/src/types/hardware.rs after name field. Field is None at all construction sites; only populated by SQLite enrichment in P6-C2. Update all GpuDevice struct literals across workspace (detect.rs, mock.rs, detector impls, test files) to add db_name:None. Update test_hardware_info_json_roundtrip to set db_name:None and assert roundtrip. Bump anvilml-core and anvilml-hardware patch versions. cargo test --workspace --features mock-hardware exits 0; GET /v1/system includes db_name:null on all GPU devices.",
+    "tags": []
+  },
+  {
+    "id": "P6-C2",
+    "description": "anvilml-hardware: SQLite capability enrichment in detect_all_devices",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": [
+      "P6-C1"
+    ],
+    "context": "Add anvilml-registry={path:../anvilml-registry} to anvilml-hardware/Cargo.toml; bump patch version. In detect.rs: rename _pool->pool, update #[instrument] skip. After step e add step e2: DeviceCapabilityStore::new(pool.clone()).await; for each non-CPU GpuDevice call store.get(pci_vendor_id,pci_device_id).await. Ok(Some(row)): overwrite arch,fp32,fp16,bf16,fp8,fp4,flash_attention,capabilities_source=DeviceTable,db_name=Some(row.name). Ok(None): tracing::warn!(vendor_id,device_id,name). Err: tracing::error! non-fatal. Never overwrite dev.name. Remove step h deferred stub. cargo test --workspace --features mock-hardware exits 0.",
+    "tags": []
   }
 ]

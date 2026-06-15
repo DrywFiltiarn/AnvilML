@@ -5,7 +5,7 @@
     "phase": "7",
     "project": "anvilml",
     "prereqs": [
-      "P6-B2"
+      "P6-C2"
     ],
     "context": "Create crates/anvilml-server/src/ws/broadcaster.rs: pub struct EventBroadcaster{tx:broadcast::Sender<WsEvent>}. pub fn new()->Self (capacity 1024). pub fn send(&self,event:WsEvent): tx.send; tracing::warn! on Err (lagged). pub fn subscribe(&self)->broadcast::Receiver<WsEvent>. Add Arc<EventBroadcaster> to AppState. Create ws/mod.rs declaring broadcaster/handler/stats_tick. cargo test -p anvilml-server -- broadcaster exits 0 >=3 tests.",
     "tags": []
