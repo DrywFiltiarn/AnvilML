@@ -97,6 +97,7 @@ impl DeviceDetector for MockDetector {
         let device = GpuDevice {
             index: 0,
             name: device_name,
+            db_name: None,
             device_type,
             vram_total_mib,
             vram_free_mib: vram_total_mib, // mock has no live VRAM tracking

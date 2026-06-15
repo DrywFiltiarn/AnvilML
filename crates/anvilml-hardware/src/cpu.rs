@@ -93,6 +93,7 @@ impl DeviceDetector for CpuDetector {
         let device = GpuDevice {
             index: 0,
             name: device_name.to_string(),
+            db_name: None,
             device_type: DeviceType::Cpu,
             vram_total_mib: 0,
             vram_free_mib: 0,

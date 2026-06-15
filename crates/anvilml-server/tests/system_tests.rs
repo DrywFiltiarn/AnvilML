@@ -67,6 +67,7 @@ async fn test_system_returns_200_with_hardware_info() {
         gpus: vec![anvilml_core::types::GpuDevice {
             index: 0,
             name: "Test GPU".to_string(),
+            db_name: None,
             device_type: anvilml_core::types::DeviceType::Cuda,
             vram_total_mib: 8192,
             vram_free_mib: 7000,

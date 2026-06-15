@@ -88,6 +88,7 @@ pub async fn detect_all_devices(
                 device_type_str(&device_type),
                 override_cfg.device_type
             ),
+            db_name: None,
             device_type,
             vram_total_mib: override_cfg.vram_total_mib,
             vram_free_mib: override_cfg.vram_total_mib, // no live VRAM for override

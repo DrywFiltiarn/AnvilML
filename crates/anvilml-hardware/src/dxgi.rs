@@ -154,6 +154,7 @@ impl DeviceDetector for DxgiDetector {
             let device = GpuDevice {
                 index,
                 name: description,
+                db_name: None,
                 device_type,
                 vram_total_mib,
                 vram_free_mib: vram_total_mib, // no device context for live read

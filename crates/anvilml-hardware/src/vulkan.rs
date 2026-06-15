@@ -157,6 +157,7 @@ impl DeviceDetector for VulkanDetector {
             let device = GpuDevice {
                 index: dev_index as u32,
                 name: device_name,
+                db_name: None,
                 device_type,
                 vram_total_mib,
                 vram_free_mib: vram_total_mib, // best-effort: no device context exists

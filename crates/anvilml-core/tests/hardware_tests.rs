@@ -29,6 +29,7 @@ fn test_hardware_info_json_roundtrip() {
             GpuDevice {
                 index: 0,
                 name: "NVIDIA A100-SXM4-40GB".to_string(),
+                db_name: None,
                 device_type: DeviceType::Cuda,
                 vram_total_mib: 40960,
                 vram_free_mib: 38000,
@@ -50,6 +51,7 @@ fn test_hardware_info_json_roundtrip() {
             GpuDevice {
                 index: 1,
                 name: "NVIDIA A100-SXM4-40GB".to_string(),
+                db_name: None,
                 device_type: DeviceType::Cuda,
                 vram_total_mib: 40960,
                 vram_free_mib: 39000,
@@ -134,6 +136,7 @@ fn test_hardware_info_json_roundtrip() {
             "gpu[{}].capabilities_source",
             i
         );
+        assert_eq!(rest.db_name, orig.db_name, "gpu[{}].db_name", i);
     }
 
     // Union inference caps must equal

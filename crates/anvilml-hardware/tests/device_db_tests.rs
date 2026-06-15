@@ -20,6 +20,7 @@ fn test_resolve_nvidia_ampere() {
     let mut dev = GpuDevice {
         index: 0,
         name: "Unknown GPU".to_string(),
+        db_name: None,
         device_type: DeviceType::Cuda,
         vram_total_mib: 40960,
         vram_free_mib: 38000,
@@ -59,6 +60,7 @@ fn test_resolve_amd_rdna3() {
     let mut dev = GpuDevice {
         index: 0,
         name: "Unknown GPU".to_string(),
+        db_name: None,
         device_type: DeviceType::Rocm,
         vram_total_mib: 24576,
         vram_free_mib: 22000,
@@ -94,6 +96,7 @@ fn test_resolve_unknown_device() {
     let mut dev = GpuDevice {
         index: 0,
         name: "Unknown GPU".to_string(),
+        db_name: None,
         device_type: DeviceType::Cuda,
         vram_total_mib: 8192,
         vram_free_mib: 7000,
@@ -132,6 +135,7 @@ fn test_resolve_cpu_fallback() {
     let mut dev = GpuDevice {
         index: 0,
         name: "CPU".to_string(),
+        db_name: None,
         device_type: DeviceType::Cpu,
         vram_total_mib: 0,
         vram_free_mib: 0,
@@ -165,6 +169,7 @@ fn test_resolve_vram_untouched() {
     let mut dev = GpuDevice {
         index: 0,
         name: "Unknown GPU".to_string(),
+        db_name: None,
         device_type: DeviceType::Cuda,
         vram_total_mib: 24576,
         vram_free_mib: 20000,
@@ -203,6 +208,7 @@ fn test_resolve_name_overwrite() {
     let mut dev = GpuDevice {
         index: 0,
         name: "Unknown GPU".to_string(),
+        db_name: None,
         device_type: DeviceType::Cuda,
         vram_total_mib: 16384,
         vram_free_mib: 15000,

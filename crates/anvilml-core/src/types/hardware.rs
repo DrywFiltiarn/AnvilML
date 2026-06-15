@@ -123,6 +123,12 @@ pub struct GpuDevice {
     pub index: u32,
     /// Human-readable device name (e.g. `"NVIDIA A100-SXM4-40GB"`).
     pub name: String,
+    /// Database-resolved device group name from the `device_capabilities` table.
+    ///
+    /// `None` until enriched by the SQLite capability lookup in P6-C2.
+    /// When present, this is the canonical group name used for device
+    /// grouping in the model registry.
+    pub db_name: Option<String>,
     /// Compute backend this device uses for inference.
     pub device_type: DeviceType,
     /// Total VRAM capacity in mebibytes (MiB).

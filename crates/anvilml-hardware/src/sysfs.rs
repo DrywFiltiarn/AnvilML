@@ -139,6 +139,7 @@ impl DeviceDetector for SysfsPciDetector {
             let device = GpuDevice {
                 index,
                 name,
+                db_name: None,
                 device_type,
                 vram_total_mib: 0,
                 vram_free_mib: 0,
