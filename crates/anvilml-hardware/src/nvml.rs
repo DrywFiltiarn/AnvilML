@@ -12,7 +12,6 @@
 /// **Hard constraints:** Never panic on library load failure, symbol
 /// resolution failure, or NVML API failure. Always return `(0, 0)`
 /// when NVML is unavailable.
-
 pub struct NvmlDetector;
 
 impl NvmlDetector {
@@ -80,7 +79,7 @@ impl DeviceDetector for NvmlDetector {
         // way to query live VRAM on NVIDIA GPUs. On non-NVIDIA systems
         // (AMD GPUs, Intel GPUs, CPUs), this library is absent and
         // we return (0, 0) — which is the correct answer.
-        let library = match libloading::Library::new(NVML_LIB) {
+        let library = match unsafe { libloading::Library::new(NVML_LIB) } {
             Ok(lib) => lib,
             Err(err) => {
                 // Library not found — common on non-NVIDIA systems.
@@ -104,7 +103,7 @@ impl DeviceDetector for NvmlDetector {
         // nvmlDevice_t handle obtained via nvmlDeviceGetHandleByIndex.
         let func: libloading::Symbol<
             unsafe extern "C" fn(*mut std::ffi::c_void, *mut MemoryInfo) -> u32,
-        > = match library.get(b"nvmlDeviceGetMemoryInfo") {
+        > = match unsafe { library.get(b"nvmlDeviceGetMemoryInfo") } {
             Ok(s) => s,
             Err(err) => {
                 // Symbol not found — the library loaded but the function
@@ -133,7 +132,7 @@ impl DeviceDetector for NvmlDetector {
             used: 0,
         };
 
-        let result = unsafe { func(0x1 as *mut std::ffi::c_void, &mut mem_info) };
+        let result = unsafe { func(std::ptr::dangling_mut::<std::ffi::c_void>(), &mut mem_info) };
 
         // NVML returns 0 (NVML_SUCCESS) on success. Any other value
         // indicates an error — we return (0, 0) rather than propagating
