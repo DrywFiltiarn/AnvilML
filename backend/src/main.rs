@@ -17,6 +17,7 @@ mod config {
 }
 
 use anvilml_hardware::detect_all_devices;
+use anvilml_registry::open;
 use anvilml_server::{build_router, AppState};
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -68,16 +69,20 @@ async fn main() {
         }
     }
 
-    // Create an in-memory SQLite pool as a placeholder for the real database
-    // connection (Phase 005 will wire the actual pool). This is sufficient
-    // because detect_all_devices only needs a pool reference — it does not
-    // execute SQL against it in Phase 004.
-    let pool = sqlx::SqlitePool::connect("sqlite::memory:")
-        .await
-        .expect("failed to create in-memory pool for hardware detection");
+    // Open the real file-backed database. The `open()` function creates the
+    // database file if it does not exist, enables WAL mode, runs migrations,
+    // and resets ghost jobs from any unclean shutdown.
+    let pool = open(&cfg.db_path).await.expect("failed to open database");
 
-    // Detect all hardware devices at startup. The pool is a placeholder
-    // (in-memory) until Phase 005 wires the real database connection.
+    // Log the database path at INFO level (mandatory log point per
+    // ENVIRONMENT.md §9 — Database subsystem, "SQLite file created" event).
+    // The `open()` function already logs "database created" when a new file
+    // is created, but we log here unconditionally so the operator always sees
+    // which database path the server is using at startup.
+    tracing::info!(path = %cfg.db_path.display(), "database opened");
+
+    // Detect all hardware devices at startup. The real database pool is now
+    // available for future device capability seeding.
     // detect_all_devices never panics and always returns at least one device.
     let hardware_info = detect_all_devices(&cfg, &pool)
         .await
@@ -96,12 +101,13 @@ async fn main() {
         );
     }
 
-    // Create shared application state with hardware detection results.
-    // env!("CARGO_PKG_VERSION") is a compile-time literal that implements
-    // Into<String>, matching AppState::new_with_hardware's parameter type.
+    // Create shared application state with hardware detection results and
+    // the real database pool. env!("CARGO_PKG_VERSION") is a compile-time
+    // literal that implements Into<String>, matching the constructor's type.
     let state = AppState::new_with_hardware(
         env!("CARGO_PKG_VERSION"),
         Arc::new(tokio::sync::RwLock::new(hardware_info)),
+        pool,
     );
 
     // Build the axum router with all registered handlers wired to their routes.

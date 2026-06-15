@@ -1,3 +1,4 @@
+use anvilml_registry::open_in_memory;
 use anvilml_server::{build_router, AppState};
 use axum::body::to_bytes;
 use axum::http::{Method, Request};
@@ -14,7 +15,7 @@ use tower::util::ServiceExt;
 /// serialization) without binding a live TCP listener.
 #[tokio::test]
 async fn test_system_env_returns_200_with_default_report() {
-    let state = AppState::new("test-version");
+    let state = AppState::new("test-version").await;
 
     // Build the router via the production `build_router` function.
     let router = build_router(state);
@@ -97,7 +98,12 @@ async fn test_system_returns_200_with_hardware_info() {
     // AppState::new_with_hardware constructor signature.
     let hardware = std::sync::Arc::new(tokio::sync::RwLock::new(hardware_info));
 
-    let state = AppState::new_with_hardware("test-version", hardware);
+    // Open an in-memory database pool for the test — this matches the
+    // production startup path where `open()` is called with the config
+    // db_path. Using `open_in_memory()` ensures test isolation.
+    let pool = open_in_memory().await.unwrap();
+
+    let state = AppState::new_with_hardware("test-version", hardware, pool);
 
     // Build the router via the production `build_router` function.
     let router = build_router(state);

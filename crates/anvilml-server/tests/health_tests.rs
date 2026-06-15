@@ -13,7 +13,7 @@ use tower::util::ServiceExt;
 /// serialization) without binding a live TCP listener.
 #[tokio::test]
 async fn test_health_returns_200_with_status_key() {
-    let state = AppState::new("test-version");
+    let state = AppState::new("test-version").await;
 
     // Build the router via the production `build_router` function.
     let router = build_router(state);

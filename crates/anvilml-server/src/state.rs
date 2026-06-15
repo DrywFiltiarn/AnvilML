@@ -7,7 +7,8 @@ use std::sync::Arc;
 /// `version` is the crate version from `CARGO_PKG_VERSION`;
 /// `env_report` is the stub environment report returned by the `/v1/system/env`
 /// endpoint (populated by future tasks); `hardware` is the hardware snapshot
-/// populated by `detect_all_devices()` at startup (Phase 004).
+/// populated by `detect_all_devices()` at startup (Phase 004); `db` is the
+/// file-backed SQLite connection pool wired at startup (Phase 005).
 #[derive(Clone)]
 pub struct AppState {
     /// Instant at which this server instance was created.
@@ -24,6 +25,11 @@ pub struct AppState {
     /// Shared via `Arc<RwLock<>>` so it can be updated independently of
     /// request handling without holding a lock across an await point.
     pub hardware: Arc<tokio::sync::RwLock<anvilml_core::types::HardwareInfo>>,
+
+    /// File-backed SQLite connection pool for persistent storage.
+    /// Opened at server startup via `anvilml_registry::open()` and
+    /// shared across all handlers that need database access.
+    pub db: sqlx::SqlitePool,
 }
 
 impl AppState {
@@ -34,7 +40,12 @@ impl AppState {
     /// which accepts `String`, `&str`, and `&'static str`. The `env_report`
     /// field is initialized with default values (a stub for future population).
     /// The `hardware` field is initialized with a default (empty) `HardwareInfo`.
-    pub fn new(version: impl Into<String>) -> Self {
+    ///
+    /// This constructor is async because `SqlitePool::connect` is async.
+    /// It is intended for use in tests and stubs — production code should
+    /// use `new_with_hardware` instead. The `db` field is initialised with
+    /// an in-memory pool.
+    pub async fn new(version: impl Into<String>) -> Self {
         Self {
             start_time: std::time::Instant::now(),
             version: version.into(),
@@ -42,29 +53,43 @@ impl AppState {
             hardware: Arc::new(tokio::sync::RwLock::new(
                 anvilml_core::types::HardwareInfo::default(),
             )),
+            // Create an in-memory pool for the stub AppState.
+            // This is only used by tests that call `new()` directly —
+            // production code always calls `new_with_hardware` with a
+            // real file-backed pool.
+            db: sqlx::SqlitePool::connect("sqlite::memory:")
+                .await
+                .expect("in-memory pool for stub AppState"),
         }
     }
 
-    /// Create a new AppState with hardware detection results.
+    /// Create a new AppState with hardware detection results and a database
+    /// connection pool.
     ///
     /// This constructor is used at server startup after `detect_all_devices()`
-    /// has populated the hardware snapshot. The version and hardware data are
-    /// stored directly; `env_report` is initialised with default values.
+    /// has populated the hardware snapshot and `anvilml_registry::open()` has
+    /// opened the file-backed database. The version, hardware, and database
+    /// data are stored directly; `env_report` is initialised with default
+    /// values.
     ///
     /// # Arguments
     ///
     /// * `version` — The server version string (e.g. from `CARGO_PKG_VERSION`).
     /// * `hardware` — A pre-detect `Arc<RwLock<HardwareInfo>>` containing the
     ///   hardware snapshot from `detect_all_devices()`.
+    /// * `db` — A file-backed `SqlitePool` opened via `anvilml_registry::open()`
+    ///   at the path specified in server configuration.
     pub fn new_with_hardware(
         version: impl Into<String>,
         hardware: Arc<tokio::sync::RwLock<anvilml_core::types::HardwareInfo>>,
+        db: sqlx::SqlitePool,
     ) -> Self {
         Self {
             start_time: std::time::Instant::now(),
             version: version.into(),
             env_report: anvilml_core::types::EnvReport::default(),
             hardware,
+            db,
         }
     }
 }
