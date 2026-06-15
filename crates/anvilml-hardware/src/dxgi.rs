@@ -12,7 +12,6 @@
 /// **Hard constraints:** Never panic on COM initialisation failure or
 /// missing adapters. Always return an empty list when detection is
 /// unavailable.
-
 pub struct DxgiDetector;
 
 impl DxgiDetector {
@@ -50,8 +49,17 @@ impl DeviceDetector for DxgiDetector {
         // Initialise COM. DXGI requires COM to be initialised on the
         // calling thread before any factory can be created.
         // S_OK (0) means already initialised — we treat that as success.
-        let hr = unsafe { windows::Win32::System::Com::CoInitializeEx(None, 0) };
-        if hr.0 != 0 && hr.0 != 0x80010106 {
+        let hr = unsafe {
+            windows::Win32::System::Com::CoInitializeEx(
+                None,
+                windows::Win32::System::Com::COINIT_MULTITHREADED,
+            )
+        };
+
+        // RPC_E_CHANGED_MODE means COM is already initialised with a different
+        // concurrency model — treat as success; we can still use DXGI.
+        const RPC_E_CHANGED_MODE: i32 = 0x80010106u32 as i32;
+        if hr.is_err() && hr.0 != RPC_E_CHANGED_MODE {
             // 0x80010106 = RPC_E_CHANGED_MODE (already initialised with different mode).
             // Any other non-zero value means COM initialisation failed.
             tracing::debug!(hr = hr.0, "DXGI COM initialisation failed");
@@ -66,15 +74,16 @@ impl DeviceDetector for DxgiDetector {
         // Create the DXGI factory. IDXGIFactory1 supports adapter
         // enumeration starting from Windows Vista SP2.
         // We use CreateDXGIFactory1 which returns IDXGIFactory1.
-        let factory = match unsafe { windows::Win32::Graphics::Dxgi::CreateDXGIFactory1() } {
-            Ok(factory) => factory,
-            Err(err) => {
-                // DXGI factory creation failed — likely no display driver.
-                // Return empty list; the CPU fallback will handle this.
-                tracing::debug!(error = ?err, "DXGI factory creation failed");
-                return Ok(vec![]);
-            }
-        };
+        let factory: windows::Win32::Graphics::Dxgi::IDXGIFactory1 =
+            match unsafe { windows::Win32::Graphics::Dxgi::CreateDXGIFactory1() } {
+                Ok(factory) => factory,
+                Err(err) => {
+                    // DXGI factory creation failed — likely no display driver.
+                    // Return empty list; the CPU fallback will handle this.
+                    tracing::debug!(error = ?err, "DXGI factory creation failed");
+                    return Ok(vec![]);
+                }
+            };
 
         let mut devices = Vec::new();
         let mut index: u32 = 0;
@@ -83,15 +92,13 @@ impl DeviceDetector for DxgiDetector {
         // while there are more adapters, and S_FALSE (0x80000001) when
         // no more adapters are available. Any other HRESULT is an error.
         loop {
-            let adapter = match factory.EnumAdapters1(index as u32) {
+            let adapter = match unsafe { factory.EnumAdapters1(index) } {
                 Ok(adapter) => adapter,
                 Err(err) => {
-                    // S_FALSE (0x80000001) means "no more adapters" — this is
-                    // the normal termination condition. Any other error is
-                    // unexpected but we treat it as end-of-list.
-                    let code = err.0;
-                    if code == 0x80000001 {
-                        // No more adapters — normal termination.
+                    // DXGI_ERROR_NOT_FOUND (0x887A0002) or S_FALSE signals no more adapters.
+                    // windows_core::Error exposes the HRESULT via .code().0
+                    let code = err.code().0 as u32;
+                    if code == 0x887A0002 || code == 0x80000001 {
                         break;
                     }
                     tracing::debug!(index, error = ?err, "DXGI EnumAdapters1 failed");
@@ -101,13 +108,11 @@ impl DeviceDetector for DxgiDetector {
 
             // Get the adapter description. DXGI_ADAPTER_DESC1 contains
             // the vendor ID, device ID, description string, and VRAM info.
-            let desc = match unsafe { adapter.GetDesc1() } {
-                Ok(desc) => desc,
-                Err(err) => {
-                    tracing::debug!(index, error = ?err, "DXGI GetDesc1 failed");
-                    break;
-                }
-            };
+            let mut desc = windows::Win32::Graphics::Dxgi::DXGI_ADAPTER_DESC1::default();
+            if let Err(err) = unsafe { adapter.GetDesc1(&mut desc) } {
+                tracing::debug!(index, error = ?err, "DXGI GetDesc1 failed");
+                break;
+            }
 
             // Convert the wide-character description string to a Rust String.
             // DXGI descriptions are null-terminated UTF-16LE.
@@ -126,7 +131,7 @@ impl DeviceDetector for DxgiDetector {
 
             // Convert dedicated video memory from bytes to mebibytes (MiB).
             // DXGI reports VRAM in bytes; we divide by 1024*1024.
-            let vram_total_mib = desc.DedicatedVideoMemory / (1024 * 1024);
+            let vram_total_mib = (desc.DedicatedVideoMemory / (1024 * 1024)) as u32;
 
             // Build the GpuDevice entry.
             // enumeration_source is set to DXGI since we enumerated via

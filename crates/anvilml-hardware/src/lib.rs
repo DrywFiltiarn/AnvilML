@@ -25,9 +25,9 @@
 pub mod cpu;
 pub mod vulkan;
 
-#[cfg(all(windows, feature = "dxgi"))]
+#[cfg(windows)]
 pub mod dxgi;
-#[cfg(all(unix, feature = "nvml"))]
+#[cfg(unix)]
 pub mod nvml;
 #[cfg(unix)]
 pub mod sysfs;
@@ -66,9 +66,9 @@ pub trait DeviceDetector: Send + Sync {
 pub use cpu::CpuDetector;
 pub use vulkan::VulkanDetector;
 
-#[cfg(all(windows, feature = "dxgi"))]
+#[cfg(windows)]
 pub use dxgi::DxgiDetector;
-#[cfg(all(unix, feature = "nvml"))]
+#[cfg(unix)]
 pub use nvml::NvmlDetector;
 #[cfg(unix)]
 pub use sysfs::SysfsPciDetector;

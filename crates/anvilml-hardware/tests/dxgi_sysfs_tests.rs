@@ -189,7 +189,7 @@ fn test_sysfs_detect_vendor_mapping() {
 ///
 /// This is a zero-cost check: constructing a unit struct involves no
 /// allocation, no I/O, and no system calls.
-#[cfg(all(unix, feature = "nvml"))]
+#[cfg(unix)]
 #[serial_test::serial]
 #[test]
 fn test_nvml_detector_new() {
@@ -200,7 +200,7 @@ fn test_nvml_detector_new() {
 /// Verify that `NvmlDetector::default()` constructs successfully.
 ///
 /// This verifies the `Default` impl delegates to `new()` correctly.
-#[cfg(all(unix, feature = "nvml"))]
+#[cfg(unix)]
 #[serial_test::serial]
 #[test]
 fn test_nvml_detector_default() {
@@ -212,7 +212,7 @@ fn test_nvml_detector_default() {
 ///
 /// NVML is a VRAM refresh supplement, not a device enumerator.
 /// This test verifies that invariant.
-#[cfg(all(unix, feature = "nvml"))]
+#[cfg(unix)]
 #[serial_test::serial]
 #[test]
 fn test_nvml_detect_returns_empty() {
@@ -231,7 +231,7 @@ fn test_nvml_detect_returns_empty() {
 /// This test is safe to run on any system — if the library is absent,
 /// it returns `(0, 0)` gracefully. If present on an NVIDIA system,
 /// it returns the actual VRAM values. Either outcome is valid.
-#[cfg(all(unix, feature = "nvml"))]
+#[cfg(unix)]
 #[serial_test::serial]
 #[test]
 fn test_nvml_refresh_vram_no_library() {
@@ -250,7 +250,7 @@ fn test_nvml_refresh_vram_no_library() {
 }
 
 /// Verify that `NvmlDetector::refresh_vram(0)` never panics.
-#[cfg(all(unix, feature = "nvml"))]
+#[cfg(unix)]
 #[serial_test::serial]
 #[test]
 fn test_nvml_refresh_vram_no_panic() {
@@ -260,7 +260,7 @@ fn test_nvml_refresh_vram_no_panic() {
 }
 
 /// Verify that `NvmlDetector` implements `Send + Sync` on Unix.
-#[cfg(all(unix, feature = "nvml"))]
+#[cfg(unix)]
 #[serial_test::serial]
 #[test]
 fn test_nvml_detector_is_send_sync() {
