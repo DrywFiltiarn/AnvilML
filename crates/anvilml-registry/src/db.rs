@@ -137,7 +137,7 @@ async fn run_migrations(pool: &SqlitePool) -> Result<(), AnvilError> {
     let pending: Vec<_> = runner
         .migrations
         .iter()
-        .filter(|m| !applied.contains(&(m.version as i64)))
+        .filter(|m| !applied.contains(&m.version))
         .collect();
 
     // Log each genuinely pending migration before running so the operator
