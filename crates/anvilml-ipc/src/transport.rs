@@ -15,7 +15,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use tokio::sync::Mutex;
 use tracing;
-use zeromq::{Endpoint, RouterSocket, Socket, SocketSend, ZmqMessage};
+use zeromq::{Endpoint, RouterSocket, Socket, SocketRecv, SocketSend, ZmqMessage};
 
 /// The socket type used internally by `RouterTransport`.
 ///
@@ -24,7 +24,8 @@ use zeromq::{Endpoint, RouterSocket, Socket, SocketSend, ZmqMessage};
 type InnerSocket = Arc<Mutex<RouterSocket>>;
 
 use crate::TransportError;
-use crate::{encode_message, WorkerMessage};
+use crate::{decode_event, encode_message, WorkerEvent, WorkerMessage};
+use anvilml_core::AnvilError;
 
 /// A ZeroMQ ROUTER socket wrapper for sending messages to AnvilML workers.
 ///
@@ -187,5 +188,83 @@ impl RouterTransport {
         tracing::debug!(worker_id = %hex_id, "message sent to worker");
 
         Ok(())
+    }
+
+    /// Receive a `WorkerEvent` from a connected worker via the ZeroMQ ROUTER socket.
+    ///
+    /// The ROUTER socket delivers messages as multipart frames: the first frame is the
+    /// peer's identity (used for routing replies back to the correct worker), and the
+    /// remaining frame(s) contain the encoded message payload.
+    ///
+    /// This method extracts the identity as a UTF-8 string, decodes the msgpack payload
+    /// into a `WorkerEvent`, and returns the `(worker_id, event)` tuple.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AnvilError::Ipc` if the socket encounters a ZeroMQ error (e.g.
+    /// connection lost, socket closed), if the identity frame is missing (protocol
+    /// violation), if the payload frame is missing, or if the msgpack payload cannot
+    /// be decoded into a `WorkerEvent`.
+    ///
+    /// # Logging
+    ///
+    /// Logs at DEBUG level: `tracing::debug!(worker_id = %worker_id, event_type = ?event,
+    /// "event received from worker")`.
+    pub async fn recv(&self) -> Result<(String, WorkerEvent), AnvilError> {
+        // Acquire the mutex lock to receive. The tokio mutex ensures that only
+        // one task at a time can access the socket, preventing races between
+        // concurrent recv() calls.
+        let mut socket = self.socket.lock().await;
+
+        // Receive the multipart message from the ROUTER socket. The ROUTER
+        // returns a ZmqMessage where frame 0 is the peer identity and frame 1+
+        // are the message payload. A ZmqError here indicates a socket-level
+        // failure (connection lost, closed socket). Map to AnvilError::Ipc
+        // since the design doc specifies recv() returns AnvilError.
+        let msg = socket
+            .recv()
+            .await
+            .map_err(|e| AnvilError::Ipc(format!("ROUTER recv failed: {e}")))?;
+
+        // Extract the identity frame (frame 0). The ROUTER socket always
+        // prepends the peer's identity as the first frame. If this frame
+        // is missing, the message violates the ROUTER protocol contract.
+        let identity_bytes = msg
+            .get(0)
+            .ok_or_else(|| AnvilError::Ipc("ROUTER recv returned no identity frame".to_string()))?;
+
+        // Extract the payload frame (frame 1). This contains the msgpack-encoded
+        // WorkerEvent. If missing, the message is incomplete.
+        let payload_bytes = msg
+            .get(1)
+            .ok_or_else(|| AnvilError::Ipc("ROUTER recv returned no payload frame".to_string()))?;
+
+        // Convert the identity bytes to a UTF-8 string. Worker identities
+        // are typically ASCII strings (e.g. "worker-0", "test-worker-0").
+        // Auto-generated zeromq identities are raw bytes, so we fall back
+        // to hex encoding when the identity is not valid UTF-8.
+        let worker_id = match String::from_utf8(identity_bytes.to_vec()) {
+            Ok(s) => s,
+            // Non-UTF8 identity: represent as hex string for log readability.
+            // This handles auto-generated zeromq identities which are raw bytes.
+            Err(_) => identity_bytes.iter().map(|b| format!("{b:02x}")).collect(),
+        };
+
+        // Decode the msgpack payload into a WorkerEvent. This uses the
+        // `_type` discriminator field to select the correct enum variant.
+        // IpcError is mapped to AnvilError::Ipc per the design doc's
+        // specification that recv() returns AnvilError.
+        let event =
+            decode_event(payload_bytes.as_ref()).map_err(|e| AnvilError::Ipc(e.to_string()))?;
+
+        // Log the received event with structured fields for log aggregation.
+        // The event_type field captures the WorkerEvent variant for indexing.
+        tracing::debug!(
+            worker_id = %worker_id,
+            event_type = ?event,
+            "event received from worker"
+        );
+
+        Ok((worker_id, event))
     }
 }

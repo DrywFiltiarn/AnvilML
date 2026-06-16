@@ -4,8 +4,9 @@
 //! verify that binding, port assignment, and message delivery work end-to-end
 //! with a connected DEALER socket.
 
-use anvilml_ipc::{RouterTransport, WorkerMessage};
+use anvilml_ipc::{RouterTransport, WorkerEvent, WorkerMessage};
 use bytes::Bytes;
+use rmp_serde;
 use std::sync::Arc;
 use zeromq::{DealerSocket, Socket, SocketRecv, SocketSend, ZmqMessage};
 
@@ -135,5 +136,105 @@ async fn send_to_unknown_worker_returns_error() {
     assert!(
         err_string.contains("Destination client not found"),
         "error should mention destination not found, got: {err_string}"
+    );
+}
+
+/// Verify that `RouterTransport::recv()` returns the correct `(worker_id, event)` tuple
+/// when a DEALER socket sends a `WorkerEvent::Pong{seq:42}` through the ROUTER.
+///
+/// This test exercises the full identity routing path:
+/// 1. A DEALER socket connects to the ROUTER (zeromq generates an auto identity).
+/// 2. The ROUTER receives a probe message and we discover the DEALER's identity.
+/// 3. The DEALER sends a WorkerEvent through the ROUTER.
+/// 4. `recv()` extracts the identity as UTF-8 and decodes the payload.
+/// 5. We assert the returned `(worker_id, event)` matches.
+#[tokio::test]
+async fn recv_roundtrip() {
+    let transport = RouterTransport::bind().await.expect("bind should succeed");
+
+    // Create a DEALER socket and connect it to the ROUTER's bound address.
+    // zeromq generates an auto-generated identity for the DEALER socket.
+    let bind_addr = format!("tcp://127.0.0.1:{}", transport.port);
+    let mut dealer = DealerSocket::new();
+    dealer
+        .connect(&bind_addr)
+        .await
+        .expect("DEALER connect should succeed");
+
+    // Give the connection time to establish. ZeroMQ's async connect
+    // completes in the background; a brief yield lets the tokio runtime
+    // process the connection handshake.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Discover the DEALER's auto-generated identity by receiving from
+    // the ROUTER socket. The ROUTER returns a multipart message:
+    // [identity_frame, message_frames]. We extract the identity (first frame).
+    //
+    // Since the transport wraps the socket in Arc<Mutex<>>, we can share
+    // the Arc with a spawned recv task to discover the identity.
+    let (identity_tx, identity_rx) = tokio::sync::oneshot::channel::<Bytes>();
+    let socket_for_recv = Arc::clone(&transport.socket);
+
+    // Spawn a task that receives from the ROUTER to discover the DEALER's
+    // identity. The recv blocks until the DEALER sends a probe message.
+    tokio::spawn(async move {
+        let mut sock = socket_for_recv.lock().await;
+        // The DEALER's probe message arrives as a multipart message:
+        // [identity, probe_payload]. We extract the first frame as identity.
+        if let Ok(msg) = sock.recv().await {
+            if let Some(frame) = msg.get(0) {
+                let _ = identity_tx.send(frame.clone());
+            }
+        }
+    });
+
+    // Send a probe from the DEALER so the ROUTER can discover its identity.
+    dealer
+        .send(ZmqMessage::from("probe"))
+        .await
+        .expect("probe send should succeed");
+
+    // Wait for the identity to be discovered.
+    let identity_bytes = tokio::time::timeout(std::time::Duration::from_secs(2), identity_rx)
+        .await
+        .expect("identity discovery timed out")
+        .expect("identity channel should have a value");
+
+    // Encode the WorkerEvent to msgpack bytes. We use `rmp_serde::to_vec_named`
+    // directly since `encode_message()` only accepts `&WorkerMessage`.
+    let event = WorkerEvent::Pong { seq: 42 };
+    let payload_bytes = rmp_serde::to_vec_named(&event).expect("encode Pong should succeed");
+
+    // The DEALER sends the event directly to the ROUTER. The ROUTER will
+    // prepend the identity and make the message available via recv().
+    // The ROUTER's recv() is sequential — the probe was already consumed
+    // by the identity discovery task, so the next recv() will get the event.
+    dealer
+        .send(ZmqMessage::from(payload_bytes))
+        .await
+        .expect("event send should succeed");
+
+    // Receive the event via the transport's recv method.
+    // The ROUTER will return [identity, event_payload] — the recv() method
+    // extracts the identity as UTF-8 and decodes the payload.
+    let (worker_id, received_event) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), transport.recv())
+            .await
+            .expect("recv should complete within timeout")
+            .expect("recv should succeed");
+
+    // Verify the worker identity matches the identity frame.
+    // Auto-generated zeromq identities are raw bytes, so the recv() method
+    // converts them to hex strings. We compare against the hex representation.
+    let expected_id: String = identity_bytes.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        worker_id, expected_id,
+        "worker_id should match the hex-encoded identity frame"
+    );
+
+    // Verify the event matches the one we sent.
+    assert!(
+        matches!(received_event, WorkerEvent::Pong { seq: 42 }),
+        "expected Pong {{ seq: 42 }}, got {received_event:?}"
     );
 }

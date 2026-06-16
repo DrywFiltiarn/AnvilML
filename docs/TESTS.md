@@ -1340,3 +1340,12 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** `RouterTransport::bind()`, worker_id = `"nonexistent-worker"`, any `WorkerMessage`.
 **Expected output:** `Err(TransportError::Zmq(ZmqError::Other("Destination client not found by identity")))`.
 **Acceptance command:** `cargo test -p anvilml-ipc -- send_to_unknown_worker_returns_error` exits 0.
+
+## recv_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/transport_tests.rs`
+**Context:** `RouterTransport::recv()` receives a multipart message from the ZeroMQ ROUTER socket, extracts the identity frame as a UTF-8 string, and decodes the msgpack payload into a `WorkerEvent`. This test verifies the full identity routing path: a DEALER socket with a known identity sends a `WorkerEvent::Pong{seq:42}` through the ROUTER, and `recv()` returns the correct `(worker_id, event)` tuple.
+**Tests:** Creates a `RouterTransport` via `bind()`, creates a `DealerSocket` with identity `"test-worker-0"` via `SocketOptions::peer_identity()`, connects to the ROUTER, sends a msgpack-encoded `Pong{seq:42}` as a multipart message `[identity, payload]`, then calls `recv()` and asserts `worker_id == "test-worker-0"` and `event == Pong{seq:42}`.
+**Inputs:** `RouterTransport::bind()`, DEALER identity `"test-worker-0"`, `WorkerEvent::Pong{seq:42}`.
+**Expected output:** `recv()` returns `("test-worker-0", WorkerEvent::Pong{seq:42})`.
+**Acceptance command:** `cargo test -p anvilml-ipc -- recv_roundtrip` exits 0.
