@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-worker"
-version = "0.1.4"
+version = "0.1.5"
 edition.workspace = true
 
 [dependencies]
@@ -14,6 +14,8 @@ tracing = { workspace = true }
 [dev-dependencies]
 bytes = { workspace = true }
 rmp-serde = { workspace = true }
+serial_test = "3.5"
+uuid = { version = "1", features = ["v4"] }
 zeromq = { workspace = true }
 
 [features]

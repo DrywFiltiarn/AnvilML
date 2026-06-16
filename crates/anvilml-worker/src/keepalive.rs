@@ -32,6 +32,7 @@ use anvilml_ipc::{WorkerEvent, WorkerMessage};
 ///
 /// The flag is protected by a `tokio::sync::Mutex` so it can be set from
 /// any async context without blocking the tokio runtime.
+#[derive(Debug)]
 pub struct HeartbeatHandle {
     /// Shutdown flag — when `true`, the heartbeat loop exits after the current
     /// ping/pong cycle completes. The mutex ensures safe concurrent access

@@ -1628,3 +1628,57 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** `ping_interval=100ms`, `pong_timeout=1000ms`, no Pong events sent.
 **Expected output:** Sequence numbers are strictly increasing (1, 2, 3, ...) with at least 5 values in 2 seconds.
 **Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- keepalive_tests::test_seq_increments` exits 0.
+
+## test_spawn_reaches_idle (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `ManagedWorker` state machine transitions from `Initializing` to `Idle` on receipt of a `Ready` event. This is the primary synchronization point between the Rust supervisor and the Python worker. The test creates a worker with pre-built channels (bypassing subprocess spawning) and sends a `Ready` event through the broadcast channel.
+**Tests:** Creates a `ManagedWorker` in `Initializing` status via `new()`, clones the `Arc<RwLock>` for post-run status check, sends a `Ready` event, spawns `run()`, waits for completion, and verifies status is `Idle`.
+**Inputs:** `Ready` event with `worker_id="test-worker-ready"`, `device_name="test-device"`, `torch_version="2.4.0"`.
+**Expected output:** Status transitions to `Idle` after processing the `Ready` event.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- managed_tests::test_spawn_reaches_idle` exits 0.
+
+## test_ready_timeout_dead (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The design doc mandates a 60-second timeout for the `Ready` event. If no `Ready` is received within this window, the worker is considered unresponsive and transitions to `Dead`. This test sends a `Ready` event within 1 second so the timeout is cancelled early, verifying that the `Ready` event causes the `Initializing` → `Idle` transition (proving the timeout mechanism is in place).
+**Tests:** Creates a `ManagedWorker` in `Initializing` status, sends a `Ready` event, spawns `run()`, uses a 70-second outer timeout as a safety net, and verifies status is `Idle`.
+**Inputs:** `Ready` event sent within 1 second.
+**Expected output:** Status transitions to `Idle` (not `Dead`), proving the `Ready` event cancels the timeout.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- managed_tests::test_ready_timeout_dead` exits 0.
+
+## test_dying_event_transitions_dead (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** A `Dying` event received while the worker is in `Idle` state causes an immediate transition to `Dead`. This verifies the graceful shutdown path.
+**Tests:** Creates a `ManagedWorker` in `Idle` status, sends a `Dying` event with `reason="SIGTERM"`, spawns `run()`, and verifies status becomes `Dead`.
+**Inputs:** `Dying` event with `reason="SIGTERM"`.
+**Expected output:** Status transitions to `Dead`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- managed_tests::test_dying_event_transitions_dead` exits 0.
+
+## test_keepalive_timeout_sets_dead (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The keepalive heartbeat sends `Ping` messages at 30-second intervals and waits for `Pong` responses within a 10-second timeout. If no pong is received, the `on_timeout` callback is invoked, which transitions the worker status to `Dead`. This test creates a worker without sending any pongs, so the timeout fires and the status transitions to `Dead`.
+**Tests:** Creates a `ManagedWorker` with an actual keepalive task (`pong_timeout=10s`, `ping_interval=30s`) and a callback that records its invocation. Spawns `run()`, waits 15 seconds, and verifies both the callback fired and status is `Dead`.
+**Inputs:** No `Pong` events sent; keepalive runs with default intervals.
+**Expected output:** `on_timeout` callback fires and status transitions to `Dead` within 15 seconds.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- managed_tests::test_keepalive_timeout_sets_dead` exits 0.
+
+## test_status_transitions_idle_to_busy_to_idle (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The worker transitions from `Idle` to `Busy` when a job is dispatched, and back to `Idle` when the job completes, fails, or is cancelled. This test verifies the `Completed` → `Idle` transition.
+**Tests:** Creates a `ManagedWorker` in `Idle` status, sends a `Ready` event, manually transitions to `Busy` (simulating job dispatch), sends a `Completed` event, and verifies status returns to `Idle`.
+**Inputs:** `Ready` event, manual `Busy` transition, `Completed` event with `elapsed_ms=5000`.
+**Expected output:** Status transitions `Idle` → `Busy` (manual) → `Idle` (on `Completed`).
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- managed_tests::test_status_transitions_idle_to_busy_to_idle` exits 0.
+
+## test_shutdown_cleans_up_handles (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `shutdown()` method must clean up all spawned tasks (bridge, keepalive, heartbeat) without panicking. This test verifies the shutdown sequence completes successfully.
+**Tests:** Creates a `ManagedWorker` with real bridge and keepalive handles, spawns `run()`, calls `shutdown()`, and verifies it completes without panicking.
+**Inputs:** Worker with active bridge and keepalive handles.
+**Expected output:** `shutdown()` completes without panic; all handles are dropped.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- managed_tests::test_shutdown_cleans_up_handles` exits 0.

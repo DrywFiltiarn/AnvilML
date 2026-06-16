@@ -209,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-worker"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
@@ -217,8 +217,10 @@ dependencies = [
  "bytes",
  "libc",
  "rmp-serde",
+ "serial_test",
  "tokio",
  "tracing",
+ "uuid",
  "zeromq",
 ]
 
