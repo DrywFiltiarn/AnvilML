@@ -115,7 +115,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-hardware"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anvilml-core",
  "anvilml-registry",
@@ -131,12 +131,16 @@ dependencies = [
 
 [[package]]
 name = "anvilml-ipc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anvilml-core",
  "rmp-serde",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "uuid",
  "zeromq",
 ]
 
@@ -180,7 +184,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-server"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",

@@ -1160,3 +1160,156 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** None (uses `EventBroadcaster::new()` and `start()`).
 **Expected output:** Event received with `ram_used_mib >= 0`.
 **Acceptance command:** `cargo test -p anvilml-server --features mock-hardware -- stats_tick` exits 0.
+
+## test_ping_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** `WorkerMessage::Ping` uses `#[serde(tag = "_type")]` for the discriminated union format. The `encode_message()` function uses `rmp_serde::to_vec_named` to produce a flat msgpack dict, and the roundtrip uses `rmp_serde::from_slice::<WorkerMessage>` to decode back to the same type. No I/O, no subprocess, no network.
+**Tests:** Constructs `WorkerMessage::Ping { seq: 42 }`, encodes via `encode_message()`, decodes via `rmp_serde::from_slice::<WorkerMessage>`, and asserts the decoded message matches the original.
+**Inputs:** `WorkerMessage::Ping { seq: 42 }`.
+**Expected output:** `decoded == Ping { seq: 42 }` — the seq field is preserved through msgpack roundtrip.
+**Acceptance command:** `cargo test -p anvilml-ipc -- messages` exits 0.
+
+## test_shutdown_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** `WorkerMessage::Shutdown` is a unit variant (no fields). Verifies that unit variants serialize to a flat dict with only the `_type` key.
+**Tests:** Constructs `WorkerMessage::Shutdown`, encodes via `encode_message()`, decodes via `rmp_serde::from_slice::<WorkerMessage>`, and asserts the decoded message is `Shutdown`.
+**Inputs:** `WorkerMessage::Shutdown`.
+**Expected output:** `decoded == Shutdown`.
+**Acceptance command:** `cargo test -p anvilml-ipc -- messages` exits 0.
+
+## test_execute_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** `WorkerMessage::Execute` is the most data-rich variant with 4 fields (`job_id: Uuid`, `graph: serde_json::Value`, `settings: JobSettings`, `device_index: u32`). The `graph` field contains nested JSON objects and arrays. Verifies all fields including the deeply-nested graph structure survive msgpack roundtrip.
+**Tests:** Constructs `WorkerMessage::Execute` with a UUID, a graph containing nodes and links arrays, `JobSettings` with a device preference, and `device_index: 0`. Encodes via `encode_message()`, decodes via `rmp_serde::from_slice::<WorkerMessage>`, and asserts all fields match.
+**Inputs:** `WorkerMessage::Execute{job_id: Uuid::new_v4(), graph: {"nodes": [...], "links": [...]}, settings: {device_preference: Some("cuda")}, device_index: 0}`.
+**Expected output:** All 4 fields match after roundtrip, including the nested graph structure.
+**Acceptance command:** `cargo test -p anvilml-ipc -- messages` exits 0.
+
+## test_cancel_job_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** `WorkerMessage::CancelJob` carries a single `Uuid` field. Verifies UUID serialization through msgpack flat-dict format.
+**Tests:** Constructs `WorkerMessage::CancelJob` with a v4 UUID, encodes, decodes, and asserts the job_id matches.
+**Inputs:** `WorkerMessage::CancelJob{job_id: Uuid::new_v4()}`.
+**Expected output:** `decoded.job_id == original.job_id`.
+**Acceptance command:** `cargo test -p anvilml-ipc -- messages` exits 0.
+
+## test_memory_query_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** `WorkerMessage::MemoryQuery` is a unit variant. Verifies that unit variants serialize to a flat dict with only the `_type` key.
+**Tests:** Constructs `WorkerMessage::MemoryQuery`, encodes via `encode_message()`, decodes via `rmp_serde::from_slice::<WorkerMessage>`, and asserts the decoded message is `MemoryQuery`.
+**Inputs:** `WorkerMessage::MemoryQuery`.
+**Expected output:** `decoded == MemoryQuery`.
+**Acceptance command:** `cargo test -p anvilml-ipc -- messages` exits 0.
+
+## test_ready_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** `WorkerEvent::Ready` is the most data-rich event variant with 12 fields including `Vec<NodeTypeDescriptor>` (nested structs). This is the synchronization event between Rust and Python. Verifies all fields including the node type descriptors survive msgpack roundtrip.
+**Tests:** Constructs `WorkerEvent::Ready` with all fields set to realistic values (worker_id, device info, torch_version, fp16/bf16/fp8/flash_attention bools, and a vector of NodeTypeDescriptor), encodes via `rmp_serde::to_vec_named()`, decodes via `decode_event()`, and asserts all 12 fields match.
+**Inputs:** `WorkerEvent::Ready{worker_id: "worker-0", device_index: 0, device_name: "NVIDIA RTX 4090", device_type: "cuda", vram_total_mib: 24576, vram_free_mib: 24000, torch_version: "2.5.1", fp16: true, bf16: true, fp8: false, flash_attention: true, node_types: [NodeTypeDescriptor{type_name: "KSampler", ...}]}`.
+**Expected output:** All 12 fields match after roundtrip.
+**Acceptance command:** `cargo test -p anvilml-ipc -- messages` exits 0.
+
+## test_pong_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** `WorkerEvent::Pong` is a simple two-field variant (`seq: u64`). Verifies u64 serialization through msgpack flat-dict format.
+**Tests:** Constructs `WorkerEvent::Pong { seq: 42 }`, encodes via `rmp_serde::to_vec_named()`, decodes via `decode_event()`, and asserts the seq field matches.
+**Inputs:** `WorkerEvent::Pong { seq: 42 }`.
+**Expected output:** `decoded.seq == 42`.
+**Acceptance command:** `cargo test -p anvilml-ipc -- messages` exits 0.
+
+## test_dying_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** `WorkerEvent::Dying` carries a single `String` field (`reason`). Verifies string serialization through msgpack flat-dict format.
+**Tests:** Constructs `WorkerEvent::Dying { reason: "SIGTERM" }`, encodes via `rmp_serde::to_vec_named()`, decodes via `decode_event()`, and asserts the reason matches.
+**Inputs:** `WorkerEvent::Dying { reason: "SIGTERM" }`.
+**Expected output:** `decoded.reason == "SIGTERM"`.
+**Acceptance command:** `cargo test -p anvilml-ipc -- messages` exits 0.
+
+## test_completed_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** `WorkerEvent::Completed` carries a `Uuid` and a `u64` (elapsed_ms). Verifies both types survive msgpack roundtrip.
+**Tests:** Constructs `WorkerEvent::Completed` with a v4 UUID and elapsed_ms=1234, encodes, decodes, and asserts both fields match.
+**Inputs:** `WorkerEvent::Completed{job_id: Uuid::new_v4(), elapsed_ms: 1234}`.
+**Expected output:** `decoded.job_id == original.job_id` and `decoded.elapsed_ms == 1234`.
+**Acceptance command:** `cargo test -p anvilml-ipc -- messages` exits 0.
+
+## test_failed_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** `WorkerEvent::Failed` carries a `Uuid`, a `String` error, and an `Option<String>` traceback. Verifies that `Some` values are preserved through msgpack roundtrip.
+**Tests:** Constructs `WorkerEvent::Failed` with a v4 UUID, error="OOM", and a non-None traceback, encodes, decodes, and asserts all fields match.
+**Inputs:** `WorkerEvent::Failed{job_id: Uuid::new_v4(), error: "OOM", traceback: Some("Traceback...")}`.
+**Expected output:** All 3 fields match after roundtrip.
+**Acceptance command:** `cargo test -p anvilml-ipc -- messages` exits 0.
+
+## test_cancelled_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** `WorkerEvent::Cancelled` carries a single `Uuid` field. Verifies UUID serialization through msgpack flat-dict format.
+**Tests:** Constructs `WorkerEvent::Cancelled` with a v4 UUID, encodes, decodes, and asserts the job_id matches.
+**Inputs:** `WorkerEvent::Cancelled{job_id: Uuid::new_v4()}`.
+**Expected output:** `decoded.job_id == original.job_id`.
+**Acceptance command:** `cargo test -p anvilml-ipc -- messages` exits 0.
+
+## test_image_ready_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** `WorkerEvent::ImageReady` carries 7 fields including a base64 string, dimensions, format, seed (i64), and steps (u32). This is the most data-rich non-Ready event. Verifies all field types survive msgpack roundtrip.
+**Tests:** Constructs `WorkerEvent::ImageReady` with all fields set, encodes via `rmp_serde::to_vec_named()`, decodes via `decode_event()`, and asserts all 7 fields match.
+**Inputs:** `WorkerEvent::ImageReady{job_id: Uuid::new_v4(), image_b64: "dGVzdCBpbWFnZQ==", width: 512, height: 512, format: "png", seed: 42, steps: 20}`.
+**Expected output:** All 7 fields match after roundtrip.
+**Acceptance command:** `cargo test -p anvilml-ipc -- messages` exits 0.
+
+## test_progress_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** `WorkerEvent::Progress` carries a `Uuid`, two `u32` fields (step, total_steps), and an `Option<String>` preview_b64. Tests the `None` case for the optional field.
+**Tests:** Constructs `WorkerEvent::Progress` with preview_b64=None, encodes, decodes, and asserts all fields match.
+**Inputs:** `WorkerEvent::Progress{job_id: Uuid::new_v4(), step: 5, total_steps: 20, preview_b64: None}`.
+**Expected output:** `decoded.preview_b64.is_none() == true` and all other fields match.
+**Acceptance command:** `cargo test -p anvilml-ipc -- messages` exits 0.
+
+## test_progress_with_preview_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** `WorkerEvent::Progress` with a non-None `preview_b64` value. Tests that the `Some` variant of the optional field survives msgpack roundtrip.
+**Tests:** Constructs `WorkerEvent::Progress` with preview_b64=Some("aW1hZ2UgZGF0YQ=="), encodes, decodes, and asserts all fields match.
+**Inputs:** `WorkerEvent::Progress{job_id: Uuid::new_v4(), step: 10, total_steps: 20, preview_b64: Some("aW1hZ2UgZGF0YQ==")}`.
+**Expected output:** `decoded.preview_b64 == Some("aW1hZ2UgZGF0YQ==")` and all other fields match.
+**Acceptance command:** `cargo test -p anvilml-ipc -- messages` exits 0.
+
+## test_memory_report_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** `WorkerEvent::MemoryReport` carries two fields (`vram_used_mib: u32`, `ram_used_mib: u64`). Verifies both integer types survive msgpack roundtrip.
+**Tests:** Constructs `WorkerEvent::MemoryReport` with vram_used_mib=4096, ram_used_mib=8192, encodes, decodes, and asserts both fields match.
+**Inputs:** `WorkerEvent::MemoryReport{vram_used_mib: 4096, ram_used_mib: 8192}`.
+**Expected output:** `decoded.vram_used_mib == 4096` and `decoded.ram_used_mib == 8192`.
+**Acceptance command:** `cargo test -p anvilml-ipc -- messages` exits 0.
+
+## test_encode_produces_non_empty_bytes (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** Every `WorkerMessage` variant must produce a non-empty byte vector when encoded. This verifies the encoding function works for all variants including unit variants.
+**Tests:** Iterates over all 5 `WorkerMessage` variants, encodes each via `encode_message()`, and asserts the result is non-empty.
+**Inputs:** All 5 `WorkerMessage` variants: `Ping`, `Shutdown`, `MemoryQuery`, `CancelJob`, `Execute`.
+**Expected output:** All encoded byte vectors have length > 0.
+**Acceptance command:** `cargo test -p anvilml-ipc -- messages` exits 0.
+
+## test_ipc_error_display (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** `IpcError` derives `thiserror::Error` which implements `Display`. Verifies that the error messages contain the original string for debugging.
+**Tests:** Constructs both `IpcError::Serialize("test error")` and `IpcError::Deserialize("test error")`, formats them with `{}`, and asserts the formatted string contains "test error".
+**Inputs:** `IpcError::Serialize("test error")`, `IpcError::Deserialize("test error")`.
+**Expected output:** Both error display strings contain "test error".
+**Acceptance command:** `cargo test -p anvilml-ipc -- messages` exits 0.

@@ -7,5 +7,6 @@
 //! **Hard constraints:** ZeroMQ routing is handled automatically — this crate
 //! never manipulates identities or performs manual message routing.
 
-#[allow(dead_code)]
-pub fn stub() {}
+pub mod messages;
+
+pub use messages::{decode_event, encode_message, IpcError, WorkerEvent, WorkerMessage};

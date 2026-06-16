@@ -1,11 +1,15 @@
 [package]
 name = "anvilml-ipc"
-version.workspace = true
+version = "0.1.1"
 edition.workspace = true
 
 [dependencies]
 anvilml-core = { path = "../anvilml-core" }
-zeromq = { workspace = true }
 rmp-serde = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
+zeromq = { workspace = true }
