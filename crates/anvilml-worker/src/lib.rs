@@ -9,7 +9,9 @@
 
 pub mod bridge;
 pub mod env;
+pub mod keepalive;
 pub mod spawn;
 pub use bridge::start;
 pub use env::build_worker_env;
+pub use keepalive::start as start_keepalive;
 pub use spawn::build_command;

@@ -1601,3 +1601,30 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** None (uses `RouterTransport::bind()` and dummy channels).
 **Expected output:** Both handles resolve without panic.
 **Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- bridge_tests::test_handles_drop_cleanly` exits 0.
+
+## test_timeout_fires (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/keepalive_tests.rs`
+**Context:** The keepalive heartbeat loop sends a Ping and waits for a matching Pong. When no Pong arrives within `pong_timeout`, the `on_timeout` callback is invoked. Uses in-memory channels (mpsc + broadcast) — no ZeroMQ transport needed since the heartbeat logic is purely about sequence matching and deadline timing.
+**Tests:** Creates a keepalive with `pong_timeout=500ms`, `ping_interval=100ms`, and a shared `AtomicUsize` counter. Spawns the keepalive, waits for the counter to increment (indicating timeout fired), and asserts it happens within 1 second.
+**Inputs:** `pong_timeout=500ms`, `ping_interval=100ms`, no Pong events sent.
+**Expected output:** `on_timeout` callback fires within 1 second (pong_timeout + 100ms buffer).
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- keepalive_tests::test_timeout_fires` exits 0.
+
+## test_pong_resets_deadline (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/keepalive_tests.rs`
+**Context:** When a matching Pong is received for each Ping, the deadline is reset and the timeout callback is never invoked. This test verifies the pong-matching logic across multiple ping cycles.
+**Tests:** Creates a keepalive with `pong_timeout=500ms`, `ping_interval=100ms`, and an `AtomicUsize` counter. Spawns the keepalive, then in a loop receives each Ping and sends back a matching Pong. Waits 1 second and asserts the counter is still 0.
+**Inputs:** `pong_timeout=500ms`, `ping_interval=100ms`, Pong sent for each Ping.
+**Expected output:** `on_timeout` never fires — counter remains 0 after 1 second.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- keepalive_tests::test_pong_resets_deadline` exits 0.
+
+## test_seq_increments (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/keepalive_tests.rs`
+**Context:** The sequence number increments monotonically across ping sends. Each ping cycle starts with `seq` incremented from the previous cycle. This test verifies the sequence number progression by collecting pings from the mpsc channel.
+**Tests:** Creates a keepalive with `ping_interval=100ms`, `pong_timeout=1000ms`, and collects pings from the mpsc receiver for 2 seconds. Asserts at least 5 pings received, first seq is 1, and all seq values are strictly increasing.
+**Inputs:** `ping_interval=100ms`, `pong_timeout=1000ms`, no Pong events sent.
+**Expected output:** Sequence numbers are strictly increasing (1, 2, 3, ...) with at least 5 values in 2 seconds.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- keepalive_tests::test_seq_increments` exits 0.
