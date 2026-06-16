@@ -43,35 +43,45 @@ pub fn start(broadcaster: Arc<EventBroadcaster>) {
         // A configurable interval is deferred to a future task.
         let interval = Duration::from_secs(5);
 
-        loop {
-            // Sleep before the first tick to avoid reading stale data
-            // immediately after server start. The first `global_cpu_usage()`
-            // call is known to be inaccurate (cold-start artifact per sysinfo
-            // docs), so the 5-second initial delay gives the OS time to
-            // establish a baseline measurement.
-            sleep(interval).await;
+        // Allocate the System instance once and reuse it across ticks.
+        // sysinfo computes CPU utilisation as the delta between the last
+        // two refresh_cpu_usage() calls. Keeping the instance alive across
+        // the 5-second sleep means the delta is measured over 5 seconds,
+        // matching the window used by Task Manager. Re-creating System each
+        // tick collapses the measurement window to microseconds, causing
+        // the OS scheduler noise to dominate and producing inflated readings.
+        let mut sys = System::new_all();
 
-            // Create a fresh System snapshot.
-            // System::new_all() is equivalent to System::new() + refresh_all(),
-            // which collects CPU, memory, and process info in one call.
-            // This matches the pattern already used in anvilml-hardware/src/cpu.rs.
-            let mut sys = System::new_all();
-            sys.refresh_all();
+        // Perform an initial refresh and discard the reading. The first
+        // global_cpu_usage() after construction computes a delta against
+        // an undefined prior timestamp (the cold-start sample taken inside
+        // new_all()), so it is inaccurate and must not be broadcast.
+        // Sleeping the full interval here establishes a valid baseline
+        // before the loop begins.
+        sys.refresh_cpu_usage();
+        sleep(interval).await;
+
+        loop {
+            // Refresh only CPU usage and memory — not processes, disks, or
+            // networks. This keeps the per-tick refresh cost minimal while
+            // providing the two values needed for SystemStats.
+            sys.refresh_cpu_usage();
+            sys.refresh_memory();
 
             // Read CPU utilisation. global_cpu_usage() returns an f32
             // representing total CPU utilisation across all cores as a
-            // percentage (0.0–N*100 where N is core count). This matches
-            // the WsEvent::SystemStats field type directly.
-            // The first reading after boot may be inaccurate (cold-start
-            // artifact), but subsequent readings are accurate.
+            // percentage (0.0–100.0). The delta is computed against the
+            // previous refresh_cpu_usage() call, which is 5 seconds ago
+            // due to the sleep below — producing an accurate reading.
+            // This matches the WsEvent::SystemStats field type directly.
             let cpu_pct = sys.global_cpu_usage();
 
             // Read used RAM and convert from bytes to mebibytes.
             // sysinfo reports memory in bytes; dividing by 1024*1024 gives
             // mebibytes. This matches the conversion pattern in
             // anvilml-hardware/src/cpu.rs for total_memory().
-            // used_memory() returns u64, so the division is u64/u64 = u64,
-            // which is always non-negative.
+            // used_memory() returns u64, so the division is always exact
+            // and non-negative.
             let ram_used_mib = sys.used_memory() / (1024 * 1024);
 
             // Build the SystemStats event with an empty workers vec.
@@ -88,11 +98,16 @@ pub fn start(broadcaster: Arc<EventBroadcaster>) {
             // a WARN and drops the event — the tick loop continues unaffected.
             broadcaster.send(event);
 
-            // Log the tick at DEBUG level for diagnostic purposes.
+            // Log the tick at TRACE level for diagnostic purposes.
             // This is a routine per-tick log point (not mandatory per
             // ENVIRONMENT.md §9) but useful for verifying the tick task
             // is running correctly during development and debugging.
-            tracing::debug!(cpu_pct, ram_used_mib, "system stats tick");
+            tracing::trace!(cpu_pct, ram_used_mib, "system stats tick");
+
+            // Sleep for the tick interval before the next measurement.
+            // This sleep is also the measurement window for the next
+            // refresh_cpu_usage() call — its delta spans exactly this duration.
+            sleep(interval).await;
         }
     });
 }

@@ -78,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
@@ -179,7 +179,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-server"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
@@ -1271,6 +1271,15 @@ name = "log"
 version = "0.4.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
+
+[[package]]
+name = "matchers"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
+dependencies = [
+ "regex-automata",
+]
 
 [[package]]
 name = "matchit"
@@ -2393,12 +2402,16 @@ version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
 dependencies = [
+ "matchers",
  "nu-ansi-term",
+ "once_cell",
+ "regex-automata",
  "serde",
  "serde_json",
  "sharded-slab",
  "smallvec",
  "thread_local",
+ "tracing",
  "tracing-core",
  "tracing-log",
  "tracing-serde",

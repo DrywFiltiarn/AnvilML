@@ -21,6 +21,8 @@ use anvilml_registry::{open, ModelStore};
 use anvilml_server::{build_router, AppState};
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tracing_subscriber::filter::Directive;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
@@ -39,6 +41,36 @@ async fn main() {
         port: args.port,
     };
 
+    // Build the log filter from ANVILML_LOG, falling back to "info".
+    // After resolving the base filter, unconditionally add a directive that
+    // suppresses sqlx::query at debug and below. This prevents sqlx from
+    // flooding logs with per-query execution traces during normal debug
+    // sessions. A user who explicitly needs query traces can override by
+    // including "sqlx::query=debug" in ANVILML_LOG, which will shadow
+    // this directive because user-supplied directives take precedence over
+    // programmatically-added ones in the order they are applied.
+    let filter = EnvFilter::try_from_env("ANVILML_LOG")
+        .unwrap_or_else(|_| EnvFilter::new("info"))
+        .add_directive(
+            "sqlx::query=off"
+                .parse::<Directive>()
+                .expect("valid directive"),
+        );
+
+    match args.log_format {
+        cli::LogFormat::Plain => {
+            tracing_subscriber::fmt::Subscriber::builder()
+                .with_env_filter(filter)
+                .init();
+        }
+        cli::LogFormat::Json => {
+            tracing_subscriber::fmt::Subscriber::builder()
+                .with_env_filter(filter)
+                .json()
+                .init();
+        }
+    }
+
     // Load the full configuration: defaults → TOML file → env vars → CLI overrides.
     // The config::load() function implements the four-level precedence chain.
     // If the TOML file does not exist, defaults are used silently.
@@ -48,26 +80,6 @@ async fn main() {
     // per ENVIRONMENT.md §9 — Server subsystem, "config loaded" event).
     // This is the first operational log line after config resolution.
     tracing::info!(host = %cfg.host, port = %cfg.port, "config loaded");
-
-    // Initialise the tracing subscriber based on the selected log format.
-    // The tracing::Level::INFO filter matches the default log level from
-    // ENVIRONMENT.md §3.1 (ANVILML_LOG defaults to `info`).
-    // We use fmt::Subscriber for both formats — the json() builder method
-    // on fmt::Subscriber is the standard approach and avoids an additional
-    // dependency on a separate JSON crate.
-    match args.log_format {
-        cli::LogFormat::Plain => {
-            tracing_subscriber::fmt::Subscriber::builder()
-                .with_max_level(tracing::Level::INFO)
-                .init();
-        }
-        cli::LogFormat::Json => {
-            tracing_subscriber::fmt::Subscriber::builder()
-                .with_max_level(tracing::Level::INFO)
-                .json()
-                .init();
-        }
-    }
 
     // Open the real file-backed database. The `open()` function creates the
     // database file if it does not exist, enables WAL mode, runs migrations,
@@ -190,8 +202,11 @@ async fn main() {
 
     // Run the server until a fatal error occurs. The .expect() provides a
     // user-visible error message if the server encounters a fatal error during serving.
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown::shutdown_signal())
-        .await
-        .expect("server error");
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown::shutdown_signal())
+    .await
+    .expect("server error");
 }

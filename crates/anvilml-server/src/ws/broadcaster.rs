@@ -51,9 +51,11 @@ impl EventBroadcaster {
         // it for logging in the error path. The clone cost is acceptable since
         // WsEvent is small and cloning only happens on the error path.
         if self.tx.send(event.clone()).is_err() {
-            // All receivers are lagging; the message was dropped.
-            // Log at WARN so operators can detect when subscribers fall behind.
-            tracing::warn!(event_type = ?event, "broadcast receiver lagged, message dropped");
+            // No receivers are subscribed; the message was dropped.
+            // This is normal during startup and when no client is connected
+            // to /v1/events — logged at DEBUG to avoid polluting WARN output
+            // with routine channel-empty conditions.
+            tracing::debug!(event_type = ?event, "broadcast receiver lagged, message dropped");
         }
     }
 
