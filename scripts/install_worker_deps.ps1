@@ -1,4 +1,4 @@
-# install_worker_deps.ps1 — Create a Python venv and install base dependencies for
+# install_worker_deps.ps1 -- Create a Python venv and install base dependencies for
 # the AnvilML Python worker.
 #
 # Usage:
@@ -15,8 +15,9 @@
 
 $ErrorActionPreference = 'Stop'
 
-# Verify that py -3.12 is available. The py launcher is installed by the standard
-# Python 3.12 installer. This is a hard requirement — no fallback to other versions.
+# Verify that py -3.12 is available (installed by the standard Python 3.12 installer).
+# This is a hard requirement -- no fallback to other Python versions.
+# try/catch used because || is not valid PowerShell syntax.
 try {
     py -3.12 -c "import sys" 2>$null
 } catch {
@@ -25,23 +26,23 @@ try {
 }
 
 # Resolve venv path from environment or use the documented default.
-# Use explicit null check for PowerShell 5.1 compatibility (?? is PS 7.0+).
+# Explicit null/empty check used instead of ?? for PowerShell 5.1 compatibility.
 if ($null -ne $env:ANVILML_VENV_PATH -and $env:ANVILML_VENV_PATH -ne '') {
     $venv_path = $env:ANVILML_VENV_PATH
 } else {
     $venv_path = '.\worker\.venv'
 }
 
-# If the venv's python.exe already exists, skip creation (idempotency).
-if (Test-Path "$venv_path\Scripts\python.exe") {
-    Write-Host "venv already exists at $venv_path — skipping creation"
+# If the venv python.exe already exists, skip creation (idempotency).
+if (Test-Path (Join-Path $venv_path 'Scripts\python.exe')) {
+    Write-Host "venv already exists at $venv_path -- skipping creation"
 } else {
     Write-Host "creating venv at $venv_path"
-    py -3.12 -m venv "$venv_path"
+    py -3.12 -m venv $venv_path
 }
 
 # Activate the venv by dot-sourcing the activation script.
-& "$venv_path\Scripts\Activate.ps1"
+& (Join-Path $venv_path 'Scripts\Activate.ps1')
 
 # Install the base dependencies declared in requirements\base.txt.
 pip install -r worker\requirements\base.txt
