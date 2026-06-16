@@ -10,6 +10,7 @@
 
 pub mod handlers;
 pub mod state;
+pub mod ws;
 pub use handlers::health::health;
 pub use handlers::system::get_env;
 pub use handlers::system::get_system;

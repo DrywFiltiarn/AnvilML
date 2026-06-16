@@ -1088,3 +1088,30 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Two temp dirs with model files, POST `/v1/models/rescan`, GET `/v1/models`.
 **Expected output:** 200 response with JSON array of 2 models with correct kind/dtype fields.
 **Acceptance command:** `cargo test -p anvilml-server --test models_tests -- infer_kind_and_dtype` exits 0.
+
+## test_broadcaster_new (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/broadcaster_tests.rs`
+**Context:** `EventBroadcaster::new()` creates a valid broadcaster with channel capacity 1024. Verifies that `subscribe()` works and the receiver can receive a broadcast event. Also exercises the `Default` impl which delegates to `new()`.
+**Tests:** Constructs `EventBroadcaster::new()`, calls `subscribe()`, sends a `WsEvent::SystemStats`, and asserts the receiver gets the event via `recv().await`.
+**Inputs:** None (uses `EventBroadcaster::new()`).
+**Expected output:** `recv().await` returns `Ok(WsEvent::SystemStats{...})` — the constructor and subscription are functional.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware -- broadcaster` exits 0.
+
+## test_broadcaster_send_and_receive (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/broadcaster_tests.rs`
+**Context:** `send()` delivers an event to a subscriber; the received event matches the sent event exactly. Verifies the core broadcast path works correctly with a known event.
+**Tests:** Creates a broadcaster, subscribes, sends a `WsEvent::SystemStats` with `cpu_pct=42.5, ram_used_mib=8192, workers=[]`, and asserts `recv().await` returns an identical event.
+**Inputs:** `WsEvent::SystemStats{cpu_pct: 42.5, ram_used_mib: 8192, workers: []}`.
+**Expected output:** `received == expected` — the event roundtrips through the broadcast channel without modification.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware -- broadcaster` exits 0.
+
+## test_broadcaster_lagged_receiver (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/broadcaster_tests.rs`
+**Context:** When all subscribers drop while the channel is full, `send()` returns `Err(SendError)` and the event is dropped. Verifies the error path for lagged receivers.
+**Tests:** Creates a broadcaster, subscribes, sends 1024 events to fill the buffer (evicting older events), drops the subscriber, then sends one more event. The final `send()` must return `Err` because the channel is full and there are no receivers.
+**Inputs:** 1025 events sent, subscriber dropped after 1024.
+**Expected output:** `send(1025th)` returns `Err(SendError)` — the error return path is exercised when all subscribers are gone.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware -- broadcaster` exits 0.

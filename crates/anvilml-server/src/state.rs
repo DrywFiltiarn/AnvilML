@@ -9,7 +9,9 @@ use std::sync::Arc;
 /// endpoint (populated by future tasks); `hardware` is the hardware snapshot
 /// populated by `detect_all_devices()` at startup (Phase 004); `db` is the
 /// file-backed SQLite connection pool wired at startup (Phase 005);
-/// `registry` is the model store for CRUD operations on model metadata.
+/// `registry` is the model store for CRUD operations on model metadata;
+/// `broadcaster` is the WebSocket event broadcaster for pushing real-time
+/// events to connected clients (Phase 007).
 #[derive(Clone)]
 pub struct AppState {
     /// Instant at which this server instance was created.
@@ -43,6 +45,14 @@ pub struct AppState {
     /// handler reads these paths to know which directories to scan.
     /// Cloned into each handler via axum's `State` extractor.
     pub model_dirs: Vec<anvilml_core::ModelDirConfig>,
+
+    /// WebSocket event broadcaster for real-time event delivery.
+    ///
+    /// Wrapped in `Arc` so it can be shared across handlers and spawned
+    /// tasks without cloning the broadcast sender. Each clone of `AppState`
+    /// shares the same `Arc<EventBroadcaster>`, so all handlers broadcast
+    /// to the same set of subscribers.
+    pub broadcaster: Arc<crate::ws::EventBroadcaster>,
 }
 
 impl AppState {
@@ -83,6 +93,9 @@ impl AppState {
             // no directories when model_dirs is empty, which is the
             // correct behavior (202 response with no models found).
             model_dirs: Vec::new(),
+            // The broadcaster is shared across all handlers and spawned tasks.
+            // Cloning AppState clones the Arc, not the sender itself.
+            broadcaster: Arc::new(crate::ws::EventBroadcaster::new()),
         }
     }
 
@@ -122,6 +135,9 @@ impl AppState {
             db,
             registry,
             model_dirs,
+            // The broadcaster is shared across all handlers and spawned tasks.
+            // Cloning AppState clones the Arc, not the sender itself.
+            broadcaster: Arc::new(crate::ws::EventBroadcaster::new()),
         }
     }
 }
