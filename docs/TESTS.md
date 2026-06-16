@@ -1511,3 +1511,66 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Any device, any config, any port.
 **Expected output:** `map.len() == 7` (with mock-hardware) or `6` (without).
 **Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- env::test_total_count` exits 0.
+
+## test_python_path_unix (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/spawn_tests.rs`
+**Context:** `build_command()` constructs a `tokio::process::Command` with the venv Python interpreter. On Unix, the interpreter path is `{venv_path}/bin/python3`. This test verifies the program name and full path are correct by inspecting the Command's internal state via `get_program()` and `get_args()`.
+**Tests:** Constructs `ServerConfig` with `venv_path = /test/venv`, calls `build_command()`, asserts `.get_program()` returns `python3`, and asserts the first argument contains `/test/venv/bin/python3`.
+**Inputs:** `venv_path = /test/venv`, port=9000, device.index=0.
+**Expected output:** `.get_program() == "python3"`, first arg contains `/test/venv/bin/python3`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- spawn::test_python_path_unix` exits 0.
+
+## test_python_path_windows (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/spawn_tests.rs`
+**Context:** On Windows, the venv interpreter path is `{venv_path}\Scripts\python.exe`. This test is `#[cfg(windows)]` — only runs on Windows targets.
+**Tests:** Constructs `ServerConfig` with `venv_path = C:\test\venv`, calls `build_command()`, asserts `.get_program()` returns `python.exe`, and asserts the first argument contains `Scripts\python.exe`.
+**Inputs:** `venv_path = C:\test\venv`, port=9000, device.index=0.
+**Expected output:** `.get_program() == "python.exe"`, first arg contains `Scripts\python.exe`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- spawn::test_python_path_windows` exits 0.
+
+## test_script_arg (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/spawn_tests.rs`
+**Context:** The worker script is `worker/worker_main.py` relative to the repository root. This test verifies the second argument (index 1, after the interpreter path) is the expected script path.
+**Tests:** Calls `build_command()` with default config, asserts `.get_args()` has at least 2 elements, and asserts the second argument is `worker/worker_main.py`.
+**Inputs:** Default config, port=9000, device.index=0.
+**Expected output:** `.get_args()[1] == "worker/worker_main.py"`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- spawn::test_script_arg` exits 0.
+
+## test_env_injection (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/spawn_tests.rs`
+**Context:** `build_command()` injects all environment variables from `build_worker_env()` into the subprocess. This test verifies the key env vars are present by inspecting the Command's environment via `get_env()`.
+**Tests:** Calls `build_command()` with port=9000, device.index=0, and asserts `ANVILML_IPC_PORT` is `"9000"`, `ANVILML_DEVICE_INDEX` is `"0"`, and `ANVILML_WORKER_MOCK` is `"1"` (with mock-hardware feature).
+**Inputs:** port=9000, device.index=0, default config.
+**Expected output:** `get_env("ANVILML_IPC_PORT") == "9000"`, `get_env("ANVILML_DEVICE_INDEX") == "0"`, `get_env("ANVILML_WORKER_MOCK") == "1"` (with mock-hardware).
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- spawn::test_env_injection` exits 0.
+
+## test_stdin_not_piped (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/spawn_tests.rs`
+**Context:** Stdin is left as the default (`Inherit`) because the Python worker is non-interactive. This test verifies that stdin is not piped.
+**Tests:** Calls `build_command()` and asserts `.get_stdin()` returns `Stdio::Inherit`.
+**Inputs:** Default config, port=9000, device.index=0.
+**Expected output:** `.get_stdin() == Stdio::Inherit`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- spawn::test_stdin_not_piped` exits 0.
+
+## test_stdout_piped (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/spawn_tests.rs`
+**Context:** Stdout is piped so the supervisor can capture worker logs and surface them through the server's log channel.
+**Tests:** Calls `build_command()` and asserts `.get_stdout()` returns `Stdio::Piped`.
+**Inputs:** Default config, port=9000, device.index=0.
+**Expected output:** `.get_stdout() == Stdio::Piped`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- spawn::test_stdout_piped` exits 0.
+
+## test_stderr_piped (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/spawn_tests.rs`
+**Context:** Stderr is piped so the supervisor captures worker error output for log aggregation.
+**Tests:** Calls `build_command()` and asserts `.get_stderr()` returns `Stdio::Piped`.
+**Inputs:** Default config, port=9000, device.index=0.
+**Expected output:** `.get_stderr() == Stdio::Piped`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- spawn::test_stderr_piped` exits 0.

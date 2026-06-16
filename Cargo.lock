@@ -209,11 +209,12 @@ dependencies = [
 
 [[package]]
 name = "anvilml-worker"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
  "anvilml-ipc",
+ "libc",
  "tokio",
  "tracing",
 ]

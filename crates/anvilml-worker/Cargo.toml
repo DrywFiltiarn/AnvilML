@@ -1,12 +1,13 @@
 [package]
 name = "anvilml-worker"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 
 [dependencies]
 anvilml-core = { path = "../anvilml-core" }
 anvilml-hardware = { path = "../anvilml-hardware" }
 anvilml-ipc = { path = "../anvilml-ipc" }
+libc = "0.2"
 tokio = { workspace = true }
 tracing = { workspace = true }
 
