@@ -22,15 +22,17 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use handlers::models::{get_model, list_models, rescan_models};
+use ws::handler::ws_events;
 
 /// Build the HTTP router with all registered handlers.
 ///
 /// Creates a new `Router`, mounts the health handler at `GET /health`,
 /// the system hardware info handler at `GET /v1/system`, the system env
 /// stub at `GET /v1/system/env`, the model list handler at `GET /v1/models`,
-/// and the model detail handler at `GET /v1/models/:id`, applies the shared
-/// `AppState` for injection into handlers, and wraps the router with
-/// middleware per ANVILML_DESIGN.md §12.3 (outermost-first):
+/// the model detail handler at `GET /v1/models/:id`, and the WebSocket
+/// event stream at `GET /v1/events`, applies the shared `AppState` for
+/// injection into handlers, and wraps the router with middleware per
+/// ANVILML_DESIGN.md §12.3 (outermost-first):
 /// 1. `CorsLayer::permissive()` — allows all origins for local-only use.
 /// 2. `TraceLayer` — structured request/response logging via `tracing`.
 ///
@@ -60,6 +62,9 @@ pub fn build_router(state: AppState) -> Router {
         // Model rescan — triggers a background directory scan.
         // Returns 202 Accepted immediately; the scan runs in a spawned task.
         .route("/v1/models/rescan", post(rescan_models))
+        // WebSocket event stream — accepts upgrade requests and forwards
+        // broadcast events as JSON text frames to connected clients.
+        .route("/v1/events", get(ws_events))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())

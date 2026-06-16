@@ -1115,3 +1115,21 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** 1025 events sent, subscriber dropped after 1024.
 **Expected output:** `send(1025th)` returns `Err(SendError)` — the error return path is exercised when all subscribers are gone.
 **Acceptance command:** `cargo test -p anvilml-server --features mock-hardware -- broadcaster` exits 0.
+
+## test_events_route_returns_101 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/handler_tests.rs`
+**Context:** The `/v1/events` route exists and returns HTTP 101 on a WebSocket upgrade request. Tests use a real TCP listener (`axum::serve`) because axum's `WebSocketUpgrade` extractor requires the `hyper::upgrade::OnUpgrade` extension which is only set up when the server processes a real HTTP connection. `Router::oneshot` does not set up this extension.
+**Tests:** Starts a real HTTP server on a random port, sends a raw HTTP request with WebSocket upgrade headers (`Upgrade: websocket`, `Connection: Upgrade`, `Sec-WebSocket-Key`, `Sec-WebSocket-Version: 13`), and asserts the response status line contains "101".
+**Inputs:** GET `/v1/events` with WebSocket upgrade headers, `AppState::new("test-version")`.
+**Expected output:** HTTP 101 Switching Protocols response — the route accepts WebSocket upgrades.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware --test handler_tests test_events_route_returns_101` exits 0.
+
+## test_events_delivers_broadcast_event (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/handler_tests.rs`
+**Context:** A WebSocket client connected to `/v1/events` receives broadcast events as JSON text frames. The test uses a real TCP listener and raw TCP I/O to verify the end-to-end event delivery path: broadcaster → handler subscription → JSON serialization → WebSocket text frame → client. The handler uses `ConnectInfo` to extract the client's socket address, which requires `into_make_service_with_connect_info`.
+**Tests:** Starts a real HTTP server, connects with a raw HTTP request containing WebSocket upgrade headers, verifies the 101 response, broadcasts a `WsEvent::SystemStats` through the broadcaster, reads the raw WebSocket frame from the client socket (skipping the 2-byte frame header), parses the JSON payload, and asserts the event type and fields match the broadcast event.
+**Inputs:** `WsEvent::SystemStats{cpu_pct: 42.5, ram_used_mib: 8192, workers: []}`.
+**Expected output:** Client receives `{"type":"system_stats","cpu_pct":42.5,"ram_used_mib":8192,"workers":[]}` as a WebSocket text frame.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware --test handler_tests test_events_delivers_broadcast_event` exits 0.
