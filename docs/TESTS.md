@@ -1313,3 +1313,30 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** `IpcError::Serialize("test error")`, `IpcError::Deserialize("test error")`.
 **Expected output:** Both error display strings contain "test error".
 **Acceptance command:** `cargo test -p anvilml-ipc -- messages` exits 0.
+
+## bind_returns_nonzero_port (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/transport_tests.rs`
+**Context:** `RouterTransport::bind()` creates a ZeroMQ ROUTER socket and binds to `tcp://127.0.0.1:0`, which causes the OS to assign an available port.
+**Tests:** The bound port is greater than zero, confirming the OS-assigned port was extracted correctly from the `Endpoint::Tcp(_, port)`.
+**Inputs:** None.
+**Expected output:** `transport.port > 0`.
+**Acceptance command:** `cargo test -p anvilml-ipc -- bind_returns_nonzero_port` exits 0.
+
+## send_delivers_message_to_dealer (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/transport_tests.rs`
+**Context:** A ZeroMQ ROUTER socket routes messages to connected peers by identity. The DEALER socket auto-generates a random 5-byte identity on connect. This test discovers the identity by having the ROUTER receive a probe message, then uses that identity to send a real message.
+**Tests:** The ROUTER successfully delivers a msgpack-encoded `WorkerMessage::Ping { seq: 1 }` to a connected DEALER socket. The DEALER receives the payload and it decodes to the original message.
+**Inputs:** `RouterTransport::bind()`, DEALER socket connected to the bound address, `WorkerMessage::Ping { seq: 1 }`.
+**Expected output:** DEALER receives a single-frame message that decodes to `WorkerMessage::Ping { seq: 1 }`.
+**Acceptance command:** `cargo test -p anvilml-ipc -- send_delivers_message_to_dealer` exits 0.
+
+## send_to_unknown_worker_returns_error (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/transport_tests.rs`
+**Context:** The ROUTER socket only routes to peers with a known identity in its internal peer table. Sending to an unknown identity returns `ZmqError::Other("Destination client not found by identity")`.
+**Tests:** `RouterTransport::send()` returns a `TransportError::Zmq` when the worker identity is not connected.
+**Inputs:** `RouterTransport::bind()`, worker_id = `"nonexistent-worker"`, any `WorkerMessage`.
+**Expected output:** `Err(TransportError::Zmq(ZmqError::Other("Destination client not found by identity")))`.
+**Acceptance command:** `cargo test -p anvilml-ipc -- send_to_unknown_worker_returns_error` exits 0.
