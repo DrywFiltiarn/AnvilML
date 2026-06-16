@@ -22,11 +22,9 @@ jobs:
         include:
           - os: ubuntu-latest
             fmt: true
-            provision: bash scripts/install_worker_deps.sh
             python: worker/.venv/bin/python
           - os: windows-latest
             fmt: false
-            provision: powershell -ExecutionPolicy Bypass -File scripts\install_worker_deps.ps1
             python: worker\.venv\Scripts\python
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -38,8 +36,13 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Provision worker venv
-        run: ${{ matrix.provision }}
+      - name: Provision worker venv (Linux)
+        if: runner.os == 'Linux'
+        run: bash scripts/install_worker_deps.sh
+      - name: Provision worker venv (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\scripts\install_worker_deps.ps1
       - name: Format check
         if: matrix.fmt
         run: cargo fmt --all -- --check
@@ -54,10 +57,8 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            provision: bash scripts/install_worker_deps.sh
             python: worker/.venv/bin/python
           - os: windows-latest
-            provision: powershell -ExecutionPolicy Bypass -File scripts\install_worker_deps.ps1
             python: worker\.venv\Scripts\python
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -66,8 +67,13 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Provision worker venv
-        run: ${{ matrix.provision }}
+      - name: Provision worker venv (Linux)
+        if: runner.os == 'Linux'
+        run: bash scripts/install_worker_deps.sh
+      - name: Provision worker venv (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\scripts\install_worker_deps.ps1
       - name: Run worker tests
         env:
           ANVILML_WORKER_MOCK: "1"
