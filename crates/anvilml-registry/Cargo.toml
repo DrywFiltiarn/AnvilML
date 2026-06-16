@@ -1,11 +1,12 @@
 [package]
 name = "anvilml-registry"
-version = "0.1.8"
+version = "0.1.9"
 edition.workspace = true
 
 [dependencies]
 anvilml-core = { path = "../anvilml-core" }
 chrono = { workspace = true }
+serde_json = { workspace = true }
 sha2 = "0.10"
 sqlx = { workspace = true, features = ["chrono"] }
 tokio = { workspace = true, features = ["fs", "io-util", "rt"] }

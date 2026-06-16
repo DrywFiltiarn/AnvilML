@@ -170,12 +170,29 @@ impl ModelScanner {
 
                 let file_size = std::fs::metadata(&entry_path).map(|m| m.len()).unwrap_or(0);
 
+                // Attempt to read dtype from the safetensors header. The header is
+                // authoritative — it reflects the actual stored tensor precision
+                // regardless of what the filename claims. Falls back to filename
+                // inference only if the header read fails (e.g. truncated file,
+                // wrong magic, permissions error).
+                let dtype = match self.read_dtype_from_header(&entry_path).await {
+                    Ok(dt) => dt,
+                    Err(e) => {
+                        tracing::debug!(
+                            path = %entry_path.display(),
+                            error = %e,
+                            "safetensors header read failed, falling back to filename inference"
+                        );
+                        self.infer_dtype(&filename)
+                    }
+                };
+
                 results.push(ModelMeta {
                     id,
                     name: filename.clone(),
                     path: entry_path.to_string_lossy().into_owned(),
                     kind: self.infer_kind(&dir_name),
-                    dtype: self.infer_dtype(&filename),
+                    dtype,
                     format: self.infer_format(&filename),
                     size_bytes: file_size,
                     scanned_at: Utc::now(),
@@ -297,6 +314,101 @@ impl ModelScanner {
         } else {
             ModelFormat::Unknown
         }
+    }
+
+    /// Read the dominant `ModelDtype` from a safetensors file header.
+    ///
+    /// Parses only the JSON header (8-byte length prefix + header bytes).
+    /// No tensor data is read. The dtype is determined by majority vote across
+    /// all tensor entries — the dtype with the highest occurrence count wins.
+    /// In the common case of a uniformly-typed file every entry shares the same
+    /// dtype and the result is unambiguous.
+    ///
+    /// The `__metadata__` key is explicitly skipped — it is not a tensor entry.
+    ///
+    /// Safetensors dtype strings (`"BF16"`, `"F16"`, `"F8_E4M3"`, etc.) differ
+    /// from the filename substrings checked by `infer_dtype` and are mapped
+    /// separately here.
+    ///
+    /// # Errors
+    ///
+    /// Returns `std::io::Error` if the file cannot be opened, is too short to
+    /// contain a valid 8-byte length prefix, the declared header length is out
+    /// of range, or the header bytes are not valid JSON.
+    async fn read_dtype_from_header(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<ModelDtype, std::io::Error> {
+        let mut file = tokio::fs::File::open(path).await?;
+
+        // Read the 8-byte little-endian u64 header length prefix.
+        // This is the first field in every valid safetensors file per the spec.
+        let mut len_buf = [0u8; 8];
+        file.read_exact(&mut len_buf).await?;
+        let header_len = u64::from_le_bytes(len_buf) as usize;
+
+        // Guard against malformed files that claim an unreasonable header size.
+        // Real headers are typically well under 1 MiB; 100 MiB is a generous
+        // ceiling that no legitimate model file would exceed.
+        const MAX_HEADER_BYTES: usize = 100 * 1024 * 1024;
+        if header_len == 0 || header_len > MAX_HEADER_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("safetensors header length out of range: {header_len}"),
+            ));
+        }
+
+        // Read the header JSON bytes immediately following the length prefix.
+        let mut header_buf = vec![0u8; header_len];
+        file.read_exact(&mut header_buf).await?;
+
+        // Parse into a generic JSON object. We only need the "dtype" field
+        // from each tensor entry — deserialising into a generic map avoids
+        // defining a full TensorInfo struct and keeps the dependency surface
+        // minimal.
+        let header: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_slice(&header_buf)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+
+        // Count occurrences of each dtype string across all tensor entries.
+        // "__metadata__" is the only non-tensor key defined by the safetensors
+        // spec; all other keys are tensor names.
+        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+        for (key, value) in &header {
+            if key == "__metadata__" {
+                // Skip the metadata block — it is not a tensor entry and its
+                // fields do not follow the tensor entry schema.
+                continue;
+            }
+            if let Some(dtype_str) = value.get("dtype").and_then(|v| v.as_str()) {
+                *counts.entry(dtype_str.to_string()).or_insert(0) += 1;
+            }
+        }
+
+        // Select the dtype with the highest occurrence count. On an empty file
+        // (no tensor entries) `max_by_key` returns `None`, which maps to Unknown.
+        // Ties are non-deterministic but vanishingly rare in practice.
+        let dominant = counts
+            .into_iter()
+            .max_by_key(|(_, count)| *count)
+            .map(|(dtype_str, _)| dtype_str);
+
+        // Map safetensors dtype strings to ModelDtype variants.
+        // The format uses uppercase with underscores ("BF16", "F8_E4M3"), which
+        // are distinct from the lowercase filename substrings infer_dtype checks.
+        // Both F8 exponent variants (E4M3 and E5M2) map to Fp8 — ModelDtype does
+        // not distinguish between the two NaN encodings.
+        Ok(match dominant.as_deref() {
+            Some("F32") => ModelDtype::Fp32,
+            Some("F16") => ModelDtype::Fp16,
+            Some("BF16") => ModelDtype::Bf16,
+            Some("F8_E4M3") | Some("F8_E5M2") => ModelDtype::Fp8,
+            Some("F4") => ModelDtype::Fp4,
+            // No tensor entries or unrecognised dtype string — fall through
+            // to Unknown, which will prompt the caller to try filename inference.
+            _ => ModelDtype::Unknown,
+        })
     }
 }
 
