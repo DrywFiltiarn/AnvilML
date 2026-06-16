@@ -149,6 +149,10 @@ async fn main() {
     }
 
     // Build the axum router with all registered handlers wired to their routes.
+    // Clone the broadcaster before passing state into the router, so we can
+    // pass it to stats_tick::start() after the router is built.
+    // AppState is Clone because its fields (Arc, Vec, String) are all Clone.
+    let broadcaster = state.broadcaster.clone();
     let router = build_router(state);
 
     // Build the bind address from the resolved config values.
@@ -176,6 +180,13 @@ async fn main() {
     // Uses the actual bound address rather than the configured one, so the
     // logged addr field always reflects the true bind point.
     tracing::info!(addr = %actual_addr, "listening");
+
+    // Start the system stats background tick task.
+    // This spawns a tokio task that broadcasts CPU and RAM metrics every
+    // 5 seconds via the WebSocket event stream. Starting after the bind
+    // log ensures the broadcaster is initialised but before accepting
+    // connections so events flow immediately to the first subscriber.
+    anvilml_server::ws::stats_tick::start(broadcaster);
 
     // Run the server until a fatal error occurs. The .expect() provides a
     // user-visible error message if the server encounters a fatal error during serving.

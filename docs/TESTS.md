@@ -1133,3 +1133,30 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** `WsEvent::SystemStats{cpu_pct: 42.5, ram_used_mib: 8192, workers: []}`.
 **Expected output:** Client receives `{"type":"system_stats","cpu_pct":42.5,"ram_used_mib":8192,"workers":[]}` as a WebSocket text frame.
 **Acceptance command:** `cargo test -p anvilml-server --features mock-hardware --test handler_tests test_events_delivers_broadcast_event` exits 0.
+
+## test_stats_tick_broadcasts_system_stats (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/stats_tick_tests.rs`
+**Context:** The `stats_tick::start()` function spawns a tokio task that broadcasts `WsEvent::SystemStats` events every 5 seconds. This test verifies the event actually arrives on the broadcast channel by subscribing to the broadcaster and waiting for the first event.
+**Tests:** Creates an `EventBroadcaster`, subscribes, calls `start()`, waits up to 6 seconds for a `SystemStats` event, and asserts that the event was received with the correct variant.
+**Inputs:** None (uses `EventBroadcaster::new()` and `start()`).
+**Expected output:** A `WsEvent::SystemStats` event received on the subscriber within 6 seconds.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware -- stats_tick` exits 0.
+
+## test_stats_tick_cpu_pct_is_finite (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/stats_tick_tests.rs`
+**Context:** The CPU percentage value read from `sysinfo::System::global_cpu_usage()` is cast from `f64` to `f32`. This test verifies the resulting value is a finite `f32` (not NaN or infinity), which would indicate a bug in the sysinfo API usage or the cast.
+**Tests:** Waits for one `SystemStats` event and asserts that `cpu_pct.is_finite()` is `true`.
+**Inputs:** None (uses `EventBroadcaster::new()` and `start()`).
+**Expected output:** Event received with `cpu_pct.is_finite() == true`.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware -- stats_tick` exits 0.
+
+## test_stats_tick_ram_used_mib_is_non_negative (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/stats_tick_tests.rs`
+**Context:** The RAM usage in mebibytes is computed as `sys.used_memory() / (1024 * 1024)`. Since `used_memory()` returns `u64`, the result is always non-negative. This test documents that invariant by asserting `ram_used_mib >= 0`.
+**Tests:** Waits for one `SystemStats` event and asserts that `ram_used_mib` is non-negative.
+**Inputs:** None (uses `EventBroadcaster::new()` and `start()`).
+**Expected output:** Event received with `ram_used_mib >= 0`.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware -- stats_tick` exits 0.
