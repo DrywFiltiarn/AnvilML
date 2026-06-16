@@ -1574,3 +1574,30 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Default config, port=9000, device.index=0.
 **Expected output:** `.get_stderr() == Stdio::Piped`.
 **Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- spawn::test_stderr_piped` exits 0.
+
+## test_writer_sends_message (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/bridge_tests.rs`
+**Context:** The bridge writer task receives messages from an `mpsc::Receiver` and forwards them to the `RouterTransport`. Uses a real ZeroMQ ROUTER socket and DEALER client to exercise the actual routing path. The writer terminates when the mpsc sender is dropped.
+**Tests:** Binds a `RouterTransport`, connects a DEALER socket, discovers the DEALER's identity via a probe message, spawns the bridge writer, sends `WorkerMessage::Ping { seq: 1 }` through the mpsc channel, drops the sender, reads from the DEALER side, and verifies the decoded message matches.
+**Inputs:** `WorkerMessage::Ping { seq: 1 }` sent through mpsc channel.
+**Expected output:** DEALER receives a single-frame message that decodes to `WorkerMessage::Ping { seq: 1 }`; writer task exits cleanly.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- bridge_tests::test_writer_sends_message` exits 0.
+
+## test_reader_broadcasts_event (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/bridge_tests.rs`
+**Context:** The bridge reader task receives events from the `RouterTransport` and broadcasts them via a `broadcast::Sender`. Uses a real ZeroMQ ROUTER socket and DEALER client. The reader terminates when the transport returns an error (socket closed).
+**Tests:** Binds a `RouterTransport`, connects a DEALER socket, discovers the DEALER's identity, spawns the bridge reader, sends `WorkerEvent::Pong { seq: 42 }` from the DEALER side, reads from the broadcast channel, and verifies the event matches. Then drops the transport to trigger reader shutdown.
+**Inputs:** `WorkerEvent::Pong { seq: 42 }` sent from DEALER to ROUTER.
+**Expected output:** Broadcast channel receives `(worker_id, WorkerEvent::Pong { seq: 42 })`; reader task exits cleanly.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- bridge_tests::test_reader_broadcasts_event` exits 0.
+
+## test_handles_drop_cleanly (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/bridge_tests.rs`
+**Context:** Dropping both bridge task handles does not panic. The writer exits when its mpsc sender is dropped; the reader exits when the transport (and its underlying socket) is dropped.
+**Tests:** Binds a `RouterTransport`, spawns both bridge tasks with a dummy mpsc channel, drops the sender, drops both handles, and asserts no panic.
+**Inputs:** None (uses `RouterTransport::bind()` and dummy channels).
+**Expected output:** Both handles resolve without panic.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- bridge_tests::test_handles_drop_cleanly` exits 0.

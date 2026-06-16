@@ -7,7 +7,9 @@
 //! **Hard constraints:** Contain only process management and message routing.
 //! No business logic — that belongs in the scheduler.
 
+pub mod bridge;
 pub mod env;
 pub mod spawn;
+pub use bridge::start;
 pub use env::build_worker_env;
 pub use spawn::build_command;
