@@ -18,7 +18,7 @@
     "prereqs": [
       "P19-A1"
     ],
-    "context": "Create docs/example_workflows/flux_klein_fp8.json: same 8-node structure as zit_fp8.json with LoadModel/LoadVae/LoadClip(clip_type=qwen3)/ClipTextEncode/EmptyLatent/Sampler/VaeDecode/SaveImage; model_id placeholders for Flux 2 Klein 9B FP8, Qwen3 8B FP8-mixed, Flux VAE. Create docs/PROOF_phase019.md: manual real-hardware steps. ANVILML_WORKER_MOCK=1 pytest worker/tests/test_parity.py exits 0 (unchanged 9 nodes).",
+    "context": "Create docs/example_workflows/flux_klein_fp8.json: same 8-node structure as zit_fp8.json with LoadModel/LoadVae/LoadClip(clip_type=qwen3)/ClipTextEncode/EmptyLatent/Sampler/VaeDecode/SaveImage; model_id placeholders for Flux 2 Klein 9B FP8, Qwen3 8B FP8-mixed, Flux VAE. Create docs/PROOF_phase019.md: manual real-hardware steps. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_parity.py exits 0 (unchanged 9 nodes).",
     "tags": []
   }
 ]

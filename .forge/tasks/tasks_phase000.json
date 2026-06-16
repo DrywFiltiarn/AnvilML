@@ -27,7 +27,7 @@
     "prereqs": [
       "P0-B1"
     ],
-    "context": "Create .github/workflows/ci.yml with 6 jobs per ENVIRONMENT.md \u00a76: rust-linux (ubuntu: fmt --check + clippy + test --features mock-hardware), rust-windows (windows: clippy + test --features mock-hardware), worker-linux (ubuntu: ANVILML_WORKER_MOCK=1 pytest worker/tests/ -v), worker-windows (windows: same), openapi-drift (ubuntu: cargo run -p anvilml-openapi && git diff --exit-code api/openapi.json), config-drift (ubuntu: cargo test -p anvilml --features mock-hardware -- config_reference). Valid YAML; all 6 job names present.",
+    "context": "Create .github/workflows/ci.yml with 6 jobs per ENVIRONMENT.md \u00a76: rust-linux (ubuntu: fmt --check + clippy + test --features mock-hardware), rust-windows (windows: clippy + test --features mock-hardware), worker-linux (ubuntu: ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v), worker-windows (windows: same), openapi-drift (ubuntu: cargo run -p anvilml-openapi && git diff --exit-code api/openapi.json), config-drift (ubuntu: cargo test -p anvilml --features mock-hardware -- config_reference). Valid YAML; all 6 job names present.",
     "tags": []
   },
   {

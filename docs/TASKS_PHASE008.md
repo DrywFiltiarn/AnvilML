@@ -78,7 +78,7 @@ Phase 007 complete. `WsEvent`, `WorkerMessage`, `WorkerEvent`, `NodeTypeDescript
 
 **Goal:** Create `worker/tests/test_ipc.py` testing `ipc.py` using in-process ZeroMQ socket pairs. Tests: `connect()` succeeds; `send_event()` sends correct msgpack dict; `recv_message()` deserialises correctly; identity frame attached. Use `ANVILML_WORKER_MOCK=1` env var. Restore env vars unconditionally.
 
-**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py -v` exits 0 with ≥ 6 tests.
+**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_ipc.py -v` exits 0 with ≥ 6 tests.
 
 #### P8-B3: scripts: install_worker_deps.sh and .ps1 — create venv and install base dependencies
 
@@ -112,7 +112,7 @@ Phase 007 complete. `WsEvent`, `WorkerMessage`, `WorkerEvent`, `NodeTypeDescript
 
 ```bash
 cargo test -p anvilml-ipc --features mock-hardware
-ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py -v
+ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_ipc.py -v
 bash scripts/install_worker_deps.sh
 cargo test -p anvilml-ipc --features mock-hardware --test stress_test
 ```

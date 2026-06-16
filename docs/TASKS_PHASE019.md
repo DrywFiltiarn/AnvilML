@@ -39,7 +39,7 @@ Phase 018 complete: all 9 baseline nodes implemented, parity test passing, `arch
 
 Real path: use `diffusers.FluxPipeline` components (transformer, scheduler) in FP8 precision. Qwen3 conditioning is already encoded in `conditioning` before `sample()` is called — the arch module receives the conditioning tensor, not raw text. Per-step callback checks `cancel_flag.is_set()`. Every FP8 precision choice and Flux-specific behaviour has an inline comment.
 
-**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 pytest worker/tests/test_arch_flux.py -v` exits 0 ≥ 3 tests; `can_handle` returns False for ZiT model object.
+**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_flux.py -v` exits 0 ≥ 3 tests; `can_handle` returns False for ZiT model object.
 
 ### Group B — Integration
 
@@ -47,12 +47,12 @@ Real path: use `diffusers.FluxPipeline` components (transformer, scheduler) in F
 
 **Goal:** No new node types are added in Phase 019 — `test_parity.py` should still pass with the same 9 nodes. Create `docs/example_workflows/flux_klein_fp8.json` (same structure as `zit_fp8.json`, different model IDs and `clip_type: "qwen3"`). Create `docs/PROOF_phase019.md` documenting the Flux manual smoke proof.
 
-**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 pytest worker/tests/test_parity.py -v` exits 0 (unchanged); `docs/PROOF_phase019.md` exists with complete commands.
+**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_parity.py -v` exits 0 (unchanged); `docs/PROOF_phase019.md` exists with complete commands.
 
 ## Phase Acceptance Criteria
 
 ```bash
-ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v
+ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v
 cargo test --workspace --features mock-hardware
 # Real hardware proof (manual, requires Flux 2 Klein FP8 safetensors in models/):
 # Submit flux_klein_fp8.json; verify Completed + PNG artifact

@@ -22,8 +22,12 @@ jobs:
         include:
           - os: ubuntu-latest
             fmt: true
+            provision: bash scripts/install_worker_deps.sh
+            python: worker/.venv/bin/python
           - os: windows-latest
             fmt: false
+            provision: powershell -ExecutionPolicy Bypass -File scripts\install_worker_deps.ps1
+            python: worker\.venv\Scripts\python
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -31,6 +35,11 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           rustflags: ""
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Provision worker venv
+        run: ${{ matrix.provision }}
       - name: Format check
         if: matrix.fmt
         run: cargo fmt --all -- --check
@@ -45,9 +54,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            activate: . .venv/bin/activate
+            provision: bash scripts/install_worker_deps.sh
+            python: worker/.venv/bin/python
           - os: windows-latest
-            activate: .venv/Scripts/activate
+            provision: powershell -ExecutionPolicy Bypass -File scripts\install_worker_deps.ps1
+            python: worker\.venv\Scripts\python
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -55,17 +66,12 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Install test dependencies
-        run: |
-          python -m venv .venv
-          ${{ matrix.activate }}
-          pip install pytest pyzmq msgpack
+      - name: Provision worker venv
+        run: ${{ matrix.provision }}
       - name: Run worker tests
         env:
           ANVILML_WORKER_MOCK: "1"
-        run: |
-          ${{ matrix.activate }}
-          python -m pytest worker/tests -v
+        run: ${{ matrix.python }} -m pytest worker/tests -v
 
   openapi-drift:
     runs-on: ubuntu-latest

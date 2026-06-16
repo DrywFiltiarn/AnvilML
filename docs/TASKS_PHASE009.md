@@ -94,7 +94,7 @@ Phase 008 complete: `RouterTransport` works with 1000-trip stress test passing. 
 - `worker/__init__.py` (empty)
 - `worker/tests/test_worker_main.py` — mock-mode startup test
 
-**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py -v` exits 0 with ≥ 4 tests.
+**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py -v` exits 0 with ≥ 4 tests.
 
 ### Group C — anvilml-server
 
@@ -108,7 +108,7 @@ Phase 008 complete: `RouterTransport` works with 1000-trip stress test passing. 
 
 ```bash
 cargo test -p anvilml-worker --features mock-hardware
-ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py -v
+ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py -v
 cargo run --features mock-hardware &
 sleep 30
 curl -s http://127.0.0.1:8488/v1/workers | python3 -c "import sys,json; workers=json.load(sys.stdin); assert any(w['status']=='Idle' for w in workers)"

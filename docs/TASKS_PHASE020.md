@@ -43,13 +43,13 @@ This phase also closes any gaps opened by earlier phases: the `openapi.json` is 
 
 **Goal:** Create or complete `docs/TESTS.md` cataloguing every test in the project per `ANVILML_DESIGN.md §16.1` format: test name, file path, context, what it verifies, inputs, expected output. Include all Rust unit tests, Rust integration tests, and Python pytest tests.
 
-**Acceptance criterion:** `docs/TESTS.md` exists; contains an entry for every test file in `crates/*/tests/`, `backend/tests/`, and `worker/tests/`; `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` and `cargo test --workspace --features mock-hardware` both exit 0.
+**Acceptance criterion:** `docs/TESTS.md` exists; contains an entry for every test file in `crates/*/tests/`, `backend/tests/`, and `worker/tests/`; `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v` and `cargo test --workspace --features mock-hardware` both exit 0.
 
 ## Phase Acceptance Criteria
 
 ```bash
 cargo test --workspace --features mock-hardware
-ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v
+ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v
 cargo clippy --workspace --features mock-hardware -- -D warnings
 cargo run -p anvilml-openapi && git diff --exit-code api/openapi.json
 cargo test -p anvilml --features mock-hardware -- config_reference

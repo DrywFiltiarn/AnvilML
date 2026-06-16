@@ -334,7 +334,7 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
 ```
 
-### Python tests (ANVILML_WORKER_MOCK=1 pytest worker/tests/)
+### Python tests (ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/)
 
 ```
 ============================= test session starts ==============================

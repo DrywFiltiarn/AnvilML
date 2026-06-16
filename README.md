@@ -145,7 +145,7 @@ AnvilML uses a **generic, architecture-agnostic node graph**. There are no `ZitS
 ```bash
 cargo build --workspace --features mock-hardware
 cargo test --workspace --features mock-hardware
-ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v
+ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v
 ```
 
 ### Pre-push gate (WSL2)

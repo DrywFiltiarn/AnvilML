@@ -1678,7 +1678,7 @@ GitHub CI runs on two real target platforms only. There is no emulated or cross-
 |:----|:----------|:---------|
 | `rust-linux` | Ubuntu latest | `cargo fmt --check`, `cargo clippy --workspace --features mock-hardware -- -D warnings`, `cargo test --workspace --features mock-hardware` |
 | `rust-windows` | Windows latest | `cargo clippy --workspace --features mock-hardware -- -D warnings`, `cargo test --workspace --features mock-hardware` |
-| `python-worker` | Ubuntu latest | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` |
+| `python-worker` | Ubuntu latest | `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v` |
 | `openapi-drift` | Ubuntu latest | Re-generate `openapi.json`, `git diff --exit-code api/openapi.json` |
 | `config-drift` | Ubuntu latest | `cargo test -p anvilml --features mock-hardware -- config_reference` |
 

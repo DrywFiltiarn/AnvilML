@@ -46,19 +46,19 @@ Phase 017 complete. `worker/nodes/__init__.py` and `base.py` exist. `worker/work
 
 **Goal:** Implement `LoadModel` node: `INPUT_SLOTS=[SlotSpec("model_id","STRING")]`, `OUTPUT_SLOTS=[SlotSpec("model","MODEL")]`. Mock: return `{"model": MockModel(arch="zit")}`. Real: use `safetensors.safe_open` to load FP8 safetensors; detect arch from metadata; load UNet/DiT weights into appropriate diffusers component via `pipeline_cache.get_or_load()`. Every public function and class needs a doc comment. Every decision point needs an inline comment.
 
-**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 pytest worker/tests/test_nodes_loader.py -v` exits 0 with ≥ 4 tests.
+**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py -v` exits 0 with ≥ 4 tests.
 
 #### P18-A2: worker/nodes/loader.py: LoadVae node
 
 **Goal:** Add `LoadVae` node to `loader.py`: `INPUT_SLOTS=[SlotSpec("model_id","STRING")]`, `OUTPUT_SLOTS=[SlotSpec("vae","VAE")]`. Mock: return `{"vae": MockVae()}`. Real: load VAE safetensors via `pipeline_cache`. `LoadModel` outputs only `MODEL` — it never provides a VAE.
 
-**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 pytest worker/tests/test_nodes_loader.py::TestLoadVae -v` exits 0 ≥ 3 tests.
+**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::TestLoadVae -v` exits 0 ≥ 3 tests.
 
 #### P18-A3: worker/nodes/loader.py: LoadClip node
 
 **Goal:** Add `LoadClip` node to `loader.py`: `INPUT_SLOTS=[SlotSpec("model_id","STRING"), SlotSpec("clip_type","STRING",optional=True)]`, `OUTPUT_SLOTS=[SlotSpec("clip","CLIP")]`. Mock: return `{"clip": MockClip(clip_type=clip_type or "qwen3")}`. Real: load text encoder safetensors. `clip_type` hint selects tokeniser (`"qwen3"`, `"clip_l"`, `"t5"`).
 
-**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 pytest worker/tests/test_nodes_loader.py::TestLoadClip -v` exits 0 ≥ 3 tests.
+**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::TestLoadClip -v` exits 0 ≥ 3 tests.
 
 ### Group B — Inference nodes
 
@@ -66,19 +66,19 @@ Phase 017 complete. `worker/nodes/__init__.py` and `base.py` exist. `worker/work
 
 **Goal:** Implement `ClipTextEncode` node: inputs `clip:CLIP, text:STRING, negative_text:STRING(optional)`, outputs `conditioning:CONDITIONING`. Mock: return `{"conditioning": MockConditioning(text=text)}`. Real: call `clip.encode(text)` (arch-agnostic interface on the CLIP object).
 
-**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 pytest worker/tests/test_nodes_encoder.py -v` exits 0 ≥ 3 tests.
+**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_encoder.py -v` exits 0 ≥ 3 tests.
 
 #### P18-B2: worker/nodes/sampler.py: EmptyLatent and Sampler nodes
 
 **Goal:** Implement `EmptyLatent`: inputs `width:INT, height:INT, batch_size:INT(optional)`, outputs `latent:LATENT`. Mock: return `{"latent": MockLatent(width,height)}`. Implement `Sampler`: inputs `model:MODEL, conditioning:CONDITIONING, latent:LATENT, steps:INT, cfg:FLOAT, seed:INT`, outputs `latent:LATENT, seed:INT`. Mock: emit 3 Progress events, return `{"latent": MockLatent, "seed": resolved_seed}`. Real: call arch dispatch `arch.sample(model, conditioning, latent, steps, cfg, seed, ...)`.
 
-**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 pytest worker/tests/test_nodes_sampler.py -v` exits 0 ≥ 5 tests (seed=-1 resolves; progress events emitted; latent returned).
+**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py -v` exits 0 ≥ 5 tests (seed=-1 resolves; progress events emitted; latent returned).
 
 #### P18-B3: worker/nodes/decode.py: VaeDecode node
 
 **Goal:** Implement `VaeDecode`: inputs `vae:VAE, latent:LATENT`, outputs `image:IMAGE`. VAE is always an explicit required input. Mock: return `{"image": MockImage()}`. Real: call `vae.decode(latent)` → PIL Image. Update SaveImage in image.py to emit real ImageReady event with PNG base64.
 
-**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 pytest worker/tests/test_nodes_decode.py -v` exits 0 ≥ 3 tests.
+**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py -v` exits 0 ≥ 3 tests.
 
 ### Group C — ZiT architecture module
 
@@ -90,7 +90,7 @@ Phase 017 complete. `worker/nodes/__init__.py` and `base.py` exist. `worker/work
 
 Real path: use `diffusers.ZitPipeline` (or equivalent) with FP8 precision; per-step callback checks `cancel_flag.is_set()`; calls `emit_progress(step, total_steps)`. Every decision point in the real path has an inline comment explaining the FP8 handling choice.
 
-**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 pytest worker/tests/test_arch_zit.py -v` exits 0; mock `can_handle` + `sample` tests pass.
+**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py -v` exits 0; mock `can_handle` + `sample` tests pass.
 
 ### Group D — Pipeline cache
 
@@ -98,7 +98,7 @@ Real path: use `diffusers.ZitPipeline` (or equivalent) with FP8 precision; per-s
 
 **Goal:** Implement `pipeline_cache.py` with `PipelineCache(max_entries=2)`: `get_or_load(model_id, dtype, loader_fn)` — return cached pipeline or call `loader_fn()` and cache result. Evict LRU entry when max_entries exceeded. Log eviction at INFO.
 
-**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 pytest worker/tests/test_pipeline_cache.py -v` exits 0 ≥ 4 tests (cache hit, cache miss, LRU eviction, max_entries=1).
+**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_pipeline_cache.py -v` exits 0 ≥ 4 tests (cache hit, cache miss, LRU eviction, max_entries=1).
 
 ### Group E — Integration
 
@@ -106,12 +106,12 @@ Real path: use `diffusers.ZitPipeline` (or equivalent) with FP8 precision; per-s
 
 **Goal:** Create `worker/tests/test_parity.py` verifying that NODE_REGISTRY contains exactly the 9 baseline node types from `ANVILML_DESIGN.md §10.3`. Create `docs/PROOF_phase018.md` documenting the manual real-hardware runnable proof: exact curl commands to submit the Appendix B ZiT workflow JSON and observe JobCompleted + PNG artifact.
 
-**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 pytest worker/tests/test_parity.py -v` exits 0; PROOF_phase018.md documents all commands and expected output.
+**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_parity.py -v` exits 0; PROOF_phase018.md documents all commands and expected output.
 
 ## Phase Acceptance Criteria
 
 ```bash
-ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v
+ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v
 cargo test --workspace --features mock-hardware
 # Real hardware proof (manual, requires ZiT FP8 safetensors in models/):
 # cargo run --features real-hardware

@@ -40,7 +40,7 @@
     "prereqs": [
       "P11-A3"
     ],
-    "context": "Create worker/nodes/__init__.py: NODE_REGISTRY:dict[str,type]={} global. Auto-import all .py files in nodes/ directory via pkgutil.iter_modules to trigger @register decorators. Create worker/nodes/base.py: @register decorator adds class to NODE_REGISTRY; BaseNode ABC with execute() abstract; SlotSpec dataclass; NodeContext dataclass. Update worker_main.py _import_nodes(): import worker.nodes; build node_types list from NODE_REGISTRY; include in Ready event. ANVILML_WORKER_MOCK=1 pytest worker/tests/test_nodes_base.py exits 0 >=3 tests.",
+    "context": "Create worker/nodes/__init__.py: NODE_REGISTRY:dict[str,type]={} global. Auto-import all .py files in nodes/ directory via pkgutil.iter_modules to trigger @register decorators. Create worker/nodes/base.py: @register decorator adds class to NODE_REGISTRY; BaseNode ABC with execute() abstract; SlotSpec dataclass; NodeContext dataclass. Update worker_main.py _import_nodes(): import worker.nodes; build node_types list from NODE_REGISTRY; include in Ready event. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_base.py exits 0 >=3 tests.",
     "tags": []
   }
 ]

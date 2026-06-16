@@ -31,7 +31,7 @@
     "prereqs": [
       "P20-B1"
     ],
-    "context": "Create docs/TESTS.md per ANVILML_DESIGN.md \u00a716.1 format: one entry per test file in crates/*/tests/, backend/tests/, worker/tests/. Each entry: test name, file, context (preconditions), what it verifies, inputs, expected output. ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v exits 0; cargo test --workspace --features mock-hardware exits 0.",
+    "context": "Create docs/TESTS.md per ANVILML_DESIGN.md \u00a716.1 format: one entry per test file in crates/*/tests/, backend/tests/, worker/tests/. Each entry: test name, file, context (preconditions), what it verifies, inputs, expected output. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v exits 0; cargo test --workspace --features mock-hardware exits 0.",
     "tags": []
   }
 ]

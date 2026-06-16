@@ -106,10 +106,13 @@ cargo test --workspace --features mock-hardware
 
 # 3. Provision the Python worker venv
 bash scripts/install_worker_deps.sh     # Linux
-# powershell ... install_worker_deps.ps1        # Windows
+# powershell -ExecutionPolicy Bypass -File scripts\install_worker_deps.ps1   # Windows
 
-# 4. Run Python tests
-ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v
+# 4. Run Python tests (invoke the venv interpreter directly — do not use bare python)
+# Linux / macOS:
+ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v
+# Windows:
+# ANVILML_WORKER_MOCK=1 worker\.venv\Scripts\python -m pytest worker/tests/ -v
 
 # 5. Install the WSL2 Windows cross-check target (once, on WSL2 only)
 rustup target add x86_64-pc-windows-gnu
@@ -337,10 +340,14 @@ requirements. Do not accept flakiness without diagnosis.
 ### Step 7 — Python tests
 
 ```bash
-ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v
+# Linux / macOS:
+ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v
+# Windows:
+# ANVILML_WORKER_MOCK=1 worker\.venv\Scripts\python -m pytest worker/tests/ -v
 ```
 
-Zero failures required. Run from the repo root with the worker venv active.
+Zero failures required. Run from the repo root. Invoke the venv interpreter directly —
+do not use bare `python`.
 
 ### Step 8 — Project gates
 
@@ -378,10 +385,10 @@ validates and can write tasks that account for all four runners.
 
 | Job | Runner | Command |
 |:----|:-------|:--------|
-| `rust-linux` | Ubuntu latest | `cargo fmt --all -- --check && cargo clippy --workspace --features mock-hardware -- -D warnings && cargo test --workspace --features mock-hardware` |
-| `rust-windows` | Windows latest | `cargo clippy --workspace --features mock-hardware -- -D warnings && cargo test --workspace --features mock-hardware` |
-| `worker-linux` | Ubuntu latest | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` |
-| `worker-windows` | Windows latest | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` |
+| `rust-linux` | Ubuntu latest | `bash scripts/install_worker_deps.sh && cargo fmt --all -- --check && cargo clippy --workspace --features mock-hardware -- -D warnings && cargo test --workspace --features mock-hardware` |
+| `rust-windows` | Windows latest | `scripts\install_worker_deps.ps1 && cargo clippy --workspace --features mock-hardware -- -D warnings && cargo test --workspace --features mock-hardware` |
+| `worker-linux` | Ubuntu latest | `bash scripts/install_worker_deps.sh && ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v` |
+| `worker-windows` | Windows latest | `scripts\install_worker_deps.ps1 && ANVILML_WORKER_MOCK=1 worker\.venv\Scripts\python -m pytest worker/tests/ -v` |
 | `openapi-drift` | Ubuntu latest | `cargo run -p anvilml-openapi && git diff --exit-code api/openapi.json` |
 | `config-drift` | Ubuntu latest | `cargo test -p anvilml --features mock-hardware -- config_reference` |
 
@@ -389,6 +396,14 @@ validates and can write tasks that account for all four runners.
 (ROCm on Windows is a mandatory MVP backend). Pytest failures on Windows that do not
 reproduce on Linux indicate platform-specific path handling, line-ending issues, or
 Windows-only socket behaviour in the worker code.
+
+All four runner jobs (`rust-linux`, `rust-windows`, `worker-linux`, `worker-windows`)
+provision `worker/.venv` via `scripts/install_worker_deps.sh` (Linux) or
+`scripts\install_worker_deps.ps1` (Windows) before any test step. This ensures the venv
+interpreter and `base.txt` dependencies are present for any Rust test that spawns a Python
+subprocess. The `rust` jobs do not set `ANVILML_WORKER_MOCK` — the `mock-hardware` feature
+flag causes `build_worker_env()` to inject `ANVILML_WORKER_MOCK=1` into the spawned
+subprocess automatically.
 
 ---
 
@@ -466,7 +481,7 @@ when the trigger conditions are met.
 or modifies `crates/anvilml-scheduler/src/node_registry.rs`.
 
 ```bash
-ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_parity.py -v
+ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_parity.py -v
 ```
 
 This test verifies that the set of types in `NODE_REGISTRY` (Python) matches the set

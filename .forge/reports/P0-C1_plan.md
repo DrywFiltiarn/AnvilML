@@ -25,8 +25,8 @@ that ensures all subsequent phases build on verified, tested code.
 - Create `.github/workflows/ci.yml` with 6 jobs:
   - `rust-linux`: ubuntu-latest — `cargo fmt --all -- --check`, `cargo clippy --workspace --features mock-hardware -- -D warnings`, `cargo test --workspace --features mock-hardware`
   - `rust-windows`: windows-latest — `cargo clippy --workspace --features mock-hardware -- -D warnings`, `cargo test --workspace --features mock-hardware`
-  - `worker-linux`: ubuntu-latest — Python 3.12 setup, `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v`
-  - `worker-windows`: windows-latest — Python 3.12 setup, `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v`
+  - `worker-linux`: ubuntu-latest — Python 3.12 setup, `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v`
+  - `worker-windows`: windows-latest — Python 3.12 setup, `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v`
   - `openapi-drift`: ubuntu-latest — `cargo run -p anvilml-openapi && git diff --exit-code api/openapi.json`
   - `config-drift`: ubuntu-latest — `cargo test -p anvilml --features mock-hardware -- config_reference`
 - Use `ubuntu-latest` and `windows-latest` as runner images
@@ -107,14 +107,14 @@ and standard `actions/*` GitHub Actions, which are managed by GitHub.
      - Step 3: Create a Python venv and install minimal test dependencies
        (`pip install pytest pyzmq msgpack`) — these are the core dependencies needed
        for the worker test harness to import and run
-     - Step 4: `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` — run Python
+     - Step 4: `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v` — run Python
        worker tests in mock mode
    - **`worker-windows` job** (runs on `windows-latest`):
      - Step 1: `actions/checkout@v6`
      - Step 2: `actions/setup-python@v6` with `python-version: "3.12"`
      - Step 3: Create a Python venv and install minimal test dependencies
        (same as worker-linux)
-     - Step 4: `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` — run tests
+     - Step 4: `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v` — run tests
        in mock mode on Windows
    - **`openapi-drift` job** (runs on `ubuntu-latest`):
      - Step 1: `actions/checkout@v6`

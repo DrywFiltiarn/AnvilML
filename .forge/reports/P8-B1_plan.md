@@ -150,7 +150,7 @@ API shape verified via MCP:
 
 ## CI Impact
 
-No CI changes required. The `worker-linux` and `worker-windows` CI jobs already run `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` which will pick up the new `test_ipc.py` file automatically. No new CI gates or job configurations are needed.
+No CI changes required. The `worker-linux` and `worker-windows` CI jobs already run `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v` which will pick up the new `test_ipc.py` file automatically. No new CI gates or job configurations are needed.
 
 ## Platform Considerations
 
@@ -169,6 +169,6 @@ None identified. The ZeroMQ DEALER socket with TCP transport (`tcp://127.0.0.1:{
 
 - [ ] `python3 -c "from worker import ipc"` exits 0
 - [ ] `python3 -c "from worker.ipc import connect, send_event, recv_message"` exits 0
-- [ ] `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py -v` exits 0 with ≥ 6 tests
+- [ ] `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_ipc.py -v` exits 0 with ≥ 6 tests
 - [ ] `cat worker/requirements/base.txt` contains all five dependency lines (pyzmq, msgpack, pillow, safetensors, pytest)
 - [ ] `wc -l worker/ipc.py` returns a line count between 40 and 120 (module should be concise)

@@ -63,7 +63,7 @@ Phase 10 complete. Refer to `docs/TASKS_PHASE010.md` for the terminal task and R
 
 ```bash
 cargo test --workspace --features mock-hardware
-ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v
+ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v
 cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu
 ```
 

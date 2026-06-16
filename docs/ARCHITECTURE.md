@@ -399,8 +399,8 @@ See `docs/ENVIRONMENT.md §6–8` for full commands.
 |:----|:-------|:--------|
 | `rust-linux` | Ubuntu latest | `cargo fmt --check`, clippy, full Rust test suite (`--features mock-hardware`) |
 | `rust-windows` | Windows latest | clippy, full Rust test suite (`--features mock-hardware`) |
-| `worker-linux` | Ubuntu latest | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` |
-| `worker-windows` | Windows latest | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v` |
+| `worker-linux` | Ubuntu latest | `bash scripts/install_worker_deps.sh && ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v` |
+| `worker-windows` | Windows latest | `scripts\install_worker_deps.ps1 && ANVILML_WORKER_MOCK=1 worker\.venv\Scripts\python -m pytest worker/tests/ -v` |
 | `openapi-drift` | Ubuntu latest | Regenerate `openapi.json`, assert no diff |
 | `config-drift` | Ubuntu latest | `cargo test -p anvilml --features mock-hardware -- config_reference` |
 

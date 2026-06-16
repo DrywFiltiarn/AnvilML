@@ -12,7 +12,7 @@
 
 ## Objective
 
-Create `worker/tests/test_ipc.py` (overwriting existing content) and ensure `worker/tests/__init__.py` exists as a package marker. The test file must verify `worker/ipc.py` functions — `connect()`, `send_event()`, and `recv_message()` — using in-process `zmq.PAIR` sockets for the roundtrip test. All tests must set `ANVILML_WORKER_MOCK=1` and restore env vars unconditionally. The acceptance criterion is that `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py -v` exits 0 with ≥ 6 tests.
+Create `worker/tests/test_ipc.py` (overwriting existing content) and ensure `worker/tests/__init__.py` exists as a package marker. The test file must verify `worker/ipc.py` functions — `connect()`, `send_event()`, and `recv_message()` — using in-process `zmq.PAIR` sockets for the roundtrip test. All tests must set `ANVILML_WORKER_MOCK=1` and restore env vars unconditionally. The acceptance criterion is that `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_ipc.py -v` exits 0 with ≥ 6 tests.
 
 ## Scope
 
@@ -69,7 +69,7 @@ pyzmq 27.1.0 is compatible with Python 3.12 (requires_python >= 3.8). msgpack 1.
    f. **`test_send_before_connect_raises`** — call `_reset_ipc_state()`, assert `ipc.send_event({})` raises `RuntimeError`.
    g. **`test_recv_before_connect_raises`** — call `_reset_ipc_state()`, assert `ipc.recv_message()` raises `RuntimeError`.
 
-3. **Verify** by running `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py -v` and confirming ≥ 6 tests pass.
+3. **Verify** by running `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_ipc.py -v` and confirming ≥ 6 tests pass.
 
 ## Public API Surface
 
@@ -87,17 +87,17 @@ None. This task only writes test code; no new public API items are introduced.
 
 | Test File | Test Name | What It Verifies | Preconditions | Inputs | Expected Output | Acceptance Command |
 |-----------|-----------|-----------------|---------------|--------|----------------|--------------------|
-| `worker/tests/test_ipc.py` | `test_connect_succeeds` | `connect()` creates valid socket and sets `_sock` | ROUTER bound on ephemeral port | `port`, `"test-worker"` | `ipc._sock is not None`, `ipc._ctx is not None` | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py -v -k test_connect_succeeds` exits 0 |
-| `worker/tests/test_ipc.py` | `test_connect_sets_identity` | `connect()` sets socket identity visible on ROUTER | ROUTER bound, DEALER connected | `port`, `"test-worker"` | ROUTER identity frame equals `b"test-worker"` | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py -v -k test_connect_sets_identity` exits 0 |
-| `worker/tests/test_ipc.py` | `test_send_event_encodes_type_discriminator` | `send_event()` sends msgpack with correct `_type` key | ROUTER bound, DEALER connected | `{"_type": "Ready", "node_types": [...]}` | `msgpack.unpackb` returns dict with `_type == "Ready"` | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py -v -k test_send_event_encodes_type_discriminator` exits 0 |
-| `worker/tests/test_ipc.py` | `test_recv_message_deserialises_correctly` | `recv_message()` deserialises msgpack correctly | ROUTER sends msgpack, DEALER connected | ROUTER sends `{"_type": "Ping", "seq": 1}` | `ipc.recv_message()` returns matching dict | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py -v -k test_recv_message_deserialises_correctly` exits 0 |
-| `worker/tests/test_ipc.py` | `test_roundtrip_via_pair_sockets` | msgpack roundtrip via in-process PAIR sockets | Two PAIR sockets connected in-process | `{"_type": "Ping", "seq": 42}` | Unpacked dict matches original exactly | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py -v -k test_roundtrip_via_pair_sockets` exits 0 |
-| `worker/tests/test_ipc.py` | `test_send_before_connect_raises` | `send_event()` raises `RuntimeError` before connect | `_sock` is `None` | `{}` | `RuntimeError` raised | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py -v -k test_send_before_connect_raises` exits 0 |
-| `worker/tests/test_ipc.py` | `test_recv_before_connect_raises` | `recv_message()` raises `RuntimeError` before connect | `_sock` is `None` | (none) | `RuntimeError` raised | `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py -v -k test_recv_before_connect_raises` exits 0 |
+| `worker/tests/test_ipc.py` | `test_connect_succeeds` | `connect()` creates valid socket and sets `_sock` | ROUTER bound on ephemeral port | `port`, `"test-worker"` | `ipc._sock is not None`, `ipc._ctx is not None` | `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_ipc.py -v -k test_connect_succeeds` exits 0 |
+| `worker/tests/test_ipc.py` | `test_connect_sets_identity` | `connect()` sets socket identity visible on ROUTER | ROUTER bound, DEALER connected | `port`, `"test-worker"` | ROUTER identity frame equals `b"test-worker"` | `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_ipc.py -v -k test_connect_sets_identity` exits 0 |
+| `worker/tests/test_ipc.py` | `test_send_event_encodes_type_discriminator` | `send_event()` sends msgpack with correct `_type` key | ROUTER bound, DEALER connected | `{"_type": "Ready", "node_types": [...]}` | `msgpack.unpackb` returns dict with `_type == "Ready"` | `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_ipc.py -v -k test_send_event_encodes_type_discriminator` exits 0 |
+| `worker/tests/test_ipc.py` | `test_recv_message_deserialises_correctly` | `recv_message()` deserialises msgpack correctly | ROUTER sends msgpack, DEALER connected | ROUTER sends `{"_type": "Ping", "seq": 1}` | `ipc.recv_message()` returns matching dict | `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_ipc.py -v -k test_recv_message_deserialises_correctly` exits 0 |
+| `worker/tests/test_ipc.py` | `test_roundtrip_via_pair_sockets` | msgpack roundtrip via in-process PAIR sockets | Two PAIR sockets connected in-process | `{"_type": "Ping", "seq": 42}` | Unpacked dict matches original exactly | `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_ipc.py -v -k test_roundtrip_via_pair_sockets` exits 0 |
+| `worker/tests/test_ipc.py` | `test_send_before_connect_raises` | `send_event()` raises `RuntimeError` before connect | `_sock` is `None` | `{}` | `RuntimeError` raised | `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_ipc.py -v -k test_send_before_connect_raises` exits 0 |
+| `worker/tests/test_ipc.py` | `test_recv_before_connect_raises` | `recv_message()` raises `RuntimeError` before connect | `_sock` is `None` | (none) | `RuntimeError` raised | `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_ipc.py -v -k test_recv_before_connect_raises` exits 0 |
 
 ## CI Impact
 
-No CI changes required. The `worker-linux` and `worker-windows` CI jobs already run `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v`, which picks up any new test files in the `worker/tests/` directory. Adding `conftest.py` (no test functions) does not change CI behavior.
+No CI changes required. The `worker-linux` and `worker-windows` CI jobs already run `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v`, which picks up any new test files in the `worker/tests/` directory. Adding `conftest.py` (no test functions) does not change CI behavior.
 
 ## Platform Considerations
 
@@ -114,7 +114,7 @@ None identified. The `zmq.PAIR` socket, `msgpack.packb/unpackb`, and `os.environ
 
 ## Acceptance Criteria
 
-- [ ] `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py -v` exits 0 with ≥ 6 tests
+- [ ] `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_ipc.py -v` exits 0 with ≥ 6 tests
 - [ ] `grep -c "^def test_" worker/tests/test_ipc.py` outputs a number ≥ 6
 - [ ] `grep -c "zmq.PAIR" worker/tests/test_ipc.py` outputs a number ≥ 1 (PAIR sockets used in roundtrip test)
 - [ ] `grep -c "ANVILML_WORKER_MOCK" worker/tests/conftest.py` outputs ≥ 1 (conftest.py references the env var)

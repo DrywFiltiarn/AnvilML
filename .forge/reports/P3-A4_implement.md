@@ -128,7 +128,7 @@ Gate passed — no OpenAPI drift.
 
 ### Gate 3 — Node Parity
 ```
-ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_parity.py -v
+ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_parity.py -v
 → ERROR: file or directory not found: worker/tests/test_parity.py
 ```
 Gate not applicable — `test_parity.py` does not exist yet in the repository.

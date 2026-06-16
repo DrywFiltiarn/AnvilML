@@ -20,7 +20,7 @@
     "prereqs": [
       "P14-A1"
     ],
-    "context": "Create worker/executor.py: def run_graph(graph:dict,settings:dict,ctx:NodeContext)->None. Topo-sort nodes; for each node: resolve inputs from outputs; instantiate node class from NODE_REGISTRY; call execute(**inputs); store outputs. Create worker/nodes/image.py SaveImage node (mock: emit ImageReady with 64x64 black PNG b64). In worker_main.py handle Execute message: run_graph; send Completed{job_id,elapsed_ms}. ANVILML_WORKER_MOCK=1 pytest worker/tests/test_executor.py exits 0 >=4 tests.",
+    "context": "Create worker/executor.py: def run_graph(graph:dict,settings:dict,ctx:NodeContext)->None. Topo-sort nodes; for each node: resolve inputs from outputs; instantiate node class from NODE_REGISTRY; call execute(**inputs); store outputs. Create worker/nodes/image.py SaveImage node (mock: emit ImageReady with 64x64 black PNG b64). In worker_main.py handle Execute message: run_graph; send Completed{job_id,elapsed_ms}. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_executor.py exits 0 >=4 tests.",
     "tags": []
   },
   {

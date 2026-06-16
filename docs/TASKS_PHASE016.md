@@ -28,7 +28,7 @@ Phase 15 complete. Refer to `docs/TASKS_PHASE015.md` for the terminal task and R
 
 ### P16-A1: anvilml-worker: progress reporting in executor.py + worker_main.py
 
-**Context:** Extend worker/executor.py: after each node executes, if step-based sampler: emit Progress{job_id,step,total_steps,preview_b64:None} via ctx.emit. In mock mode: emit 3 Progress events then ImageReady then Completed. Update worker_main.py: pass emit=ipc.send_event into NodeContext. ANVILML_WORKER_MOCK=1 pytest worker/tests/test_executor.py exits 0; test verifies Progress events emitted in order.
+**Context:** Extend worker/executor.py: after each node executes, if step-based sampler: emit Progress{job_id,step,total_steps,preview_b64:None} via ctx.emit. In mock mode: emit 3 Progress events then ImageReady then Completed. Update worker_main.py: pass emit=ipc.send_event into NodeContext. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_executor.py exits 0; test verifies Progress events emitted in order.
 
 **Acceptance criterion:** See context field — all stated commands must exit 0.
 
@@ -46,7 +46,7 @@ Phase 15 complete. Refer to `docs/TASKS_PHASE015.md` for the terminal task and R
 
 ```bash
 cargo test --workspace --features mock-hardware
-ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/ -v
+ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v
 cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu
 ```
 
