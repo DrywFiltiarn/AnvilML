@@ -1682,3 +1682,39 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Worker with active bridge and keepalive handles.
 **Expected output:** `shutdown()` completes without panic; all handles are dropped.
 **Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- managed_tests::test_shutdown_cleans_up_handles` exits 0.
+
+## test_spawn_all_workers_idle (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/pool_tests.rs`
+**Context:** `WorkerPool` manages a collection of `ManagedWorker` instances. This test verifies that constructing a pool with N mock workers results in N workers all reporting `Idle` status. Uses `ManagedWorker::new()` with pre-built channels (bypassing subprocess spawning).
+**Tests:** Creates 3 mock workers in `Idle` status, constructs a `WorkerPool` via the test constructor, calls `get_worker_infos()`, and verifies all 3 workers report `Idle` with correct IDs, device names, and device indices.
+**Inputs:** 3 `ManagedWorker` instances in `Idle` status, `RouterTransport::bind()`, `EventBroadcaster::new()`.
+**Expected output:** `get_worker_infos()` returns 3 workers, all with `status: Idle`, correct `id` and `device_name` fields, `current_job_id: None`, `vram_used_mib: None`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- pool_tests::test_spawn_all_workers_idle` exits 0.
+
+## test_broadcaster_returns_reference (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/pool_tests.rs`
+**Context:** `WorkerPool::broadcaster()` must return a reference to the same `Arc<EventBroadcaster>` that was passed during construction. This verifies the pool stores and exposes the broadcaster correctly.
+**Tests:** Constructs a pool with a known `EventBroadcaster` Arc, calls `broadcaster()`, and verifies pointer equality with the original Arc.
+**Inputs:** 1 `ManagedWorker` in `Idle` status, `RouterTransport::bind()`, `EventBroadcaster::new()`.
+**Expected output:** `Arc::ptr_eq(pool.broadcaster(), &original)` — the returned reference is the same Arc.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- pool_tests::test_broadcaster_returns_reference` exits 0.
+
+## test_pool_broadcasts_status_change (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/pool_tests.rs`
+**Context:** The pool's background monitoring task must detect status changes and broadcast `WsEvent::WorkerStatusChanged`. This test verifies the broadcast mechanism by manually spawning a monitoring task and checking for the event.
+**Tests:** Creates a pool with one worker in `Idle` status, spawns a monitoring task (100ms poll interval), sets the worker's status to `Busy` via the RwLock, waits for detection, and verifies the broadcaster received a `WorkerStatusChanged` event with correct fields.
+**Inputs:** 1 `ManagedWorker` in `Idle` status, manually set to `Busy` via RwLock.
+**Expected output:** Broadcaster received `WsEvent::WorkerStatusChanged{worker_id: "test-worker-broadcast", status: Busy, device_index: 0}`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- pool_tests::test_pool_broadcasts_status_change` exits 0.
+
+## test_reexport_worker_pool (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/pool_tests.rs`
+**Context:** `pub use pool::WorkerPool;` in `lib.rs` must make `WorkerPool` accessible via `anvilml_worker::WorkerPool`. This is a compile-time check that verifies the re-export.
+**Tests:** Constructs a `WorkerPool` using the re-exported type name `anvilml_worker::WorkerPool`. If it compiles, the re-export is correct.
+**Inputs:** 1 `ManagedWorker` in `Idle` status, `RouterTransport::bind()`, `EventBroadcaster::new()`.
+**Expected output:** Compiles successfully — no compilation error.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- pool_tests::test_reexport_worker_pool` exits 0.

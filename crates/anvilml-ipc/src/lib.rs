@@ -10,7 +10,9 @@
 pub mod error;
 pub mod messages;
 pub mod transport;
+pub mod ws;
 
 pub use error::TransportError;
 pub use messages::{decode_event, encode_message, IpcError, WorkerEvent, WorkerMessage};
 pub use transport::RouterTransport;
+pub use ws::EventBroadcaster;
