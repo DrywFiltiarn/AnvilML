@@ -57,12 +57,23 @@
     "tags": []
   },
   {
+    "id": "P8-B3",
+    "description": "scripts: install_worker_deps.sh and .ps1 — create venv and install base dependencies",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": [
+      "P8-B2"
+    ],
+    "context": "Create scripts/install_worker_deps.sh (Linux/macOS): verify python3.12 present (exit 1 if not); read ANVILML_VENV_PATH defaulting to ./worker/.venv; skip venv creation if interpreter already exists at venv_path/bin/python3; else python3.12 -m venv \"$venv_path\"; pip install -r worker/requirements/base.txt. Create scripts/install_worker_deps.ps1 (Windows): same logic using py -3.12 and venv_path\\Scripts\\python.exe. Both idempotent. bash scripts/install_worker_deps.sh && worker/.venv/bin/python3 -c \"import zmq, msgpack\" exits 0.",
+    "tags": []
+  },
+  {
     "id": "P8-C1",
     "description": "anvilml-ipc: 1000-trip RouterTransport stress test",
     "phase": "8",
     "project": "anvilml",
     "prereqs": [
-      "P8-B2"
+      "P8-B3"
     ],
     "context": "Create crates/anvilml-ipc/tests/stress_test.rs: #[tokio::test] bind RouterTransport; spawn Python subprocess running worker/ipc_echo.py (minimal script: connect, loop recv_message/send_event Pong); send 1000 WorkerMessage::Ping{seq:i}; assert 1000 Pong responses arrive with matching seq in order; all within 30s. Create worker/ipc_echo.py. cargo test -p anvilml-ipc --features mock-hardware --test stress_test exits 0; log shows 1000/1000.",
     "tags": [

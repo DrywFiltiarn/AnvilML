@@ -12,13 +12,13 @@
   },
   {
     "id": "P22-A2",
-    "description": "scripts: install_worker_deps.sh and .ps1 validated",
+    "description": "scripts: install_worker_deps.sh and .ps1 extended with hardware detection and torch installation",
     "phase": "22",
     "project": "anvilml",
     "prereqs": [
       "P22-A1"
     ],
-    "context": "Ensure install_worker_deps.sh (Linux/macOS): detects nvidia-smi->cuda, amdgpu/rocminfo->rocm, else cpu; creates venv via uv or python3.12 -m venv; pip install base.txt then cuda/rocm-linux/cpu.txt; exits non-zero if Python 3.12 missing. Ensure install_worker_deps.ps1 (Windows): same logic; AMD detection via Get-CimInstance or amd-smi; installs rocm-windows.txt for ROCm. bash -n exits 0 for .sh; PSScriptAnalyzer passes for .ps1.",
+    "context": "Extend scripts/install_worker_deps.sh (created in P8-B3): after base.txt install, detect nvidia-smi->cuda, amdgpu/rocminfo->rocm, else cpu; pip install matching cuda/rocm-linux/cpu.txt. Extend install_worker_deps.ps1: AMD detection via Get-CimInstance or amd-smi; installs rocm-windows.txt for ROCm. Both remain idempotent. bash -n exits 0 for .sh; PSScriptAnalyzer passes for .ps1; bash scripts/install_worker_deps.sh && worker/.venv/bin/python3 -c \"import torch\" exits 0.",
     "tags": []
   }
 ]

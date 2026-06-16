@@ -21,7 +21,7 @@ All messages are msgpack-serialised flat dicts with a `_type` discriminator key.
 | Group | Subsystem | Tasks | Summary |
 |-------|-----------|-------|---------|
 | A | anvilml-ipc Rust | P8-A1 … P8-A3 | WorkerMessage/WorkerEvent enums, msgpack codecs, RouterTransport |
-| B | worker Python | P8-B1 … P8-B2 | ipc.py DEALER transport, test_ipc.py |
+| B | worker Python | P8-B1 … P8-B3 | ipc.py DEALER transport, test_ipc.py, provisioning scripts |
 | C | Integration | P8-C1 | 1000-trip stress test: RouterTransport ↔ mock Python worker |
 
 ## Prerequisites
@@ -72,7 +72,7 @@ Phase 007 complete. `WsEvent`, `WorkerMessage`, `WorkerEvent`, `NodeTypeDescript
 - `worker/ipc.py`
 - `worker/requirements/base.txt` with `pyzmq>=26.0`, `msgpack>=1.0`, `pillow>=10.0`, `safetensors>=0.4`, `pytest>=8.0`
 
-**Acceptance criterion:** `python3 -c "from worker import ipc; print('ok')"` exits 0; pytest worker/tests/test_ipc.py exits 0.
+**Acceptance criterion:** `python3 -c "from worker import ipc; print('ok')"` exits 0.
 
 #### P8-B2: worker/tests/test_ipc.py
 
@@ -80,11 +80,31 @@ Phase 007 complete. `WsEvent`, `WorkerMessage`, `WorkerEvent`, `NodeTypeDescript
 
 **Acceptance criterion:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py -v` exits 0 with ≥ 6 tests.
 
+#### P8-B3: scripts: install_worker_deps.sh and .ps1 — create venv and install base dependencies
+
+**Goal:** Create `scripts/install_worker_deps.sh` (Linux/macOS) and `scripts/install_worker_deps.ps1` (Windows) that ensure the worker venv exists and has the base dependencies installed. These scripts are the provisioning entry point referenced in `ENVIRONMENT.md §1` and `ANVILML_DESIGN.md §18.1`; Phase 022 will extend them with hardware-detection and torch installation.
+
+**Files to create:**
+- `scripts/install_worker_deps.sh` — verify `python3.12` is present (exit 1 if not); read `ANVILML_VENV_PATH` env var defaulting to `./worker/.venv`; skip venv creation if interpreter already exists at `$venv_path/bin/python3`; otherwise run `python3.12 -m venv "$venv_path"`; run `pip install -r worker/requirements/base.txt`. Script is idempotent.
+- `scripts/install_worker_deps.ps1` — same logic using `py -3.12` and `$venv_path\Scripts\python.exe`.
+
+**Key implementation notes:**
+- Python 3.12.x is a hard requirement per `ENVIRONMENT.md §1`. The scripts must reject any other version explicitly, not fall back to a system `python3`.
+- Both scripts must be idempotent: re-running when the venv already exists and `base.txt` is satisfied must be a silent no-op with exit 0.
+- The `.sh` script must use `#!/usr/bin/env bash` and `set -euo pipefail`.
+- The `.ps1` script must use `$ErrorActionPreference = 'Stop'`.
+
+**Acceptance criterion:** `bash scripts/install_worker_deps.sh && worker/.venv/bin/python3 -c "import zmq, msgpack"` exits 0 on Linux. On Windows: `scripts\install_worker_deps.ps1` followed by `worker\.venv\Scripts\python.exe -c "import zmq, msgpack"` exits 0.
+
 ### Group C — Integration stress test
 
 #### P8-C1: anvilml-ipc: 1000-trip RouterTransport stress test
 
-**Goal:** Create `crates/anvilml-ipc/tests/stress_test.rs`: bind `RouterTransport`; spawn a mock Python subprocess (`worker/ipc.py` + minimal echo loop); send 1000 Ping messages; assert 1000 Pong responses arrive with matching seq values; assert 0 timeouts. Test must complete within 30 seconds.
+**Goal:** Create `crates/anvilml-ipc/tests/stress_test.rs`: bind `RouterTransport`; spawn a mock Python subprocess (`worker/ipc_echo.py` + minimal echo loop); send 1000 Ping messages; assert 1000 Pong responses arrive with matching seq values; assert 0 timeouts. Test must complete within 30 seconds.
+
+**Files to create:**
+- `crates/anvilml-ipc/tests/stress_test.rs`
+- `worker/ipc_echo.py`
 
 **Acceptance criterion:** `cargo test -p anvilml-ipc --features mock-hardware --test stress_test` exits 0; all 1000 trips complete; log shows "stress test passed: 1000/1000".
 
@@ -93,14 +113,16 @@ Phase 007 complete. `WsEvent`, `WorkerMessage`, `WorkerEvent`, `NodeTypeDescript
 ```bash
 cargo test -p anvilml-ipc --features mock-hardware
 ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py -v
+bash scripts/install_worker_deps.sh
 cargo test -p anvilml-ipc --features mock-hardware --test stress_test
 ```
 
-All three must exit 0 before Phase 009 begins.
+All four must exit 0 before Phase 009 begins.
 
 ## Known Constraints and Gotchas
 
 - Use `zeromq = { version = "0.6", features = ["tokio"] }` in workspace. Do NOT use 0.4.x — it lacks correct ROUTER/DEALER support.
 - The DEALER socket identity must be set via `setsockopt(zmq.IDENTITY, worker_id.encode())` BEFORE calling `connect()`. Setting identity after connect has no effect.
 - `RouterTransport.recv()` receives a multipart message: `[identity_frame, empty_delimiter, payload_frame]` for ROUTER sockets. Strip the identity and delimiter before decoding the payload.
-- The stress test requires the Python venv to be provisioned (`pyzmq` and `msgpack` installed). Ensure `ANVILML_VENV_PATH` is set or use the default `./worker/.venv`.
+- The stress test (P8-C1) spawns Python from the venv created by P8-B3. `ANVILML_VENV_PATH` must be set or the default `./worker/.venv` must exist with `pyzmq` and `msgpack` installed. P8-B3 guarantees this precondition; P8-C1 must not run before P8-B3 completes.
+- `install_worker_deps.ps1` requires PowerShell 5.1 or later. `py -3.12` requires the Python Launcher for Windows, which is installed by the standard Python 3.12 installer.
