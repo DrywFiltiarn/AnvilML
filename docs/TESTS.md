@@ -1349,3 +1349,57 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** `RouterTransport::bind()`, DEALER identity `"test-worker-0"`, `WorkerEvent::Pong{seq:42}`.
 **Expected output:** `recv()` returns `("test-worker-0", WorkerEvent::Pong{seq:42})`.
 **Acceptance command:** `cargo test -p anvilml-ipc -- recv_roundtrip` exits 0.
+
+## test_connect_succeeds (worker)
+
+**File:** `worker/tests/test_ipc.py`
+**Context:** `ipc.connect(port, worker_id)` creates a DEALER socket, sets the identity, and connects to the ROUTER at the given port. Uses an in-process ROUTER socket bound on a random ephemeral port — no shared state with other tests.
+**Tests:** Creates a `zmq.Context()` and `zmq.ROUTER` socket bound on a random port, calls `ipc.connect(port, "test-worker")`, and asserts `ipc._sock` is not None.
+**Inputs:** Random ephemeral port, worker_id = `"test-worker"`.
+**Expected output:** `ipc._sock is not None` and `ipc._ctx is not None`.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py::test_connect_succeeds -v` exits 0.
+
+## test_send_event_roundtrip (worker)
+
+**File:** `worker/tests/test_ipc.py`
+**Context:** `ipc.send_event()` serialises a dict with msgpack and sends it over the DEALER socket. `ipc.recv_message()` receives and deserialises it. Tests the full send/recv roundtrip with in-process ROUTER+DEALER socket pair.
+**Tests:** Creates a ROUTER socket, connects via `ipc.connect()`, sends `{"_type": "Ready", "node_types": []}` from the test side, then calls `ipc.recv_message()` and asserts the result matches the original dict.
+**Inputs:** Dict `{"_type": "Ready", "node_types": []}`, in-process ROUTER+DEALER pair.
+**Expected output:** `recv_message() == {"_type": "Ready", "node_types": []}`.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py::test_send_event_roundtrip -v` exits 0.
+
+## test_send_event_type_discriminator (worker)
+
+**File:** `worker/tests/test_ipc.py`
+**Context:** The `_type` key in the msgpack-serialised dict survives the roundtrip intact. This is the event discriminator used by the Rust supervisor to route messages.
+**Tests:** Sends `{"_type": "Ready", "node_types": ["LoadCheckpoints"]}` via `ipc.send_event()`, receives via `ipc.recv_message()`, and asserts `received["_type"] == "Ready"`.
+**Inputs:** Dict with `_type: "Ready"` and a node type list.
+**Expected output:** `received["_type"] == "Ready"`.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py::test_send_event_type_discriminator -v` exits 0.
+
+## test_recv_message_before_connect_raises (worker)
+
+**File:** `worker/tests/test_ipc.py`
+**Context:** `ipc._sock` is `None` at module level before `connect()` is called. The guard check in `recv_message()` must raise `RuntimeError` to prevent silent failures.
+**Tests:** Calls `ipc.recv_message()` without calling `connect()` first, and asserts `RuntimeError` is raised.
+**Inputs:** None (module-level `_sock` is `None`).
+**Expected output:** `RuntimeError` is raised.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py::test_recv_message_before_connect_raises -v` exits 0.
+
+## test_send_event_before_connect_raises (worker)
+
+**File:** `worker/tests/test_ipc.py`
+**Context:** Same guard check as `test_recv_message_before_connect_raises` but for `send_event()`. The `_sock is None` guard prevents sending on an uninitialised socket.
+**Tests:** Calls `ipc.send_event({})` without calling `connect()` first, and asserts `RuntimeError` is raised.
+**Inputs:** None (module-level `_sock` is `None`).
+**Expected output:** `RuntimeError` is raised.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py::test_send_event_before_connect_raises -v` exits 0.
+
+## test_identity_attached (worker)
+
+**File:** `worker/tests/test_ipc.py`
+**Context:** ZeroMQ DEALER sockets prepend the identity frame to every message received by the ROUTER. The identity is set via `setsockopt(zmq.IDENTITY, worker_id.encode())` before `connect()`.
+**Tests:** Creates a ROUTER socket bound on a random port, connects via `ipc.connect(port, "test-identity")`, sends a message, reads the ROUTER's multipart frame, and asserts the identity frame equals `b"test-identity"`.
+**Inputs:** In-process ROUTER socket, worker_id = `"test-identity"`.
+**Expected output:** `router.recv() == b"test-identity"` (identity frame of multipart message).
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py::test_identity_attached -v` exits 0.
