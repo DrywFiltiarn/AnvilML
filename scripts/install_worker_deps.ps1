@@ -9,16 +9,28 @@
 #
 # This script is idempotent: if the venv already exists, it skips creation and
 # re-installs dependencies from worker/requirements/base.txt.
+#
+# Requires: py -3.12 (installed by the standard Python 3.12 installer).
+# Compatible with PowerShell 5.1 and later.
 
 $ErrorActionPreference = 'Stop'
 
-# Verify that py -3.12 is available (installed by the standard Python 3.12 installer).
-# This is a hard requirement — no fallback to other Python versions.
-py -3.12 -c "import sys" 2>$null \
-  || { Write-Error "error: py -3.12 is required but not found on PATH"; exit 1; }
+# Verify that py -3.12 is available. The py launcher is installed by the standard
+# Python 3.12 installer. This is a hard requirement — no fallback to other versions.
+try {
+    py -3.12 -c "import sys" 2>$null
+} catch {
+    Write-Error "error: py -3.12 is required but not found on PATH"
+    exit 1
+}
 
 # Resolve venv path from environment or use the documented default.
-$venv_path = $env:ANVILML_VENV_PATH ?? ".\worker\.venv"
+# Use explicit null check for PowerShell 5.1 compatibility (?? is PS 7.0+).
+if ($null -ne $env:ANVILML_VENV_PATH -and $env:ANVILML_VENV_PATH -ne '') {
+    $venv_path = $env:ANVILML_VENV_PATH
+} else {
+    $venv_path = '.\worker\.venv'
+}
 
 # If the venv's python.exe already exists, skip creation (idempotency).
 if (Test-Path "$venv_path\Scripts\python.exe") {
