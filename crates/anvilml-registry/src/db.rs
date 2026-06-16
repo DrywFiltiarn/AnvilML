@@ -107,9 +107,9 @@ pub async fn open_in_memory() -> Result<SqlitePool, AnvilError> {
 
 /// Run all pending migrations from the compiled-in migration directory.
 ///
-/// Logs each migration applied at INFO level. If no migrations are pending,
-/// logs an "up-to-date" message. This is a mandatory INFO log point per
-/// ENVIRONMENT.md §9.
+/// Logs each migration that is genuinely pending (not yet applied to this
+/// database) at INFO level, and logs an "up-to-date" message when nothing
+/// needs to run. This is a mandatory INFO log point per ENVIRONMENT.md §9.
 ///
 /// The migration directory path is embedded at compile time by the
 /// `sqlx::migrate!` macro.
@@ -119,13 +119,35 @@ async fn run_migrations(pool: &SqlitePool) -> Result<(), AnvilError> {
     // the migrations live at ../../database/migrations/.
     let runner = sqlx::migrate!("../../database/migrations");
 
-    // Log each migration that will be applied. The runner.migrations field
-    // is public on the Migrator struct and contains all migrations resolved
-    // at compile time. We log them before running so the operator can see
-    // what migrations are about to be applied.
-    let count = runner.migrations.len();
-    for m in runner.migrations.iter() {
-        info!(migration = %m.description, version = m.version, "migration pending");
+    // Query the applied-migration tracking table to determine which
+    // migrations have already run. sqlx creates _sqlx_migrations on the
+    // first call to run(); on a brand-new database it does not exist yet,
+    // so unwrap_or_default() treats that as an empty set rather than an
+    // error.
+    let applied: Vec<i64> =
+        sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success = TRUE")
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+
+    // Filter the compile-time migration list down to those whose version
+    // number is absent from the applied set. Casting m.version (u64) to
+    // i64 is safe — sqlx stores versions as i64 in _sqlx_migrations and
+    // migration version numbers are small sequential integers.
+    let pending: Vec<_> = runner
+        .migrations
+        .iter()
+        .filter(|m| !applied.contains(&(m.version as i64)))
+        .collect();
+
+    // Log each genuinely pending migration before running so the operator
+    // can see exactly what is about to be applied.
+    if pending.is_empty() {
+        info!("migrations up-to-date");
+    } else {
+        for m in &pending {
+            info!(migration = %m.description, version = m.version, "migration pending");
+        }
     }
 
     // Run migrations — convert MigrateError to sqlx::Error via From impl,
@@ -135,14 +157,6 @@ async fn run_migrations(pool: &SqlitePool) -> Result<(), AnvilError> {
         .run(pool)
         .await
         .map_err(|e| AnvilError::Db(e.into()))?;
-
-    // Log the up-to-date message when no migrations were pending —
-    // mandatory INFO log point per ENVIRONMENT.md §9.
-    if count == 0 {
-        info!(migrations_applied = 0, "migrations up-to-date");
-    } else {
-        info!(migrations_applied = count, "migrations applied");
-    }
 
     Ok(())
 }
