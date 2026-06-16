@@ -1412,3 +1412,12 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** None (module-level `_sock` is `None`).
 **Expected output:** `RuntimeError` is raised.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_ipc.py::test_recv_before_connect_raises -v` exits 0.
+
+## test_stress_test_1000_trips (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/stress_test.rs`
+**Context:** Exercises the full Rust-to-Python IPC path: `RouterTransport` (Rust, ZeroMQ ROUTER) ↔ `ipc.py` DEALER (Python) over msgpack-serialised messages. Spawns a minimal Python echo worker (`worker/ipc_echo.py`) subprocess that connects to the bound ROUTER socket, echoes each `WorkerMessage::Ping` as a `WorkerEvent::Pong`, then sends 1000 Ping messages and asserts all 1000 Pong responses arrive with matching `seq` values in order. The test must complete within 30 seconds. No environment variables are mutated — the worker identity is hardcoded and the port is passed via CLI argument.
+**Tests:** Binds a `RouterTransport::bind()`, spawns `worker/ipc_echo.py` from the worker venv with the bound port as a CLI argument, waits 500ms for the Python startup Ready message, then enters a loop sending `WorkerMessage::Ping { seq: 0..999 }` and asserting each `WorkerEvent::Pong { seq }` matches in order. Sends a Shutdown message on completion.
+**Inputs:** 1000 `WorkerMessage::Ping { seq: 0..999 }` messages sent to worker identity `stress-test-worker`.
+**Expected output:** All 1000 Pongs received with matching seq in order; test completes in < 30s; stdout contains "stress test passed: 1000/1000".
+**Acceptance command:** `cargo test -p anvilml-ipc --features mock-hardware --test stress_test` exits 0.
