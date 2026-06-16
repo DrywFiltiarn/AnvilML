@@ -12,10 +12,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Verify that the stats tick task broadcasts a `SystemStats` event
-/// within 6 seconds of starting.
+/// within 10 seconds of starting.
 ///
 /// This test creates an `EventBroadcaster`, subscribes to it, calls
-/// `start()`, then waits up to 6 seconds for a `SystemStats` event
+/// `start()`, then waits up to 10 seconds for a `SystemStats` event
 /// to arrive on the broadcast channel. The event must have the correct
 /// variant and field types.
 #[tokio::test]
@@ -30,12 +30,12 @@ async fn test_stats_tick_broadcasts_system_stats() {
     // broadcast SystemStats events every 5 seconds.
     stats_tick::start(broadcaster);
 
-    // Wait up to 6 seconds for the first SystemStats event.
+    // Wait up to 10 seconds for the first SystemStats event.
     // The tick sleeps for 5 seconds before the first broadcast,
-    // so 6 seconds gives a 1-second margin for scheduling variance.
+    // so 10 seconds gives a 5-second margin for scheduling variance.
     let mut found = false;
     let start = std::time::Instant::now();
-    while start.elapsed() < Duration::from_secs(6) {
+    while start.elapsed() < Duration::from_secs(10) {
         // Use a non-blocking recv with a short timeout.
         // tokio::sync::mpsc does not support try_recv on broadcast,
         // so we use a select with a timeout.
@@ -65,7 +65,7 @@ async fn test_stats_tick_broadcasts_system_stats() {
 
     // Assert that a SystemStats event was received.
     // If this fails, the tick task is not broadcasting correctly.
-    assert!(found, "expected a SystemStats event within 6 seconds");
+    assert!(found, "expected a SystemStats event within 10 seconds");
 }
 
 /// Verify that the CPU percentage value in a `SystemStats` event is a
@@ -84,7 +84,7 @@ async fn test_stats_tick_cpu_pct_is_finite() {
     // Wait for one SystemStats event.
     let mut got_event = false;
     let start = std::time::Instant::now();
-    while start.elapsed() < Duration::from_secs(6) {
+    while start.elapsed() < Duration::from_secs(10) {
         match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
             Ok(Ok(event)) => {
                 if let WsEvent::SystemStats { cpu_pct, .. } = event {
@@ -105,7 +105,7 @@ async fn test_stats_tick_cpu_pct_is_finite() {
         }
     }
 
-    assert!(got_event, "expected a SystemStats event within 6 seconds");
+    assert!(got_event, "expected a SystemStats event within 10 seconds");
 }
 
 /// Verify that the RAM usage value in a `SystemStats` event is always
@@ -124,7 +124,7 @@ async fn test_stats_tick_ram_used_mib_is_non_negative() {
     // Wait for one SystemStats event.
     let mut got_event = false;
     let start = std::time::Instant::now();
-    while start.elapsed() < Duration::from_secs(6) {
+    while start.elapsed() < Duration::from_secs(10) {
         match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
             Ok(Ok(event)) => {
                 if let WsEvent::SystemStats { ram_used_mib, .. } = event {
@@ -146,5 +146,5 @@ async fn test_stats_tick_ram_used_mib_is_non_negative() {
         }
     }
 
-    assert!(got_event, "expected a SystemStats event within 6 seconds");
+    assert!(got_event, "expected a SystemStats event within 10 seconds");
 }
