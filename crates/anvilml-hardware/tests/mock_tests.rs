@@ -4,9 +4,11 @@
 /// `mock-hardware` feature is active. All tests are marked `#[serial]`
 /// because they mutate process-global environment variables, which are
 /// shared across test threads.
+#[cfg(feature = "mock-hardware")]
 use anvilml_core::{DeviceType, EnumerationSource, HardwareOverrideConfig, ServerConfig};
+
+#[cfg(feature = "mock-hardware")]
 use sqlx::SqlitePool;
-use tokio;
 
 #[cfg(feature = "mock-hardware")]
 use anvilml_hardware::{detect_all_devices, DeviceDetector, MockDetector};
@@ -16,11 +18,14 @@ use anvilml_hardware::{detect_all_devices, DeviceDetector, MockDetector};
 /// Returns a guard that restores the original value (or removes the
 /// variable) when dropped. This guarantees unconditional cleanup even
 /// on panic or early return.
+#[cfg(feature = "mock-hardware")]
+
 struct EnvGuard {
     key: String,
     prior: Option<String>,
 }
 
+#[cfg(feature = "mock-hardware")]
 impl EnvGuard {
     fn new(key: &str, value: &str) -> Self {
         let prior = std::env::var(key).ok();
