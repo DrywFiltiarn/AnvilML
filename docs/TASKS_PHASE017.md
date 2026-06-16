@@ -10,35 +10,68 @@
 
 ## Overview
 
-Phase 017 implements cancellation as the next vertical slice. All tasks in this phase build on Phase 16 being complete. Each task implements one module or one concern, with tests, and leaves the binary in a runnable state.
+Phase 017 implements job cancellation. Two distinct paths exist: cancelling a `Queued` job is immediate (the job is removed from the queue and marked `Cancelled` in a single operation); cancelling a `Running` job sends a `CancelJob` IPC message to the owning worker, which cooperatively stops and confirms via `WorkerEvent::Cancelled`. Attempting to cancel a job already in a terminal state returns 409.
 
-Refer to `docs/ANVILML_DESIGN.md` for the full specification of types, interfaces, and contracts relevant to this phase.
+This phase also adds the delete endpoints that allow operators to clean up finished jobs and their artifacts from disk and SQLite.
 
 ## Group Reference
 
 | Group | Subsystem | Tasks | Summary |
 |-------|-----------|-------|---------|
-| A | Cancellation | P17-A1…P17-A2 | Cancellation implementation |
+| A | anvilml-scheduler + server | P17-A1 … P17-A2 | cancel_job logic, CancelJob IPC, HTTP cancel and delete endpoints |
 
 ## Prerequisites
 
-Phase 16 complete. Refer to `docs/TASKS_PHASE016.md` for the terminal task and Runnable Proof of Phase 16.
+Phase 016 complete. `JobScheduler` has running dispatch and event subscription loops. `WorkerMessage::CancelJob { job_id: Uuid }` and `WorkerEvent::Cancelled { job_id: Uuid }` exist in `anvilml-core`. `ArtifactStore::delete` exists or is added in P17-A2. The Python worker handles `CancelJob` messages (or that handling is added in P17-A1).
+
+## Interfaces and Contracts
+
+| Contract document | Relevant to tasks | What must match |
+|-------------------|-------------------|-----------------|
+| `ANVILML_DESIGN.md §8.1` | P17-A1 | `WorkerMessage::CancelJob { job_id }` |
+| `ANVILML_DESIGN.md §8.2` | P17-A1 | `WorkerEvent::Cancelled { job_id }` |
+| `ANVILML_DESIGN.md §12.4` | P17-A2 | POST /v1/jobs/:id/cancel → 202; DELETE /v1/jobs/:id → 204; DELETE /v1/jobs → 200 `{ removed: u32 }` |
+| `ANVILML_DESIGN.md §12.5` | P17-A2 | 409 error shape for terminal-state cancel attempt |
 
 ## Task Descriptions
 
-### P17-A1: anvilml-scheduler: cancel queued job (immediate) and cancel running job (IPC)
+### Group A — anvilml-scheduler and anvilml-server
 
-**Context:** Add to scheduler.rs: pub async fn cancel_job(&self,id:Uuid)->Result<(),AnvilError>. If Queued: mark Cancelled in queue+DB; broadcast JobCancelled; return Ok. If Running: send WorkerMessage::CancelJob{job_id} to owning worker; return Ok (actual cancellation confirmed via WorkerEvent::Cancelled). If terminal: return AnvilError::InvalidOperation (409). On WorkerEvent::Cancelled{job_id}: mark Cancelle...
+#### P17-A1: anvilml-scheduler: cancel queued job (immediate) and cancel running job (IPC)
 
-**Acceptance criterion:** See context field — all stated commands must exit 0.
+**Goal:** Implement `cancel_job` in `JobScheduler`. Queued cancellation is synchronous; running cancellation is asynchronous (the scheduler sends the IPC message and the actual cancellation is confirmed when `WorkerEvent::Cancelled` arrives).
+
+**Files to create or modify:**
+- `crates/anvilml-scheduler/src/scheduler.rs` — add `pub async fn cancel_job(&self, id: Uuid) -> Result<(), AnvilError>` and `WorkerEvent::Cancelled` handler
+- `crates/anvilml-scheduler/tests/scheduler_cancel_tests.rs` — new file; ≥ 4 tests
+- `worker/worker_main.py` — handle `WorkerMessage::CancelJob`: set cancel flag; send `WorkerEvent::Cancelled { job_id }`
+
+**Key implementation notes:**
+- `cancel_job`: look up job status; if `Queued`: `queue.cancel(id)`; `UPDATE jobs SET status=Cancelled`; `broadcast(WsEvent::JobCancelled { job_id })`; return `Ok(())`
+- If `Running`: send `WorkerMessage::CancelJob { job_id }` to the owning worker; return `Ok(())` — caller receives 202 immediately, Cancelled status arrives asynchronously
+- If already terminal (`Completed`, `Failed`, `Cancelled`): return `AnvilError::InvalidOperation` (409)
+- On `WorkerEvent::Cancelled { job_id }`: `UPDATE jobs SET status=Cancelled`; `ledger.release(...)`; `broadcast(WsEvent::JobCancelled { job_id })`
+- `tracing::info!(job_id, "job cancelled")`
+
+**Acceptance criterion:** `cargo test -p anvilml-scheduler --features mock-hardware` exits 0 with ≥ 4 tests (cancel queued → immediate Cancelled; cancel running → 202 then Cancelled via event; cancel terminal → error 409; cancel unknown → 404).
 
 ---
 
-### P17-A2: anvilml-server: POST /v1/jobs/:id/cancel + DELETE endpoints
+#### P17-A2: anvilml-server: POST /v1/jobs/:id/cancel + DELETE endpoints
 
-**Context:** Add to handlers/jobs.rs: cancel_job(State<AppState>,Path<Uuid>): call scheduler.cancel_job(); 202 on Ok; 409 on InvalidOperation; 404 if not found. delete_job(Path<Uuid>): only if terminal; DELETE from DB+artifacts. bulk_clear(Query<{status}>): DELETE matching terminal jobs+artifacts. Mount POST /v1/jobs/:id/cancel, DELETE /v1/jobs/:id, DELETE /v1/jobs in build_router. Integration test: cancel que...
+**Goal:** Expose the cancellation and deletion HTTP endpoints. Delete endpoints are only valid for terminal jobs; attempting to delete a Queued or Running job returns 409.
 
-**Acceptance criterion:** See context field — all stated commands must exit 0.
+**Files to create or modify:**
+- `crates/anvilml-server/src/handlers/jobs.rs` — add `cancel_job`, `delete_job`, `bulk_clear` handlers
+- `crates/anvilml-server/src/lib.rs` — mount `POST /v1/jobs/:id/cancel`, `DELETE /v1/jobs/:id`, `DELETE /v1/jobs`
+
+**Key implementation notes:**
+- `cancel_job(State<AppState>, Path<Uuid>)`: call `scheduler.cancel_job(id).await`; map `Ok(())` → 202; `AnvilError::InvalidOperation` → 409; `AnvilError::JobNotFound` → 404
+- `delete_job(Path<Uuid>)`: only if terminal; `DELETE FROM jobs WHERE id=?`; delete artifact files via `artifact_store`; return 204
+- `bulk_clear(Query<{ status: String }>)`: delete all jobs matching the status filter (must be a terminal status string: `completed`, `failed`, `cancelled`, or `all`); return `200 { removed: u32 }`
+- Integration test: cancel a queued job via POST → 202; verify `GET /v1/jobs/:id` returns `{ status: "cancelled" }`
+
+**Acceptance criterion:** `cargo test -p anvilml-server --features mock-hardware` exits 0; integration test covers cancel → 202 → Cancelled status confirmed via GET.
 
 ---
 
@@ -52,6 +85,8 @@ cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu
 
 ## Known Constraints and Gotchas
 
-- Follow `FORGE_AGENT_RULES.md §12` for all inline documentation: every pub item needs a doc comment; every decision point needs an inline comment.
-- Follow `FORGE_AGENT_RULES.md §11` for all logging: mandatory INFO and DEBUG log points must be present before a task is marked complete.
+- The `bulk_clear` endpoint must reject non-terminal status values (e.g. `status=running`) with 400. Only `completed`, `failed`, `cancelled`, and `all` are valid.
+- When deleting jobs with `bulk_clear`, artifact files must be deleted from disk alongside the DB rows. An orphaned PNG on disk with no DB entry is acceptable; a DB entry with no file is not.
+- Follow `FORGE_AGENT_RULES.md §12` for all inline documentation.
+- Follow `FORGE_AGENT_RULES.md §11` for all logging.
 - Test isolation: every test that sets env vars must restore them unconditionally per `ENVIRONMENT.md §11.3`.
