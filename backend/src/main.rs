@@ -17,8 +17,10 @@ mod config {
 }
 
 use anvilml_hardware::detect_all_devices;
+use anvilml_ipc::RouterTransport;
 use anvilml_registry::{open, ModelStore};
 use anvilml_server::{build_router, AppState};
+use anvilml_worker::WorkerPool;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing_subscriber::filter::Directive;
@@ -120,11 +122,51 @@ async fn main() {
         );
     }
 
-    // Create shared application state with hardware detection results and
-    // the real database pool. env!("CARGO_PKG_VERSION") is a compile-time
-    // literal that implements Into<String>, matching the constructor's type.
-    // Construct the ModelStore from the pool — it only stores the pool
-    // reference (no I/O), but the constructor is async for API consistency.
+    // Bind the IPC transport. The ROUTER socket accepts connections from
+    // worker DEALER sockets. Binding to port 0 lets the OS assign an
+    // available port, avoiding conflicts when multiple server instances
+    // run concurrently. The assigned port is passed to workers via env vars.
+    let transport = RouterTransport::bind()
+        .await
+        .expect("failed to bind IPC transport");
+
+    // Spawn managed workers for all detected GPU devices.
+    // Each worker is a Python subprocess that executes inference nodes.
+    // The worker pool spawns a background monitoring task per worker that
+    // broadcasts status changes to connected WebSocket clients.
+    // We need an EventBroadcaster for the worker pool. Since the full
+    // AppState requires the workers pool (circular dependency), we
+    // create a temporary AppState first to obtain the broadcaster.
+    //
+    // However, hardware_info must be borrowed for spawn_all() before
+    // it is moved into the temp AppState. We handle this by cloning
+    // hardware_info for the temp state (acceptable cost — one hardware
+    // snapshot is small, and the clone is dropped immediately after).
+    let temp_state = AppState::new_with_hardware_no_workers(
+        env!("CARGO_PKG_VERSION"),
+        Arc::new(tokio::sync::RwLock::new(hardware_info.clone())),
+        pool.clone(),
+        Arc::new(ModelStore::new(pool.clone()).await),
+        cfg.model_dirs.clone(),
+    );
+
+    let workers = WorkerPool::spawn_all(
+        &cfg,
+        &hardware_info.gpus,
+        Arc::new(transport),
+        temp_state.broadcaster.clone(),
+    )
+    .await
+    .expect("failed to spawn worker pool");
+
+    // Drop the temp state — we only needed its broadcaster.
+    // The temp hardware Arc is dropped here, freeing the original
+    // hardware_info clone.
+    drop(temp_state);
+
+    // Create the real shared application state with the worker pool included.
+    // env!("CARGO_PKG_VERSION") is a compile-time literal that implements
+    // Into<String>, matching the constructor's type.
     let registry = Arc::new(ModelStore::new(pool.clone()).await);
     let state = AppState::new_with_hardware(
         env!("CARGO_PKG_VERSION"),
@@ -132,6 +174,7 @@ async fn main() {
         pool,
         registry,
         cfg.model_dirs.clone(),
+        Arc::new(workers),
     );
 
     // Run the initial model directory scan at startup. This populates the
@@ -161,10 +204,12 @@ async fn main() {
     }
 
     // Build the axum router with all registered handlers wired to their routes.
-    // Clone the broadcaster before passing state into the router, so we can
-    // pass it to stats_tick::start() after the router is built.
     // AppState is Clone because its fields (Arc, Vec, String) are all Clone.
-    let broadcaster = state.broadcaster.clone();
+    // The workers field was populated before this point, so the router
+    // has access to the worker pool via state.workers.
+    // Clone the workers Arc before moving state into the router, so we can
+    // pass it to stats_tick::start() after the router is built.
+    let workers = state.workers.clone().unwrap();
     let router = build_router(state);
 
     // Build the bind address from the resolved config values.
@@ -198,7 +243,9 @@ async fn main() {
     // 5 seconds via the WebSocket event stream. Starting after the bind
     // log ensures the broadcaster is initialised but before accepting
     // connections so events flow immediately to the first subscriber.
-    anvilml_server::ws::stats_tick::start(broadcaster);
+    // The stats tick uses the WorkerPool for both the broadcaster
+    // (via pool.broadcaster()) and the worker info snapshot.
+    anvilml_server::ws::stats_tick::start(workers);
 
     // Run the server until a fatal error occurs. The .expect() provides a
     // user-visible error message if the server encounters a fatal error during serving.

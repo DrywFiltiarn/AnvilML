@@ -17,8 +17,6 @@ use anvilml_core::types::WsEvent;
 use sysinfo::System;
 use tokio::time::sleep;
 
-use crate::ws::EventBroadcaster;
-
 /// Start the system stats background tick task.
 ///
 /// Spawns a tokio task that loops indefinitely, collecting CPU utilisation
@@ -31,10 +29,9 @@ use crate::ws::EventBroadcaster;
 ///
 /// # Arguments
 ///
-/// * `broadcaster` — An `Arc<EventBroadcaster>` shared across the server.
-///   The arc is cloned into the spawned task so the original can continue
-///   being used by HTTP handlers.
-pub fn start(broadcaster: Arc<EventBroadcaster>) {
+/// * `pool` — An `Arc<WorkerPool>` providing access to the shared
+///   `EventBroadcaster` and the current worker info snapshot.
+pub fn start(pool: Arc<anvilml_worker::WorkerPool>) {
     // Spawn the tick loop as a detached tokio task.
     // The JoinHandle is intentionally dropped — the task runs for the
     // lifetime of the server and does not need to be polled or cancelled.
@@ -84,19 +81,22 @@ pub fn start(broadcaster: Arc<EventBroadcaster>) {
             // and non-negative.
             let ram_used_mib = sys.used_memory() / (1024 * 1024);
 
-            // Build the SystemStats event with an empty workers vec.
-            // The workers array is populated by a future task (Phase 009)
-            // when the WorkerPool exists.
+            // Get the worker info snapshot from the pool.
+            // This populates the workers field in SystemStats with the
+            // current state of all managed workers.
+            let workers = pool.get_worker_infos().await;
+
+            // Build the SystemStats event with the worker snapshot.
             let event = WsEvent::SystemStats {
                 cpu_pct,
                 ram_used_mib,
-                workers: Vec::new(),
+                workers,
             };
 
             // Broadcast the event to all connected WebSocket clients.
             // If all receivers are lagging, EventBroadcaster::send() logs
             // a WARN and drops the event — the tick loop continues unaffected.
-            broadcaster.send(event);
+            pool.broadcaster().send(event);
 
             // Log the tick at TRACE level for diagnostic purposes.
             // This is a routine per-tick log point (not mandatory per

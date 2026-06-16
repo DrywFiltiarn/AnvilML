@@ -6,29 +6,47 @@
 //! is involved.
 
 use anvilml_core::types::WsEvent;
-use anvilml_server::ws::broadcaster::EventBroadcaster;
+use anvilml_ipc::{EventBroadcaster, RouterTransport};
 use anvilml_server::ws::stats_tick;
+use anvilml_worker::WorkerPool;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Helper to create a minimal WorkerPool for tests.
+///
+/// Creates a bound RouterTransport (port 0, OS-assigned), a fresh
+/// EventBroadcaster, and an empty worker list. The transport is never
+/// actually used by the test since no messages are sent.
+fn test_pool() -> WorkerPool {
+    // Create a bound transport with OS-assigned port.
+    // Port 0 avoids conflicts when multiple test instances run concurrently.
+    let transport = futures::executor::block_on(async {
+        RouterTransport::bind().await.expect("bind test transport")
+    });
+
+    // Create a fresh event broadcaster for this test pool.
+    let broadcaster = Arc::new(EventBroadcaster::new());
+
+    // Build an empty worker pool — no workers to monitor.
+    // The pool's broadcaster is the one above.
+    WorkerPool::new(Vec::new(), Arc::new(transport), broadcaster)
+}
 
 /// Verify that the stats tick task broadcasts a `SystemStats` event
 /// within 10 seconds of starting.
 ///
-/// This test creates an `EventBroadcaster`, subscribes to it, calls
-/// `start()`, then waits up to 10 seconds for a `SystemStats` event
-/// to arrive on the broadcast channel. The event must have the correct
-/// variant and field types.
+/// This test creates a minimal `WorkerPool`, subscribes to its
+/// `EventBroadcaster`, calls `start()`, then waits up to 10 seconds
+/// for a `SystemStats` event to arrive on the broadcast channel.
+/// The event must have the correct variant and field types.
 #[tokio::test]
 async fn test_stats_tick_broadcasts_system_stats() {
-    // Create a broadcaster and subscribe to it.
-    // The broadcast channel capacity of 1024 is sufficient for this test
-    // which only receives a handful of events.
-    let broadcaster = Arc::new(EventBroadcaster::new());
-    let mut rx = broadcaster.subscribe();
+    let pool = test_pool();
+    let mut rx = pool.broadcaster().subscribe();
 
     // Start the tick task. This spawns a detached tokio task that will
     // broadcast SystemStats events every 5 seconds.
-    stats_tick::start(broadcaster);
+    stats_tick::start(Arc::new(pool));
 
     // Wait up to 10 seconds for the first SystemStats event.
     // The tick sleeps for 5 seconds before the first broadcast,
@@ -76,10 +94,10 @@ async fn test_stats_tick_broadcasts_system_stats() {
 /// asserts that `cpu_pct.is_finite()` is true.
 #[tokio::test]
 async fn test_stats_tick_cpu_pct_is_finite() {
-    let broadcaster = Arc::new(EventBroadcaster::new());
-    let mut rx = broadcaster.subscribe();
+    let pool = test_pool();
+    let mut rx = pool.broadcaster().subscribe();
 
-    stats_tick::start(broadcaster);
+    stats_tick::start(Arc::new(pool));
 
     // Wait for one SystemStats event.
     let mut got_event = false;
@@ -116,10 +134,10 @@ async fn test_stats_tick_cpu_pct_is_finite() {
 /// inherently non-negative, but this test documents that invariant.
 #[tokio::test]
 async fn test_stats_tick_ram_used_mib_is_non_negative() {
-    let broadcaster = Arc::new(EventBroadcaster::new());
-    let mut rx = broadcaster.subscribe();
+    let pool = test_pool();
+    let mut rx = pool.broadcaster().subscribe();
 
-    stats_tick::start(broadcaster);
+    stats_tick::start(Arc::new(pool));
 
     // Wait for one SystemStats event.
     let mut got_event = false;

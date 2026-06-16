@@ -1754,3 +1754,48 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** 1 `ManagedWorker` in `Idle` status, `RouterTransport::bind()`, `EventBroadcaster::new()`.
 **Expected output:** Compiles successfully — no compilation error.
 **Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- pool_tests::test_reexport_worker_pool` exits 0.
+
+## test_list_workers_returns_empty_when_no_pool (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/workers_tests.rs`
+**Context:** The `GET /v1/workers` handler returns an empty JSON array when `AppState.workers` is `None`. Exercises the production `build_router` path via `Router::oneshot` without a live TCP listener.
+**Tests:** Builds the router with `AppState::new("test-version")` (which sets `workers = None`), sends GET `/v1/workers`, asserts HTTP 200, parses the JSON response, and verifies the body is an empty JSON array `[]`.
+**Inputs:** GET `/v1/workers`, `AppState::new("test-version")`.
+**Expected output:** HTTP 200 with JSON body `[]`.
+**Acceptance command:** `cargo test -p anvilml-server --test workers_tests -- test_list_workers_returns_empty_when_no_pool` exits 0.
+
+## test_list_workers_returns_pool_data (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/workers_tests.rs`
+**Context:** The `GET /v1/workers` handler returns worker info from the `WorkerPool` when `AppState.workers` is `Some(pool)`. Exercises the production `build_router` path via `Router::oneshot`. Uses a mock `ManagedWorker` in `Idle` status to avoid spawning a real Python subprocess.
+**Tests:** Creates a `WorkerPool` with one mock `ManagedWorker` (status=`Idle`, id=`"worker-0"`, device=`"mock-device"`), builds `AppState` with `new_with_hardware` including the pool, sends GET `/v1/workers`, asserts HTTP 200, parses the JSON response, and verifies the body is a JSON array with one entry containing `status: "idle"` and `id: "worker-0"`.
+**Inputs:** GET `/v1/workers`, `AppState::new_with_hardware(...)` with a mock pool containing one worker.
+**Expected output:** HTTP 200 with JSON array of length 1, first entry has `status="idle"` and `id="worker-0"`.
+**Acceptance command:** `cargo test -p anvilml-server --test workers_tests -- test_list_workers_returns_pool_data` exits 0.
+
+## test_stats_tick_broadcasts_system_stats (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/stats_tick_tests.rs`
+**Context:** The `stats_tick::start()` function now takes `Arc<WorkerPool>` instead of `Arc<EventBroadcaster>`. This test verifies the tick task broadcasts a `SystemStats` event within 10 seconds. Uses a minimal `WorkerPool` with zero workers (created via `test_pool()` helper that binds a `RouterTransport` on port 0 and creates a fresh `EventBroadcaster`).
+**Tests:** Creates a minimal `WorkerPool`, subscribes to its broadcaster, calls `start()`, then waits up to 10 seconds for a `SystemStats` event. The event must have the correct `SystemStats` variant and field types.
+**Inputs:** Minimal `WorkerPool` (0 workers, bound transport, fresh broadcaster).
+**Expected output:** `SystemStats` event received within 10 seconds.
+**Acceptance command:** `cargo test -p anvilml-server --test stats_tick_tests -- test_stats_tick_broadcasts_system_stats` exits 0.
+
+## test_stats_tick_cpu_pct_is_finite (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/stats_tick_tests.rs`
+**Context:** The `stats_tick::start()` function uses `Arc<WorkerPool>` as its parameter. This test verifies the CPU percentage value in a `SystemStats` event is a finite `f32` (not NaN or infinity).
+**Tests:** Creates a minimal `WorkerPool`, subscribes to its broadcaster, calls `start()`, waits for one event, and asserts `cpu_pct.is_finite() == true`.
+**Inputs:** Minimal `WorkerPool` (0 workers).
+**Expected output:** `cpu_pct.is_finite() == true`.
+**Acceptance command:** `cargo test -p anvilml-server --test stats_tick_tests -- test_stats_tick_cpu_pct_is_finite` exits 0.
+
+## test_stats_tick_ram_used_mib_is_non_negative (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/stats_tick_tests.rs`
+**Context:** The `stats_tick::start()` function uses `Arc<WorkerPool>` as its parameter. This test verifies the RAM usage value in a `SystemStats` event is always non-negative.
+**Tests:** Creates a minimal `WorkerPool`, subscribes to its broadcaster, calls `start()`, waits for one event, and asserts `ram_used_mib > 0`.
+**Inputs:** Minimal `WorkerPool` (0 workers).
+**Expected output:** `ram_used_mib > 0`.
+**Acceptance command:** `cargo test -p anvilml-server --test stats_tick_tests -- test_stats_tick_ram_used_mib_is_non_negative` exits 0.

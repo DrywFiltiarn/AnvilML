@@ -22,6 +22,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use handlers::models::{get_model, list_models, rescan_models};
+use handlers::workers::list_workers;
 use ws::handler::ws_events;
 
 /// Build the HTTP router with all registered handlers.
@@ -62,6 +63,9 @@ pub fn build_router(state: AppState) -> Router {
         // Model rescan — triggers a background directory scan.
         // Returns 202 Accepted immediately; the scan runs in a spawned task.
         .route("/v1/models/rescan", post(rescan_models))
+        // Worker list — returns all workers and their current states.
+        // Returns an empty array when no worker pool is configured.
+        .route("/v1/workers", get(list_workers))
         // WebSocket event stream — accepts upgrade requests and forwards
         // broadcast events as JSON text frames to connected clients.
         .route("/v1/events", get(ws_events))

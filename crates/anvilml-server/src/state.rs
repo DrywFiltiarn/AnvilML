@@ -53,6 +53,14 @@ pub struct AppState {
     /// shares the same `Arc<EventBroadcaster>`, so all handlers broadcast
     /// to the same set of subscribers.
     pub broadcaster: Arc<crate::ws::EventBroadcaster>,
+
+    /// The managed worker pool, if spawned at server startup.
+    ///
+    /// `Some(pool)` in production after `WorkerPool::spawn_all()` succeeds.
+    /// `None` in tests that use `AppState::new()` for stub mode — the
+    /// `GET /v1/workers` handler returns an empty JSON array when this
+    /// field is `None`.
+    pub workers: Option<Arc<anvilml_worker::WorkerPool>>,
 }
 
 impl AppState {
@@ -96,6 +104,9 @@ impl AppState {
             // The broadcaster is shared across all handlers and spawned tasks.
             // Cloning AppState clones the Arc, not the sender itself.
             broadcaster: Arc::new(crate::ws::EventBroadcaster::new()),
+            // Workers pool is None for stub/test mode — the workers handler
+            // returns an empty array when workers is None.
+            workers: None,
         }
     }
 
@@ -120,7 +131,49 @@ impl AppState {
     ///   sync/async boundary in this synchronous constructor.
     /// * `model_dirs` — Configured model directories for the scanner.
     ///   Passed from `cfg.model_dirs` at server startup.
+    /// * `workers` — The managed worker pool, already spawned via
+    ///   `WorkerPool::spawn_all()`. Provides worker state for the
+    ///   `/v1/workers` handler and the system stats tick.
     pub fn new_with_hardware(
+        version: impl Into<String>,
+        hardware: Arc<tokio::sync::RwLock<anvilml_core::types::HardwareInfo>>,
+        db: sqlx::SqlitePool,
+        registry: Arc<anvilml_registry::ModelStore>,
+        model_dirs: Vec<anvilml_core::ModelDirConfig>,
+        workers: Arc<anvilml_worker::WorkerPool>,
+    ) -> Self {
+        Self {
+            start_time: std::time::Instant::now(),
+            version: version.into(),
+            env_report: anvilml_core::types::EnvReport::default(),
+            hardware,
+            db,
+            registry,
+            model_dirs,
+            // The broadcaster is shared across all handlers and spawned tasks.
+            // Cloning AppState clones the Arc, not the sender itself.
+            broadcaster: Arc::new(crate::ws::EventBroadcaster::new()),
+            workers: Some(workers),
+        }
+    }
+
+    /// Create a new AppState with hardware detection results but without
+    /// a worker pool.
+    ///
+    /// This constructor is used for the temporary AppState at server
+    /// startup to obtain the `EventBroadcaster` before spawning workers.
+    /// The `workers` field is `None`; production code should use
+    /// `new_with_hardware` with a populated worker pool instead.
+    ///
+    /// # Arguments
+    ///
+    /// * `version` — The server version string (e.g. from `CARGO_PKG_VERSION`).
+    /// * `hardware` — A pre-detect `Arc<RwLock<HardwareInfo>>` containing the
+    ///   hardware snapshot from `detect_all_devices()`.
+    /// * `db` — A file-backed `SqlitePool` opened via `anvilml_registry::open()`.
+    /// * `registry` — A pre-built `Arc<ModelStore>` for model metadata CRUD.
+    /// * `model_dirs` — Configured model directories for the scanner.
+    pub fn new_with_hardware_no_workers(
         version: impl Into<String>,
         hardware: Arc<tokio::sync::RwLock<anvilml_core::types::HardwareInfo>>,
         db: sqlx::SqlitePool,
@@ -138,6 +191,7 @@ impl AppState {
             // The broadcaster is shared across all handlers and spawned tasks.
             // Cloning AppState clones the Arc, not the sender itself.
             broadcaster: Arc::new(crate::ws::EventBroadcaster::new()),
+            workers: None,
         }
     }
 }

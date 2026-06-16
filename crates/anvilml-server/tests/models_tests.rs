@@ -92,7 +92,7 @@ async fn test_list_models_with_kind_filter() {
     let hardware = std::sync::Arc::new(tokio::sync::RwLock::new(
         anvilml_core::types::HardwareInfo::default(),
     ));
-    let state = AppState::new_with_hardware(
+    let state = AppState::new_with_hardware_no_workers(
         "test-version",
         hardware,
         pool.clone(),
@@ -246,7 +246,7 @@ async fn test_rescan_populates_registry() {
         recursive: false,
         max_depth: None,
     }];
-    let state = AppState::new_with_hardware(
+    let state = AppState::new_with_hardware_no_workers(
         "test-version",
         hardware,
         pool,
@@ -342,7 +342,7 @@ async fn test_rescan_infer_kind_and_dtype() {
             max_depth: None,
         },
     ];
-    let state = AppState::new_with_hardware(
+    let state = AppState::new_with_hardware_no_workers(
         "test-version",
         hardware,
         pool,
