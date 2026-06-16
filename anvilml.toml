@@ -5,6 +5,7 @@ artifact_dir = "./artifacts"
 venv_path = "./worker/.venv"
 max_ipc_payload_mib = 256
 seeds_path = "./database/seeds"
+log_level = "info"
 
 [gpu_selection]
 default_device = "auto"

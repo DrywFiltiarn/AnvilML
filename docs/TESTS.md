@@ -1421,3 +1421,93 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** 1000 `WorkerMessage::Ping { seq: 0..999 }` messages sent to worker identity `stress-test-worker`.
 **Expected output:** All 1000 Pongs received with matching seq in order; test completes in < 30s; stdout contains "stress test passed: 1000/1000".
 **Acceptance command:** `cargo test -p anvilml-ipc --features mock-hardware --test stress_test` exits 0.
+
+## test_ipc_port (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/env_tests.rs`
+**Context:** `build_worker_env()` is callable — no I/O, no subprocess, no network. Pure data transformation.
+**Tests:** Constructs a `GpuDevice` with index=0 and `ServerConfig::default()`, calls `build_worker_env` with port=9000, and asserts `ANVILML_IPC_PORT` equals `"9000"`.
+**Inputs:** port=9000, device.index=0, default config.
+**Expected output:** `map["ANVILML_IPC_PORT"] == "9000"`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- env::test_ipc_port` exits 0.
+
+## test_worker_id (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/env_tests.rs`
+**Context:** `build_worker_env()` produces `ANVILML_WORKER_ID` from the device index.
+**Tests:** Constructs a `GpuDevice` with index=0, calls `build_worker_env`, and asserts `ANVILML_WORKER_ID` equals `"0"`.
+**Inputs:** device.index=0, port=8488, default config.
+**Expected output:** `map["ANVILML_WORKER_ID"] == "0"`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- env::test_worker_id` exits 0.
+
+## test_device_index (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/env_tests.rs`
+**Context:** `build_worker_env()` produces `ANVILML_DEVICE_INDEX` from the device index.
+**Tests:** Constructs a `GpuDevice` with index=0, calls `build_worker_env`, and asserts `ANVILML_DEVICE_INDEX` equals `"0"`.
+**Inputs:** device.index=0, port=8488, default config.
+**Expected output:** `map["ANVILML_DEVICE_INDEX"] == "0"`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- env::test_device_index` exits 0.
+
+## test_device_type_cuda (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/env_tests.rs`
+**Context:** `build_worker_env()` maps `DeviceType::Cuda` to `"cuda"` via `device_type_label()`.
+**Tests:** Constructs a `GpuDevice` with `DeviceType::Cuda`, calls `build_worker_env`, and asserts `ANVILML_DEVICE_TYPE` equals `"cuda"`.
+**Inputs:** device_type=DeviceType::Cuda, port=8488, default config.
+**Expected output:** `map["ANVILML_DEVICE_TYPE"] == "cuda"`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- env::test_device_type_cuda` exits 0.
+
+## test_device_type_rocm (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/env_tests.rs`
+**Context:** `build_worker_env()` maps `DeviceType::Rocm` to `"rocm"` via `device_type_label()`.
+**Tests:** Constructs a `GpuDevice` with `DeviceType::Rocm`, calls `build_worker_env`, and asserts `ANVILML_DEVICE_TYPE` equals `"rocm"`.
+**Inputs:** device_type=DeviceType::Rocm, port=8488, default config.
+**Expected output:** `map["ANVILML_DEVICE_TYPE"] == "rocm"`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- env::test_device_type_rocm` exits 0.
+
+## test_device_type_cpu (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/env_tests.rs`
+**Context:** `build_worker_env()` maps `DeviceType::Cpu` to `"cpu"` via `device_type_label()`.
+**Tests:** Constructs a `GpuDevice` with `DeviceType::Cpu`, calls `build_worker_env`, and asserts `ANVILML_DEVICE_TYPE` equals `"cpu"`.
+**Inputs:** device_type=DeviceType::Cpu, port=8488, default config.
+**Expected output:** `map["ANVILML_DEVICE_TYPE"] == "cpu"`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- env::test_device_type_cpu` exits 0.
+
+## test_log_level (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/env_tests.rs`
+**Context:** `build_worker_env()` forwards `cfg.log_level` to `ANVILML_LOG_LEVEL`.
+**Tests:** Constructs a `ServerConfig` with `log_level = "debug"`, calls `build_worker_env`, and asserts `ANVILML_LOG_LEVEL` equals `"debug"`.
+**Inputs:** cfg.log_level="debug", device.index=0, port=8488.
+**Expected output:** `map["ANVILML_LOG_LEVEL"] == "debug"`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- env::test_log_level` exits 0.
+
+## test_max_ipc_payload_mib (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/env_tests.rs`
+**Context:** `build_worker_env()` forwards `cfg.max_ipc_payload_mib` to `ANVILML_MAX_IPC_PAYLOAD_MIB`.
+**Tests:** Constructs a `ServerConfig` with `max_ipc_payload_mib = 512`, calls `build_worker_env`, and asserts `ANVILML_MAX_IPC_PAYLOAD_MIB` equals `"512"`.
+**Inputs:** cfg.max_ipc_payload_mib=512, device.index=0, port=8488.
+**Expected output:** `map["ANVILML_MAX_IPC_PAYLOAD_MIB"] == "512"`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- env::test_max_ipc_payload_mib` exits 0.
+
+## test_mock_hardware_flag (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/env_tests.rs`
+**Context:** When compiled with `mock-hardware` feature, `build_worker_env()` injects `ANVILML_WORKER_MOCK=1`.
+**Tests:** With `mock-hardware` feature enabled, calls `build_worker_env` and asserts `ANVILML_WORKER_MOCK` equals `"1"`.
+**Inputs:** Any device, any config, any port. Feature `mock-hardware` enabled.
+**Expected output:** `map["ANVILML_WORKER_MOCK"] == "1"`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- env::test_mock_hardware_flag` exits 0.
+
+## test_total_count (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/env_tests.rs`
+**Context:** `build_worker_env()` produces exactly 6 env vars normally, 7 with `mock-hardware`.
+**Tests:** Calls `build_worker_env` and asserts the HashMap length. With `mock-hardware`: 7. Without: 6.
+**Inputs:** Any device, any config, any port.
+**Expected output:** `map.len() == 7` (with mock-hardware) or `6` (without).
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- env::test_total_count` exits 0.

@@ -208,6 +208,7 @@ Config precedence (lowest to highest):
 | `venv_path` | path | `"./worker/.venv"` | Python venv root |
 | `max_ipc_payload_mib` | u32 | `256` | Maximum IPC message payload in MiB |
 | `seeds_path` | path | `"./database/seeds"` | SQL seed files directory |
+| `log_level` | string | `"info"` | Logging level forwarded to worker subprocesses |
 
 ### `[[model_dirs]]` (array of tables)
 

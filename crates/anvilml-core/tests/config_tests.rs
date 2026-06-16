@@ -98,6 +98,7 @@ fn test_env_override_values() {
             vram_total_mib: 16384,
         }),
         seeds_path: std::path::PathBuf::from("/custom/seeds"),
+        log_level: "debug".to_string(),
     };
 
     // Serialize and deserialize

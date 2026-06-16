@@ -7,5 +7,5 @@
 //! **Hard constraints:** Contain only process management and message routing.
 //! No business logic — that belongs in the scheduler.
 
-#[allow(dead_code)]
-pub fn stub() {}
+pub mod env;
+pub use env::build_worker_env;

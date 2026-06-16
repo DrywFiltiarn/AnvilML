@@ -193,6 +193,16 @@ pub struct ServerConfig {
     /// SQL seed files directory. Default: `"./database/seeds"`.
     #[serde(with = "path_as_string")]
     pub seeds_path: PathBuf,
+    /// Logging level forwarded to worker subprocesses. Default: `"info"`.
+    ///
+    /// This value is injected as `ANVILML_LOG_LEVEL` into the Python worker
+    /// environment so the worker uses the same log level as the server.
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
 }
 
 impl Default for ServerConfig {
@@ -211,6 +221,7 @@ impl Default for ServerConfig {
             rocm: None,
             hardware_override: None,
             seeds_path: PathBuf::from("./database/seeds"),
+            log_level: "info".to_string(),
         }
     }
 }
