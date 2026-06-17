@@ -37,6 +37,7 @@ impl EnvGuard {
     }
 }
 
+#[cfg(feature = "mock-hardware")]
 impl Drop for EnvGuard {
     fn drop(&mut self) {
         match &self.prior {
