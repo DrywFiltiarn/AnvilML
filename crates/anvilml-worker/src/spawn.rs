@@ -1,7 +1,7 @@
 //! Subprocess Command construction for Python worker processes.
 //!
 //! Produces a `tokio::process::Command` configured to launch the Python worker
-//! script (`worker/worker_main.py`) via the venv interpreter, with environment
+//! as a module (`-m worker.worker_main`) via the venv interpreter, with environment
 //! variables injected, stdout/stderr piped for log capture, and on Linux
 //! `PR_SET_PDEATHSIG` set so the worker is orphan-cleaned if the parent
 //! supervisor dies.
@@ -15,7 +15,7 @@ use crate::env::build_worker_env;
 /// Build a `tokio::process::Command` to launch the Python worker subprocess.
 ///
 /// The command uses the venv Python interpreter (platform-specific path),
-/// passes `worker/worker_main.py` as the script argument, injects all
+/// passes `-m worker.worker_main` as the module invocation, injects all
 /// `ANVILML_*` environment variables via `build_worker_env()`, and pipes
 /// stdout/stderr for log capture.
 ///
@@ -46,7 +46,7 @@ pub fn build_command(cfg: &ServerConfig, device: &GpuDevice, port: u16) -> Comma
     // The worker script is at `worker/worker_main.py` relative to the
     // repository root, which is the working directory at server startup.
     // Forward slashes work on both Unix and Windows in the tokio Command API.
-    cmd.arg("worker/worker_main.py");
+    cmd.args(["-m", "worker.worker_main"]);
 
     // Inject all ANVILML_* environment variables required by the worker
     // runtime: IPC port, worker ID, device info, log level, payload cap.

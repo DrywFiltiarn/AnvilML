@@ -95,17 +95,15 @@ fn test_python_path_windows() {
     );
 }
 
-/// Verify the script argument is `worker/worker_main.py`.
+/// Verify the command invokes the worker as a module (`-m worker.worker_main`),
+/// matching the proven invocation convention already used by the Python test
+/// suite (`[sys.executable, "-m", "worker.worker_main"]`).
 ///
 /// Preconditions: None.
 /// Inputs: Any config, any device, any port.
-/// Expected output: `.get_args()` contains `worker/worker_main.py`.
-///
-/// Note: `get_args()` returns only the arguments passed via `.arg()` or
-/// `.args()`, NOT the program name. So the list should contain exactly
-/// one element: the script path.
+/// Expected output: `.get_args()` is exactly `["-m", "worker.worker_main"]`.
 #[test]
-fn test_script_arg() {
+fn test_module_invocation() {
     let device = make_device(DeviceType::Cpu);
     let cfg = ServerConfig::default();
     let cmd = build_command(&cfg, &device, 9000);
@@ -116,10 +114,11 @@ fn test_script_arg() {
     let args: Vec<_> = std_cmd.get_args().collect();
     assert_eq!(
         args.len(),
-        1,
-        "should have exactly one argument (the script)"
+        2,
+        "should have exactly two arguments: -m and the module path"
     );
-    assert_eq!(args[0], "worker/worker_main.py");
+    assert_eq!(args[0], "-m");
+    assert_eq!(args[1], "worker.worker_main");
 }
 
 /// Verify that environment variables from `build_worker_env` are

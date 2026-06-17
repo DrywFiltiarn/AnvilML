@@ -1566,14 +1566,14 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Expected output:** `.get_program() == "python.exe"`, first arg contains `Scripts\python.exe`.
 **Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- spawn::test_python_path_windows` exits 0.
 
-## test_script_arg (anvilml-worker)
+## test_module_invocation (anvilml-worker)
 
 **File:** `crates/anvilml-worker/tests/spawn_tests.rs`
-**Context:** The worker script is `worker/worker_main.py` relative to the repository root. This test verifies the second argument (index 1, after the interpreter path) is the expected script path.
-**Tests:** Calls `build_command()` with default config, asserts `.get_args()` has at least 2 elements, and asserts the second argument is `worker/worker_main.py`.
+**Context:** The worker is launched as a module (`-m worker.worker_main`) rather than a script path, matching the invocation convention already proven by the Python test suite (`[sys.executable, "-m", "worker.worker_main"]`). Running `worker_main.py` as a bare script breaks its `from worker.ipc import ...` package-relative import, since the script's own directory — not its parent — lands on `sys.path[0]`. This test verifies the command's two arguments are exactly `-m` and `worker.worker_main`.
+**Tests:** Calls `build_command()` with default config, asserts `.get_args()` has exactly 2 elements, and asserts they are `"-m"` and `"worker.worker_main"`.
 **Inputs:** Default config, port=9000, device.index=0.
-**Expected output:** `.get_args()[1] == "worker/worker_main.py"`.
-**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- spawn::test_script_arg` exits 0.
+**Expected output:** `.get_args() == ["-m", "worker.worker_main"]`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- spawn::test_module_invocation` exits 0.
 
 ## test_env_injection (anvilml-worker)
 
