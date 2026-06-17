@@ -6,8 +6,19 @@
 /// ConfigOverrides → config::load → TCP bind → health endpoint.
 ///
 /// The server is spawned as a subprocess with `--port 0` (OS-assigned port).
-/// The actual port is detected via platform-specific tooling (`lsof` on Unix,
-/// `netstat` on Windows) — the OS-assigned port cannot be known in advance.
+/// The actual port is recovered by reading the mandatory `"listening"` INFO
+/// log line on the subprocess's stderr (`addr = %actual_addr` per
+/// ENVIRONMENT.md §9.2) rather than by inspecting the OS socket table.
+///
+/// This is deliberate: as of P9-C1, the server process also binds a second,
+/// unrelated TCP listener (the ZeroMQ ROUTER socket used for worker IPC, via
+/// `RouterTransport::bind()`). A PID-scoped `lsof`/`netstat` scan cannot
+/// distinguish that socket from the HTTP listener, and previously picked
+/// whichever LISTEN entry happened to be returned first by the OS — passing
+/// or failing nondeterministically depending on socket-table ordering.
+/// Reading the log line is unambiguous regardless of how many sockets the
+/// process owns.
+///
 /// The subprocess is killed after the assertion regardless of outcome.
 ///
 /// Preconditions:
@@ -16,15 +27,13 @@
 ///
 /// Acceptance command:
 ///   `cargo test -p anvilml --features mock-hardware -- cli_tests` exits 0.
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, Command, Stdio};
-use std::thread;
 use std::time::Duration;
 
-/// Spawn the anvilml binary directly (pre-built) with `--port 0`, detect the
-/// bound port via platform-specific tooling (`lsof` on Unix, `netstat` on
-/// Windows), hit the health endpoint, and assert HTTP 200 with
-/// `"status":"ok"`.
+/// Spawn the anvilml binary directly (pre-built) with `--port 0`, recover the
+/// bound port from the `"listening"` INFO log line on stderr, hit the health
+/// endpoint, and assert HTTP 200 with `"status":"ok"`.
 ///
 /// The subprocess is killed unconditionally at the end of the test.
 #[test]
@@ -54,7 +63,8 @@ fn test_custom_port_health() {
     };
 
     // Spawn the server binary directly with port 0 for OS-assigned port.
-    // The --log-format plain flag ensures clean stderr output.
+    // The --log-format plain flag ensures clean, line-based stderr output
+    // that the port-detection logic below can parse.
     // Using the pre-built binary avoids cargo's output buffering issues.
     let mut child = Command::new(&binary)
         .args(["--port", "0", "--log-format", "plain"])
@@ -69,6 +79,12 @@ fn test_custom_port_health() {
                 binary, e
             )
         });
+
+    // Take ownership of stderr immediately after spawn so the port-detection
+    // block below can read it line-by-line. This must happen before the
+    // catch_unwind closure, since `child` is borrowed mutably for kill_child
+    // after the closure returns and cannot also be moved into it.
+    let child_stderr = child.stderr.take().expect("stderr was piped at spawn");
 
     // Capture and clean up any ANVILML_* env vars that might have leaked from
     // other parallel test runs. This prevents env var pollution from affecting
@@ -93,10 +109,6 @@ fn test_custom_port_health() {
 
     // Scope for the child handle — ensures it's dropped (killed) on test exit.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // Clear any ANVILML_* env vars that may have leaked from other
-        // parallel test runs. This prevents env var pollution from
-        // affecting the test's own logic (e.g., if a prior test set
-        // ANVILML_PORT and failed to restore it).
         for name in [
             "ANVILML_PORT",
             "ANVILML_HOST",

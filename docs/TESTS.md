@@ -102,8 +102,8 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 ## test_custom_port_health (anvilml)
 
 **File:** `backend/tests/cli_tests.rs`
-**Context:** The server binary accepts `--port` CLI override, binds to the OS-assigned port, and the health endpoint returns HTTP 200.
-**Tests:** Spawns the pre-built anvilml binary with `--port 0` (OS-assigned port), detects the bound port via platform-specific tooling (`lsof` on Unix, `netstat` on Windows), sends `GET /health`, and asserts HTTP 200 with `{"status":"ok"}`.
+**Context:** The server binary accepts `--port` CLI override, binds to the OS-assigned port, and the health endpoint returns HTTP 200. Since P9-C1, the server process also binds an unrelated second TCP listener (the ZeroMQ ROUTER socket for worker IPC), so port detection cannot rely on OS-level socket-table scans scoped only by PID — it must identify the HTTP listener specifically.
+**Tests:** Spawns the pre-built anvilml binary with `--port 0` (OS-assigned port), recovers the bound port by reading the mandatory `"listening"` INFO log line (`addr=...`) on the subprocess's stderr, sends `GET /health`, and asserts HTTP 200 with `{"status":"ok"}`.
 **Inputs:** Binary path from `CARGO_TARGET_DIR` (or `target/debug/anvilml`), `--port 0`, `--log-format plain`.
 **Expected output:** HTTP 200 response with JSON body containing `"status":"ok"`.
 **Acceptance command:** `cargo test -p anvilml --features mock-hardware -- cli_tests` exits 0.
