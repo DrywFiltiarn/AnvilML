@@ -42,10 +42,16 @@ fn format_worker_id(id: &[u8]) -> String {
 ///
 /// * `transport` — The shared `RouterTransport` wrapping the ROUTER socket.
 ///   Cloned (Arc inner) for each task.
-/// * `worker_id` — The worker identity used as the routing key for
-///   `transport.send()`. For human workers this is a UTF-8 string like
-///   `"worker-0"` (encoded as bytes); for auto-generated identities from
-///   DEALER sockets it is the raw byte sequence returned by the ROUTER's recv.
+/// * `worker_id` — The IPC routing identity used as the key for
+///   `transport.send()`. This must match the ZMQ identity the Python
+///   worker actually registered, not a human-readable display label.
+///   For workers launched via `build_command()`, this is the bare device
+///   index as a UTF-8 string (e.g. `"0"`), matching `ANVILML_WORKER_ID`
+///   set by `build_worker_env()`. For auto-generated identities from
+///   DEALER sockets (e.g. in tests), it is the raw byte sequence returned
+///   by the ROUTER's recv. The `"worker-N"` display label used elsewhere
+///   for logging and WebSocket broadcasts is a separate, unrelated string
+///   and must never be passed here.
 /// * `msg_rx` — The receive half of the mpsc channel. The caller owns the
 ///   sender and drops it during shutdown to signal the writer task to exit.
 /// * `event_tx` — The broadcast sender for events received from the transport.

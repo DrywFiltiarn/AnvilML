@@ -177,7 +177,12 @@ impl ManagedWorker {
     /// * `cfg` — The server configuration (provides venv path and IPC payload cap).
     /// * `device` — The GPU device this worker will operate on.
     /// * `transport` — The shared `RouterTransport` for IPC communication.
-    /// * `worker_id` — The worker's stable identity string (e.g. `"worker-0"`).
+    /// * `worker_id` — The worker's stable display identity string (e.g.
+    ///   `"worker-0"`), used for logging, `WorkerInfo`, and WebSocket
+    ///   broadcasts. This is NOT used as the IPC routing key — the bridge
+    ///   is given `device.index.to_string()` instead, since that is what
+    ///   matches the ZMQ identity the Python worker registers (see
+    ///   `ANVILML_WORKER_ID` in `build_worker_env()`).
     ///
     /// # Errors
     ///
@@ -227,9 +232,18 @@ impl ManagedWorker {
         // The writer forwards messages from mpsc → transport, the reader forwards
         // events from transport → broadcast. We clone event_tx because the bridge
         // task takes ownership of one copy.
-        let worker_id_bytes = worker_id.clone().into_bytes();
-        let (writer_handle, reader_handle) =
-            bridge::start(transport.clone(), worker_id_bytes, msg_rx, event_tx.clone());
+        // The IPC routing identity must match what the Python worker sets as its
+        // ZMQ identity — ANVILML_WORKER_ID, which build_worker_env() sets to the
+        // bare device index (e.g. "0"), not the "worker-N" display label. Using
+        // the display label here causes every send() to fail with "Destination
+        // client not found by identity", since ZMQ never registered that string.
+        let ipc_identity_bytes = device.index.to_string().into_bytes();
+        let (writer_handle, reader_handle) = bridge::start(
+            transport.clone(),
+            ipc_identity_bytes,
+            msg_rx,
+            event_tx.clone(),
+        );
         let bridge_handles = Some((writer_handle, reader_handle));
 
         // Create the keepalive timeout callback. The callback captures a weak

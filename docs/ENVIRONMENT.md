@@ -162,7 +162,7 @@ Do not set them manually in production; they are listed here for test reference.
 | Variable | Type | Set by | Description |
 |:---------|:-----|:-------|:------------|
 | `ANVILML_IPC_PORT` | u16 decimal | `env.rs` | TCP port of the ROUTER socket |
-| `ANVILML_WORKER_ID` | string | `env.rs` | Logical worker ID (e.g. `"worker-0"`) |
+| `ANVILML_WORKER_ID` | string | `env.rs` | Bare device index as a string (e.g. `"0"`) — this is also the ZMQ DEALER identity the worker registers with the ROUTER. NOT the `"worker-N"` display label used elsewhere for logging/UI. |
 | `ANVILML_DEVICE_INDEX` | u32 decimal | `env.rs` | GPU device index |
 | `ANVILML_DEVICE_TYPE` | string | `env.rs` | `"cuda"`, `"rocm"`, or `"cpu"` |
 | `ANVILML_LOG_LEVEL` | string | `env.rs` | Forwarded from server config |
