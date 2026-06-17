@@ -147,13 +147,26 @@ fn test_custom_port_health() {
         // only on both substrings appearing on the same line.
         let mut reader = BufReader::new(child_stdout);
         let mut port: Option<u16> = None;
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        // 30s, not 5s: by the time the "listening" line is logged, the
+        // server has already opened the database, run migrations, reset
+        // ghost jobs, run seed loading, detected hardware (Vulkan/CUDA
+        // enumeration can itself take >1s), bound the IPC transport,
+        // spawned the worker pool, and run an initial model directory
+        // scan. Observed ~2s on a warm local Windows dev machine via plain
+        // `cargo run`; CI runners (cold disk cache, antivirus scanning on
+        // Windows, CPU contention from `cargo test --workspace` running
+        // other test binaries concurrently) are reasonably expected to be
+        // slower. There is no documented startup-time SLA for this
+        // pipeline, so 30s is a pragmatic margin rather than a derived
+        // constant — revisit if the startup sequence grows further.
+        let start = std::time::Instant::now();
+        let deadline = start + Duration::from_secs(30);
 
         let mut line = String::new();
         while std::time::Instant::now() < deadline {
             line.clear();
             match reader.read_line(&mut line) {
-                Ok(0) => break, // EOF — process exited or closed stderr early.
+                Ok(0) => break, // EOF — process exited or closed stdout early.
                 Ok(_) => {
                     if line.contains("listening") {
                         if let Some(addr_start) = line.find("addr=") {
@@ -177,12 +190,18 @@ fn test_custom_port_health() {
             }
         }
 
-        let port: u16 = port.expect(
-            "could not find 'listening' log line with addr=... on server stderr \
-             within 5s — server may not have started, or the log format changed. \
-             Check that mock-hardware feature is available, the binary runs \
-             correctly, and main.rs still logs `addr = %actual_addr, \"listening\"`.",
-        );
+        let elapsed = start.elapsed();
+        let port: u16 = port.unwrap_or_else(|| {
+            panic!(
+                "could not find 'listening' log line with addr=... on server \
+                 stdout within {:.1}s (waited {:.1}s) — server may not have \
+                 started, or the log format changed. Check that mock-hardware \
+                 feature is available, the binary runs correctly, and main.rs \
+                 still logs `addr = %actual_addr, \"listening\"`.",
+                deadline.duration_since(start).as_secs_f64(),
+                elapsed.as_secs_f64(),
+            )
+        });
 
         // Send a raw HTTP GET /health request over TCP.
         // Using std::net::TcpStream avoids adding a new dependency for the
