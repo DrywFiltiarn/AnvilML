@@ -61,19 +61,25 @@ async fn main() {
 
     match args.log_format {
         cli::LogFormat::Plain => {
-            // with_ansi(false): tracing-subscriber's TTY detection for
+            // with_ansi(...): tracing-subscriber's own TTY detection for
             // whether to emit ANSI color/style codes is not reliable across
             // all pipe/redirect configurations, particularly on Windows.
-            // When output is piped (e.g. to a log aggregator, a file, or a
-            // test harness reading stdout programmatically), ANSI escape
-            // sequences end up embedded inside structured field names —
-            // for example `addr=` is emitted as `addr` + an ANSI reset +
-            // `=`, with no contiguous "addr=" substring — which breaks any
-            // consumer doing plain substring/field parsing on the output.
-            // "Plain" should mean plain: no escape codes, ever.
+            // We make the decision explicit instead: colorize only when
+            // stdout is actually attached to a terminal. When piped (e.g.
+            // to a log aggregator, a file, or a test harness reading stdout
+            // programmatically), ANSI escape sequences would otherwise end
+            // up embedded inside structured field names — for example
+            // `addr=` rendered as `addr` + an ANSI reset + `=`, with no
+            // contiguous "addr=" substring — which breaks any consumer
+            // doing plain substring/field parsing on the output.
+            //
+            // std::io::IsTerminal::is_terminal() is stable since Rust 1.70
+            // and requires no extra dependency.
+            use std::io::IsTerminal;
+            let interactive = std::io::stdout().is_terminal();
             tracing_subscriber::fmt::Subscriber::builder()
                 .with_env_filter(filter)
-                .with_ansi(false)
+                .with_ansi(interactive)
                 .init();
         }
         cli::LogFormat::Json => {
