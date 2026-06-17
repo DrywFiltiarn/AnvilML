@@ -329,147 +329,186 @@ impl ManagedWorker {
         // receiver delivers them to the state machine.
         let mut event_rx = self.event_tx.subscribe();
 
-        // Set up the 60-second timeout for the Ready event.
-        // If the worker does not emit Ready within this window, it is
-        // considered unresponsive and will transition to Dead.
-        // This is a hard requirement from the design doc.
-        let ready_timeout = tokio::time::sleep(Duration::from_secs(60));
+        // Drop the sender held by the worker struct. The bridge reader task
+        // (spawned in `spawn()`) holds its own clone for writing events.
+        // In tests there is no bridge reader, so the test holds the only
+        // remaining sender — dropping it closes the channel and lets the
+        // loop exit. In production the bridge reader's clone is the only
+        // sender; when the bridge exits, the channel closes.
+        drop(self.event_tx);
 
-        // Enter the main select loop. This loop processes events from the
-        // broadcast channel and drives the state machine transitions.
-        // The loop exits when:
-        // 1. The ready timeout fires (worker never became ready)
-        // 2. The broadcast channel is closed (bridge reader exited)
-        // 3. A terminal state (Dead/Respawning) is reached
-        tokio::select! {
-            // Ready timeout fired — 60 seconds elapsed without a Ready event.
-            // The worker is considered unresponsive; transition to Dead.
-            _ = ready_timeout => {
-                tracing::warn!(
-                    worker_id = %self.worker_id,
-                    "ready timeout, worker dead"
-                );
-                *self.status.write().await = WorkerStatus::Dead;
-            }
+        // Main event loop — processes events for the worker's full lifetime.
+        // The loop exits only when the broadcast channel is closed (bridge
+        // reader exited). The ready_timeout is scoped to the Initializing
+        // state only; once the worker reaches Idle, the timeout is disarmed.
+        loop {
+            // Mandatory DEBUG log per ENVIRONMENT.md §9.11.5 — IPC log point
+            // for "event received from a worker" tracking.
+            tracing::debug!(worker_id = %self.worker_id, "run loop iteration");
 
-            // An event was received from the broadcast channel.
-            result = event_rx.recv() => {
-                match result {
-                    Ok((_id, event)) => {
-                        // Process the event based on the current status.
-                        // We read the status first, then make the transition
-                        // under a write lock. This ensures we don't race with
-                        // other status updates (though in practice only the
-                        // run loop writes to status).
-                        tracing::debug!(
-                            worker_id = %self.worker_id,
-                            event_type = ?event,
-                            "processing event in run loop"
-                        );
-                        let _current_status = *self.status.read().await;
-                        let device_name = match &event {
-                            WorkerEvent::Ready { device_name, .. } => {
-                                // Update device_name from the Ready event.
-                                // The worker may report a different name than
-                                // the initial device name (e.g., auto-detected
-                                // vs. configured). We use the worker's actual
-                                // reported name for subsequent logging.
-                                tracing::debug!(
-                                    worker_id = %self.worker_id,
-                                    event_type = ?event,
-                                    "processing event"
-                                );
-                                let mut s = self.status.write().await;
-                                match *s {
-                                    WorkerStatus::Initializing => {
-                                        // Worker reported Ready — transition to Idle.
-                                        // This is the synchronization point between
-                                        // Rust and Python. The worker is now ready
-                                        // to accept jobs.
-                                        *s = WorkerStatus::Idle;
-                                        tracing::info!(
-                                            worker_id = %self.worker_id,
-                                            device = %device_name,
-                                            "worker reached Ready"
-                                        );
-                                        Some(device_name.clone())
-                                    }
-                                    // Other states don't transition on Ready.
-                                    _ => {
-                                        Some(device_name.clone())
-                                    }
-                                }
-                            }
-                            _ => {
-                                tracing::debug!(
-                                    worker_id = %self.worker_id,
-                                    event_type = ?event,
-                                    "processing event"
-                                );
-                                let mut s = self.status.write().await;
-                                match *s {
-                                    WorkerStatus::Idle => {
-                                        // Dying event from Idle — transition to Dead.
-                                        // The worker is terminating.
-                                        if matches!(&event, WorkerEvent::Dying { .. }) {
-                                            *s = WorkerStatus::Dead;
+            // Scope ready_timeout to Initializing only.
+            // Once the worker is no longer Initializing, the timeout must not
+            // fire — a worker sitting Idle for hours must not be killed by
+            // a stale 60-second timer. We read the status under a shared lock
+            // before entering the select to decide whether to arm the timeout.
+            let mut ready_timeout = if *self.status.read().await == WorkerStatus::Initializing {
+                Some(tokio::time::sleep(Duration::from_secs(60)))
+            } else {
+                None
+            };
+
+            tokio::select! {
+                // Ready timeout arm. When ready_timeout is Some, this fires
+                // after 60 seconds without a Ready event — the worker is
+                // considered unresponsive. When ready_timeout is None, this
+                // arm uses a Duration::MAX sleep that will never fire, so
+                // it can never win the select.
+                _ = async {
+                    // `tokio::time::Sleep` is !Unpin, so we must take ownership
+                    // and pin it before awaiting. `take()` consumes the Option,
+                    // replacing it with None. If the event arm wins the select
+                    // before the timeout fires, the sleep is dropped harmlessly;
+                    // on the next loop iteration a fresh timeout is created.
+                    if let Some(sleep) = ready_timeout.take() {
+                        // `pin!` creates a Pin<&mut Sleep> from the owned value,
+                        // satisfying the !Unpin requirement of tokio::time::Sleep.
+                        std::pin::pin!(sleep).as_mut().await;
+                    } else {
+                        // Never-firing sleep — this branch can never win.
+                        // tokio::select! requires all arms to be futures,
+                        // so we use a Duration::MAX sleep as a placeholder.
+                        // Duration::MAX ≈ 292,471 years — safe no-op branch.
+                        tokio::time::sleep(std::time::Duration::MAX).await;
+                    }
+                } => {
+                    tracing::warn!(
+                        worker_id = %self.worker_id,
+                        "ready timeout, worker dead"
+                    );
+                    *self.status.write().await = WorkerStatus::Dead;
+                }
+
+                // An event was received from the broadcast channel.
+                result = event_rx.recv() => {
+                    match result {
+                        Ok((_id, event)) => {
+                            // Process the event based on the current status.
+                            // We read the status first, then make the transition
+                            // under a write lock. This ensures we don't race with
+                            // other status updates (though in practice only the
+                            // run loop writes to status).
+                            tracing::debug!(
+                                worker_id = %self.worker_id,
+                                event_type = ?event,
+                                "processing event in run loop"
+                            );
+                            let _current_status = *self.status.read().await;
+                            let device_name = match &event {
+                                WorkerEvent::Ready { device_name, .. } => {
+                                    // Update device_name from the Ready event.
+                                    // The worker may report a different name than
+                                    // the initial device name (e.g., auto-detected
+                                    // vs. configured). We use the worker's actual
+                                    // reported name for subsequent logging.
+                                    tracing::debug!(
+                                        worker_id = %self.worker_id,
+                                        event_type = ?event,
+                                        "processing event"
+                                    );
+                                    let mut s = self.status.write().await;
+                                    match *s {
+                                        WorkerStatus::Initializing => {
+                                            // Worker reported Ready — transition to Idle.
+                                            // This is the synchronization point between
+                                            // Rust and Python. The worker is now ready
+                                            // to accept jobs.
+                                            *s = WorkerStatus::Idle;
+                                            tracing::info!(
+                                                worker_id = %self.worker_id,
+                                                device = %device_name,
+                                                "worker reached Ready"
+                                            );
+                                            Some(device_name.clone())
+                                        }
+                                        // Other states don't transition on Ready.
+                                        _ => {
+                                            Some(device_name.clone())
                                         }
                                     }
-                                    WorkerStatus::Busy => {
-                                        // Job completion events from Busy — transition to Idle.
-                                        // The worker is now ready to accept new jobs.
-                                        match &event {
-                                            WorkerEvent::Completed { .. } |
-                                            WorkerEvent::Failed { .. } |
-                                            WorkerEvent::Cancelled { .. } => {
-                                                *s = WorkerStatus::Idle;
-                                            }
-                                            WorkerEvent::Dying { .. } => {
+                                }
+                                _ => {
+                                    tracing::debug!(
+                                        worker_id = %self.worker_id,
+                                        event_type = ?event,
+                                        "processing event"
+                                    );
+                                    let mut s = self.status.write().await;
+                                    match *s {
+                                        WorkerStatus::Idle => {
+                                            // Dying event from Idle — transition to Dead.
+                                            // The worker is terminating.
+                                            if matches!(&event, WorkerEvent::Dying { .. }) {
                                                 *s = WorkerStatus::Dead;
                                             }
-                                            _ => {}
+                                        }
+                                        WorkerStatus::Busy => {
+                                            // Job completion events from Busy — transition to Idle.
+                                            // The worker is now ready to accept new jobs.
+                                            match &event {
+                                                WorkerEvent::Completed { .. } |
+                                                WorkerEvent::Failed { .. } |
+                                                WorkerEvent::Cancelled { .. } => {
+                                                    *s = WorkerStatus::Idle;
+                                                }
+                                                WorkerEvent::Dying { .. } => {
+                                                    *s = WorkerStatus::Dead;
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                        WorkerStatus::Dead | WorkerStatus::Respawning => {
+                                            // Terminal states — no further processing.
+                                            // Events received while in a terminal state
+                                            // are logged at DEBUG but do not change state.
+                                        }
+                                        WorkerStatus::Initializing => {
+                                            // Non-Ready events during initialization
+                                            // are ignored (state remains Initializing).
                                         }
                                     }
-                                    WorkerStatus::Dead | WorkerStatus::Respawning => {
-                                        // Terminal states — no further processing.
-                                        // Events received while in a terminal state
-                                        // are logged at DEBUG but do not change state.
-                                    }
-                                    WorkerStatus::Initializing => {
-                                        // Non-Ready events during initialization
-                                        // are ignored (state remains Initializing).
-                                    }
+                                    None
                                 }
-                                None
-                            }
-                        };
+                            };
 
-                        // Update the stored device_name if we received one from
-                        // the Ready event. This ensures subsequent log statements
-                        // use the worker's actual reported device name.
-                        if let Some(name) = device_name {
-                            self.device_name = name;
+                            // Update the stored device_name if we received one from
+                            // the Ready event. This ensures subsequent log statements
+                            // use the worker's actual reported device name.
+                            if let Some(name) = device_name {
+                                self.device_name = name;
+                            }
                         }
-                    }
-                    // Broadcast channel closed — the bridge reader has exited.
-                    // This is a terminal condition; the worker is gone.
-                    Err(broadcast::error::RecvError::Closed) => {
-                        tracing::info!(
-                            worker_id = %self.worker_id,
-                            "broadcast channel closed, worker gone"
-                        );
-                    }
-                    // Broadcast channel had lagged events — we dropped some.
-                    // This can happen when the state machine falls behind on
-                    // recv() calls (e.g., during slow status transitions).
-                    // We log at DEBUG and continue; the missed events are
-                    // not critical for state machine correctness.
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::debug!(
-                            worker_id = %self.worker_id,
-                            dropped = %n,
-                            "managed dropped lagged events"
-                        );
+                        // Broadcast channel closed — the bridge reader has exited.
+                        // This is a terminal condition; no more events will arrive.
+                        // Break the loop to exit the run method and trigger cleanup.
+                        Err(broadcast::error::RecvError::Closed) => {
+                            tracing::info!(
+                                worker_id = %self.worker_id,
+                                "broadcast channel closed, worker gone"
+                            );
+                            break;
+                        }
+                        // Broadcast channel had lagged events — we dropped some.
+                        // This can happen when the state machine falls behind on
+                        // recv() calls (e.g., during slow status transitions).
+                        // We log at DEBUG and continue; the missed events are
+                        // not critical for state machine correctness.
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::debug!(
+                                worker_id = %self.worker_id,
+                                dropped = %n,
+                                "managed dropped lagged events"
+                            );
+                        }
                     }
                 }
             }
