@@ -11,7 +11,7 @@ use anvilml_worker::RespawnPolicy;
 /// equals `max_attempts` (maximum attempts exceeded).
 ///
 /// Preconditions: `max_attempts = 3`.
-/// Inputs: `crash_count = 3`, `last_crash = Instant::now()`.
+/// Inputs: `crash_count = 3` (mutable ref), `last_crash = Instant::now()`.
 /// Expected output: `false` — the worker should not be respawned.
 #[test]
 fn test_should_respawn_max_attempts_exceeded() {
@@ -22,15 +22,17 @@ fn test_should_respawn_max_attempts_exceeded() {
     };
 
     // crash_count == max_attempts → no more respawns.
-    assert!(!policy.should_respawn(3, std::time::Instant::now()));
+    let mut count = 3;
+    assert!(!policy.should_respawn(&mut count, std::time::Instant::now()));
 }
 
 /// Verify that `should_respawn` returns `true` when `crash_count`
 /// is below `max_attempts` and the crash window has not expired.
 ///
 /// Preconditions: `max_attempts = 5`, `window_s = 60`.
-/// Inputs: `crash_count = 2`, `last_crash = 30 seconds ago`.
-/// Expected output: `true` — the worker should be respawned.
+/// Inputs: `crash_count = 2` (mutable ref), `last_crash = 30 seconds ago`.
+/// Expected output: `true` — the worker should be respawned; `crash_count`
+/// incremented to 3.
 #[test]
 fn test_should_respawn_within_window() {
     let policy = RespawnPolicy {
@@ -41,18 +43,24 @@ fn test_should_respawn_within_window() {
 
     // 30 seconds have elapsed — still within the 60-second window.
     let last_crash = std::time::Instant::now() - Duration::from_secs(30);
-    assert!(policy.should_respawn(2, last_crash));
+    let mut count = 2;
+    assert!(policy.should_respawn(&mut count, last_crash));
+    assert_eq!(count, 3); // incremented by the allow step
 }
 
-/// Verify that `should_respawn` returns `true` when the crash window
-/// has expired, even if `crash_count` was close to `max_attempts`.
+/// Verify that `should_respawn` resets `crash_count` to 0 when the
+/// window has expired, then increments it to 1 and returns `true`.
 ///
-/// The window expiry resets the crash count conceptually — the caller
-/// should reset `crash_count` to `0` before the next call.
+/// This test asserts both the boolean return value and the counter
+/// mutation — the old buggy implementation returned `true` but never
+/// mutated the count, so the old signature didn't even accept a mutable
+/// reference. The assertion on `count == 1` is what distinguishes the
+/// correct implementation from the broken one.
 ///
 /// Preconditions: `max_attempts = 5`, `window_s = 10`.
-/// Inputs: `crash_count = 4`, `last_crash = 15 seconds ago`.
-/// Expected output: `true` — the window has expired, fresh attempts allowed.
+/// Inputs: `crash_count = 4` (mutable ref), `last_crash = 15 seconds ago`.
+/// Expected output: `true`; `crash_count` == 1 (reset to 0 by window expiry,
+/// then incremented to 1 by the allow step).
 #[test]
 fn test_should_respawn_window_reset() {
     let policy = RespawnPolicy {
@@ -63,7 +71,11 @@ fn test_should_respawn_window_reset() {
 
     // 15 seconds have elapsed — exceeds the 10-second window.
     let last_crash = std::time::Instant::now() - Duration::from_secs(15);
-    assert!(policy.should_respawn(4, last_crash));
+    let mut count = 4;
+    let result = policy.should_respawn(&mut count, last_crash);
+    assert!(result);
+    // Window expired → count reset to 0, then incremented to 1.
+    assert_eq!(count, 1);
 }
 
 /// Verify that `next_delay_ms` computes exponential backoff correctly

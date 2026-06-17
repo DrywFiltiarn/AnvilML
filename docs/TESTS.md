@@ -1803,29 +1803,29 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 ## test_should_respawn_max_attempts_exceeded (anvilml-worker)
 
 **File:** `crates/anvilml-worker/tests/respawn_tests.rs`
-**Context:** `RespawnPolicy::should_respawn()` returns `false` when `crash_count >= max_attempts`. This is the maximum-attempt guard that prevents infinite respawn loops.
-**Tests:** Constructs `RespawnPolicy { max_attempts: 3, ... }`, calls `should_respawn(3, Instant::now())`, and asserts `false`.
-**Inputs:** `policy.max_attempts = 3`, `crash_count = 3`, `last_crash = Instant::now()`.
-**Expected output:** `false` — the worker should not be respawned.
-**Acceptance command:** `cargo test -p anvilml-worker --test respawn_tests test_should_respawn_max_attempts_exceeded` exits 0.
+**Context:** `RespawnPolicy::should_respawn()` returns `false` when `crash_count >= max_attempts`. This is the maximum-attempt guard that prevents infinite respawn loops. The method now takes `crash_count` by mutable reference and owns the window-reset contract.
+**Tests:** Constructs `RespawnPolicy { max_attempts: 3, ... }`, calls `should_respawn(&mut count, Instant::now())` with `count = 3`, and asserts `false`.
+**Inputs:** `policy.max_attempts = 3`, `crash_count = 3` (mutable ref), `last_crash = Instant::now()`.
+**Expected output:** `false` — the worker should not be respawned; `crash_count` unchanged at 3.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware --test respawn_tests test_should_respawn_max_attempts_exceeded` exits 0.
 
 ## test_should_respawn_within_window (anvilml-worker)
 
 **File:** `crates/anvilml-worker/tests/respawn_tests.rs`
-**Context:** `RespawnPolicy::should_respawn()` returns `true` when `crash_count < max_attempts` and the crash window has not expired. The window is `last_crash + window_s > now`.
-**Tests:** Constructs `RespawnPolicy { max_attempts: 5, window_s: 60, ... }`, calls `should_respawn(2, Instant::now() - Duration::from_secs(30))`, and asserts `true`.
-**Inputs:** `policy.max_attempts = 5`, `policy.window_s = 60`, `crash_count = 2`, `last_crash = 30 seconds ago`.
-**Expected output:** `true` — the worker should be respawned.
-**Acceptance command:** `cargo test -p anvilml-worker --test respawn_tests test_should_respawn_within_window` exits 0.
+**Context:** `RespawnPolicy::should_respawn()` returns `true` when `crash_count < max_attempts` and the crash window has not expired. The window is `last_crash + window_s > now`. The method now takes `crash_count` by mutable reference and increments it on each allow.
+**Tests:** Constructs `RespawnPolicy { max_attempts: 5, window_s: 60, ... }`, calls `should_respawn(&mut count, Instant::now() - Duration::from_secs(30))` with `count = 2`, asserts `true`, and asserts `count == 3`.
+**Inputs:** `policy.max_attempts = 5`, `policy.window_s = 60`, `crash_count = 2` (mutable ref), `last_crash = 30 seconds ago`.
+**Expected output:** `true` — the worker should be respawned; `crash_count` incremented to 3.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware --test respawn_tests test_should_respawn_within_window` exits 0.
 
 ## test_should_respawn_window_reset (anvilml-worker)
 
 **File:** `crates/anvilml-worker/tests/respawn_tests.rs`
-**Context:** `RespawnPolicy::should_respawn()` returns `true` when the crash window has expired, even if `crash_count` was close to `max_attempts`. Window expiry allows a fresh set of attempts.
-**Tests:** Constructs `RespawnPolicy { max_attempts: 5, window_s: 10, ... }`, calls `should_respawn(4, Instant::now() - Duration::from_secs(15))`, and asserts `true`.
-**Inputs:** `policy.max_attempts = 5`, `policy.window_s = 10`, `crash_count = 4`, `last_crash = 15 seconds ago`.
-**Expected output:** `true` — the window has expired, fresh attempts allowed.
-**Acceptance command:** `cargo test -p anvilml-worker --test respawn_tests test_should_respawn_window_reset` exits 0.
+**Context:** `RespawnPolicy::should_respawn()` resets `crash_count` to `0` when the window has expired, then increments it to `1` and returns `true`. This test asserts both the boolean return value and the counter mutation — the old buggy implementation returned `true` but never mutated the count.
+**Tests:** Constructs `RespawnPolicy { max_attempts: 5, window_s: 10, ... }`, calls `should_respawn(&mut count, Instant::now() - Duration::from_secs(15))` with `count = 4`, asserts `true`, and asserts `count == 1` (reset to 0 by window expiry, then incremented to 1).
+**Inputs:** `policy.max_attempts = 5`, `policy.window_s = 10`, `crash_count = 4` (mutable ref), `last_crash = 15 seconds ago`.
+**Expected output:** `true`; `crash_count == 1` (reset to 0 by window expiry, then incremented to 1 by the allow step).
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware --test respawn_tests test_should_respawn_window_reset` exits 0.
 
 ## test_next_delay_ms_exponential_backoff_and_cap (anvilml-worker)
 

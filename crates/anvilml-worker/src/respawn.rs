@@ -5,16 +5,16 @@
 //! number of respawn attempts, the delay between attempts, and the time window
 //! within which attempts are counted.
 //!
-//! The respawn decision is a pure function: `should_respawn` takes the current
-//! crash count and the timestamp of the last crash, and returns whether a
-//! respawn attempt should proceed. The caller is responsible for tracking
-//! `crash_count` and `last_crash` externally and passing the current values.
+//! `should_respawn` performs the window-reset internally: when the elapsed time
+//! since `last_crash` exceeds `window_s`, the crash count is reset to zero before
+//! the attempt counter is incremented. The caller passes `crash_count` by mutable
+//! reference so the method can update it atomically with the decision.
 //!
 //! Delay computation uses exponential backoff (`delay_ms * 2^attempt`) with a
 //! fixed 30-second cap, preventing rapid re-spawn loops while still responding
 //! quickly to transient failures.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Respawn policy for a managed worker subprocess.
 ///
@@ -65,40 +65,43 @@ const MAX_DELAY_MS: u64 = 30_000;
 impl RespawnPolicy {
     /// Determine whether the worker should be respawned.
     ///
-    /// This is a **pure decision function** — it does not mutate any state.
-    /// The caller is responsible for tracking `crash_count` and `last_crash`
-    /// externally and passing the current values on each call.
+    /// Performs a window-reset internally: when the elapsed time since
+    /// `last_crash` exceeds `window_s`, the crash count is reset to zero
+    /// before the attempt counter is incremented. The caller passes
+    /// `crash_count` by mutable reference so the method can update it
+    /// atomically with the decision.
     ///
     /// # Arguments
     ///
-    /// * `crash_count` — The number of crashes that have occurred within the
-    ///   current time window. The caller resets this to `0` when the window
-    ///   expires (i.e., when `last_crash` is older than `window_s`).
+    /// * `crash_count` — A mutable reference to the current crash count
+    ///   within the time window. The method resets it to `0` when the
+    ///   window expires, then increments it by `1` when allowing a respawn.
     /// * `last_crash` — The `Instant` when the most recent crash occurred.
     ///
     /// # Returns
     ///
     /// `true` if the worker should be respawned, `false` otherwise.
     ///
-    /// Returns `false` when:
-    /// - `crash_count >= max_attempts` (maximum attempts exceeded), or
-    /// - The crash window has not expired and the caller has not reset
-    ///   `crash_count` (the window is still active).
-    ///
-    /// Returns `true` when the window has expired (the caller should reset
-    /// `crash_count` to `0` before the next call), allowing a fresh set of
-    /// attempts.
-    pub fn should_respawn(&self, crash_count: u32, _last_crash: Instant) -> bool {
-        // Reject if we have already exhausted the maximum number of attempts.
-        if crash_count >= self.max_attempts {
+    /// Returns `false` when `crash_count >= max_attempts` after any
+    /// window-reset has been applied. Otherwise returns `true` and
+    /// increments `crash_count` by one.
+    pub fn should_respawn(&self, crash_count: &mut u32, last_crash: Instant) -> bool {
+        // Compute elapsed time since the last crash to determine if the
+        // window has expired. If the window has expired, reset the crash
+        // count to zero so a fresh set of attempts is allowed.
+        let elapsed = last_crash.elapsed();
+        if elapsed >= Duration::from_secs(self.window_s as u64) {
+            *crash_count = 0;
+        }
+
+        // Reject if we have already exhausted the maximum number of attempts
+        // (after any window-reset that may have occurred above).
+        if *crash_count >= self.max_attempts {
             return false;
         }
 
-        // Always allow respawn when under the max attempt limit.
-        // The caller is responsible for checking whether the window has
-        // expired (elapsed >= window_s) and resetting crash_count to 0
-        // before the next call. The window check is informational only —
-        // it does not gate the respawn decision itself.
+        // Allow the respawn and increment the crash counter.
+        *crash_count += 1;
         true
     }
 
