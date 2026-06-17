@@ -22,15 +22,6 @@ use tracing;
 
 use anvilml_ipc::{RouterTransport, WorkerEvent, WorkerMessage};
 
-/// Format a worker identity as a hex string for logging.
-///
-/// Worker identities from ZeroMQ ROUTER sockets are raw bytes (often UUIDs).
-/// Converting to hex produces a readable, stable representation for log
-/// aggregation and debugging.
-fn format_worker_id(id: &[u8]) -> String {
-    id.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 /// Spawn the IPC bridge: two independent tokio tasks for message routing.
 ///
 /// The bridge connects a worker's message channel and event broadcast to the
@@ -49,9 +40,18 @@ fn format_worker_id(id: &[u8]) -> String {
 ///   index as a UTF-8 string (e.g. `"0"`), matching `ANVILML_WORKER_ID`
 ///   set by `build_worker_env()`. For auto-generated identities from
 ///   DEALER sockets (e.g. in tests), it is the raw byte sequence returned
-///   by the ROUTER's recv. The `"worker-N"` display label used elsewhere
-///   for logging and WebSocket broadcasts is a separate, unrelated string
-///   and must never be passed here.
+///   by the ROUTER's recv. This identity is used only for `transport.send()`
+///   and the misrouting cross-check described below — it is never logged
+///   directly, since raw routing bytes (or their hex encoding) are not a
+///   useful key for an operator to grep on. See `display_id` for the
+///   identity used in all log output.
+/// * `display_id` — The human-readable display label (e.g. `"worker-0"`)
+///   used in every log statement emitted by this module. This is the same
+///   `"worker-N"` string stored on `ManagedWorker` and shown in `WorkerInfo`
+///   and WebSocket broadcasts elsewhere in the worker subsystem — passing
+///   the same string here ensures a single worker is referred to identically
+///   across every log line, regardless of which task or module emitted it.
+///   This string has no meaning to ZeroMQ and must never be used for routing.
 /// * `msg_rx` — The receive half of the mpsc channel. The caller owns the
 ///   sender and drops it during shutdown to signal the writer task to exit.
 /// * `event_tx` — The broadcast sender for events received from the transport.
@@ -76,17 +76,29 @@ fn format_worker_id(id: &[u8]) -> String {
 /// not `Option`. On error (e.g. socket closed), the reader logs at WARN and
 /// breaks out of the loop. Transport errors are terminal for the reader — if
 /// the socket is closed, there is no point retrying.
+///
+/// On every successfully received event, the reader also compares the wire
+/// identity ZeroMQ actually delivered the frame under against this bridge's
+/// own `worker_id`. A mismatch means the ROUTER socket handed this bridge an
+/// event that originated from a different peer than the one it was given at
+/// construction — i.e. cross-worker misrouting. This should never happen in
+/// correct operation, so a mismatch is logged at WARN rather than silently
+/// broadcast as if it were normal; the event is still broadcast either way,
+/// since dropping it would leave the worker pool in an undetermined state.
 pub fn start(
     transport: Arc<RouterTransport>,
     worker_id: Vec<u8>,
+    display_id: String,
     msg_rx: mpsc::Receiver<WorkerMessage>,
     event_tx: broadcast::Sender<(String, WorkerEvent)>,
 ) -> (JoinHandle<()>, JoinHandle<()>) {
-    // Clone transport and worker_id for the writer task. The original values
-    // are moved into the async closure, so we clone the Arc (cheap reference
-    // count bump) for the reader, and clone worker_id for the writer.
+    // Clone transport, worker_id, and display_id for the writer task. The
+    // original transport and worker_id values are moved into the reader's
+    // async closure below, so the writer gets its own clones (cheap: Arc
+    // refcount bump for transport, byte/string copies for the identities).
     let transport_writer = transport.clone();
     let worker_id_writer = worker_id.clone();
+    let display_id_writer = display_id.clone();
 
     // Spawn the writer task first. It runs independently of the reader —
     // messages flow from mpsc → transport, while events flow from transport
@@ -102,24 +114,21 @@ pub fn start(
             // during worker respawn, so we log at WARN and continue rather
             // than aborting the task.
             if let Err(e) = transport_writer.send(&worker_id_writer, &msg).await {
-                let hex_id = format_worker_id(&worker_id_writer);
                 tracing::warn!(
-                    worker_id = %hex_id,
+                    worker_id = %display_id_writer,
                     error = %e,
                     "writer send failed"
                 );
             }
-            let hex_id = format_worker_id(&worker_id_writer);
             tracing::debug!(
-                worker_id = %hex_id,
+                worker_id = %display_id_writer,
                 msg_type = ?msg,
                 "message sent to worker"
             );
         }
         // The mpsc channel sender was dropped — all messages have been
         // processed. This is a normal shutdown path, not an error.
-        let hex_id = format_worker_id(&worker_id_writer);
-        tracing::debug!(worker_id = %hex_id, "writer task ended (channel closed)");
+        tracing::debug!(worker_id = %display_id_writer, "writer task ended (channel closed)");
     });
 
     // Spawn the reader task second. It runs independently of the writer —
@@ -128,8 +137,18 @@ pub fn start(
     //
     // The reader does not use worker_id for routing — it receives the
     // identity from transport.recv() for each event, which is the correct
-    // identity for the ROUTER socket.
+    // identity for the ROUTER socket. worker_id is retained here only to
+    // cross-check against that received identity for misrouting detection
+    // (see the WARN below); it is never logged directly.
     let reader_handle = tokio::spawn(async move {
+        // Precompute the expected wire identity as a string once, outside
+        // the loop, so the comparison below is a cheap string equality
+        // check per event rather than re-decoding worker_id every iteration.
+        // `String::from_utf8_lossy` degrades gracefully for the rare
+        // non-UTF8 test identities instead of panicking; in production
+        // worker_id is always the bare device index, which is valid UTF-8.
+        let expected_wire_id = String::from_utf8_lossy(&worker_id).into_owned();
+
         // The reader uses `loop { match ... }` instead of `while let` because
         // transport.recv() returns Result, not Option. On Ok, we broadcast
         // the event; on Err, we log and break (terminal error for the reader).
@@ -137,10 +156,28 @@ pub fn start(
             match transport.recv().await {
                 Ok((id, event)) => {
                     tracing::debug!(
-                        worker_id = %id,
+                        worker_id = %display_id,
                         event_type = ?event,
                         "event received from worker"
                     );
+
+                    // Cross-check: the wire identity ZeroMQ delivered this
+                    // frame under should always match this bridge's own
+                    // routing identity. A mismatch indicates the ROUTER
+                    // socket associated this event with the wrong peer —
+                    // a misrouting condition that should never occur in
+                    // correct operation and is otherwise invisible, since
+                    // the event is still broadcast and processed normally.
+                    if id != expected_wire_id {
+                        tracing::warn!(
+                            worker_id = %display_id,
+                            expected_wire_id = %expected_wire_id,
+                            actual_wire_id = %id,
+                            event_type = ?event,
+                            "received event under unexpected wire identity — possible IPC misrouting"
+                        );
+                    }
+
                     // Broadcast to all listeners. If no receivers are
                     // subscribed, send() returns Err(RecvError::Closed)
                     // which we ignore — there is nothing to deliver.
@@ -150,9 +187,8 @@ pub fn start(
                     // Transport recv error is terminal for the reader —
                     // the socket is closed or unreachable, so there is no
                     // point retrying. Log at WARN and break out of the loop.
-                    let hex_id = format_worker_id(&worker_id);
                     tracing::warn!(
-                        worker_id = %hex_id,
+                        worker_id = %display_id,
                         error = %e,
                         "reader recv failed, stopping"
                     );

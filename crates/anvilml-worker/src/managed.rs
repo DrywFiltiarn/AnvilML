@@ -241,6 +241,7 @@ impl ManagedWorker {
         let (writer_handle, reader_handle) = bridge::start(
             transport.clone(),
             ipc_identity_bytes,
+            worker_id.clone(),
             msg_rx,
             event_tx.clone(),
         );
@@ -652,7 +653,10 @@ impl ManagedWorker {
         // case the writer task is itself stuck (e.g. transport socket in a
         // bad state) — shutdown must still make progress in that case.
         if let Some((writer_handle, reader_handle)) = self.bridge_handles.take() {
-            if let Err(_) = tokio::time::timeout(Duration::from_secs(2), writer_handle).await {
+            if tokio::time::timeout(Duration::from_secs(2), writer_handle)
+                .await
+                .is_err()
+            {
                 tracing::warn!(
                     worker_id = %self.worker_id,
                     "bridge writer task did not finish within grace period during shutdown"

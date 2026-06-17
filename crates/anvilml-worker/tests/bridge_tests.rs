@@ -74,7 +74,13 @@ async fn test_writer_sends_message() {
     let (event_tx, _event_rx) = broadcast::channel(16);
 
     // Spawn the bridge writer task.
-    let (writer_handle, _reader_handle) = start(Arc::new(transport), worker_id, msg_rx, event_tx);
+    let (writer_handle, _reader_handle) = start(
+        Arc::new(transport),
+        worker_id,
+        "test-worker".to_string(),
+        msg_rx,
+        event_tx,
+    );
 
     // Send a message through the mpsc channel.
     msg_tx
@@ -169,8 +175,13 @@ async fn test_reader_broadcasts_event() {
 
     // Spawn the bridge reader task. The writer is also spawned but its
     // channel sender is dropped immediately so the writer exits.
-    let (writer_handle, _reader_handle) =
-        start(Arc::clone(&transport), worker_id.clone(), msg_rx, event_tx);
+    let (writer_handle, _reader_handle) = start(
+        Arc::clone(&transport),
+        worker_id.clone(),
+        "test-worker".to_string(),
+        msg_rx,
+        event_tx,
+    );
 
     // Drop the writer's sender so the writer exits cleanly.
     drop(msg_tx);
@@ -248,6 +259,7 @@ async fn test_handles_drop_cleanly() {
     let (writer_handle, reader_handle) = start(
         Arc::clone(&transport),
         b"test-worker".to_vec(),
+        "test-worker".to_string(),
         msg_rx,
         event_tx,
     );

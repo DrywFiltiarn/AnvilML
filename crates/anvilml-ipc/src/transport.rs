@@ -85,6 +85,21 @@ pub struct RouterTransport {
     pub port: u16,
 }
 
+/// Render a raw ZeroMQ identity as a string for logging.
+///
+/// Worker identities are UTF-8 strings in production (the bare device index,
+/// e.g. `"0"`), but auto-generated DEALER identities (e.g. in tests) may be
+/// arbitrary non-UTF8 bytes. This decodes as UTF-8 when valid and falls back
+/// to a hex string otherwise. Used by both `send()` and `recv()` so that the
+/// same underlying identity bytes always render identically in logs,
+/// regardless of which method observed them.
+fn render_identity(id: &[u8]) -> String {
+    match std::str::from_utf8(id) {
+        Ok(s) => s.to_string(),
+        Err(_) => id.iter().map(|b| format!("{b:02x}")).collect(),
+    }
+}
+
 impl RouterTransport {
     /// Create a new ROUTER socket and bind it to `tcp://127.0.0.1:0`.
     ///
@@ -183,9 +198,10 @@ impl RouterTransport {
         // that identity is connected, it returns ZmqError::Other.
         socket.send(message).await?;
 
-        // Log the worker identity as a hex string for readability.
-        let hex_id: String = worker_id.iter().map(|b| format!("{b:02x}")).collect();
-        tracing::debug!(worker_id = %hex_id, "message sent to worker");
+        // Log the worker identity using the same UTF-8-or-hex rule as recv(),
+        // so the same identity bytes always render identically in logs whether
+        // they were sent to or received from the ROUTER socket.
+        tracing::debug!(worker_id = %render_identity(worker_id), "message sent to worker");
 
         Ok(())
     }
@@ -243,12 +259,7 @@ impl RouterTransport {
         // are typically ASCII strings (e.g. "worker-0", "test-worker-0").
         // Auto-generated zeromq identities are raw bytes, so we fall back
         // to hex encoding when the identity is not valid UTF-8.
-        let worker_id = match String::from_utf8(identity_bytes.to_vec()) {
-            Ok(s) => s,
-            // Non-UTF8 identity: represent as hex string for log readability.
-            // This handles auto-generated zeromq identities which are raw bytes.
-            Err(_) => identity_bytes.iter().map(|b| format!("{b:02x}")).collect(),
-        };
+        let worker_id = render_identity(identity_bytes);
 
         // Decode the msgpack payload into a WorkerEvent. This uses the
         // `_type` discriminator field to select the correct enum variant.

@@ -354,6 +354,7 @@ async fn test_shutdown_cleans_up_handles() {
     let (writer_handle, reader_handle) = anvilml_worker::start(
         transport.clone(),
         b"test-worker-shutdown".to_vec(),
+        "test-worker-shutdown".to_string(),
         msg_rx,
         event_tx.clone(),
     );
@@ -394,6 +395,7 @@ async fn test_shutdown_cleans_up_handles() {
     let (wh2, rh2) = anvilml_worker::start(
         transport.clone(),
         b"test-worker-shutdown-2".to_vec(),
+        "test-worker-shutdown-2".to_string(),
         _msg_rx2,
         event_tx2.clone(),
     );

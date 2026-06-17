@@ -131,7 +131,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-ipc"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anvilml-core",
  "bytes",
@@ -211,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-worker"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
