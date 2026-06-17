@@ -63,14 +63,21 @@ fn test_custom_port_health() {
     };
 
     // Spawn the server binary directly with port 0 for OS-assigned port.
-    // The --log-format plain flag ensures clean, line-based stderr output
-    // that the port-detection logic below can parse.
+    // The --log-format plain flag ensures clean, line-based output that the
+    // port-detection logic below can parse.
+    //
+    // tracing-subscriber's fmt::Subscriber writes to stdout by default (no
+    // .with_writer() override is configured in main.rs), so the "listening"
+    // log line appears on stdout, not stderr. stdout is piped here for the
+    // port-detection read loop; stderr is left inherited so any panic
+    // output or non-tracing diagnostics from the subprocess still surface
+    // in the test runner's own output for debugging.
     // Using the pre-built binary avoids cargo's output buffering issues.
     let mut child = Command::new(&binary)
         .args(["--port", "0", "--log-format", "plain"])
         .current_dir(&ws_root)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()
         .unwrap_or_else(|e| {
             panic!(
@@ -80,11 +87,11 @@ fn test_custom_port_health() {
             )
         });
 
-    // Take ownership of stderr immediately after spawn so the port-detection
+    // Take ownership of stdout immediately after spawn so the port-detection
     // block below can read it line-by-line. This must happen before the
     // catch_unwind closure, since `child` is borrowed mutably for kill_child
     // after the closure returns and cannot also be moved into it.
-    let child_stderr = child.stderr.take().expect("stderr was piped at spawn");
+    let child_stdout = child.stdout.take().expect("stdout was piped at spawn");
 
     // Capture and clean up any ANVILML_* env vars that might have leaked from
     // other parallel test runs. This prevents env var pollution from affecting
@@ -109,6 +116,10 @@ fn test_custom_port_health() {
 
     // Scope for the child handle — ensures it's dropped (killed) on test exit.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // Clear any ANVILML_* env vars that may have leaked from other
+        // parallel test runs. This prevents env var pollution from
+        // affecting the test's own logic (e.g., if a prior test set
+        // ANVILML_PORT and failed to restore it).
         for name in [
             "ANVILML_PORT",
             "ANVILML_HOST",
@@ -134,7 +145,7 @@ fn test_custom_port_health() {
         // --log-format plain produces lines containing `addr=IP:PORT` and
         // the message `listening`; we don't depend on exact field ordering,
         // only on both substrings appearing on the same line.
-        let mut reader = BufReader::new(child_stderr);
+        let mut reader = BufReader::new(child_stdout);
         let mut port: Option<u16> = None;
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
 
