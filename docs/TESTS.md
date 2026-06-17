@@ -1835,3 +1835,12 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** `policy.delay_ms = 1000`, attempts 0, 1, 2, 3, 4, 5, 10.
 **Expected output:** 1000, 2000, 4000, 8000, 16000, 30000 (capped), 30000 (capped).
 **Acceptance command:** `cargo test -p anvilml-worker --test respawn_tests test_next_delay_ms_exponential_backoff_and_cap` exits 0.
+
+## test_run_processes_multiple_sequential_events (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** `ManagedWorker::run()` has been refactored into a continuous loop (P901-A1) that processes events until the broadcast channel closes. Existing tests send one event then `drop(event_tx)` — a pattern compatible with both the old one-shot `select!` and the new loop. This test sends two sequential events on a single `run()` call to prove the loop is real.
+**Tests:** Creates a worker in `Initializing` state, spawns `run()`, sends a `Ready` event (triggering `Initializing → Idle`), manually sets status to `Busy`, sends a `Completed` event (triggering `Busy → Idle`), and asserts the final status is `Idle`. If `run()` exited after the first event, the second event would never be received and the status would remain `Busy`.
+**Inputs:** Worker in `Initializing` state, `Ready` event followed by `Completed` event (sent sequentially on the same `event_tx`), manual `Busy` status set between events.
+**Expected output:** Status transitions: `Initializing → Idle` (on Ready) → `Busy` (manual) → `Idle` (on Completed). Final status is `Idle`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- test_run_processes_multiple_sequential_events` exits 0.

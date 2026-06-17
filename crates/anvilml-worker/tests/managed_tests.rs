@@ -17,6 +17,7 @@ use anvilml_worker::keepalive;
 use anvilml_worker::managed::ManagedWorker;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::timeout;
+use uuid::Uuid;
 
 /// Create a `ManagedWorker` for testing with pre-built channels.
 ///
@@ -406,4 +407,112 @@ async fn test_shutdown_cleans_up_handles() {
     // Abort the first run() task since it blocks on event_rx.recv().
     run_handle.abort();
     let _ = run_handle.await;
+}
+
+/// Verify that `run()` processes two sequential events on a single invocation,
+/// proving the event loop is continuous and does not exit after the first event.
+///
+/// This test creates a worker in `Initializing` state, sends a `Ready` event
+/// (triggering `Initializing → Idle`), then manually sets status to `Busy`,
+/// sends a `Completed` event (triggering `Busy → Idle`), and asserts the final
+/// status is `Idle`. If `run()` had exited after the first event, the second
+/// event would never be received and the status would remain `Busy`.
+///
+/// Starting from `Initializing` exercises the full Ready→Idle transition path
+/// (the most critical state machine path), then transitions to Busy manually
+/// and verifies the second event. This is more comprehensive than starting
+/// from `Idle` because it covers both the Ready timeout scoping and the
+/// subsequent loop continuity.
+///
+/// The 10-second timeout on `run_handle.await` prevents the test from hanging
+/// indefinitely if the loop fails to break on channel close.
+#[tokio::test]
+async fn test_run_processes_multiple_sequential_events() {
+    // Create a worker in the Initializing state.
+    let (worker, event_tx) = make_test_worker(
+        WorkerStatus::Initializing,
+        "test-worker-multi",
+        "test-device",
+    );
+
+    // Clone the status Arc before consuming worker in run().
+    let status = worker.get_status();
+
+    // Spawn run() — it subscribes to the broadcast channel and enters the
+    // select loop.
+    let run_handle = tokio::spawn(worker.run());
+
+    // Give run() time to subscribe to the broadcast channel and enter
+    // the select loop. This is critical — events sent before run()
+    // subscribes may not be delivered.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Send a Ready event through the broadcast channel. This triggers the
+    // Initializing → Idle transition.
+    let ready_event = WorkerEvent::Ready {
+        worker_id: "test-worker-multi".to_string(),
+        device_index: 0,
+        device_name: "test-device".to_string(),
+        device_type: "cpu".to_string(),
+        vram_total_mib: 8192,
+        vram_free_mib: 8000,
+        torch_version: "2.4.0".to_string(),
+        fp16: true,
+        bf16: true,
+        fp8: false,
+        flash_attention: false,
+        node_types: Vec::new(),
+    };
+    let _ = event_tx.send(("test-worker-multi".to_string(), ready_event));
+
+    // Wait for the Ready event to be processed by run().
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Verify the status transitioned to Idle after the Ready event.
+    let final_status = *status.read().await;
+    assert_eq!(
+        final_status,
+        WorkerStatus::Idle,
+        "status should be Idle after Ready event, got {:?}",
+        final_status
+    );
+
+    // Manually set status to Busy (simulating a job dispatch from the scheduler).
+    {
+        let mut s = status.write().await;
+        *s = WorkerStatus::Busy;
+    }
+
+    // Give the write time to propagate.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Send a Completed event through the broadcast channel. This triggers the
+    // Busy → Idle transition. If run() had exited after the first event, this
+    // event would never be received and the status would remain Busy.
+    let completed_event = WorkerEvent::Completed {
+        job_id: Uuid::new_v4(),
+        elapsed_ms: 5000,
+    };
+    let _ = event_tx.send(("test-worker-multi".to_string(), completed_event));
+
+    // Wait for the Completed event to be processed.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Verify the status transitioned back to Idle after the Completed event.
+    // This is the critical assertion: if run() had exited after processing
+    // the first event, the status would still be Busy here.
+    let final_status = *status.read().await;
+    assert_eq!(
+        final_status,
+        WorkerStatus::Idle,
+        "status should be Idle after Completed event (proving run() loop is continuous), got {:?}",
+        final_status
+    );
+
+    // Close the channel to let run() exit.
+    drop(event_tx);
+
+    // Await run() with a timeout to prevent CI from hanging indefinitely
+    // if the loop fails to break on channel close.
+    let _ = timeout(Duration::from_secs(10), run_handle).await;
 }
