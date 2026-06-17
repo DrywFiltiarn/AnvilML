@@ -603,15 +603,19 @@ impl ManagedWorker {
     ///
     /// This method performs a graceful shutdown sequence:
     /// 1. Signal the heartbeat to stop via `HeartbeatHandle::shutdown()`
-    /// 2. Drop `msg_tx` to signal the bridge writer to exit
-    /// 3. Drop bridge handles to abort the bridge tasks
-    /// 4. Drop the keepalive handle to abort the keepalive task
-    /// 5. Send a `Shutdown` message to the bridge (best-effort, may fail
-    ///    if the channel is already closed from step 2)
+    /// 2. Send a `Shutdown` message to the bridge (best-effort, may fail
+    ///    if the channel is already closed)
+    /// 3. Drop `msg_tx` to signal the bridge writer to exit
+    /// 4. Drop bridge handles to abort the bridge tasks
+    /// 5. Drop the keepalive handle to abort the keepalive task
+    /// 6. Wait up to 5 seconds for the subprocess to exit on its own, then
+    ///    force-kill it if it hasn't — this is required because dropping a
+    ///    `tokio::process::Child` does not terminate the OS process, only
+    ///    the Rust handle to it.
     ///
     /// This method consumes `self` to take ownership of all fields.
     #[tracing::instrument(skip(self), fields(worker_id = %self.worker_id))]
-    pub async fn shutdown(self) {
+    pub async fn shutdown(mut self) {
         // Signal the heartbeat to stop after the current ping/pong cycle.
         // This prevents the heartbeat from sending pings to a worker that
         // is already shutting down.
@@ -625,17 +629,88 @@ impl ManagedWorker {
         // when msg_tx is dropped below.
         self.msg_tx.send(WorkerMessage::Shutdown).await.ok();
 
-        // Drop the message sender to signal the bridge writer to exit.
-        // The bridge writer will exit when `msg_rx.recv()` returns None
-        // (all senders are dropped).
+        // Drop the message sender to signal the bridge writer to exit once
+        // it has drained the channel. The writer's `while let Some(msg) =
+        // msg_rx.recv().await` loop exits when `recv()` returns `None`,
+        // which only happens after every sender is dropped AND the buffer
+        // is empty — so dropping here does not discard the Shutdown message
+        // we just enqueued above.
         drop(self.msg_tx);
 
-        // Drop the bridge handles to abort the bridge tasks.
-        // Dropping a JoinHandle aborts the task (same as AbortHandle::abort).
-        drop(self.bridge_handles);
+        // Await the writer task so the Shutdown message is actually
+        // delivered to the transport before we proceed. This is the fix for
+        // workers never receiving Shutdown during supervisor exit: a bare
+        // `mpsc::Sender::send().await` only guarantees the message reached
+        // the channel buffer, not that the writer task has been scheduled
+        // to pull it off and call `transport.send()`. Previously this
+        // method dropped the `JoinHandle` immediately afterward — dropping
+        // a `tokio::JoinHandle` does NOT abort the task, but it also gives
+        // no guarantee the task is ever polled again before the runtime
+        // tears down at process exit, since tokio's scheduler is
+        // cooperative and nothing in this function naturally yielded long
+        // enough for the writer to run. Bounded with a short timeout in
+        // case the writer task is itself stuck (e.g. transport socket in a
+        // bad state) — shutdown must still make progress in that case.
+        if let Some((writer_handle, reader_handle)) = self.bridge_handles.take() {
+            if let Err(_) = tokio::time::timeout(Duration::from_secs(2), writer_handle).await {
+                tracing::warn!(
+                    worker_id = %self.worker_id,
+                    "bridge writer task did not finish within grace period during shutdown"
+                );
+            }
+            // The reader task terminates on its own once the transport
+            // returns an error (e.g. after the worker process exits and the
+            // socket closes) or once the worker subprocess is killed below.
+            // We don't block shutdown on it — only abort it so it doesn't
+            // outlive this function.
+            reader_handle.abort();
+        }
 
         // Drop the keepalive handle to abort the keepalive task.
         drop(self.keepalive_handle);
+
+        // Wait for the subprocess to exit on its own (it should react to the
+        // Shutdown message above and exit cleanly), bounded by a grace period.
+        // Without this step the OS process survives the supervisor exiting —
+        // dropping a `tokio::process::Child` does NOT terminate the child,
+        // it only drops Rust's handle to it. This is the fix for the defect
+        // where workers remained alive after the supervisor was Ctrl+C'd:
+        // `with_graceful_shutdown` only drains HTTP connections, it never
+        // touched worker subprocesses, so the child outlived the parent.
+        if let Some(mut child) = self.child.take() {
+            match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
+                Ok(Ok(status)) => {
+                    tracing::debug!(
+                        worker_id = %self.worker_id,
+                        exit_code = ?status.code(),
+                        "worker subprocess exited cleanly during shutdown"
+                    );
+                }
+                Ok(Err(err)) => {
+                    tracing::warn!(
+                        worker_id = %self.worker_id,
+                        error = %err,
+                        "error waiting on worker subprocess during shutdown"
+                    );
+                }
+                Err(_) => {
+                    // The grace period elapsed without the child exiting.
+                    // Force-kill so the OS process does not outlive the
+                    // supervisor.
+                    tracing::warn!(
+                        worker_id = %self.worker_id,
+                        "worker subprocess did not exit within grace period, killing"
+                    );
+                    if let Err(err) = child.kill().await {
+                        tracing::warn!(
+                            worker_id = %self.worker_id,
+                            error = %err,
+                            "failed to kill worker subprocess"
+                        );
+                    }
+                }
+            }
+        }
 
         tracing::debug!(
             worker_id = %self.worker_id,

@@ -262,7 +262,7 @@ async fn main() {
     // connections so events flow immediately to the first subscriber.
     // The stats tick uses the WorkerPool for both the broadcaster
     // (via pool.broadcaster()) and the worker info snapshot.
-    anvilml_server::ws::stats_tick::start(workers);
+    anvilml_server::ws::stats_tick::start(workers.clone());
 
     // Run the server until a fatal error occurs. The .expect() provides a
     // user-visible error message if the server encounters a fatal error during serving.
@@ -273,4 +273,14 @@ async fn main() {
     .with_graceful_shutdown(shutdown::shutdown_signal())
     .await
     .expect("server error");
+
+    // `with_graceful_shutdown` only stops axum from accepting new HTTP
+    // connections and waits for in-flight requests to finish — it has no
+    // knowledge of the worker subprocesses spawned via `WorkerPool`. Without
+    // this call, Ctrl+C (or SIGTERM) left every Python worker process
+    // running after the supervisor exited, since dropping a
+    // `tokio::process::Child` does not terminate the underlying OS process.
+    // `shutdown_all` sends each worker a graceful `Shutdown` IPC message and
+    // force-kills any that don't exit within their grace period.
+    workers.shutdown_all().await;
 }

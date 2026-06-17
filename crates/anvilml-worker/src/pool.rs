@@ -42,7 +42,15 @@ pub struct WorkerPool {
     /// `ManagedWorker` does not expose `worker_id` or `device_name` publicly,
     /// so the pool stores these values alongside the worker reference.
     /// Each tuple is `(worker, worker_id, device_name)`.
-    workers: Vec<(Arc<ManagedWorker>, String, String)>,
+    ///
+    /// Wrapped in a `tokio::sync::Mutex` (rather than a bare `Vec`) so that
+    /// `shutdown_all(&self)` can drain the vec and move each `Arc<ManagedWorker>`
+    /// out by value through a shared reference — `WorkerPool` is held behind
+    /// an `Arc` shared with `AppState` and the system stats tick task, so no
+    /// method on this struct can ever take `self` by value. Moving entries
+    /// out (rather than cloning the `Arc`s) is required for `Arc::try_unwrap`
+    /// in `shutdown_all` to see a strong count of 1 and succeed.
+    workers: tokio::sync::Mutex<Vec<(Arc<ManagedWorker>, String, String)>>,
 
     /// The shared IPC transport used by all workers for message routing.
     ///
@@ -186,7 +194,7 @@ impl WorkerPool {
         );
 
         Ok(Self {
-            workers,
+            workers: tokio::sync::Mutex::new(workers),
             transport,
             broadcaster,
         })
@@ -208,7 +216,7 @@ impl WorkerPool {
         broadcaster: Arc<EventBroadcaster>,
     ) -> Self {
         Self {
-            workers,
+            workers: tokio::sync::Mutex::new(workers),
             transport,
             broadcaster,
         }
@@ -237,9 +245,15 @@ impl WorkerPool {
     /// - `vram_used_mib`: Always `None` — VRAM usage is reported by the worker
     ///   via the `MemoryReport` event, which the pool does not currently track.
     pub async fn get_worker_infos(&self) -> Vec<WorkerInfo> {
-        let mut infos = Vec::with_capacity(self.workers.len());
+        // Lock briefly to snapshot the worker list. The lock is held only
+        // for the duration of this method — `shutdown_all` is the only
+        // other place that touches `self.workers`, and the two are not
+        // expected to race in practice (shutdown happens once, after the
+        // server has stopped accepting new requests).
+        let workers = self.workers.lock().await;
+        let mut infos = Vec::with_capacity(workers.len());
 
-        for (worker, worker_id, device_name) in &self.workers {
+        for (worker, worker_id, device_name) in workers.iter() {
             // Read the current status under a read lock. This allows
             // concurrent reads from multiple callers (e.g., the HTTP
             // handler and the system stats tick).
@@ -249,8 +263,7 @@ impl WorkerPool {
             // In production, the device index is known at spawn time
             // from the enumerate position. Here we reconstruct it
             // from the stored device name.
-            let device_index = self
-                .workers
+            let device_index = workers
                 .iter()
                 .position(|(_, _id, name)| name == device_name)
                 .unwrap_or(0) as u32;
@@ -278,5 +291,63 @@ impl WorkerPool {
     /// A reference to the `Arc<EventBroadcaster>` stored in this pool.
     pub fn broadcaster(&self) -> &Arc<EventBroadcaster> {
         &self.broadcaster
+    }
+
+    /// Shut down every worker in the pool.
+    ///
+    /// This is the fix for workers surviving a supervisor Ctrl+C: previously
+    /// nothing in `main.rs` ever called `ManagedWorker::shutdown()`, so the
+    /// Python subprocesses were simply abandoned when the process exited.
+    /// `with_graceful_shutdown` only drains in-flight HTTP connections — it
+    /// has no knowledge of worker subprocesses.
+    ///
+    /// Takes `&self` because `WorkerPool` lives behind an `Arc` shared with
+    /// `AppState` and the system stats tick task, so it can never be moved
+    /// out at the call site. To still get owned `ManagedWorker` values (which
+    /// `ManagedWorker::shutdown(mut self)` requires), this drains the entire
+    /// `Vec` out of the `workers` mutex via `std::mem::take`, leaving the
+    /// pool's list empty afterward. This moves each `Arc<ManagedWorker>` out
+    /// by value rather than cloning it, so the strong reference count seen
+    /// by `Arc::try_unwrap` below is exactly 1 for each worker — cloning
+    /// instead of moving here was the bug in an earlier version of this
+    /// method, since a clone always raises the count to 2 and guarantees
+    /// `try_unwrap` fails.
+    ///
+    /// Workers are shut down sequentially rather than concurrently. This
+    /// pool is sized to one worker per GPU (typically 1–8), so sequential
+    /// shutdown completes well within the per-worker grace period used by
+    /// `ManagedWorker::shutdown()` and keeps the shutdown log easy to read.
+    ///
+    /// # Returns
+    ///
+    /// Nothing. Failures to cleanly shut down an individual worker are
+    /// logged at WARN rather than surfaced as an error — shutdown must
+    /// proceed for all workers even if one is uncooperative.
+    #[tracing::instrument(skip(self))]
+    pub async fn shutdown_all(&self) {
+        // Drain the vec out from behind the mutex. After this, self.workers
+        // is empty — shutdown_all is expected to be called exactly once,
+        // at process exit, so leaving the pool empty afterward is correct.
+        let drained = std::mem::take(&mut *self.workers.lock().await);
+
+        for (worker, worker_id, _device_name) in drained {
+            match Arc::try_unwrap(worker) {
+                Ok(worker) => {
+                    worker.shutdown().await;
+                }
+                Err(_) => {
+                    // Strong count was not 1 at the point of try_unwrap.
+                    // Given the current monitoring task design (it clones
+                    // only the status RwLock's Arc via get_status(), never
+                    // the worker Arc itself), this should not happen — log
+                    // loudly so it's caught if that invariant is ever broken.
+                    tracing::warn!(
+                        worker_id = %worker_id,
+                        "could not take exclusive ownership of worker during \
+                         shutdown; worker subprocess may remain running"
+                    );
+                }
+            }
+        }
     }
 }
