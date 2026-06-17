@@ -12,14 +12,29 @@
   },
   {
     "id": "P10-A2",
-    "description": "anvilml-worker: managed.rs crash detection and automatic respawn",
+    "description": "anvilml-worker: managed.rs detect unexpected child exit and transition to Dead",
     "phase": "10",
     "project": "anvilml",
     "prereqs": [
-      "P10-A1"
+      "P901-A3"
     ],
-    "context": "Extend managed.rs: child.wait() future in managed run loop detects unexpected exit; transition Dead; broadcast WorkerStatusChanged(Dead); if in-flight job: mark Failed with error=worker_crashed via job store callback. After respawn_delay: if RespawnPolicy::should_respawn: transition Respawning; re-run spawn(); emit WorkerStatusChanged(Respawning). tracing::info!(worker_id,exit_code) on Dead; tracing::info!(worker_id,attempt,delay_ms) on Respawning. tests/managed_tests.rs: kill worker->Dead->Idle cycle. cargo test --features mock-hardware exits 0.",
-    "tags": []
+    "context": "Extend the continuous run() loop (P901-A1): add self.child.as_mut().unwrap().wait() as a third select! arm alongside event_rx.recv(). On unexpected exit: transition status to Dead; broadcast WorkerStatusChanged(Dead); tracing::info!(worker_id,exit_code,\"worker exited unexpectedly\"). No respawn here (P10-A3). Job-failure notification out of scope (JobScheduler does not exist until P13-A3) \u2014 leave // TODO(P14) comment at the Dead transition instead. tests/managed_tests.rs: kill spawned child -> Dead observed. cargo test -p anvilml-worker --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P10-A3",
+    "description": "anvilml-worker: managed.rs respawn cycle after Dead using RespawnPolicy",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": [
+      "P10-A2"
+    ],
+    "context": "Extend Dead path from P10-A2: after respawn_delay (next_delay_ms via tokio::time::sleep, not std::thread::sleep), call should_respawn(&mut crash_count,last_crash); true: transition Respawning, broadcast WorkerStatusChanged(Respawning), re-run spawn() with same cfg/device/transport, continue run() loop; false: remain Dead, tracing::info!(worker_id,\"respawn attempts exhausted\"). tracing::info!(worker_id,attempt,delay_ms) on Respawning. managed_tests.rs: kill subprocess -> Dead->Respawning->Idle within timeout. cargo test -p anvilml-worker --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
   },
   {
     "id": "P10-B1",
@@ -27,7 +42,7 @@
     "phase": "10",
     "project": "anvilml",
     "prereqs": [
-      "P10-A2"
+      "P10-A3"
     ],
     "context": "Create handlers/workers.rs restart_worker(State<AppState>,Path<String>): lookup worker by id in WorkerPool; if not found 404; send Shutdown IPC message; force-kill after 5s; respawn. Return 202. Mount POST /v1/workers/:id/restart in build_router. Integration test: restart a worker; GET /v1/workers shows Idle within 30s. cargo test -p anvilml-server --features mock-hardware exits 0.",
     "tags": []

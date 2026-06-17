@@ -1,0 +1,39 @@
+[
+  {
+    "id": "P901-A1",
+    "description": "anvilml-worker: managed.rs fix run() to loop continuously instead of returning after one event",
+    "phase": "901",
+    "project": "anvilml",
+    "prereqs": [
+      "P10-A1"
+    ],
+    "context": "Defect: ManagedWorker::run() wraps a single tokio::select!{ready_timeout,event_rx.recv()} with no enclosing loop, so it processes exactly one event then returns, dropping bridge/keepalive handles prematurely. Fix: wrap the select! in loop{...}. Keep ready_timeout only while status==Initializing; once Ready is processed, drop the timeout branch from future iterations (it must not misfire after the worker is already Idle/Busy). break only on RecvError::Closed. cargo test -p anvilml-worker --features mock-hardware exits 0 (existing tests may fail here; fixed in P901-A2).",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P901-A2",
+    "description": "anvilml-worker: managed_tests.rs update tests for the now-continuous run() loop",
+    "phase": "901",
+    "project": "anvilml",
+    "prereqs": [
+      "P901-A1"
+    ],
+    "context": "P901-A1 made run() loop continuously instead of returning after one event. Existing tests in managed_tests.rs send one event then drop(event_tx) to force run() to exit; this pattern still works (Closed still breaks the loop) but no longer proves continuity. Add test_run_processes_multiple_sequential_events: on one run() invocation send Ready, await Idle, then send a Busy-completing event, and assert the second transition is observed before dropping event_tx. Do not modify managed.rs in this task. cargo test -p anvilml-worker --features mock-hardware exits 0, including the new test.",
+    "tags": []
+  },
+  {
+    "id": "P901-A3",
+    "description": "anvilml-worker: respawn.rs fix should_respawn to honor last_crash/window_s instead of ignoring them",
+    "phase": "901",
+    "project": "anvilml",
+    "prereqs": [
+      "P901-A2"
+    ],
+    "context": "Defect: should_respawn ignores last_crash (renamed _last_crash), always true below max_attempts, never resets count. Contradicts ANVILML_DESIGN.md \u00a718.4 and P10-A1's criteria. Fix signature: should_respawn(&self,crash_count:&mut u32,last_crash:Instant)->bool. Reset *crash_count=0 if last_crash.elapsed()>=window_s. Return false if *crash_count>=max_attempts. Else increment *crash_count, return true. Update respawn_tests.rs: window_reset test asserts crash_count mutated low post-call, not just the bool. cargo test -p anvilml-worker --features mock-hardware -- respawn exits 0 >=4 tests.",
+    "tags": [
+      "reasoning"
+    ]
+  }
+]

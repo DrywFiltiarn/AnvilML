@@ -6,26 +6,58 @@
 | Name | Worker Crash Recovery |
 | Project | anvilml |
 | Status | Approved |
-| Depends on phases | 9 |
+| Depends on phases | 9, 901 |
 
 ## Overview
 
-Phase 010 implements automatic worker crash recovery. At the end of Phase 009 the server can spawn and manage workers, but a worker process that exits unexpectedly is never restarted. This phase adds the policy type that decides when and how often to respawn, the crash-detection loop inside `ManagedWorker`, and the HTTP endpoint that lets operators force-restart a specific worker.
+Phase 010 implements automatic worker crash recovery. At the end of Phase 009 the server
+can spawn and manage workers, but a worker process that exits unexpectedly is never
+restarted. This phase adds the policy type that decides when and how often to respawn, the
+crash-detection logic inside `ManagedWorker`, the respawn cycle that follows it, and the
+HTTP endpoint that lets operators force-restart a specific worker.
 
-At phase start the binary can spawn workers and serve the health endpoint. At phase end a killed worker process is automatically detected, the in-flight job is marked Failed, and the worker respawns after a configurable backoff — all observable via the WebSocket event stream. The `POST /v1/workers/:id/restart` endpoint provides a manual override path.
+At phase start the binary can spawn workers and serve the health endpoint. At phase end a
+killed worker process is automatically detected, the worker respawns after a configurable
+backoff, and a manual `POST /v1/workers/:id/restart` override path exists — all observable
+via the WebSocket event stream.
 
-Phase 011 (Dynamic Node Registry) depends on workers reaching Idle after respawn; the respawn logic landed here is the prerequisite for that behaviour.
+`P10-A2` was originally a single task combining crash detection and the respawn cycle. It
+is now two tasks (`P10-A2`, `P10-A3`) because the combination depends on `ManagedWorker::run()`
+actually looping continuously and `RespawnPolicy::should_respawn` actually resetting its
+crash counter — neither of which was true in the codebase this phase started from. Both
+defects are corrected in the **Phase 901** retrofit, which sits between `P10-A1` and the
+renumbered `P10-A2`. Splitting the work this way also means crash detection (Dead) and the
+respawn cycle (Respawning → Idle) can each be verified independently before being composed,
+rather than debugged together as one unit — the combined version previously stalled for
+several hours without producing a working result.
+
+**In-flight job failure notification is out of scope for this phase.** The original task
+text for `P10-A2` stated that "the in-flight job tracking callback exists on the worker," but
+no such callback exists anywhere in the codebase at this point — `JobScheduler`, the type
+that would own that callback, is not introduced until `P13-A3`, and no job is ever dispatched
+to a worker until `P14-A1`. The crash-detection task leaves a `// TODO(P14)` comment at the
+`Dead` transition site instead. Whichever task in Phase 14 wires worker crash events into job
+failure should reference this comment.
+
+Phase 011 (Dynamic Node Registry) depends on workers reaching Idle after respawn; the
+respawn logic landed here is the prerequisite for that behaviour.
 
 ## Group Reference
 
 | Group | Subsystem | Tasks | Summary |
 |-------|-----------|-------|---------|
-| A | anvilml-worker | P10-A1 … P10-A2 | RespawnPolicy type, crash detection and automatic respawn |
+| A | anvilml-worker | P10-A1 … P10-A3 | RespawnPolicy type; crash detection (Dead); respawn cycle (Respawning → Idle) |
 | B | anvilml-server | P10-B1 | POST /v1/workers/:id/restart handler |
 
 ## Prerequisites
 
-Phase 009 complete. `ManagedWorker` in `crates/anvilml-worker/src/managed.rs` exists with a running loop that handles IPC events. `WorkerPool` exists and manages one `ManagedWorker` per GPU. `WorkerStatusChanged` events are broadcast via `EventBroadcaster`. The in-flight job tracking callback exists on the worker so the scheduler can be notified on unexpected exit.
+Phase 009 complete. `ManagedWorker` in `crates/anvilml-worker/src/managed.rs` exists with a
+`run()` loop that processes IPC events continuously (corrected in Phase 901 — see above).
+`WorkerPool` exists and manages one `ManagedWorker` per GPU. `WorkerStatusChanged` events are
+broadcast via `EventBroadcaster`. `RespawnPolicy::should_respawn` correctly resets its crash
+counter against the configured time window (corrected in Phase 901 — see above). There is no
+in-flight job tracking on `ManagedWorker` at this point in the codebase; do not assume one
+exists.
 
 ## Task Descriptions
 
@@ -33,7 +65,9 @@ Phase 009 complete. `ManagedWorker` in `crates/anvilml-worker/src/managed.rs` ex
 
 #### P10-A1: anvilml-worker: respawn.rs RespawnPolicy with backoff and max-attempt guard
 
-**Goal:** Create `crates/anvilml-worker/src/respawn.rs` providing the `RespawnPolicy` type that determines whether a crashed worker should be restarted and how long to wait before doing so. This type is pure logic with no I/O; it is consumed by `ManagedWorker` in P10-A2.
+**Goal:** Create `crates/anvilml-worker/src/respawn.rs` providing the `RespawnPolicy` type
+that determines whether a crashed worker should be restarted and how long to wait before
+doing so. This type is pure logic with no I/O; it is consumed by `ManagedWorker` in `P10-A3`.
 
 **Files to create or modify:**
 - `crates/anvilml-worker/src/respawn.rs` — new file; `RespawnPolicy` struct and both public methods
@@ -41,29 +75,49 @@ Phase 009 complete. `ManagedWorker` in `crates/anvilml-worker/src/managed.rs` ex
 
 **Key implementation notes:**
 - `RespawnPolicy { delay_ms: u64, max_attempts: u32, window_s: u32 }` — all fields pub
-- `pub fn should_respawn(&self, crash_count: u32, last_crash: Instant) -> bool` — returns false if `crash_count >= max_attempts`; resets count if `last_crash` is older than `window_s`
+- `pub fn should_respawn(&self, crash_count: u32, last_crash: Instant) -> bool` — returns false if `crash_count >= max_attempts`; resets count if `last_crash` is older than `window_s`. **Note:** Phase 901 changes this signature to take `crash_count` by mutable reference so the reset is performed by the function itself rather than left to caller discretion — implement to the signature in this task's acceptance criterion, and expect the Phase 901 retrofit to revise it.
 - `pub fn next_delay_ms(&self, attempt: u32) -> u64` — exponential backoff starting at `delay_ms`, capped at 30 000 ms
 
 **Acceptance criterion:** `cargo test -p anvilml-worker --features mock-hardware -- respawn` exits 0 with ≥ 4 tests (max exceeded → false; within window → true; outside window resets count; delay sequence correct and capped).
 
 ---
 
-#### P10-A2: anvilml-worker: managed.rs crash detection and automatic respawn
+#### P10-A2: anvilml-worker: managed.rs detect unexpected child exit and transition to Dead
 
-**Goal:** Extend `ManagedWorker`'s run loop to detect unexpected child process exits, mark the worker `Dead`, fail any in-flight job, and then attempt a respawn according to `RespawnPolicy`.
+**Goal:** Extend `ManagedWorker`'s run loop to detect an unexpected child process exit and
+mark the worker `Dead`. This task does not implement respawn — see `P10-A3`.
 
 **Files to create or modify:**
-- `crates/anvilml-worker/src/managed.rs` — add crash-detection branch and respawn logic
-- `crates/anvilml-worker/tests/managed_tests.rs` — new or extend; crash cycle test
+- `crates/anvilml-worker/src/managed.rs` — add a `child.wait()` branch to the `run()` loop's `select!`
+- `crates/anvilml-worker/tests/managed_tests.rs` — extend; crash-detection test
 
 **Key implementation notes:**
-- `child.wait()` is selected alongside the IPC event channel; unexpected exit (non-zero or signal) triggers the Dead path, not graceful shutdown
-- On Dead: broadcast `WorkerStatusChanged(Dead)`; if in-flight job exists, call the job-store callback with `error = "worker_crashed"`
-- After `respawn_delay`: call `RespawnPolicy::should_respawn`; if true, transition to Respawning, re-run spawn, broadcast `WorkerStatusChanged(Respawning)`
-- `tracing::info!(worker_id, exit_code, "worker exited unexpectedly")` on Dead
-- `tracing::info!(worker_id, attempt, delay_ms, "respawning worker")` on Respawning
+- This task assumes `run()` already loops continuously and prerequisites the final task of Phase 901 (`P901-A3`) for exactly that reason — do not attempt this against the pre-Phase-901 `run()`, which exits after one event and cannot host a concurrent `child.wait()` branch.
+- `child.wait()` is selected alongside the IPC event channel inside the existing loop, as a third arm — not a separate function, not a separate task that supersedes the loop.
+- On unexpected exit: broadcast `WorkerStatusChanged(Dead)`; `tracing::info!(worker_id, exit_code, "worker exited unexpectedly")`.
+- Leave a `// TODO(P14): notify JobScheduler of in-flight job failure once it exists` comment at the Dead transition site. Do not invent a callback mechanism — there is nothing in the codebase yet for it to call.
+- `run()` must continue looping after the Dead transition (it does not return) so that `P10-A3` can add the respawn branch without re-touching this control flow.
 
-**Acceptance criterion:** `cargo test -p anvilml-worker --features mock-hardware` exits 0; `tests/managed_tests.rs` includes a test that kills the worker process and asserts the Dead → Respawning → Idle event sequence.
+**Acceptance criterion:** `cargo test -p anvilml-worker --features mock-hardware` exits 0; `tests/managed_tests.rs` includes a test that kills the spawned subprocess and asserts the `Dead` transition and broadcast are observed.
+
+---
+
+#### P10-A3: anvilml-worker: managed.rs respawn cycle after Dead using RespawnPolicy
+
+**Goal:** Extend the `Dead` path added in `P10-A2` with the respawn cycle: wait the policy's
+backoff delay, consult `RespawnPolicy::should_respawn`, and either respawn or remain `Dead`.
+
+**Files to create or modify:**
+- `crates/anvilml-worker/src/managed.rs` — add respawn branch following the `Dead` transition
+- `crates/anvilml-worker/tests/managed_tests.rs` — extend; full crash-respawn-cycle test
+
+**Key implementation notes:**
+- Await the delay with `tokio::time::sleep(Duration::from_millis(policy.next_delay_ms(attempt)))` — never `std::thread::sleep`, which would block the async runtime.
+- Call `should_respawn(&mut crash_count, last_crash)` (Phase 901's corrected signature). If `true`: transition `Respawning`, broadcast `WorkerStatusChanged(Respawning)`, re-run `spawn()` with the same `cfg`/`device`/`transport`, and continue the same `run()` loop — `run()` must not return after a successful respawn. If `false`: remain `Dead` and log `tracing::info!(worker_id, "respawn attempts exhausted")`.
+- `tracing::info!(worker_id, attempt, delay_ms, "respawning worker")` on the `Respawning` transition.
+- The integration test in `managed_tests.rs` is the first test in this crate to kill a *real* spawned subprocess (not a pre-built channel) and observe the full `Dead → Respawning → Idle` sequence — budget test time accordingly and use a generous but bounded timeout.
+
+**Acceptance criterion:** `cargo test -p anvilml-worker --features mock-hardware` exits 0; `tests/managed_tests.rs` includes a test that kills the worker process and asserts the `Dead → Respawning → Idle` event sequence within the test's timeout.
 
 ---
 
@@ -97,8 +151,10 @@ cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu
 
 ## Known Constraints and Gotchas
 
-- `child.wait()` must be polled inside a `tokio::select!` alongside the IPC channel. Do not block the async runtime with a synchronous wait.
+- `child.wait()` must be polled inside the `run()` loop's `tokio::select!` alongside the IPC channel, as one arm among several in a continuing loop — not a separate blocking call, and not in a function that returns after handling it once.
 - The respawn delay must be awaited with `tokio::time::sleep`, not `std::thread::sleep`.
+- `RespawnPolicy::should_respawn` takes `crash_count` by mutable reference as of Phase 901 — it performs the window-reset itself; do not re-implement reset logic at the call site.
+- There is no in-flight job tracking on `ManagedWorker` at this point in the codebase. Do not invent a job-failure callback in `P10-A2` — leave the `// TODO(P14)` comment instead.
 - Follow `FORGE_AGENT_RULES.md §12` for all inline documentation: every `pub` item needs a doc comment; every decision point needs an inline comment.
 - Follow `FORGE_AGENT_RULES.md §11` for all logging: mandatory INFO log points must be present on the Dead and Respawning transitions.
 - Test isolation: every test that sets env vars must restore them unconditionally per `ENVIRONMENT.md §11.3`.
