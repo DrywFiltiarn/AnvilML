@@ -52,8 +52,7 @@ async fn test_writer_sends_message() {
     // recv_with_raw_identity() decodes the payload the same way recv() does.
     dealer
         .send(ZmqMessage::from(
-            rmp_serde::to_vec_named(&WorkerEvent::Pong { seq: 0 })
-                .expect("encode probe"),
+            rmp_serde::to_vec_named(&WorkerEvent::Pong { seq: 0 }).expect("encode probe"),
         ))
         .await
         .expect("probe send should succeed");
