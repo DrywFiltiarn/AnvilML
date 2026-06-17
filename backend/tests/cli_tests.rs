@@ -134,40 +134,64 @@ fn test_custom_port_health() {
             std::env::remove_var(name);
         }
 
-        // Recover the bound HTTP port from the mandatory "listening" INFO
-        // log line (ENVIRONMENT.md §9.2: `addr = %actual_addr` on successful
-        // bind). This is unambiguous even though the process also owns a
-        // second TCP listener (the ZeroMQ ROUTER socket bound via
-        // RouterTransport::bind() since P9-C1) — unlike scanning the OS
-        // socket table by PID, the log line identifies the HTTP listener
-        // specifically, by construction, not by guesswork.
-        //
-        // --log-format plain produces lines containing `addr=IP:PORT` and
-        // the message `listening`; we don't depend on exact field ordering,
-        // only on both substrings appearing on the same line.
-        let mut reader = BufReader::new(child_stdout);
-        let mut port: Option<u16> = None;
-        // 30s, not 5s: by the time the "listening" line is logged, the
-        // server has already opened the database, run migrations, reset
-        // ghost jobs, run seed loading, detected hardware (Vulkan/CUDA
-        // enumeration can itself take >1s), bound the IPC transport,
-        // spawned the worker pool, and run an initial model directory
-        // scan. Observed ~2s on a warm local Windows dev machine via plain
-        // `cargo run`; CI runners (cold disk cache, antivirus scanning on
-        // Windows, CPU contention from `cargo test --workspace` running
-        // other test binaries concurrently) are reasonably expected to be
-        // slower. There is no documented startup-time SLA for this
-        // pipeline, so 30s is a pragmatic margin rather than a derived
-        // constant — revisit if the startup sequence grows further.
-        let start = std::time::Instant::now();
-        let deadline = start + Duration::from_secs(30);
+        // Read stdout on a dedicated thread so a single blocking read_line()
+        // call can never defeat the deadline below. A previous version of
+        // this test checked the deadline only between read_line() calls —
+        // if one call blocked (e.g. due to OS-level pipe buffering delaying
+        // delivery of already-written bytes), the loop could run far past
+        // its stated timeout with no way to interrupt it. Spawning the read
+        // onto its own thread and waiting on a channel with recv_timeout
+        // makes the timeout authoritative regardless of how the underlying
+        // read behaves.
+        let (line_tx, line_rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(child_stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break, // EOF — process exited or closed stdout.
+                    Ok(_) => {
+                        let found = line.contains("listening") && line.contains("addr=");
+                        // Send every line so a future debugging session can
+                        // see what the process actually printed; the main
+                        // thread only acts on lines that match.
+                        if line_tx.send(line.clone()).is_err() {
+                            // Receiver dropped (main thread gave up) — stop
+                            // reading, nothing more to do.
+                            break;
+                        }
+                        if found {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            // line_tx is dropped here, which closes the channel and makes
+            // recv_timeout return Err once all buffered lines are consumed.
+        });
 
-        let mut line = String::new();
-        while std::time::Instant::now() < deadline {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) => break, // EOF — process exited or closed stdout early.
-                Ok(_) => {
+        let start = std::time::Instant::now();
+        // 30s: by the time "listening" is logged, the server has already
+        // opened the database, run migrations, reset ghost jobs, run seed
+        // loading, detected hardware, bound the IPC transport, spawned the
+        // worker pool, and run an initial model directory scan. Observed
+        // ~2s on a warm local Windows dev machine via plain `cargo run`;
+        // there is no documented startup-time SLA for this pipeline, so
+        // this is a pragmatic margin, not a derived constant.
+        let total_timeout = Duration::from_secs(30);
+        let mut port: Option<u16> = None;
+        let mut last_line: Option<String> = None;
+
+        loop {
+            let remaining = total_timeout.saturating_sub(start.elapsed());
+            if remaining.is_zero() {
+                break;
+            }
+            match line_rx.recv_timeout(remaining) {
+                Ok(line) => {
+                    last_line = Some(line.clone());
                     if line.contains("listening") {
                         if let Some(addr_start) = line.find("addr=") {
                             let rest = &line[addr_start + "addr=".len()..];
@@ -186,6 +210,8 @@ fn test_custom_port_health() {
                         }
                     }
                 }
+                // Channel closed (reader thread hit EOF) or timed out —
+                // either way, stop waiting.
                 Err(_) => break,
             }
         }
@@ -194,12 +220,14 @@ fn test_custom_port_health() {
         let port: u16 = port.unwrap_or_else(|| {
             panic!(
                 "could not find 'listening' log line with addr=... on server \
-                 stdout within {:.1}s (waited {:.1}s) — server may not have \
-                 started, or the log format changed. Check that mock-hardware \
-                 feature is available, the binary runs correctly, and main.rs \
-                 still logs `addr = %actual_addr, \"listening\"`.",
-                deadline.duration_since(start).as_secs_f64(),
+                 stdout within {:.1}s (waited {:.1}s). Last line seen: {:?}. \
+                 Server may not have started, or the log format changed. \
+                 Check that mock-hardware feature is available, the binary \
+                 runs correctly, and main.rs still logs \
+                 `addr = %actual_addr, \"listening\"`.",
+                total_timeout.as_secs_f64(),
                 elapsed.as_secs_f64(),
+                last_line,
             )
         });
 

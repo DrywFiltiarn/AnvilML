@@ -61,8 +61,19 @@ async fn main() {
 
     match args.log_format {
         cli::LogFormat::Plain => {
+            // with_ansi(false): tracing-subscriber's TTY detection for
+            // whether to emit ANSI color/style codes is not reliable across
+            // all pipe/redirect configurations, particularly on Windows.
+            // When output is piped (e.g. to a log aggregator, a file, or a
+            // test harness reading stdout programmatically), ANSI escape
+            // sequences end up embedded inside structured field names —
+            // for example `addr=` is emitted as `addr` + an ANSI reset +
+            // `=`, with no contiguous "addr=" substring — which breaks any
+            // consumer doing plain substring/field parsing on the output.
+            // "Plain" should mean plain: no escape codes, ever.
             tracing_subscriber::fmt::Subscriber::builder()
                 .with_env_filter(filter)
+                .with_ansi(false)
                 .init();
         }
         cli::LogFormat::Json => {
