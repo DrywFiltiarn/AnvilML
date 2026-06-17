@@ -1799,3 +1799,39 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Minimal `WorkerPool` (0 workers).
 **Expected output:** `ram_used_mib > 0`.
 **Acceptance command:** `cargo test -p anvilml-server --test stats_tick_tests -- test_stats_tick_ram_used_mib_is_non_negative` exits 0.
+
+## test_should_respawn_max_attempts_exceeded (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/respawn_tests.rs`
+**Context:** `RespawnPolicy::should_respawn()` returns `false` when `crash_count >= max_attempts`. This is the maximum-attempt guard that prevents infinite respawn loops.
+**Tests:** Constructs `RespawnPolicy { max_attempts: 3, ... }`, calls `should_respawn(3, Instant::now())`, and asserts `false`.
+**Inputs:** `policy.max_attempts = 3`, `crash_count = 3`, `last_crash = Instant::now()`.
+**Expected output:** `false` — the worker should not be respawned.
+**Acceptance command:** `cargo test -p anvilml-worker --test respawn_tests test_should_respawn_max_attempts_exceeded` exits 0.
+
+## test_should_respawn_within_window (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/respawn_tests.rs`
+**Context:** `RespawnPolicy::should_respawn()` returns `true` when `crash_count < max_attempts` and the crash window has not expired. The window is `last_crash + window_s > now`.
+**Tests:** Constructs `RespawnPolicy { max_attempts: 5, window_s: 60, ... }`, calls `should_respawn(2, Instant::now() - Duration::from_secs(30))`, and asserts `true`.
+**Inputs:** `policy.max_attempts = 5`, `policy.window_s = 60`, `crash_count = 2`, `last_crash = 30 seconds ago`.
+**Expected output:** `true` — the worker should be respawned.
+**Acceptance command:** `cargo test -p anvilml-worker --test respawn_tests test_should_respawn_within_window` exits 0.
+
+## test_should_respawn_window_reset (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/respawn_tests.rs`
+**Context:** `RespawnPolicy::should_respawn()` returns `true` when the crash window has expired, even if `crash_count` was close to `max_attempts`. Window expiry allows a fresh set of attempts.
+**Tests:** Constructs `RespawnPolicy { max_attempts: 5, window_s: 10, ... }`, calls `should_respawn(4, Instant::now() - Duration::from_secs(15))`, and asserts `true`.
+**Inputs:** `policy.max_attempts = 5`, `policy.window_s = 10`, `crash_count = 4`, `last_crash = 15 seconds ago`.
+**Expected output:** `true` — the window has expired, fresh attempts allowed.
+**Acceptance command:** `cargo test -p anvilml-worker --test respawn_tests test_should_respawn_window_reset` exits 0.
+
+## test_next_delay_ms_exponential_backoff_and_cap (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/respawn_tests.rs`
+**Context:** `RespawnPolicy::next_delay_ms()` computes exponential backoff (`delay_ms * 2^attempt`) with a 30-second cap. Verifies the sequence grows correctly and caps at the right attempt.
+**Tests:** Constructs `RespawnPolicy { delay_ms: 1000, ... }`, calls `next_delay_ms()` for attempts 0–5 and 10, and asserts the expected values including the cap at attempt 5 (30,000 ms).
+**Inputs:** `policy.delay_ms = 1000`, attempts 0, 1, 2, 3, 4, 5, 10.
+**Expected output:** 1000, 2000, 4000, 8000, 16000, 30000 (capped), 30000 (capped).
+**Acceptance command:** `cargo test -p anvilml-worker --test respawn_tests test_next_delay_ms_exponential_backoff_and_cap` exits 0.
