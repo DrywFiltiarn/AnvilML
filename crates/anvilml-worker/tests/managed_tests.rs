@@ -22,7 +22,8 @@ use uuid::Uuid;
 /// Create a `ManagedWorker` for testing with pre-built channels.
 ///
 /// This helper constructs a worker in the given initial status, with
-/// no bridge/keepalive handles, and the specified worker ID and device name.
+/// no bridge/keepalive handles, and the specified worker ID, device name,
+/// and device index.
 ///
 /// Returns the worker and the broadcast sender (cloned) so the test
 /// can send events through the channel.
@@ -30,6 +31,20 @@ fn make_test_worker(
     initial_status: WorkerStatus,
     worker_id: &str,
     device_name: &str,
+) -> (ManagedWorker, broadcast::Sender<(String, WorkerEvent)>) {
+    make_test_worker_with_index(initial_status, worker_id, device_name, 0)
+}
+
+/// Create a `ManagedWorker` for testing with pre-built channels and a
+/// specific device index.
+///
+/// Like `make_test_worker` but allows specifying the device index
+/// (useful for tests that verify device_index propagation).
+fn make_test_worker_with_index(
+    initial_status: WorkerStatus,
+    worker_id: &str,
+    device_name: &str,
+    device_index: u32,
 ) -> (ManagedWorker, broadcast::Sender<(String, WorkerEvent)>) {
     let (msg_tx, _msg_rx) = mpsc::channel(16);
     let (event_tx, _event_rx) = broadcast::channel(16);
@@ -44,6 +59,7 @@ fn make_test_worker(
         None, // heartbeat_handle
         worker_id.to_string(),
         device_name.to_string(),
+        device_index,
     );
 
     (worker, event_tx)
@@ -251,6 +267,7 @@ async fn test_keepalive_timeout_sets_dead() {
         Some(heartbeat_handle),
         "test-worker-keepalive".to_string(),
         "test-device".to_string(),
+        0, // device_index
     );
 
     // Spawn run() first.
@@ -361,6 +378,7 @@ async fn test_shutdown_cleans_up_handles() {
         Some(heartbeat_handle),
         "test-worker-shutdown".to_string(),
         "test-device".to_string(),
+        0, // device_index
     );
 
     // Spawn run() for the worker — it will block on event_rx.recv().
@@ -399,6 +417,7 @@ async fn test_shutdown_cleans_up_handles() {
         Some(hh2),
         "test-worker-shutdown-2".to_string(),
         "test-device".to_string(),
+        0, // device_index
     );
 
     // Call shutdown — this should drop all handles cleanly without panicking.
@@ -515,4 +534,85 @@ async fn test_run_processes_multiple_sequential_events() {
     // Await run() with a timeout to prevent CI from hanging indefinitely
     // if the loop fails to break on channel close.
     let _ = timeout(Duration::from_secs(10), run_handle).await;
+}
+
+/// Verify that when the child subprocess exits unexpectedly, the worker
+/// status transitions to Dead via the `child.wait()` arm of the select! loop.
+///
+/// This test creates a real child process (a short-lived shell command that
+/// exits after 0.5 seconds) and passes it to `ManagedWorker::new()`. The
+/// run loop's `child.wait()` arm fires when the child exits, transitioning
+/// the status to `Dead`.
+///
+/// This is the crash detection test — it verifies the new `child.wait()`
+/// arm of the `tokio::select!` loop in `run()` fires when the subprocess
+/// dies without sending a Dying event.
+#[tokio::test]
+async fn test_child_exit_transitions_dead() {
+    // Spawn a real child process that exits after a short delay.
+    // This simulates a subprocess that crashes without sending a Dying event.
+    // Using `sh -c` with `sleep` for cross-platform compatibility.
+    let child = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg("sleep 0.5 && exit 1")
+        .spawn()
+        .expect("failed to spawn sleep command");
+
+    // Create a worker with the test child (not spawned by spawn()).
+    // The worker starts in Initializing state — since no bridge reader
+    // is running, no Ready event will arrive, so the worker stays
+    // Initializing until the child exits and the status transitions to Dead.
+    let (msg_tx, _msg_rx) = mpsc::channel(16);
+    let (event_tx, _event_rx) = broadcast::channel(16);
+
+    let worker = ManagedWorker::new(
+        WorkerStatus::Initializing,
+        msg_tx,
+        event_tx.clone(),
+        Some(child), // child — a real process that will exit
+        None,        // bridge_handles
+        None,        // keepalive_handle
+        None,        // heartbeat_handle
+        "test-child-exit".to_string(),
+        "test-device".to_string(),
+        0, // device_index
+    );
+
+    let status = worker.get_status();
+
+    // Spawn run() — it subscribes to the broadcast channel and enters
+    // the event processing loop, including the new child.wait() arm.
+    let run_handle = tokio::spawn(worker.run());
+
+    // Wait for the child to exit and the status to transition to Dead.
+    // The child exits after 0.5 seconds, so we need a generous timeout.
+    let result = timeout(Duration::from_secs(5), async {
+        loop {
+            let s = *status.read().await;
+            if s == WorkerStatus::Dead {
+                break;
+            }
+            let _ = s;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+
+    // Verify the status transitioned to Dead.
+    assert!(
+        result.is_ok(),
+        "status should transition to Dead within 5 seconds after child exit"
+    );
+
+    let final_status = *status.read().await;
+    assert_eq!(
+        final_status,
+        WorkerStatus::Dead,
+        "status should be Dead after child exit, got {:?}",
+        final_status
+    );
+
+    // Close the channel to let run() exit.
+    drop(event_tx);
+    let _ = run_handle.await;
 }

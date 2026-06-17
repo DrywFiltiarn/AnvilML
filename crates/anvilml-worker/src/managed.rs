@@ -57,7 +57,7 @@ use crate::spawn::build_command;
 ///
 /// All fields are `Option`-wrapped join handles to allow `shutdown()` to
 /// take ownership and abort tasks by dropping the handle.
-#[allow(dead_code)] // child and respawn_policy are for future respawn logic (P10-A1)
+#[allow(dead_code)] // child, device_index, and respawn_policy are for future respawn logic (P10-A1)
 #[derive(Debug)]
 pub struct ManagedWorker {
     /// The worker's current lifecycle state, protected by a read-write lock
@@ -98,6 +98,11 @@ pub struct ManagedWorker {
     /// `Ready` event during the run loop. Used for logging when the worker
     /// reaches Ready state.
     device_name: String,
+
+    /// The GPU device index (zero-based, as reported by the OS/driver).
+    /// Populated from the `Ready` event during the run loop. Used for
+    /// structured logging when reporting worker status changes.
+    device_index: u32,
 }
 
 /// A message sent from the Rust supervisor to a Python worker subprocess.
@@ -123,6 +128,7 @@ impl ManagedWorker {
     /// * `heartbeat_handle` — Handle for signalling heartbeat shutdown.
     /// * `worker_id` — The worker's stable identity string.
     /// * `device_name` — The GPU device name (populated from `Ready` event in production).
+    /// * `device_index` — The GPU device index (populated from `Ready` event in production).
     #[allow(clippy::too_many_arguments)] // test constructor with many parameters
     pub fn get_status(&self) -> Arc<tokio::sync::RwLock<WorkerStatus>> {
         // Get a clone of the status Arc for external status inspection.
@@ -142,6 +148,7 @@ impl ManagedWorker {
         heartbeat_handle: Option<HeartbeatHandle>,
         worker_id: String,
         device_name: String,
+        device_index: u32,
     ) -> Self {
         Self {
             status: Arc::new(tokio::sync::RwLock::new(status)),
@@ -154,6 +161,7 @@ impl ManagedWorker {
             respawn_policy: RespawnPolicy::default(),
             worker_id,
             device_name,
+            device_index,
         }
     }
 
@@ -292,6 +300,7 @@ impl ManagedWorker {
             respawn_policy: RespawnPolicy::default(),
             worker_id,
             device_name,
+            device_index: device.index,
         })
     }
 
@@ -403,13 +412,21 @@ impl ManagedWorker {
                                 "processing event in run loop"
                             );
                             let _current_status = *self.status.read().await;
-                            let device_name = match &event {
-                                WorkerEvent::Ready { device_name, .. } => {
-                                    // Update device_name from the Ready event.
-                                    // The worker may report a different name than
-                                    // the initial device name (e.g., auto-detected
-                                    // vs. configured). We use the worker's actual
-                                    // reported name for subsequent logging.
+                            // The device_name match result is unused — we set
+                            // self.device_name directly in the Ready arm above.
+                            let _device_name = match &event {
+                                WorkerEvent::Ready {
+                                    device_name,
+                                    device_index,
+                                    ..
+                                } => {
+                                    // Update device_name and device_index from the Ready
+                                    // event. The worker may report a different name than
+                                    // the initial device name (e.g., auto-detected vs.
+                                    // configured). We use the worker's actual reported
+                                    // values for subsequent logging and status broadcast.
+                                    self.device_name = device_name.clone();
+                                    self.device_index = *device_index;
                                     tracing::debug!(
                                         worker_id = %self.worker_id,
                                         event_type = ?event,
@@ -479,13 +496,6 @@ impl ManagedWorker {
                                     None
                                 }
                             };
-
-                            // Update the stored device_name if we received one from
-                            // the Ready event. This ensures subsequent log statements
-                            // use the worker's actual reported device name.
-                            if let Some(name) = device_name {
-                                self.device_name = name;
-                            }
                         }
                         // Broadcast channel closed — the bridge reader has exited.
                         // This is a terminal condition; no more events will arrive.
@@ -510,6 +520,52 @@ impl ManagedWorker {
                             );
                         }
                     }
+                }
+
+                // Child process exited unexpectedly.
+                // This arm only fires when child is Some (production).
+                // In tests (child = None), the arm uses a never-firing
+                // placeholder so it can never win the select.
+                _ = async {
+                    match self.child.as_mut() {
+                        Some(child) => {
+                            // Wait for the subprocess to exit. This is the crash
+                            // detection mechanism — if the child exits without
+                            // sending a Dying event, we detect it here.
+                            // `child.wait()` returns a `ChildWait` future that
+                            // resolves to an `ExitStatus`. We ignore the result
+                            // since we only care that the process exited.
+                            let _ = child.wait().await;
+                        }
+                        None => {
+                            // No child process (test mode). Use a never-firing
+                            // sleep so this arm never wins the select.
+                            tokio::time::sleep(std::time::Duration::MAX).await;
+                        }
+                    }
+                } => {
+                    // The subprocess has exited. Transition to Dead, broadcast
+                    // the status change, and log the exit code.
+                    //
+              // TODO(P14): notify JobScheduler of in-flight job failure
+                // once it exists. The scheduler is introduced in P13-A3 and
+                // wired to dispatch in P14-A1.
+                let exit_code = match self.child.as_mut().and_then(|c| c.try_wait().ok()).flatten() {
+                    Some(status) => status.code(),
+                    None => None,
+                };
+                *self.status.write().await = WorkerStatus::Dead;
+                tracing::info!(
+                    worker_id = %self.worker_id,
+                    exit_code = ?exit_code,
+                    "worker exited unexpectedly"
+                );
+                // Note: we cannot broadcast a Dying event here because
+                // self.event_tx was dropped at the start of run() (the
+                // bridge reader holds the only remaining clone). Subscribers
+                // will observe the Dead status via the next GET /v1/workers
+                // poll anyway.
+                break;
                 }
             }
         }
@@ -647,6 +703,7 @@ mod tests {
             None,
             "test-worker".to_string(),
             "test-device".to_string(),
+            0, // device_index
         );
 
         let status = worker.get_status();
@@ -707,6 +764,7 @@ mod tests {
             None,
             "test-worker".to_string(),
             "test-device".to_string(),
+            0, // device_index
         );
 
         let status = worker.get_status();

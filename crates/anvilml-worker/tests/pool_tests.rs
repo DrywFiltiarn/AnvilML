@@ -39,6 +39,7 @@ fn make_test_worker(
         None, // heartbeat_handle
         worker_id.to_string(),
         device_name.to_string(),
+        0, // device_index
     );
 
     (worker, event_tx)

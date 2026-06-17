@@ -1844,3 +1844,12 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Worker in `Initializing` state, `Ready` event followed by `Completed` event (sent sequentially on the same `event_tx`), manual `Busy` status set between events.
 **Expected output:** Status transitions: `Initializing → Idle` (on Ready) → `Busy` (manual) → `Idle` (on Completed). Final status is `Idle`.
 **Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- test_run_processes_multiple_sequential_events` exits 0.
+
+## test_child_exit_transitions_dead (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `ManagedWorker::run()` loop has a `child.wait()` arm in its `tokio::select!` block that detects unexpected subprocess exit. This test creates a real child process (a shell command that sleeps briefly then exits) and passes it to `ManagedWorker::new()`. The run loop's `child.wait()` arm fires when the child exits, transitioning the status to `Dead`.
+**Tests:** A real child subprocess is spawned via `tokio::process::Command`, passed to `ManagedWorker::new()` with `Initializing` status, and the run loop is spawned. The test polls the status until it becomes `Dead` (or times out after 5 seconds). Asserts the final status is `Dead`.
+**Inputs:** Child process `sh -c "sleep 0.5 && exit 1"`, `ManagedWorker` in `Initializing` state, no bridge reader running.
+**Expected output:** Status transitions from `Initializing` to `Dead` within 5 seconds. The `child.wait()` arm fires, the status is set to `Dead`, and a `Dying` event is broadcast.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- managed_tests::test_child_exit_transitions_dead` exits 0.
