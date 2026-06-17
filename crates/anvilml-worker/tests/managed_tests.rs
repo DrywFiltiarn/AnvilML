@@ -54,7 +54,7 @@ fn make_test_worker_with_index(
         msg_tx,
         event_tx.clone(),
         None, // child — not spawning subprocess in tests
-        None, // bridge_handles
+        None, // bridge_handle
         None, // keepalive_handle
         None, // heartbeat_handle
         worker_id.to_string(),
@@ -146,7 +146,6 @@ async fn test_ready_timeout_dead() {
 
     let run_handle = tokio::spawn(worker.run());
 
-    // Give run() time to subscribe to the broadcast channel.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let ready_event = WorkerEvent::Ready {
@@ -165,7 +164,6 @@ async fn test_ready_timeout_dead() {
     };
     let _ = event_tx.send(("test-worker-timeout".to_string(), ready_event));
 
-    // Wait briefly for the event to be processed.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // The Ready event should have caused the transition to Idle.
@@ -195,7 +193,6 @@ async fn test_dying_event_transitions_dead() {
 
     let run_handle = tokio::spawn(worker.run());
 
-    // Give run() time to subscribe to the broadcast channel.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let dying_event = WorkerEvent::Dying {
@@ -203,7 +200,6 @@ async fn test_dying_event_transitions_dead() {
     };
     let _ = event_tx.send(("test-worker-dying".to_string(), dying_event));
 
-    // Wait briefly for the event to be processed.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let final_status = *status.read().await;
@@ -300,7 +296,6 @@ async fn test_status_transitions_idle_to_busy_to_idle() {
 
     let run_handle = tokio::spawn(worker.run());
 
-    // Give run() time to subscribe to the broadcast channel.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Manually transition to Busy (simulating a job being dispatched).
@@ -321,7 +316,6 @@ async fn test_status_transitions_idle_to_busy_to_idle() {
     };
     let _ = event_tx.send(("test-worker-busy".to_string(), completed_event));
 
-    // Wait for the event to be processed.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Verify the status transitioned back to Idle.
@@ -350,13 +344,12 @@ async fn test_shutdown_cleans_up_handles() {
     let (msg_tx, msg_rx) = mpsc::channel(16);
     let (event_tx, event_rx) = broadcast::channel(16);
 
-    // Spawn the bridge tasks.
-    let (writer_handle, reader_handle) = anvilml_worker::start(
+    // Only the writer half exists now — see crate::bridge's module docs.
+    let writer_handle = anvilml_worker::start(
         transport.clone(),
         b"test-worker-shutdown".to_vec(),
         "test-worker-shutdown".to_string(),
         msg_rx,
-        event_tx.clone(),
     );
 
     // Spawn the keepalive task.
@@ -374,7 +367,7 @@ async fn test_shutdown_cleans_up_handles() {
         msg_tx.clone(),
         event_tx,
         None, // child
-        Some((writer_handle, reader_handle)),
+        Some(writer_handle),
         Some(keepalive_handle),
         Some(heartbeat_handle),
         "test-worker-shutdown".to_string(),
@@ -392,12 +385,11 @@ async fn test_shutdown_cleans_up_handles() {
     let (msg_tx2, _msg_rx2) = mpsc::channel(16);
     let (event_tx2, _event_rx2) = broadcast::channel(16);
 
-    let (wh2, rh2) = anvilml_worker::start(
+    let wh2 = anvilml_worker::start(
         transport.clone(),
         b"test-worker-shutdown-2".to_vec(),
         "test-worker-shutdown-2".to_string(),
         _msg_rx2,
-        event_tx2.clone(),
     );
 
     let (kh2, hh2) = keepalive::start(
@@ -414,7 +406,7 @@ async fn test_shutdown_cleans_up_handles() {
         msg_tx2,
         event_tx2,
         None,
-        Some((wh2, rh2)),
+        Some(wh2),
         Some(kh2),
         Some(hh2),
         "test-worker-shutdown-2".to_string(),
@@ -541,28 +533,41 @@ async fn test_run_processes_multiple_sequential_events() {
 /// Verify that when the child subprocess exits unexpectedly, the worker
 /// status transitions to Dead via the `child.wait()` arm of the select! loop.
 ///
-/// This test creates a real child process (a short-lived shell command that
-/// exits after 0.5 seconds) and passes it to `ManagedWorker::new()`. The
-/// run loop's `child.wait()` arm fires when the child exits, transitioning
-/// the status to `Dead`.
+/// This test creates a real, short-lived child process and passes it to
+/// `ManagedWorker::new()`. The run loop's `child.wait()` arm fires when the
+/// child exits, transitioning the status to `Dead`.
 ///
 /// This is the crash detection test — it verifies the new `child.wait()`
 /// arm of the `tokio::select!` loop in `run()` fires when the subprocess
 /// dies without sending a Dying event.
 #[tokio::test]
 async fn test_child_exit_transitions_dead() {
-    // Spawn a real child process that exits after a short delay.
-    // This simulates a subprocess that crashes without sending a Dying event.
-    // Using `sh -c` with `sleep` for cross-platform compatibility.
+    // No single command line means "sleep ~0.5s then exit" identically on
+    // both platforms, so this is cfg-gated rather than shelled through `sh`
+    // — `sh` isn't on PATH by default on Windows. `ping -n 1 -w 500` is used
+    // as a dependency-free Windows sleep substitute (ping.exe ships with
+    // every Windows install); its exit code differs from the Unix branch's
+    // `exit 1`, but the test never asserts on exit code, only on the run
+    // loop's `child.wait()` arm firing once the process exits at all.
+    #[cfg(windows)]
+    let child = tokio::process::Command::new("ping")
+        .arg("-n")
+        .arg("1")
+        .arg("-w")
+        .arg("500")
+        .arg("127.0.0.1")
+        .spawn()
+        .expect("failed to spawn ping command");
+
+    #[cfg(not(windows))]
     let child = tokio::process::Command::new("sh")
         .arg("-c")
         .arg("sleep 0.5 && exit 1")
         .spawn()
         .expect("failed to spawn sleep command");
 
-    // Create a worker with the test child (not spawned by spawn()).
-    // The worker starts in Initializing state — since no bridge reader
-    // is running, no Ready event will arrive, so the worker stays
+    // The worker starts in Initializing state — with no demux task running
+    // for this test, no Ready event can ever arrive, so the worker stays
     // Initializing until the child exits and the status transitions to Dead.
     let (msg_tx, _msg_rx) = mpsc::channel(16);
     let (event_tx, _event_rx) = broadcast::channel(16);
@@ -572,7 +577,7 @@ async fn test_child_exit_transitions_dead() {
         msg_tx,
         event_tx.clone(),
         Some(child), // child — a real process that will exit
-        None,        // bridge_handles
+        None,        // bridge_handle
         None,        // keepalive_handle
         None,        // heartbeat_handle
         "test-child-exit".to_string(),

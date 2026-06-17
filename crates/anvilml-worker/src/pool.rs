@@ -1,35 +1,31 @@
 //! WorkerPool — manages a collection of `ManagedWorker` instances.
 //!
-//! `WorkerPool` owns a `Vec<Arc<ManagedWorker>>` along with the shared `RouterTransport`
-//! and `EventBroadcaster`. It provides methods to spawn workers for all detected devices,
-//! retrieve worker info snapshots, and broadcast status changes as `WsEvent::WorkerStatusChanged`.
+//! `WorkerPool` owns the workers, the shared `RouterTransport`, the shared
+//! `EventBroadcaster`, and the single demux task (`crate::demux`) that reads
+//! every worker's events off that transport. It provides methods to spawn
+//! workers for all detected devices, retrieve worker info snapshots, and
+//! broadcast status changes as `WsEvent::WorkerStatusChanged`.
 //!
-//! Each worker is tracked alongside its identity and device name (stored in the pool because
-//! `ManagedWorker` does not expose these fields publicly). A background monitoring task
-//! polls each worker's status at a 100ms interval and broadcasts `WorkerStatusChanged`
-//! events when the status changes.
+//! Each worker is tracked alongside its identity and device name (stored in
+//! the pool because `ManagedWorker` does not expose these fields publicly).
+//! A background monitoring task polls each worker's status at a 100ms
+//! interval and broadcasts `WorkerStatusChanged` events when the status
+//! changes.
 //!
-//! **Hard constraints:** Contain only pool management and status broadcasting.
-//! No job dispatch logic — that belongs in the scheduler.
+//! **Hard constraints:** Contain only pool management and status
+//! broadcasting. No job dispatch logic — that belongs in the scheduler.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use anvilml_core::{AnvilError, GpuDevice, ServerConfig, WorkerInfo};
-use anvilml_ipc::{EventBroadcaster, RouterTransport};
+use anvilml_ipc::{render_identity, EventBroadcaster, RouterTransport};
 use tracing;
 
+use crate::demux::{self, RouteTable};
 use crate::managed::ManagedWorker;
 
 /// A pool of managed workers, one per GPU device.
-///
-/// `WorkerPool` manages the lifecycle of all workers in the system. It owns:
-/// - The list of workers, each paired with its identity and device name
-/// - The shared `RouterTransport` for IPC communication
-/// - The shared `EventBroadcaster` for WebSocket event broadcasting
-///
-/// The pool spawns a background monitoring task per worker that polls the
-/// worker's status and broadcasts changes to connected WebSocket clients.
 ///
 /// # Construction
 ///
@@ -37,11 +33,9 @@ use crate::managed::ManagedWorker;
 /// `GpuDevice` values. Each device gets its own worker with a generated
 /// identity (`"worker-0"`, `"worker-1"`, etc.).
 pub struct WorkerPool {
-    /// Workers paired with their identity and device name.
-    ///
-    /// `ManagedWorker` does not expose `worker_id` or `device_name` publicly,
-    /// so the pool stores these values alongside the worker reference.
-    /// Each tuple is `(worker, worker_id, device_name)`.
+    /// `ManagedWorker` does not expose `worker_id` or `device_name`
+    /// publicly, so the pool stores these values alongside the worker
+    /// reference. Each tuple is `(worker, worker_id, device_name)`.
     ///
     /// Wrapped in a `tokio::sync::Mutex` (rather than a bare `Vec`) so that
     /// `shutdown_all(&self)` can drain the vec and move each `Arc<ManagedWorker>`
@@ -52,8 +46,6 @@ pub struct WorkerPool {
     /// in `shutdown_all` to see a strong count of 1 and succeed.
     workers: tokio::sync::Mutex<Vec<(Arc<ManagedWorker>, String, String)>>,
 
-    /// The shared IPC transport used by all workers for message routing.
-    ///
     /// Stored for future dispatch routing logic (belongs in the scheduler).
     #[allow(dead_code)] // reserved for future dispatch routing
     transport: Arc<RouterTransport>,
@@ -61,15 +53,17 @@ pub struct WorkerPool {
     /// The shared event broadcaster used to notify WebSocket clients
     /// about worker status changes and other system events.
     broadcaster: Arc<EventBroadcaster>,
+
+    /// The pool-wide demux task's handle (see `crate::demux`), guarded by a
+    /// `Mutex` for the same reason `workers` is: `shutdown_all` only has
+    /// `&self` and must still be able to take ownership of the handle to
+    /// abort it. `None` only in pools built via `new()` for tests that
+    /// never start a demux task at all.
+    demux_handle: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl WorkerPool {
     /// Spawn a managed worker for each device and return a `WorkerPool`.
-    ///
-    /// This is the primary entry point for creating a worker pool in production.
-    /// It iterates over the provided device list, generates a unique identity
-    /// for each (`"worker-0"`, `"worker-1"`, etc.), spawns a `ManagedWorker`
-    /// for each device, and starts a background monitoring task per worker.
     ///
     /// # Arguments
     ///
@@ -88,6 +82,18 @@ impl WorkerPool {
     /// the worker's status every 100ms. When a status change is detected,
     /// a `WsEvent::WorkerStatusChanged` event is broadcast to all connected
     /// WebSocket clients.
+    ///
+    /// # Demux startup ordering
+    ///
+    /// The demux task is started once, before any device is spawned, with
+    /// an empty routing table — not after the loop, with a fully-built one.
+    /// `ManagedWorker::spawn()` starts a worker's keepalive (and so its
+    /// first ping) before returning, so building the table only after every
+    /// device has spawned would leave every worker's first ping/pong racing
+    /// the demux task's own startup. Each worker's route is registered
+    /// immediately after its own `spawn()` call returns, against a demux
+    /// task that already exists, bounding that race to one lock acquisition
+    /// rather than the time to spawn the whole pool.
     #[tracing::instrument(skip(cfg, devices, transport, broadcaster), fields(worker_count = %devices.len()))]
     pub async fn spawn_all(
         cfg: &ServerConfig,
@@ -97,33 +103,40 @@ impl WorkerPool {
     ) -> Result<Self, AnvilError> {
         let mut workers = Vec::with_capacity(devices.len());
 
+        // Empty at this point — see "Demux startup ordering" above for why
+        // the task must exist before any worker does, not after all of them.
+        let routes: RouteTable =
+            Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        let demux_handle = demux::start(transport.clone(), routes.clone());
+
         for (i, device) in devices.iter().enumerate() {
-            // Generate a stable worker identity: "worker-0", "worker-1", etc.
-            // This matches the naming convention used by the scheduler and
-            // worker subprocess environment variables.
+            // Matches the naming convention the scheduler and worker
+            // subprocess environment variables also use.
             let worker_id = format!("worker-{i}");
 
-            // Spawn the managed worker for this device. The spawn method
-            // constructs the subprocess command, sets up IPC channels, and
-            // returns a ManagedWorker in the Initializing state.
-            let worker =
+            let (worker, route_info) =
                 ManagedWorker::spawn(cfg, device, transport.clone(), worker_id.clone()).await?;
 
-            // Store the worker alongside its identity and device name.
-            // We capture device.name here because ManagedWorker::device_name
-            // is private; the device name may be updated by the Ready event
-            // in production, but for the pool's purposes the initial name
-            // from GpuDevice is sufficient for WorkerInfo snapshots.
+            // Registered immediately, before any other bookkeeping for this
+            // worker — its keepalive already fired ping #1 inside spawn(),
+            // so every statement between spawn() returning and this
+            // registration is additional race window.
+            let key = render_identity(&route_info.ipc_identity);
+            demux::register(&routes, key, (route_info.display_id, route_info.event_tx)).await;
+
+            // GpuDevice's name is captured here rather than read back from
+            // ManagedWorker, since device_name is private and may anyway be
+            // overwritten by the Ready event later — the pool only needs a
+            // stable label for WorkerInfo snapshots, not the live value.
             let device_name = device.name.clone();
 
             workers.push((Arc::new(worker), worker_id, device_name));
         }
 
-        // Spawn a background monitoring task for each worker.
-        // Each task polls the worker's status at 100ms intervals and
-        // broadcasts WsEvent::WorkerStatusChanged when a change is detected.
-        // The 100ms interval is a reasonable trade-off: frequent enough
-        // to detect changes promptly, infrequent enough to avoid CPU waste.
+        // One task per worker, polling rather than event-driven: the
+        // alternative (subscribing to each worker's own event_tx) would
+        // need its own demux-style fan-out, for a status display that
+        // tolerates being up to 100ms stale.
         for (worker, worker_id, device_name) in &workers {
             let broadcaster = Arc::clone(&broadcaster);
             let worker_id = worker_id.clone();
@@ -133,35 +146,18 @@ impl WorkerPool {
                 .unwrap_or(0) as u32;
             let status = worker.get_status();
 
-            // Clone the initial status for the first comparison.
-            // This ensures we don't broadcast a spurious "change" at startup
-            // when the worker is in Initializing state (the initial state
-            // is not a "change" — it's the starting point).
+            // Seeded with the worker's actual starting status so the first
+            // poll iteration doesn't broadcast a spurious "change" from some
+            // arbitrary default into Initializing.
             let initial_status = *status.read().await;
             let mut previous_status = initial_status;
 
-            // Spawn the monitoring task. This task runs for the lifetime
-            // of the worker — when the worker is dropped, the status RwLock
-            // is dropped, and subsequent reads will succeed but return the
-            // last known state (RwLock reads don't panic on dropped data;
-            // they simply read whatever is currently stored).
             tokio::spawn(async move {
                 loop {
-                    // Sleep before polling to avoid busy-waiting.
-                    // 100ms is a reasonable interval for status change detection
-                    // in a worker pool where status changes are infrequent
-                    // (only on job dispatch, completion, failure, or death).
                     tokio::time::sleep(Duration::from_millis(100)).await;
 
-                    // Read the current status. If the status RwLock is still
-                    // alive, this returns the current state. If the worker has
-                    // been dropped, the RwLock may still exist (owned by the
-                    // worker Arc which is still in the pool).
                     let current_status = *status.read().await;
 
-                    // Only broadcast if the status actually changed.
-                    // This prevents redundant broadcasts when the status
-                    // remains the same (e.g., the worker is Idle and stays Idle).
                     if current_status != previous_status {
                         tracing::debug!(
                             worker_id = %worker_id,
@@ -170,10 +166,6 @@ impl WorkerPool {
                             "worker status changed, broadcasting"
                         );
 
-                        // Broadcast the status change to all WebSocket clients.
-                        // The WsEvent::WorkerStatusChanged event carries the
-                        // worker identity, new status, and device index so
-                        // clients can update their worker status display.
                         broadcaster.send(anvilml_core::types::WsEvent::WorkerStatusChanged {
                             worker_id: worker_id.clone(),
                             status: current_status,
@@ -186,8 +178,8 @@ impl WorkerPool {
             });
         }
 
-        // Log at INFO level: mandatory log point per ENVIRONMENT.md §9.
-        // The worker_count field is indexed by log aggregators.
+        // Mandatory INFO log point per ENVIRONMENT.md §9; worker_count is
+        // indexed by log aggregators.
         tracing::info!(
             worker_count = %devices.len(),
             "worker pool spawned"
@@ -197,13 +189,13 @@ impl WorkerPool {
             workers: tokio::sync::Mutex::new(workers),
             transport,
             broadcaster,
+            demux_handle: tokio::sync::Mutex::new(Some(demux_handle)),
         })
     }
 
-    /// Create a pool from pre-built workers (for testing).
-    ///
-    /// This constructor does not spawn background monitoring tasks.
-    /// Tests that need monitoring can spawn them manually.
+    /// Create a pool from pre-built workers (for testing), with no demux
+    /// task and no background monitoring — tests that need either can
+    /// start them manually against the same transport.
     ///
     /// # Arguments
     ///
@@ -219,50 +211,33 @@ impl WorkerPool {
             workers: tokio::sync::Mutex::new(workers),
             transport,
             broadcaster,
+            demux_handle: tokio::sync::Mutex::new(None),
         }
     }
 
     /// Retrieve a snapshot of all worker info.
     ///
-    /// This method reads the current status of each worker and constructs
-    /// a `WorkerInfo` struct for each. The snapshot is consistent within
-    /// the method call (each worker's status is read independently, so
-    /// different workers may reflect slightly different points in time).
-    ///
-    /// # Returns
-    ///
-    /// A `Vec<WorkerInfo>` containing one entry per worker in the pool,
-    /// in the same order as the workers were spawned.
-    ///
     /// # Fields
     ///
-    /// - `id`: The worker's stable identity (e.g. `"worker-0"`).
-    /// - `device_index`: The zero-based GPU device index.
-    /// - `device_name`: The GPU device name (e.g. `"NVIDIA A100-SXM4-40GB"`).
-    /// - `status`: The worker's current lifecycle state.
     /// - `current_job_id`: Always `None` — the pool does not track job assignments
     ///   (that belongs in the scheduler).
     /// - `vram_used_mib`: Always `None` — VRAM usage is reported by the worker
     ///   via the `MemoryReport` event, which the pool does not currently track.
     pub async fn get_worker_infos(&self) -> Vec<WorkerInfo> {
-        // Lock briefly to snapshot the worker list. The lock is held only
-        // for the duration of this method — `shutdown_all` is the only
-        // other place that touches `self.workers`, and the two are not
-        // expected to race in practice (shutdown happens once, after the
-        // server has stopped accepting new requests).
+        // Held only for this method's duration; shutdown_all is the only
+        // other place touching self.workers, and shutdown happens once,
+        // after the server has stopped accepting requests, so the two
+        // are not expected to contend in practice.
         let workers = self.workers.lock().await;
         let mut infos = Vec::with_capacity(workers.len());
 
         for (worker, worker_id, device_name) in workers.iter() {
-            // Read the current status under a read lock. This allows
-            // concurrent reads from multiple callers (e.g., the HTTP
-            // handler and the system stats tick).
             let status = *worker.get_status().read().await;
 
-            // Find the device index by matching the device name.
-            // In production, the device index is known at spawn time
-            // from the enumerate position. Here we reconstruct it
-            // from the stored device name.
+            // Reconstructed by name match rather than stored directly,
+            // since the tuple doesn't carry device_index and adding it
+            // would duplicate what's already recoverable from `devices`
+            // at spawn time.
             let device_index = workers
                 .iter()
                 .position(|(_, _id, name)| name == device_name)
@@ -281,19 +256,13 @@ impl WorkerPool {
         infos
     }
 
-    /// Return a reference to the shared event broadcaster.
-    ///
-    /// This allows callers (e.g., the system stats tick) to access the
-    /// broadcaster directly for sending custom events.
-    ///
-    /// # Returns
-    ///
-    /// A reference to the `Arc<EventBroadcaster>` stored in this pool.
+    /// Return a reference to the shared event broadcaster, so callers like
+    /// the system stats tick can send their own events on the same bus.
     pub fn broadcaster(&self) -> &Arc<EventBroadcaster> {
         &self.broadcaster
     }
 
-    /// Shut down every worker in the pool.
+    /// Shut down every worker in the pool, then the demux task.
     ///
     /// This is the fix for workers surviving a supervisor Ctrl+C: previously
     /// nothing in `main.rs` ever called `ManagedWorker::shutdown()`, so the
@@ -318,6 +287,15 @@ impl WorkerPool {
     /// shutdown completes well within the per-worker grace period used by
     /// `ManagedWorker::shutdown()` and keeps the shutdown log easy to read.
     ///
+    /// The demux task is stopped last, after every worker, rather than
+    /// first — each worker's own `shutdown()` still needs *something*
+    /// notionally listening on its event channel right up until that
+    /// worker's writer task delivers its `Shutdown` message, even though in
+    /// practice nothing further arrives once a worker stops responding.
+    /// Stopping demux first would not break shutdown, but would leave a
+    /// brief window where the routing table still exists with no consumer
+    /// reading it — stopping it last avoids reasoning about that window at all.
+    ///
     /// # Returns
     ///
     /// Nothing. Failures to cleanly shut down an individual worker are
@@ -325,9 +303,8 @@ impl WorkerPool {
     /// proceed for all workers even if one is uncooperative.
     #[tracing::instrument(skip(self))]
     pub async fn shutdown_all(&self) {
-        // Drain the vec out from behind the mutex. After this, self.workers
-        // is empty — shutdown_all is expected to be called exactly once,
-        // at process exit, so leaving the pool empty afterward is correct.
+        // shutdown_all is expected to run exactly once, at process exit,
+        // so leaving the pool empty afterward is correct, not a leak.
         let drained = std::mem::take(&mut *self.workers.lock().await);
 
         for (worker, worker_id, _device_name) in drained {
@@ -336,11 +313,11 @@ impl WorkerPool {
                     worker.shutdown().await;
                 }
                 Err(_) => {
-                    // Strong count was not 1 at the point of try_unwrap.
-                    // Given the current monitoring task design (it clones
-                    // only the status RwLock's Arc via get_status(), never
-                    // the worker Arc itself), this should not happen — log
-                    // loudly so it's caught if that invariant is ever broken.
+                    // Given that the monitoring task only ever clones the
+                    // status RwLock's Arc via get_status() — never the
+                    // worker Arc itself — strong count should always be 1
+                    // here; this branch existing at all is a tripwire for
+                    // that invariant being broken elsewhere in the future.
                     tracing::warn!(
                         worker_id = %worker_id,
                         "could not take exclusive ownership of worker during \
@@ -348,6 +325,14 @@ impl WorkerPool {
                     );
                 }
             }
+        }
+
+        // Aborted rather than awaited: by this point every worker has
+        // already been told to shut down, so there is nothing left for the
+        // demux task to usefully deliver — waiting for transport.recv() to
+        // itself error out would just add latency to shutdown for no benefit.
+        if let Some(handle) = self.demux_handle.lock().await.take() {
+            handle.abort();
         }
     }
 }

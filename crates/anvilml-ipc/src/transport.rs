@@ -9,25 +9,36 @@
 //! to the correct peer based on the identity frame. The caller must provide
 //! the worker identity as the first frame of every `send()` call; the socket
 //! pops it internally and uses it to look up the connected peer.
+//!
+//! **Why send and recv use separate locks:** `RouterSocket::split()` divides
+//! the socket into independent send and recv halves rather than wrapping one
+//! `RouterSocket` in a single shared mutex. With one shared lock, a `recv()`
+//! call has no message waiting parks holding that lock for as long as no
+//! traffic arrives — and since `anvilml-worker`'s demux task calls `recv()`
+//! in an unbroken loop for the transport's entire lifetime, that meant any
+//! concurrent `send()` (e.g. the `Shutdown` message during supervisor exit,
+//! with every worker idle and no traffic incoming) could block indefinitely
+//! waiting for a lock recv() had no reason to ever release. Splitting once
+//! at `bind()` time means send() and recv() contend with nothing but their
+//! own kind, and recv()'s lock — held by exactly one caller for the
+//! transport's whole lifetime — is never actually contended at all.
 
 use std::sync::Arc;
 
 use bytes::Bytes;
 use tokio::sync::Mutex;
 use tracing;
-use zeromq::{Endpoint, RouterSocket, Socket, SocketRecv, SocketSend, ZmqMessage};
-
-/// The socket type used internally by `RouterTransport`.
-///
-/// `Arc<Mutex<RouterSocket>>` allows the transport to be cloned and shared
-/// across async tasks while keeping the underlying socket access serialised.
-type InnerSocket = Arc<Mutex<RouterSocket>>;
+use zeromq::{
+    Endpoint, RouterRecvHalf, RouterSendHalf, RouterSocket, Socket, SocketRecv, SocketSend,
+    ZmqMessage,
+};
 
 use crate::TransportError;
 use crate::{decode_event, encode_message, WorkerEvent, WorkerMessage};
 use anvilml_core::AnvilError;
 
-/// A ZeroMQ ROUTER socket wrapper for sending messages to AnvilML workers.
+/// A ZeroMQ ROUTER socket wrapper for sending messages to and receiving
+/// events from AnvilML workers.
 ///
 /// The ROUTER socket is the server-side socket type in ZeroMQ. It accepts
 /// connections from worker DEALER sockets and routes messages to them by
@@ -35,9 +46,12 @@ use anvilml_core::AnvilError;
 ///
 /// # Thread safety
 ///
-/// The inner socket is protected by `tokio::sync::Mutex` (not `std::sync::Mutex`)
-/// because all socket operations are async. The `Arc` wrapper allows the transport
-/// to be cloned and shared across async tasks.
+/// The send half and recv half are each behind their own `tokio::sync::Mutex`
+/// — see the module docs for why these must be separate locks rather than
+/// one shared lock across both operations. Both halves originate from a
+/// single `RouterSocket::split()` call in `bind()`, so they share the same
+/// underlying ZeroMQ socket and connection state despite being independently
+/// lockable.
 ///
 /// # Examples
 ///
@@ -60,21 +74,23 @@ use anvilml_core::AnvilError;
 /// # }
 /// ```
 pub struct RouterTransport {
-    /// The underlying ZeroMQ ROUTER socket, protected by a tokio async mutex
-    /// inside an `Arc` for shared ownership across async tasks.
-    ///
-    /// `Arc<Mutex<RouterSocket>>` allows the transport to be cloned and shared
-    /// across async tasks while keeping the underlying socket access serialised.
-    /// `tokio::sync::Mutex` is required because all socket methods (`bind`,
-    /// `send`, `recv`) are async and must be awaitable without blocking the
-    /// tokio runtime thread.
-    ///
-    /// The underlying ZeroMQ ROUTER socket wrapped in `Arc<Mutex<>>`.
-    ///
-    /// This field is `pub` to allow integration tests to discover the DEALER
-    /// socket's auto-generated identity via `recv`. In production, the `send()`
-    /// method is the only public interface.
-    pub socket: InnerSocket,
+    /// The send half produced by `RouterSocket::split()`. `RouterSendHalf`
+    /// is itself `Clone` (backed by an `Arc` internally), but the
+    /// `SocketSend` trait still requires `&mut self` per call, so a lock
+    /// is needed regardless — `Arc<Mutex<>>` here keeps the door open to
+    /// handing out cloned halves per caller later without a structural
+    /// change, though nothing currently needs that.
+    send_half: Arc<Mutex<RouterSendHalf>>,
+
+    /// The recv half produced by the same `split()` call. Not wrapped in
+    /// `Arc` — unlike `send_half`, nothing needs to share ownership of
+    /// this, since it's private and only ever reached through
+    /// `RouterTransport::recv(&self)`. The `Mutex` exists only to satisfy
+    /// `&self`'s borrow rules for the `&mut self` `SocketRecv::recv()`
+    /// needs; in practice this lock is never contended, since exactly one
+    /// task (the demux task in `anvilml-worker`) ever calls `recv()` for
+    /// the transport's entire lifetime.
+    recv_half: Mutex<RouterRecvHalf>,
 
     /// The TCP port the ROUTER socket is bound to.
     ///
@@ -85,15 +101,17 @@ pub struct RouterTransport {
     pub port: u16,
 }
 
-/// Render a raw ZeroMQ identity as a string for logging.
+/// Render a raw ZeroMQ identity as a string for logging and routing.
 ///
 /// Worker identities are UTF-8 strings in production (the bare device index,
 /// e.g. `"0"`), but auto-generated DEALER identities (e.g. in tests) may be
 /// arbitrary non-UTF8 bytes. This decodes as UTF-8 when valid and falls back
-/// to a hex string otherwise. Used by both `send()` and `recv()` so that the
-/// same underlying identity bytes always render identically in logs,
-/// regardless of which method observed them.
-fn render_identity(id: &[u8]) -> String {
+/// to a hex string otherwise. `send()` and `recv()` both use this so the same
+/// underlying bytes always render identically regardless of which method
+/// observed them — and `anvilml-worker`'s demux task uses the same function
+/// to build its routing table keys, since a route only matches an incoming
+/// event if both sides rendered the identity the same way.
+pub fn render_identity(id: &[u8]) -> String {
     match std::str::from_utf8(id) {
         Ok(s) => s.to_string(),
         Err(_) => id.iter().map(|b| format!("{b:02x}")).collect(),
@@ -141,11 +159,13 @@ impl RouterTransport {
 
         tracing::info!(port = %port, "ROUTER socket bound");
 
-        // Wrap the socket in Arc<Mutex<>> so it can be shared across async
-        // tasks. The Arc allows cloning the transport, and the Mutex ensures
-        // only one task accesses the socket at a time.
+        // Split into independent halves immediately after bind — see the
+        // module docs for why send and recv must never share one lock.
+        let (send_half, recv_half) = socket.split();
+
         Ok(Self {
-            socket: Arc::new(Mutex::new(socket)),
+            send_half: Arc::new(Mutex::new(send_half)),
+            recv_half: Mutex::new(recv_half),
             port,
         })
     }
@@ -173,30 +193,20 @@ impl RouterTransport {
         // type definitions or a corrupted message value.
         let encoded = encode_message(msg).map_err(|e| TransportError::Encode(e.to_string()))?;
 
-        // Construct a ZeroMQ multipart message with two frames:
-        // Frame 1: worker identity — the ROUTER socket pops this internally
-        //          to route the remaining frames to the correct peer.
-        // Frame 2: encoded payload — the msgpack-serialized WorkerMessage.
-        //
-        // The ROUTER socket's send API requires at least 2 frames. Fewer
-        // frames will return ZmqError::Socket("ROUTER send requires at least 2 frames").
         // Construct the message with two frames in order: [identity, payload].
         // The ROUTER socket pops the first frame (identity) internally to
-        // route the remaining frames to the correct peer.
+        // route the remaining frames to the correct peer. Fewer than 2
+        // frames returns ZmqError::Socket("ROUTER send requires at least 2 frames").
         let frames: Vec<Bytes> = vec![
             Bytes::from(worker_id.to_vec()), // identity frame
             Bytes::from(encoded),            // payload frame
         ];
         let message = ZmqMessage::try_from(frames).expect("frames should be non-empty");
 
-        // Acquire the mutex lock to send. The tokio mutex ensures that only
-        // one task at a time can modify the socket state, preventing races
-        // between concurrent send() calls.
-        let mut socket = self.socket.lock().await;
-        // The ROUTER socket pops the first frame (identity) internally and
-        // routes the remaining frames to the matching peer. If no peer with
-        // that identity is connected, it returns ZmqError::Other.
-        socket.send(message).await?;
+        // Locks only against other send() callers — never against recv(),
+        // since the two now live behind independent mutexes (see module docs).
+        let mut send_half = self.send_half.lock().await;
+        send_half.send(message).await?;
 
         // Log the worker identity using the same UTF-8-or-hex rule as recv(),
         // so the same identity bytes always render identically in logs whether
@@ -218,7 +228,7 @@ impl RouterTransport {
     /// # Errors
     ///
     /// Returns `AnvilError::Ipc` if the socket encounters a ZeroMQ error (e.g.
-    /// connection lost, socket closed), if the identity frame is missing (protocol
+    /// connection lost, closed socket), if the identity frame is missing (protocol
     /// violation), if the payload frame is missing, or if the msgpack payload cannot
     /// be decoded into a `WorkerEvent`.
     ///
@@ -227,17 +237,15 @@ impl RouterTransport {
     /// Logs at DEBUG level: `tracing::debug!(worker_id = %worker_id, event_type = ?event,
     /// "event received from worker")`.
     pub async fn recv(&self) -> Result<(String, WorkerEvent), AnvilError> {
-        // Acquire the mutex lock to receive. The tokio mutex ensures that only
-        // one task at a time can access the socket, preventing races between
-        // concurrent recv() calls.
-        let mut socket = self.socket.lock().await;
+        // Locks only against other recv() callers — in practice never
+        // contended, since exactly one task (anvilml-worker's demux task)
+        // calls recv() for the transport's entire lifetime. See module docs.
+        let mut recv_half = self.recv_half.lock().await;
 
-        // Receive the multipart message from the ROUTER socket. The ROUTER
-        // returns a ZmqMessage where frame 0 is the peer identity and frame 1+
-        // are the message payload. A ZmqError here indicates a socket-level
-        // failure (connection lost, closed socket). Map to AnvilError::Ipc
-        // since the design doc specifies recv() returns AnvilError.
-        let msg = socket
+        // A ZmqError here indicates a socket-level failure (connection
+        // lost, closed socket). Mapped to AnvilError::Ipc since the design
+        // doc specifies recv() returns AnvilError.
+        let msg = recv_half
             .recv()
             .await
             .map_err(|e| AnvilError::Ipc(format!("ROUTER recv failed: {e}")))?;
@@ -277,5 +285,60 @@ impl RouterTransport {
         );
 
         Ok((worker_id, event))
+    }
+
+    /// Like [`recv`](Self::recv), but also returns the unrendered identity
+    /// bytes alongside the rendered string.
+    ///
+    /// Production code should use [`recv`](Self::recv) and `render_identity`
+    /// — every routing table in this codebase (`anvilml-worker`'s demux
+    /// task included) is keyed by the rendered string on both the send and
+    /// recv side, never by raw bytes, so production never needs this.
+    ///
+    /// This exists for tests and diagnostics that need to address the same
+    /// peer again after receiving from it — e.g. a test DEALER socket has
+    /// no way to set a predictable identity in this version of the
+    /// `zeromq` crate, so the only way to send a reply back to it is to
+    /// recover the exact bytes ZeroMQ assigned, not a rendering of them.
+    /// `render_identity` is lossy for non-UTF8 input (hex-encodes it), so
+    /// `worker_id.as_bytes()` from `recv()`'s return is NOT a valid
+    /// substitute for the original bytes when the identity isn't UTF-8 —
+    /// using it as one would address `send()` to the literal ASCII bytes
+    /// of a hex string, not to the peer that was actually received from.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`recv`](Self::recv).
+    pub async fn recv_with_raw_identity(
+        &self,
+    ) -> Result<(Vec<u8>, String, WorkerEvent), AnvilError> {
+        let mut recv_half = self.recv_half.lock().await;
+
+        let msg = recv_half
+            .recv()
+            .await
+            .map_err(|e| AnvilError::Ipc(format!("ROUTER recv failed: {e}")))?;
+
+        let identity_bytes = msg
+            .get(0)
+            .ok_or_else(|| AnvilError::Ipc("ROUTER recv returned no identity frame".to_string()))?;
+
+        let payload_bytes = msg
+            .get(1)
+            .ok_or_else(|| AnvilError::Ipc("ROUTER recv returned no payload frame".to_string()))?;
+
+        let raw_identity = identity_bytes.to_vec();
+        let worker_id = render_identity(identity_bytes);
+
+        let event =
+            decode_event(payload_bytes.as_ref()).map_err(|e| AnvilError::Ipc(e.to_string()))?;
+
+        tracing::debug!(
+            worker_id = %worker_id,
+            event_type = ?event,
+            "event received from worker"
+        );
+
+        Ok((raw_identity, worker_id, event))
     }
 }

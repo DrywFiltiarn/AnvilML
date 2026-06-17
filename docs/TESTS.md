@@ -1620,23 +1620,14 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Expected output:** DEALER receives a single-frame message that decodes to `WorkerMessage::Ping { seq: 1 }`; writer task exits cleanly.
 **Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- bridge_tests::test_writer_sends_message` exits 0.
 
-## test_reader_broadcasts_event (anvilml-worker)
+## test_handle_drops_cleanly (anvilml-worker)
 
 **File:** `crates/anvilml-worker/tests/bridge_tests.rs`
-**Context:** The bridge reader task receives events from the `RouterTransport` and broadcasts them via a `broadcast::Sender`. Uses a real ZeroMQ ROUTER socket and DEALER client. The reader terminates when the transport returns an error (socket closed).
-**Tests:** Binds a `RouterTransport`, connects a DEALER socket, discovers the DEALER's identity, spawns the bridge reader, sends `WorkerEvent::Pong { seq: 42 }` from the DEALER side, reads from the broadcast channel, and verifies the event matches. Then drops the transport to trigger reader shutdown.
-**Inputs:** `WorkerEvent::Pong { seq: 42 }` sent from DEALER to ROUTER.
-**Expected output:** Broadcast channel receives `(worker_id, WorkerEvent::Pong { seq: 42 })`; reader task exits cleanly.
-**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- bridge_tests::test_reader_broadcasts_event` exits 0.
-
-## test_handles_drop_cleanly (anvilml-worker)
-
-**File:** `crates/anvilml-worker/tests/bridge_tests.rs`
-**Context:** Dropping both bridge task handles does not panic. The writer exits when its mpsc sender is dropped; the reader exits when the transport (and its underlying socket) is dropped.
-**Tests:** Binds a `RouterTransport`, spawns both bridge tasks with a dummy mpsc channel, drops the sender, drops both handles, and asserts no panic.
-**Inputs:** None (uses `RouterTransport::bind()` and dummy channels).
-**Expected output:** Both handles resolve without panic.
-**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- bridge_tests::test_handles_drop_cleanly` exits 0.
+**Context:** Dropping the bridge writer's handle does not panic. The writer exits on its own once its mpsc sender is dropped — there is no reader handle here anymore, since `bridge::start` no longer reads from the transport (see `crate::demux`).
+**Tests:** Binds a `RouterTransport`, spawns the bridge writer with a dummy mpsc channel, drops the sender, drops the handle, and asserts no panic.
+**Inputs:** None (uses `RouterTransport::bind()` and a dummy channel).
+**Expected output:** The handle resolves without panic.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- bridge_tests::test_handle_drops_cleanly` exits 0.
 
 ## test_timeout_fires (anvilml-worker)
 
@@ -1853,3 +1844,21 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Child process `sh -c "sleep 0.5 && exit 1"`, `ManagedWorker` in `Initializing` state, no bridge reader running.
 **Expected output:** Status transitions from `Initializing` to `Dead` within 5 seconds. The `child.wait()` arm fires, the status is set to `Dead`, and a `Dying` event is broadcast.
 **Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- managed_tests::test_child_exit_transitions_dead` exits 0.
+
+## test_demux_dispatches_event_to_registered_route (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/demux_tests.rs`
+**Context:** The demux task is the single reader of the shared `RouterTransport`; it looks up each received event's wire identity in a routing table and forwards it to that route's `broadcast::Sender`. Uses a real ZeroMQ ROUTER socket and DEALER client. Replaces what `test_reader_broadcasts_event` formerly verified in `bridge_tests.rs`, against `bridge::start`'s reader — that reader no longer exists; this test exercises `demux::start` instead.
+**Tests:** Binds a `RouterTransport`, connects a DEALER socket, discovers the DEALER's identity, registers a route for that identity, starts the demux task, sends `WorkerEvent::Pong { seq: 42 }` from the DEALER side, reads from the route's broadcast channel, and verifies the event matches and the broadcast worker_id is the wire identity (not the display label).
+**Inputs:** `WorkerEvent::Pong { seq: 42 }` sent from DEALER to ROUTER, one pre-registered route.
+**Expected output:** Broadcast channel receives `(wire_identity, WorkerEvent::Pong { seq: 42 })`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- demux_tests::test_demux_dispatches_event_to_registered_route` exits 0.
+
+## test_demux_drops_event_for_unregistered_identity (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/demux_tests.rs`
+**Context:** Regression test for the cross-worker misrouting bug the demux task exists to fix: before a single shared reader existed, multiple per-worker readers raced the same ROUTER socket and could receive each other's events. With one reader and an explicit routing table, an identity with no registered route has nowhere to go and must be dropped, not guessed at or delivered to the wrong route.
+**Tests:** Binds a `RouterTransport`, connects a DEALER socket, registers a route under an unrelated identity (not the DEALER's own), starts the demux task, sends a message from the DEALER, and asserts no panic or hang.
+**Inputs:** A message from an identity with no matching entry in the routing table.
+**Expected output:** The event is dropped (logged at WARN); no panic, no delivery to the unrelated registered route.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- demux_tests::test_demux_drops_event_for_unregistered_identity` exits 0.

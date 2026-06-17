@@ -8,6 +8,7 @@
 //! No business logic — that belongs in the scheduler.
 
 pub mod bridge;
+pub mod demux;
 pub mod env;
 pub mod keepalive;
 pub mod managed;
@@ -15,6 +16,7 @@ pub mod pool;
 pub mod respawn;
 pub mod spawn;
 pub use bridge::start;
+pub use demux::{register as register_route, start as start_demux, Route, RouteTable};
 pub use env::build_worker_env;
 pub use keepalive::start as start_keepalive;
 pub use managed::ManagedWorker;
