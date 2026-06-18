@@ -44,7 +44,7 @@ fn mock_pool_with_one_worker() -> WorkerPool {
         None, // heartbeat_handle
         "worker-0".to_string(),
         "mock-device".to_string(),
-        0, // device_index
+        0,    // device_index
         None, // routes — no real demux task in this test
         None, // route_key
     );
