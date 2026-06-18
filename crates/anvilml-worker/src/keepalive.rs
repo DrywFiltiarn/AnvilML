@@ -15,13 +15,13 @@
 //! worker that hasn't finished initializing yet.
 //!
 //! **Shutdown:** The caller receives a `HeartbeatHandle` alongside the `JoinHandle`.
-//! Setting the shutdown flag on the handle causes the loop to exit cleanly on the
-//! next ping cycle iteration.
+//! Calling `shutdown()` causes the loop to exit promptly — at either of its
+//! two wait points (the ping-interval sleep, or the pong-timeout wait) —
+//! rather than only at a cycle boundary.
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tracing;
@@ -31,29 +31,66 @@ use anvilml_ipc::{WorkerEvent, WorkerMessage};
 /// A handle for signalling the heartbeat loop to shut down.
 ///
 /// The caller (typically `ManagedWorker`) stores this handle alongside the
-/// `JoinHandle` returned by `start()`. Setting the shutdown flag causes the
-/// loop to exit cleanly at the next iteration boundary — the current ping/pong
-/// cycle completes before shutdown, ensuring no in-flight ping is orphaned.
+/// `JoinHandle` returned by `start()`. Calling `shutdown()` causes the loop
+/// to exit cleanly and promptly — including while it's in the middle of
+/// either of its two wait points (the `ping_interval` sleep between
+/// cycles, or the `pong_timeout` wait for a matching pong) — not just at a
+/// cycle boundary.
 ///
-/// The flag is protected by a `tokio::sync::Mutex` so it can be set from
-/// any async context without blocking the tokio runtime.
+/// Backed by a `tokio::sync::watch` channel rather than a bare
+/// `Mutex<bool>` plus a separate wakeup primitive: the loop has two
+/// sequential wait points that each need to observe a single `shutdown()`
+/// call, and a one-shot wakeup (e.g. `Notify`'s single stored permit)
+/// would be consumed by whichever wait point reaches it first, leaving the
+/// other to block for its full duration regardless. A `watch` value does
+/// not have this problem — `*rx.borrow()` can be checked any number of
+/// times at any number of separate `.await` points and always reflects
+/// the latest sent value, with no "consumption" semantics to race.
 #[derive(Debug)]
 pub struct HeartbeatHandle {
-    /// Shutdown flag — when `true`, the heartbeat loop exits after the current
-    /// ping/pong cycle completes. The mutex ensures safe concurrent access
-    /// from any async task (e.g. `ManagedWorker::shutdown`).
-    shutdown: Arc<Mutex<bool>>,
+    /// Sends `true` once, on `shutdown()`. The loop holds the matching
+    /// `watch::Receiver` and checks/awaits it at both of its wait points.
+    shutdown_tx: watch::Sender<bool>,
 }
 
 impl HeartbeatHandle {
-    /// Signal the heartbeat loop to shut down after the current ping/pong cycle.
+    /// Signal the heartbeat loop to shut down immediately.
     ///
-    /// This is a non-blocking operation — it sets the flag and returns
-    /// immediately. The loop checks the flag at the start of each iteration,
-    /// so shutdown takes effect at the next ping cycle boundary.
+    /// Sends `true` on the underlying watch channel. Whichever wait point
+    /// the loop is currently at (or the next one it reaches) observes this
+    /// and the loop exits without waiting out the rest of its current
+    /// `ping_interval` or `pong_timeout` window. A send error here only
+    /// means the loop's `watch::Receiver` was already dropped — i.e. the
+    /// task has already exited on its own for some other reason (broadcast
+    /// channel closed, bridge writer gone) — which isn't a failure to
+    /// react to.
     pub async fn shutdown(&self) {
-        let mut flag = self.shutdown.lock().await;
-        *flag = true; // Mark shutdown to stop the heartbeat loop on next cycle.
+        let _ = self.shutdown_tx.send(true);
+    }
+}
+
+/// Waits until `rx`'s value becomes `true`, or returns immediately if it
+/// already is. Used at each of the heartbeat loop's wait points so a
+/// single `shutdown()` call is observable at any/all of them, regardless
+/// of which one is current when it's sent — see discussion on
+/// `HeartbeatHandle` for why a one-shot wakeup primitive doesn't have this
+/// property across multiple sequential wait points.
+///
+/// Checking `*rx.borrow()` first (rather than only ever calling
+/// `changed()`) is what makes this safe to call repeatedly on the same
+/// receiver at separate, later wait points: `changed()` alone marks the
+/// value "seen" on first observation, which would make a second call on
+/// the same receiver block waiting for a value that will never change
+/// again (the value is sent at most once, `false → true`). Checking the
+/// current value directly has no such one-time consumption.
+async fn wait_for_shutdown(rx: &mut watch::Receiver<bool>) {
+    while !*rx.borrow() {
+        if rx.changed().await.is_err() {
+            // Sender dropped without ever sending `true` — treat the same
+            // as shutdown, since there is no one left to ask for graceful
+            // continuation either way.
+            return;
+        }
     }
 }
 
@@ -109,20 +146,18 @@ pub fn start(
     pong_timeout: Duration,
     on_timeout: impl Fn() + Send + 'static,
 ) -> (JoinHandle<()>, HeartbeatHandle) {
-    // Create the shared shutdown flag. Initially false — the heartbeat is
-    // active. The mutex allows setting the flag from any async context
-    // (e.g. ManagedWorker::shutdown) without blocking the runtime.
-    let shutdown = Arc::new(Mutex::new(false));
-    let handle = HeartbeatHandle {
-        shutdown: Arc::clone(&shutdown),
-    };
+    // Initially false — the heartbeat is active. See HeartbeatHandle's doc
+    // comment for why a watch channel rather than a bare flag: the loop
+    // has two sequential wait points that each independently need to
+    // observe a single shutdown() call.
+    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+    let handle = HeartbeatHandle { shutdown_tx };
 
     // Spawn the heartbeat task. The task runs an infinite loop that sends
     // pings and waits for pongs, using select! with a per-ping deadline.
-    // The task terminates when the shutdown flag is set or the broadcast
+    // The task terminates when shutdown is requested or the broadcast
     // channel is closed.
     let worker_id_clone = worker_id.clone();
-    let handle_clone = shutdown.clone();
     let task_handle = tokio::spawn(async move {
         // Wait for the worker to report Ready before sending a single
         // ping. Starting immediately at spawn time — before the Python
@@ -152,21 +187,22 @@ pub fn start(
         let mut seq: u64 = 0; // Monotonically increasing sequence number for ping/pong matching.
 
         loop {
-            // Check for shutdown signal at the start of each iteration.
-            // This allows ManagedWorker to stop the heartbeat when the
-            // worker transitions to Dead or is dropped.
-            {
-                let flag = handle_clone.lock().await;
-                if *flag {
-                    // Shutdown requested — exit the loop cleanly. The current
-                    // ping/pong cycle has already completed (or was never
-                    // started), so no ping is orphaned.
-                    tracing::debug!(
-                        worker_id = %worker_id_clone,
-                        "keepalive shutdown requested"
-                    );
-                    return;
-                }
+            // Check for shutdown at the start of each iteration. This
+            // allows ManagedWorker to stop the heartbeat when the worker
+            // transitions to Dead or is dropped. A direct borrow check
+            // (not changed()) since this call site doesn't want to mark
+            // the value seen — wait_for_shutdown() (used at the two wait
+            // points below) needs to make its own independent check later
+            // in the same iteration.
+            if *shutdown_rx.borrow() {
+                // Shutdown requested — exit the loop cleanly. The current
+                // ping/pong cycle has already completed (or was never
+                // started), so no ping is orphaned.
+                tracing::debug!(
+                    worker_id = %worker_id_clone,
+                    "keepalive shutdown requested"
+                );
+                return;
             }
 
             seq += 1; // Increment sequence number for this ping cycle.
@@ -296,14 +332,44 @@ pub fn start(
                         // the past, so sleep_until would fire again immediately).
                         break;
                     }
+                    // Shutdown requested while waiting for a pong — break
+                    // out immediately rather than waiting up to
+                    // pong_timeout for this inner select to resolve on its
+                    // own. Breaking (not returning) is deliberate: it sends
+                    // control to the outer loop's top, where the shutdown
+                    // check is the single place that actually decides to
+                    // exit — consistent with how every other path out of
+                    // this inner select already works.
+                    _ = wait_for_shutdown(&mut shutdown_rx) => {
+                        tracing::debug!(
+                            worker_id = %worker_id_clone,
+                            seq = %seq,
+                            "pong wait interrupted by shutdown signal"
+                        );
+                        break;
+                    }
                 }
             }
 
-            // Wait for the next ping interval before sending the next ping.
-            // The interval starts after the pong is received (or timeout fires),
-            // not after the ping is sent. This prevents ping storms when the
+            // Wait for the next ping interval before sending the next ping,
+            // but don't wait out the full interval if shutdown() is called
+            // in the meantime — race the sleep against shutdown_rx so the
+            // loop wakes immediately and re-checks at the top, rather than
+            // potentially sitting in this sleep for the remainder of
+            // ping_interval (up to 30s in production) after shutdown was
+            // already requested. The interval still starts after the pong
+            // is received (or timeout fires), not after the ping is sent,
+            // for the same reason as before: to avoid ping storms when the
             // worker is slow to respond.
-            tokio::time::sleep(ping_interval).await;
+            tokio::select! {
+                _ = tokio::time::sleep(ping_interval) => {}
+                _ = wait_for_shutdown(&mut shutdown_rx) => {
+                    tracing::debug!(
+                        worker_id = %worker_id_clone,
+                        "ping_interval sleep interrupted by shutdown signal"
+                    );
+                }
+            }
         }
     });
 

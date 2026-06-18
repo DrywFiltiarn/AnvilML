@@ -397,14 +397,18 @@ impl ManagedWorker {
     /// the loop's shutdown arm, which runs the following sequence in order
     /// and then returns:
     /// 1. Signal the heartbeat to stop via `HeartbeatHandle::shutdown()`
-    /// 2. Send a `Shutdown` message to the bridge (best-effort, may fail
+    ///    (now woken promptly even mid-wait, not just at a cycle boundary
+    ///    — see `crate::keepalive`'s `HeartbeatHandle`)
+    /// 2. Abort the keepalive task via its `JoinHandle` immediately after
+    ///    — a second, unconditional guarantee that its `msg_tx` clone is
+    ///    gone before step 4 below, on top of step 1's now-prompt graceful
+    ///    signal (see "Keepalive gating and abort" above for why `.abort()`
+    ///    and not a bare drop)
+    /// 3. Send a `Shutdown` message to the bridge (best-effort, may fail
     ///    if the channel is already closed)
-    /// 3. Drop `msg_tx` to signal the bridge writer to exit
-    /// 4. Await the bridge writer (bounded to 2s), so `Shutdown` is
+    /// 4. Drop `msg_tx` to signal the bridge writer to exit
+    /// 5. Await the bridge writer (bounded to 2s), so `Shutdown` is
     ///    actually transmitted before proceeding
-    /// 5. Abort the keepalive task via its `JoinHandle` (see "Keepalive
-    ///    gating and abort" above for why this is `.abort()` and not a
-    ///    bare drop)
     /// 6. Deregister this worker's route from the demux table (no-op if
     ///    `routes`/`route_key` are `None`)
     /// 7. Wait up to 5 seconds for the subprocess to exit on its own, then
@@ -656,8 +660,22 @@ impl ManagedWorker {
 
                     // Stop pinging before the worker is told to shut down,
                     // so no ping races the Shutdown message sent below.
+                    // shutdown() now wakes the keepalive task promptly even
+                    // mid-wait (see crate::keepalive's HeartbeatHandle), but
+                    // the abort() right after is a second, unconditional
+                    // guarantee: by the time the writer-wait below begins,
+                    // the keepalive task's own msg_tx clone is gone one way
+                    // or another, so that wait only ever needs the buffer
+                    // drained, not a second sender to also disappear on its
+                    // own schedule. Aborting here (rather than only at the
+                    // bottom of this arm, alongside the other Dead-bound
+                    // exit paths) is what actually closes that race, not
+                    // just narrows its window.
                     if let Some(handle) = &self.heartbeat_handle {
                         handle.shutdown().await;
+                    }
+                    if let Some(handle) = self.keepalive_handle.take() {
+                        handle.abort();
                     }
 
                     // Best-effort: the writer drains this from the channel
@@ -697,19 +715,6 @@ impl ManagedWorker {
                         // pool-wide and outlives any single worker's
                         // shutdown. WorkerPool aborts it once, after every
                         // worker has stopped.
-                    }
-
-                    // Aborted, not merely dropped, for the same reason as
-                    // the ready-timeout and child-exit arms: if shutdown
-                    // was requested while still Initializing, ready_tx was
-                    // never fired, so the keepalive task is parked on its
-                    // ready_rx gate — that resolves to Err once ready_tx
-                    // drops with self at the end of this function and the
-                    // task would exit on its own either way, but aborting
-                    // here keeps all three Dead-bound exit paths uniform
-                    // rather than this one being the sole exception.
-                    if let Some(handle) = self.keepalive_handle.take() {
-                        handle.abort();
                     }
 
                     // Remove this worker's entry from the demux table so it
