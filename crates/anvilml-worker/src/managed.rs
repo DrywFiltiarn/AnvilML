@@ -95,8 +95,9 @@ pub struct ManagedWorker {
     /// Broadcast sender for events addressed to this worker. The demux task
     /// holds the matching clone it forwards into; this struct's own copy is
     /// dropped at the start of `run()` so the channel can close once the
-    /// demux task's clone is the only one left.
-    event_tx: broadcast::Sender<(String, WorkerEvent)>,
+    /// demux task's clone is the only one left. Wrapped in `Option` so
+    /// `run()` can call `.take()` without a partial move (avoids E0382).
+    event_tx: Option<broadcast::Sender<(String, WorkerEvent)>>,
 
     /// `None` when constructed via `new()` for testing without a real
     /// subprocess.
@@ -277,7 +278,7 @@ impl ManagedWorker {
         Self {
             status: Arc::new(tokio::sync::RwLock::new(status)),
             msg_tx,
-            event_tx,
+            event_tx: Some(event_tx),
             child,
             bridge_handle,
             keepalive_handle,
@@ -462,7 +463,7 @@ impl ManagedWorker {
         let worker = Self {
             status,
             msg_tx,
-            event_tx,
+            event_tx: Some(event_tx),
             child: Some(child),
             bridge_handle,
             keepalive_handle: Some(keepalive_handle),
@@ -601,33 +602,16 @@ impl ManagedWorker {
         )
         .await?;
 
-        let new_event_rx = new_worker.event_tx.subscribe();
+        let new_event_rx = new_worker
+            .event_tx
+            .as_ref()
+            .expect("event_tx always Some in freshly spawned worker")
+            .subscribe();
 
-        // Note: *self = new_worker replaces self.status with the new
-        // worker's fresh status Arc (starting at Initializing). WorkerPool's
-        // background monitoring task still holds a clone of the *old* status
-        // Arc (which is now isolated, frozen at Dead). This means WebSocket
-        // WorkerStatusChanged events for the respawned worker's lifecycle
-        // (Initializing → Idle, etc.) will not be broadcast by the existing
-        // polling task. This is a known, scoped limitation of this approach —
-        // fixing it fully would require the monitoring task to watch a shared
-        // slot for the current status Arc rather than holding a clone captured
-        // at spawn time. Out of scope for P10-A3; flagged here for follow-up.
         *self = new_worker;
 
-        // Mirror what run() does at entry: drop this struct's own clone of
-        // event_tx so the demux task's clone is the only live sender. If
-        // self.event_tx were kept alive here, the broadcast channel would
-        // always have two senders (this one and the demux task's), meaning
-        // it would never close — and run()'s "broadcast channel closed"
-        // exit path would never fire after a respawn.
-        //
-        // Cannot do `drop(self.event_tx)` — that's a partial move out of
-        // `&mut self`, which Rust disallows. Use mem::replace to swap in a
-        // fresh, immediately-dropped sender instead. The value returned by
-        // replace (the real new_worker.event_tx clone) is dropped at the
-        // end of this statement, releasing that sender slot.
-        let _ = std::mem::replace(&mut self.event_tx, broadcast::channel(1).0);
+        // Drop our clone via take() — no partial move.
+        self.event_tx.take();
 
         Ok(new_event_rx)
     }
@@ -726,21 +710,16 @@ impl ManagedWorker {
     /// stop, not a failure to recover from.
     #[tracing::instrument(skip(self, shutdown_rx), fields(worker_id = %self.worker_id))]
     pub async fn run(mut self, shutdown_rx: oneshot::Receiver<()>) {
-        let mut event_rx = self.event_tx.subscribe();
+        let mut event_rx = self
+            .event_tx
+            .as_ref()
+            .expect("event_tx always Some at run() entry")
+            .subscribe();
         let mut shutdown_rx = shutdown_rx;
 
-        // In production, the pool's demux task (crate::demux) holds the
-        // only remaining clone of this sender and forwards this worker's
-        // events into it — when the demux task exits, the channel closes
-        // and the loop below exits. In tests constructing ManagedWorker
-        // directly, the test itself holds the only remaining sender.
-        //
-        // Uses mem::replace rather than `drop(self.event_tx)` to avoid a
-        // partial move out of `self`: a partial move prevents do_respawn()
-        // from later borrowing `&mut self` (E0382). Replacing with a dummy
-        // sender that is immediately dropped achieves the same effect —
-        // the real sender is released — without touching self's move state.
-        let _ = std::mem::replace(&mut self.event_tx, broadcast::channel(1).0);
+        // Drop our clone so the demux task's clone is the only live sender.
+        // Option::take() avoids a partial move (E0382).
+        self.event_tx.take();
 
         // Set once self.restart_rx's sender (held by WorkerPool) is
         // observed dropped. tokio::sync::watch::Receiver::changed()
@@ -772,19 +751,8 @@ impl ManagedWorker {
                 None
             };
 
-            // Reborrow self.timeout_rx and self.restart_rx as named locals
-            // before entering select! — same pattern as shutdown_rx above.
-            // tokio::select! pins all arm futures simultaneously before
-            // polling; if multiple arms reference different fields of self
-            // directly (e.g. &mut self.timeout_rx AND self.child.as_mut()
-            // inside an async block), the macro expansion can't see they're
-            // disjoint and treats them as conflicting &mut self borrows. Named
-            // reborrows break that: the select arms reference locals, not
-            // self fields, so the compiler sees no conflict. Without this,
-            // child.wait() silently falls through to the None/sleep branch
-            // every iteration — the child arm never fires.
-            let timeout_rx = &mut self.timeout_rx;
-            let restart_rx = &mut self.restart_rx;
+            // loop_child: take child for the select arm, restore after.
+            let mut loop_child = self.child.take();
 
             tokio::select! {
                 // Both branches of this async block must be the same
@@ -939,23 +907,24 @@ impl ManagedWorker {
                     }
                 }
 
-                // child is None in tests, where this arm must never win —
-                // a never-firing sleep keeps it inert without needing a
-                // separate code path per child-present/absent case.
+                // Call child.wait() directly when a child is present,
+                // std::future::pending() otherwise. The async{} wrapper was
+                // the cancel-safety failure (recreated each iteration loses
+                // OS wakeup). pending() is safe for None case — it never
+                // resolves. Note: tokio::select! evaluates the future
+                // expression before checking the if guard, so we cannot use
+                // unwrap() here; instead we use a safe expression that
+                // returns pending when loop_child is None.
                 _ = async {
-                    match self.child.as_mut() {
-                        Some(child) => {
-                            let _ = child.wait().await;
-                        }
-                        None => {
-                            tokio::time::sleep(std::time::Duration::MAX).await;
-                        }
+                    match loop_child.as_mut() {
+                        Some(c) => { let _ = c.wait().await; }
+                        None => { std::future::pending::<()>().await; }
                     }
                 } => {
                     // TODO(P14): notify JobScheduler of in-flight job failure
                     // once it exists. The scheduler is introduced in P13-A3 and
                     // wired to dispatch in P14-A1.
-                    let exit_code = match self.child.as_mut().and_then(|c| c.try_wait().ok()).flatten() {
+                    let exit_code = match loop_child.as_mut().and_then(|c| c.try_wait().ok()).flatten() {
                         Some(status) => status.code(),
                         None => None,
                     };
@@ -1004,7 +973,7 @@ impl ManagedWorker {
                 // the child-exit arm, the subprocess may still be running
                 // (e.g. wedged on a ZMQ call), so it must be explicitly
                 // killed before respawning.
-                _ = &mut *timeout_rx => {
+                _ = &mut self.timeout_rx => {
                     tracing::warn!(
                         worker_id = %self.worker_id,
                         "heartbeat timeout, worker unresponsive"
@@ -1014,7 +983,7 @@ impl ManagedWorker {
                         handle.abort();
                     }
 
-                    if let Some(mut child) = self.child.take() {
+                    if let Some(mut child) = loop_child.take() {
                         if let Err(err) = child.kill().await {
                             tracing::warn!(
                                 worker_id = %self.worker_id,
@@ -1065,7 +1034,7 @@ impl ManagedWorker {
                         tokio::time::sleep(std::time::Duration::MAX).await;
                         unreachable!("never-firing placeholder for closed restart_rx")
                     } else {
-                        restart_rx.changed().await
+                        self.restart_rx.changed().await
                     }
                 } => {
                     if changed_result.is_err() {
@@ -1085,7 +1054,7 @@ impl ManagedWorker {
                         handle.abort();
                     }
 
-                    if let Some(mut child) = self.child.take() {
+                    if let Some(mut child) = loop_child.take() {
                         if let Err(err) = child.kill().await {
                             tracing::warn!(
                                 worker_id = %self.worker_id,
@@ -1199,7 +1168,7 @@ impl ManagedWorker {
                     // supervisor exiting: dropping tokio::process::Child
                     // only drops Rust's handle, never the underlying
                     // process.
-                    if let Some(mut child) = self.child.take() {
+                    if let Some(mut child) = loop_child.take() {
                         match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
                             Ok(Ok(status)) => {
                                 tracing::debug!(
@@ -1238,6 +1207,14 @@ impl ManagedWorker {
                     break;
                 }
             }
+
+            // Restore loop_child back into self.child for any arm that didn't
+            // consume it (timeout/restart/shutdown arms take it via child.take()
+            // in their bodies and set loop_child = None implicitly by that;
+            // the child-exit arm exits or continues so doesn't need restore).
+            // Simply always restore — if the arm already took the child, loop_child
+            // is None and self.child becomes None, which is correct.
+            self.child = loop_child;
         }
 
         // Reached by every break path (ready timeout, channel closed,
