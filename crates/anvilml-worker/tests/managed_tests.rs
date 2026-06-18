@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anvilml_core::WorkerStatus;
-use anvilml_ipc::{RouterTransport, WorkerEvent};
+use anvilml_ipc::{RouterTransport, WorkerEvent, WorkerMessage};
 use anvilml_worker::keepalive;
 use anvilml_worker::managed::ManagedWorker;
 use tokio::sync::{broadcast, mpsc};
@@ -70,6 +70,7 @@ fn make_test_worker_with_index(
         device_index,
         None, // routes — no real demux task in these tests
         None, // route_key
+        None, // ready_tx — no real keepalive task in these tests
     );
 
     (worker, event_tx)
@@ -272,6 +273,12 @@ async fn test_keepalive_timeout_sets_dead() {
     let (msg_tx, _msg_rx) = mpsc::channel(16);
     let (event_tx, event_rx) = broadcast::channel(16);
 
+    // Fired immediately — this test is about pong-timeout behaviour
+    // (whether the on_timeout callback fires), not the Ready gate itself.
+    // See test_no_ping_before_ready in keepalive_tests.rs for that.
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let _ = ready_tx.send(());
+
     // Create the keepalive with a 10-second pong timeout.
     // The timeout callback records its invocation.
     let on_timeout = {
@@ -285,6 +292,7 @@ async fn test_keepalive_timeout_sets_dead() {
         "test-worker-keepalive".to_string(),
         msg_tx.clone(),
         event_rx,
+        ready_rx,
         Duration::from_secs(30), // ping_interval
         Duration::from_secs(10), // pong_timeout
         on_timeout,
@@ -304,6 +312,7 @@ async fn test_keepalive_timeout_sets_dead() {
         0,    // device_index
         None, // routes — no real demux task in this test
         None, // route_key
+        None, // ready_tx — already fired directly above, before new()
     );
 
     // Spawn run() first.
@@ -402,11 +411,18 @@ async fn test_shutdown_cleans_up_handles() {
         msg_rx,
     );
 
+    // Fired immediately — this test exercises run()'s shutdown sequence,
+    // not the Ready gate itself; the keepalive only needs to exist as a
+    // real task for the shutdown arm's abort() to have something to act on.
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let _ = ready_tx.send(());
+
     // Spawn the keepalive task.
     let (keepalive_handle, heartbeat_handle) = keepalive::start(
         "test-worker-shutdown".to_string(),
         msg_tx.clone(),
         event_rx,
+        ready_rx,
         Duration::from_secs(30),
         Duration::from_secs(10),
         || {},
@@ -425,6 +441,7 @@ async fn test_shutdown_cleans_up_handles() {
         0,    // device_index
         None, // routes — no real demux task in this test
         None, // route_key
+        None, // ready_tx — already fired directly above, before new()
     );
 
     // Spawn run() with a real shutdown channel this time, rather than the
@@ -625,6 +642,7 @@ async fn test_child_exit_transitions_dead() {
         0,    // device_index
         None, // routes — no real demux task in this test
         None, // route_key
+        None, // ready_tx — no real keepalive task in this test
     );
 
     let status = worker.get_status();
@@ -762,6 +780,7 @@ async fn test_run_shutdown_deregisters_route() {
         0,
         Some(routes.clone()),
         Some(key.clone()),
+        None, // ready_tx — no real keepalive task in this test
     );
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -780,4 +799,94 @@ async fn test_run_shutdown_deregisters_route() {
         !routes.lock().await.contains_key(&key),
         "route should be deregistered after run()'s shutdown arm completes"
     );
+}
+
+/// Verify that `run()`'s `Initializing → Idle` transition actually fires
+/// `ready_tx`, releasing a real keepalive task's start gate — end-to-end,
+/// through `run()` itself rather than `keepalive::start()` in isolation
+/// (see `keepalive_tests::test_no_ping_before_ready` for that unit-level
+/// check).
+///
+/// Constructs a worker with a real keepalive task and an unfired
+/// `ready_tx`, starts it `Initializing`, and asserts no ping arrives on
+/// the shared `msg_tx` channel until a `Ready` event is sent through the
+/// broadcast channel and processed by `run()`'s event loop.
+#[tokio::test]
+async fn test_run_ready_event_releases_keepalive_gate() {
+    let (msg_tx, mut msg_rx) = mpsc::channel(16);
+    let (event_tx, event_rx) = broadcast::channel(16);
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
+    let (keepalive_handle, heartbeat_handle) = keepalive::start(
+        "test-worker-ready-gate".to_string(),
+        msg_tx.clone(),
+        event_rx,
+        ready_rx,
+        Duration::from_millis(50), // ping_interval
+        Duration::from_secs(10),   // pong_timeout
+        || {},
+    );
+
+    let worker = ManagedWorker::new(
+        WorkerStatus::Initializing,
+        msg_tx,
+        event_tx.clone(),
+        None, // child
+        None, // bridge_handle
+        Some(keepalive_handle),
+        Some(heartbeat_handle),
+        "test-worker-ready-gate".to_string(),
+        "test-device".to_string(),
+        0,    // device_index
+        None, // routes — no real demux task in this test
+        None, // route_key
+        Some(ready_tx),
+    );
+
+    let run_handle = spawn_run(worker);
+
+    // Give run() time to subscribe to the broadcast channel before
+    // sending the Ready event below.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // No ping should have arrived yet — the worker is still Initializing,
+    // so ready_tx has not been fired, so the keepalive's gate is still
+    // closed.
+    assert!(
+        timeout(Duration::from_millis(100), msg_rx.recv())
+            .await
+            .is_err(),
+        "no ping should be sent while the worker is still Initializing"
+    );
+
+    let ready_event = WorkerEvent::Ready {
+        worker_id: "test-worker-ready-gate".to_string(),
+        device_index: 0,
+        device_name: "test-device".to_string(),
+        device_type: "cpu".to_string(),
+        vram_total_mib: 8192,
+        vram_free_mib: 8000,
+        torch_version: "2.4.0".to_string(),
+        fp16: true,
+        bf16: true,
+        fp8: false,
+        flash_attention: false,
+        node_types: Vec::new(),
+    };
+    let _ = event_tx.send(("test-worker-ready-gate".to_string(), ready_event));
+
+    // A ping should now arrive promptly — run()'s Ready transition fires
+    // ready_tx, which releases the keepalive's gate.
+    let first_ping = timeout(Duration::from_millis(300), msg_rx.recv())
+        .await
+        .expect("a ping should arrive shortly after the Ready event is processed")
+        .expect("mpsc channel should still be open");
+    assert!(
+        matches!(first_ping, WorkerMessage::Ping { seq: 1 }),
+        "first message after Ready should be Ping{{seq: 1}}, got {:?}",
+        first_ping
+    );
+
+    drop(event_tx);
+    let _ = run_handle.await;
 }

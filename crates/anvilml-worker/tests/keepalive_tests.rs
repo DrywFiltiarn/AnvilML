@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::timeout;
 
 use anvilml_ipc::{WorkerEvent, WorkerMessage};
@@ -36,6 +36,12 @@ async fn test_timeout_fires() {
     // waits for a pong that never arrives.
     let (event_tx, event_rx) = broadcast::channel::<(String, WorkerEvent)>(16);
 
+    // Fired immediately — this test is about pong-timeout behaviour, not
+    // the Ready gate itself (see test_no_ping_before_ready for that), so
+    // the gate is released right away to preserve the original timing.
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let _ = ready_tx.send(());
+
     // Spawn the keepalive task with a 500ms pong timeout and 100ms ping interval.
     // The ping interval is shorter than the timeout to allow multiple cycles
     // if the timeout doesn't fire.
@@ -43,6 +49,7 @@ async fn test_timeout_fires() {
         "test-worker".to_string(),
         msg_tx,
         event_rx,
+        ready_rx,
         Duration::from_millis(100), // ping_interval
         Duration::from_millis(500), // pong_timeout
         move || {
@@ -95,11 +102,17 @@ async fn test_pong_resets_deadline() {
     // Create broadcast channel — keepalive gets the receiver.
     let (event_tx, event_rx) = broadcast::channel::<(String, WorkerEvent)>(16);
 
+    // Fired immediately — this test is about pong-matching behaviour, not
+    // the Ready gate itself.
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let _ = ready_tx.send(());
+
     // Spawn the keepalive task.
     let (handle, _hb_handle) = start(
         "test-worker".to_string(),
         msg_tx,
         event_rx,
+        ready_rx,
         Duration::from_millis(100), // ping_interval
         Duration::from_millis(500), // pong_timeout
         move || {
@@ -171,11 +184,17 @@ async fn test_seq_increments() {
     // to exit cleanly (it returns on RecvError::Closed).
     let (event_tx, event_rx) = broadcast::channel::<(String, WorkerEvent)>(16);
 
+    // Fired immediately — this test is about sequence-number behaviour,
+    // not the Ready gate itself.
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let _ = ready_tx.send(());
+
     // Spawn the keepalive task.
     let (handle, _hb_handle) = start(
         "test-worker".to_string(),
         msg_tx,
         event_rx,
+        ready_rx,
         Duration::from_millis(50), // ping_interval
         Duration::from_millis(50), // pong_timeout
         || {
@@ -229,4 +248,106 @@ async fn test_seq_increments() {
     handle
         .await
         .expect("keepalive task should exit cleanly after broadcast channel closes");
+}
+
+/// Verify that no ping is sent until `ready_rx` resolves, and that pings
+/// begin immediately once it does.
+///
+/// This is the core regression test for the Ready gate: without it, the
+/// keepalive would send its first ping the instant `start()` is called,
+/// well before the worker has had any chance to finish initializing (see
+/// the `ManagedWorker::run()` `Ready` transition, which is the only thing
+/// that ever fires the matching `ready_tx` in production).
+#[tokio::test]
+async fn test_no_ping_before_ready() {
+    let (msg_tx, mut msg_rx) = mpsc::channel::<WorkerMessage>(16);
+    let (event_tx, event_rx) = broadcast::channel::<(String, WorkerEvent)>(16);
+    let (ready_tx, ready_rx) = oneshot::channel();
+
+    let (handle, _hb_handle) = start(
+        "test-worker".to_string(),
+        msg_tx,
+        event_rx,
+        ready_rx,
+        Duration::from_millis(50),  // ping_interval
+        Duration::from_millis(500), // pong_timeout
+        || {},
+    );
+
+    // Give the task ample opportunity to send a ping if the gate were not
+    // in place — several multiples of ping_interval.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        timeout(Duration::from_millis(10), msg_rx.recv())
+            .await
+            .is_err(),
+        "no ping should be sent before ready_tx fires"
+    );
+
+    // Release the gate — the first ping should now arrive promptly.
+    let _ = ready_tx.send(());
+
+    let first_ping = timeout(Duration::from_millis(200), msg_rx.recv())
+        .await
+        .expect("a ping should arrive shortly after ready_tx fires")
+        .expect("mpsc channel should still be open");
+    assert!(
+        matches!(first_ping, WorkerMessage::Ping { seq: 1 }),
+        "first message after the gate releases should be Ping{{seq: 1}}, got {:?}",
+        first_ping
+    );
+
+    // Clean up.
+    handle.abort();
+    drop(event_tx);
+}
+
+/// Verify that dropping `ready_tx` without ever firing it (the ready
+/// timeout / unexpected-exit case in production) causes the keepalive
+/// task to exit cleanly without ever sending a ping.
+#[tokio::test]
+async fn test_dropped_ready_tx_skips_heartbeat_entirely() {
+    let (msg_tx, mut msg_rx) = mpsc::channel::<WorkerMessage>(16);
+    let (_event_tx, event_rx) = broadcast::channel::<(String, WorkerEvent)>(16);
+    let (ready_tx, ready_rx) = oneshot::channel::<()>();
+
+    let (handle, _hb_handle) = start(
+        "test-worker".to_string(),
+        msg_tx,
+        event_rx,
+        ready_rx,
+        Duration::from_millis(20), // ping_interval
+        Duration::from_millis(20), // pong_timeout
+        || {},
+    );
+
+    // Drop the sender without firing it — simulates the worker hitting the
+    // ready timeout or exiting before ever reporting Ready.
+    drop(ready_tx);
+
+    // The task should exit on its own almost immediately, well within the
+    // bound below — there is no ping_interval wait on this path, since the
+    // task returns from the ready_rx.await before the loop even begins.
+    let result = timeout(Duration::from_secs(1), handle).await;
+    assert!(
+        result.is_ok(),
+        "keepalive task should exit promptly when ready_tx is dropped, not hang"
+    );
+    assert!(
+        result.unwrap().is_ok(),
+        "keepalive task should exit cleanly (no panic) when ready_tx is dropped"
+    );
+
+    // No ping should ever have been sent. By this point the keepalive
+    // task has already exited (confirmed above) and dropped its `msg_tx`
+    // with it, so `recv()` resolves immediately to `Ok(None)` rather than
+    // blocking until a timeout — `Ok(None)` is itself the proof that the
+    // channel closed with nothing ever sent through it, which is a
+    // stronger check than a timeout would have been here.
+    let recv_result = timeout(Duration::from_millis(100), msg_rx.recv()).await;
+    assert!(
+        matches!(recv_result, Ok(None)),
+        "no ping should ever be sent when ready_tx is dropped without firing, got {:?}",
+        recv_result
+    );
 }

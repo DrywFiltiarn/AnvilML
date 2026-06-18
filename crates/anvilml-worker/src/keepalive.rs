@@ -9,6 +9,11 @@
 //! `tokio::time::interval` because the deadline is relative to each ping send time,
 //! not a fixed clock interval.
 //!
+//! **Ready gate:** The loop does not send its first ping until the caller's
+//! `ready_rx` resolves — see `start()`'s `ready_rx` parameter. This keeps
+//! pings from being sent (and pong timeouts from being logged) against a
+//! worker that hasn't finished initializing yet.
+//!
 //! **Shutdown:** The caller receives a `HeartbeatHandle` alongside the `JoinHandle`.
 //! Setting the shutdown flag on the handle causes the loop to exit cleanly on the
 //! next ping cycle iteration.
@@ -70,6 +75,14 @@ impl HeartbeatHandle {
 /// * `event_rx` — The broadcast receiver for `(String, WorkerEvent)` tuples.
 ///   This is the same channel populated by the bridge reader task — pongs
 ///   flow through this channel from the ROUTER socket.
+/// * `ready_rx` — Resolves once the worker has reported `Ready` (fired by
+///   `ManagedWorker::run()`'s `Initializing → Idle` transition). The ping
+///   loop below does not start until this resolves, so no ping is ever
+///   sent to a worker that hasn't finished initializing yet. If the sender
+///   is dropped without firing — the worker hit the ready timeout or
+///   exited before ever reporting `Ready` — this resolves to `Err` and the
+///   task returns immediately without ever pinging: there is no live
+///   worker left to heartbeat.
 /// * `ping_interval` — How often to send a Ping message. Default 30 seconds.
 ///   The interval starts after the pong is received (or timeout fires), not
 ///   after the ping is sent. This prevents ping storms when the worker is slow.
@@ -91,6 +104,7 @@ pub fn start(
     worker_id: String,
     tx: mpsc::Sender<WorkerMessage>,
     mut event_rx: broadcast::Receiver<(String, WorkerEvent)>,
+    ready_rx: tokio::sync::oneshot::Receiver<()>,
     ping_interval: Duration,
     pong_timeout: Duration,
     on_timeout: impl Fn() + Send + 'static,
@@ -110,6 +124,31 @@ pub fn start(
     let worker_id_clone = worker_id.clone();
     let handle_clone = shutdown.clone();
     let task_handle = tokio::spawn(async move {
+        // Wait for the worker to report Ready before sending a single
+        // ping. Starting immediately at spawn time — before the Python
+        // worker has even imported its node registry — produces pings
+        // (and eventually pong-timeout warnings) against a worker that
+        // was never given a chance to respond in the first place.
+        match ready_rx.await {
+            Ok(()) => {
+                tracing::debug!(
+                    worker_id = %worker_id_clone,
+                    "ready signal received, starting heartbeat"
+                );
+            }
+            Err(_) => {
+                // The sender was dropped without firing — the worker hit
+                // the ready timeout or exited before ever reporting Ready.
+                // There is no live worker to ping, so exit now rather than
+                // entering the loop below at all.
+                tracing::debug!(
+                    worker_id = %worker_id_clone,
+                    "ready signal never sent, skipping heartbeat"
+                );
+                return;
+            }
+        }
+
         let mut seq: u64 = 0; // Monotonically increasing sequence number for ping/pong matching.
 
         loop {

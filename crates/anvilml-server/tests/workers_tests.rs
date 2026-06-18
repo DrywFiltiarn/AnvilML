@@ -47,6 +47,7 @@ fn mock_pool_with_one_worker() -> WorkerPool {
         0,    // device_index
         None, // routes — no real demux task in this test
         None, // route_key
+        None, // ready_tx — no real keepalive task in this test
     );
 
     // Build the pool with one mock worker.

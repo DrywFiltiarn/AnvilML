@@ -49,6 +49,7 @@ fn make_test_worker(
         None, // routes — these tests exercise the pool's test constructor,
         // which never starts a real demux task
         None, // route_key
+        None, // ready_tx — no real keepalive task in this test
     );
 
     (worker, event_tx)

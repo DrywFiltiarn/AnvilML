@@ -116,6 +116,17 @@ pub struct ManagedWorker {
     /// Stored alongside `routes` (both present or both absent) since neither
     /// is useful without the other.
     route_key: Option<String>,
+
+    /// Fires once, in `run()`'s `Ready` transition arm, to release the
+    /// keepalive task's gate so it can start pinging — see `crate::keepalive`'s
+    /// `ready_rx` parameter. Unlike `routes`/`route_key`, `None` here is not
+    /// solely a test-only state: in production this becomes `None` the
+    /// instant `Ready` is processed (via `.take()`), so by the time a
+    /// worker reaches `Idle` this field has already legitimately emptied
+    /// itself. `None` from construction (as opposed to from firing) only
+    /// occurs for test workers built via `new()` that don't exercise a
+    /// real keepalive task at all.
+    ready_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 impl ManagedWorker {
     /// Returns a clone of the status `Arc` so callers can observe state
@@ -145,6 +156,10 @@ impl ManagedWorker {
     ///   shutdown. `None` when the test has no demux task running.
     /// * `route_key` — This worker's key in `routes`. `None` iff `routes` is
     ///   `None` — the two are only ever meaningful together.
+    /// * `ready_tx` — Fired on the `Initializing → Idle` transition to
+    ///   release the keepalive task's start gate. `None` for tests that
+    ///   don't construct a real keepalive task (the common case) or that
+    ///   fire their own `ready_tx` directly before calling `new()`.
     #[allow(clippy::too_many_arguments)] // test constructor with many parameters
     pub fn new(
         status: WorkerStatus,
@@ -159,6 +174,7 @@ impl ManagedWorker {
         device_index: u32,
         routes: Option<crate::demux::RouteTable>,
         route_key: Option<String>,
+        ready_tx: Option<tokio::sync::oneshot::Sender<()>>,
     ) -> Self {
         Self {
             status: Arc::new(tokio::sync::RwLock::new(status)),
@@ -174,6 +190,7 @@ impl ManagedWorker {
             device_index,
             routes,
             route_key,
+            ready_tx,
         }
     }
     /// Spawn a Python worker subprocess, register its route with the
@@ -280,10 +297,16 @@ impl ManagedWorker {
             });
         };
 
+        // Fires once, in run()'s Ready transition arm, to release the
+        // keepalive task's start gate — see crate::keepalive's ready_rx
+        // parameter for why pinging must not begin before Ready.
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
         let (keepalive_handle, heartbeat_handle) = keepalive::start(
             worker_id.clone(),
             msg_tx.clone(),
             _event_rx,
+            ready_rx,
             Duration::from_secs(30), // ping_interval
             Duration::from_secs(10), // pong_timeout
             on_timeout,
@@ -327,6 +350,7 @@ impl ManagedWorker {
             device_index: device.index,
             routes: Some(routes),
             route_key: Some(route_key),
+            ready_tx: Some(ready_tx),
         })
     }
     /// Run the managed worker's state machine event loop, consuming `self`.
@@ -353,6 +377,19 @@ impl ManagedWorker {
     /// considered unresponsive and transitions to `Dead`. This prevents
     /// workers from hanging indefinitely in the `Initializing` state.
     ///
+    /// # Keepalive gating and abort
+    ///
+    /// The keepalive task spawned in `spawn()` does not send its first ping
+    /// until this method fires `ready_tx` in the `Ready` transition arm —
+    /// see `crate::keepalive`'s `ready_rx` parameter. Symmetrically, every
+    /// path below that puts the worker into a confirmed-`Dead` state
+    /// (ready timeout, unexpected child exit, and the graceful shutdown
+    /// arm) calls `keepalive_handle.take().abort()` rather than merely
+    /// dropping the handle: dropping a `JoinHandle` detaches Rust's
+    /// interest in the task's result but does not stop the task itself,
+    /// which would otherwise keep running — and, if it had already passed
+    /// the `ready_rx` gate, keep pinging — a worker that no longer exists.
+    ///
     /// # Shutdown
     ///
     /// `shutdown_rx` is the caller's means of requesting a graceful stop —
@@ -365,7 +402,9 @@ impl ManagedWorker {
     /// 3. Drop `msg_tx` to signal the bridge writer to exit
     /// 4. Await the bridge writer (bounded to 2s), so `Shutdown` is
     ///    actually transmitted before proceeding
-    /// 5. Drop the keepalive handle to abort the keepalive task
+    /// 5. Abort the keepalive task via its `JoinHandle` (see "Keepalive
+    ///    gating and abort" above for why this is `.abort()` and not a
+    ///    bare drop)
     /// 6. Deregister this worker's route from the demux table (no-op if
     ///    `routes`/`route_key` are `None`)
     /// 7. Wait up to 5 seconds for the subprocess to exit on its own, then
@@ -375,10 +414,11 @@ impl ManagedWorker {
     /// This is the only shutdown path: there is no separate method, since
     /// `run(self)` already holds the only owned `ManagedWorker` there will
     /// ever be once spawned. The loop's two other exit paths (ready timeout
-    /// and unexpected child exit) skip this sequence — they only drop the
-    /// three task handles — because in both cases the worker is already
-    /// gone or unresponsive, so there is nothing live to signal a graceful
-    /// `Shutdown` message to.
+    /// and unexpected child exit) skip this sequence — each aborts the
+    /// keepalive task directly (see "Keepalive gating and abort" above)
+    /// and otherwise only drops the remaining task handles — because in
+    /// both cases the worker is already gone or unresponsive, so there is
+    /// nothing live to signal a graceful `Shutdown` message to.
     #[tracing::instrument(skip(self, shutdown_rx), fields(worker_id = %self.worker_id))]
     pub async fn run(mut self, shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
         let mut event_rx = self.event_tx.subscribe();
@@ -426,6 +466,17 @@ impl ManagedWorker {
                         "ready timeout, worker dead"
                     );
                     *self.status.write().await = WorkerStatus::Dead;
+
+                    // The worker never reported Ready, so the keepalive
+                    // task is still parked on its ready_rx gate (or, if it
+                    // somehow already passed it, is mid-ping-cycle against
+                    // a worker that's now confirmed dead) — abort it
+                    // outright rather than dropping the handle, which
+                    // would only detach interest in the task without
+                    // stopping it.
+                    if let Some(handle) = self.keepalive_handle.take() {
+                        handle.abort();
+                    }
                 }
 
                 result = event_rx.recv() => {
@@ -467,6 +518,18 @@ impl ManagedWorker {
                                                 device = %device_name,
                                                 "worker reached Ready"
                                             );
+                                            // Release the keepalive task's
+                                            // start gate now, not before —
+                                            // see crate::keepalive's
+                                            // ready_rx parameter. A send
+                                            // failure here only means the
+                                            // keepalive task already exited
+                                            // on its own (e.g. the bridge
+                                            // writer died first); nothing
+                                            // further to do about that here.
+                                            if let Some(tx) = self.ready_tx.take() {
+                                                let _ = tx.send(());
+                                            }
                                             Some(device_name.clone())
                                         }
                                         _ => {
@@ -567,6 +630,15 @@ impl ManagedWorker {
                     // already dropped above, and the demux task holds the
                     // only remaining clone. The next GET /v1/workers poll
                     // will observe the Dead status instead.
+
+                    // The worker is confirmed dead here too — same
+                    // reasoning as the ready-timeout arm above: abort
+                    // rather than drop, since dropping the handle alone
+                    // would leave the task running (and possibly still
+                    // pinging) against a worker that no longer exists.
+                    if let Some(handle) = self.keepalive_handle.take() {
+                        handle.abort();
+                    }
                     break;
                 }
 
@@ -627,7 +699,18 @@ impl ManagedWorker {
                         // worker has stopped.
                     }
 
-                    drop(self.keepalive_handle.take());
+                    // Aborted, not merely dropped, for the same reason as
+                    // the ready-timeout and child-exit arms: if shutdown
+                    // was requested while still Initializing, ready_tx was
+                    // never fired, so the keepalive task is parked on its
+                    // ready_rx gate — that resolves to Err once ready_tx
+                    // drops with self at the end of this function and the
+                    // task would exit on its own either way, but aborting
+                    // here keeps all three Dead-bound exit paths uniform
+                    // rather than this one being the sole exception.
+                    if let Some(handle) = self.keepalive_handle.take() {
+                        handle.abort();
+                    }
 
                     // Remove this worker's entry from the demux table so it
                     // doesn't accumulate stale routes across crashes and
@@ -685,14 +768,22 @@ impl ManagedWorker {
         }
 
         // Reached by all four break paths (ready timeout, channel closed,
-        // unexpected child exit, and the shutdown arm above). The shutdown
-        // arm already dropped bridge_handle/keepalive_handle explicitly as
-        // part of its sequence — these drops are a no-op for that path
-        // (the Options are already None) and the only real cleanup for the
-        // other three, which never run the shutdown sequence above. The
-        // child subprocess isn't waited on here for those three paths — if
-        // it's still alive, it's either exiting on its own or will be
-        // reaped when self drops.
+        // unexpected child exit, and the shutdown arm above). Three of
+        // those four — every path except "channel closed" — already
+        // `.take()` and abort `keepalive_handle` as part of their own
+        // arm (see "Keepalive gating and abort" on this method's doc
+        // comment), so `drop(self.keepalive_handle)` below is a no-op for
+        // them (the Option is already None) and is only real cleanup for
+        // the "channel closed" path, which never touches keepalive_handle
+        // itself. `bridge_handle` is dropped here unconditionally, though
+        // it's a no-op for the shutdown arm, which already consumed it via
+        // `.take()` above. `heartbeat_handle` is only ever borrowed
+        // (`&self.heartbeat_handle`, in the shutdown arm's
+        // `HeartbeatHandle::shutdown()` call), never taken, so it reaches
+        // this drop as `Some` on every path. The child subprocess isn't
+        // waited on here for the three non-shutdown paths — if it's still
+        // alive, it's either exiting on its own or will be reaped when
+        // self drops.
         drop(self.bridge_handle);
         drop(self.keepalive_handle);
         drop(self.heartbeat_handle);
