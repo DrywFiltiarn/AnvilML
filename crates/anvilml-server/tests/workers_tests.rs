@@ -3,7 +3,7 @@
 //! Tests cover: empty workers list when no pool is configured, and
 //! worker info returned when a pool with a mock worker is present.
 
-use anvilml_core::WorkerStatus;
+use anvilml_core::{GpuDevice, ServerConfig, WorkerStatus};
 use anvilml_ipc::{EventBroadcaster, RouterTransport};
 use anvilml_server::{build_router, AppState};
 use anvilml_worker::{ManagedWorker, WorkerPool};
@@ -14,34 +14,68 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tower::util::ServiceExt;
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn stub_cfg() -> ServerConfig {
+    ServerConfig::default()
+}
+
+fn stub_device() -> GpuDevice {
+    GpuDevice {
+        index: 0,
+        name: "stub-device".to_string(),
+        db_name: None,
+        device_type: anvilml_core::DeviceType::Cpu,
+        vram_total_mib: 0,
+        vram_free_mib: 0,
+        driver_version: String::new(),
+        pci_vendor_id: 0,
+        pci_device_id: 0,
+        arch: None,
+        caps: anvilml_core::InferenceCaps::default(),
+        enumeration_source: anvilml_core::EnumerationSource::Vulkan,
+        capabilities_source: anvilml_core::CapabilitySource::DeviceTable,
+    }
+}
+
 /// Create a minimal WorkerPool with one mock worker for tests.
 ///
 /// The mock worker is created with `WorkerStatus::Idle` so that
 /// `GET /v1/workers` returns a valid WorkerInfo entry.
 /// The transport is bound to port 0 (OS-assigned) to avoid conflicts.
 fn mock_pool_with_one_worker() -> WorkerPool {
-    // Bind a transport with OS-assigned port to avoid conflicts.
-    let transport = futures::executor::block_on(async {
+    let transport = Arc::new(futures::executor::block_on(async {
         RouterTransport::bind().await.expect("bind mock transport")
-    });
+    }));
 
-    // Create a fresh broadcaster for the mock pool.
     let broadcaster = Arc::new(EventBroadcaster::new());
 
-    // Create a mock ManagedWorker in Idle status.
-    // The channels and handles are dummy values — they are never
-    // used because the mock worker is only queried for status.
     let (msg_tx, _msg_rx) = mpsc::channel(16);
     let (event_tx, _event_rx) = broadcast::channel(16);
+
+    // timeout_tx is intentionally dropped immediately — this test never
+    // calls worker.run(), so timeout_rx is never polled and the drop is
+    // harmless.
+    let (timeout_tx, timeout_rx) = tokio::sync::oneshot::channel::<()>();
+    drop(timeout_tx);
+
+    let (_restart_tx, restart_rx) = tokio::sync::watch::channel(0u64);
 
     let mock_worker = ManagedWorker::new(
         WorkerStatus::Idle,
         msg_tx,
         event_tx,
         None, // child — no subprocess for mock
-        None, // bridge_handles
+        None, // bridge_handle
         None, // keepalive_handle
         None, // heartbeat_handle
+        stub_cfg(),
+        stub_device(),
+        transport.clone(),
+        timeout_rx,
+        restart_rx,
         "worker-0".to_string(),
         "mock-device".to_string(),
         0,    // device_index
@@ -50,31 +84,29 @@ fn mock_pool_with_one_worker() -> WorkerPool {
         None, // ready_tx — no real keepalive task in this test
     );
 
-    // Build the pool with one mock worker.
     WorkerPool::new(
         vec![(
             mock_worker.get_status(),
             "worker-0".to_string(),
             "mock-device".to_string(),
         )],
-        Arc::new(transport),
+        transport,
         broadcaster,
     )
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 /// Verify that GET /v1/workers returns an empty JSON array when
 /// AppState.workers is None (test/stub mode).
-///
-/// Uses `AppState::new()` which sets workers to None. The handler
-/// should return `[]` without panicking or erroring.
 #[tokio::test]
 async fn test_list_workers_returns_empty_when_no_pool() {
     let state = AppState::new("test-version").await;
 
-    // Build the router via the production `build_router` function.
     let router = build_router(state);
 
-    // Dispatch a GET request to /v1/workers.
     let request = Request::builder()
         .method(Method::GET)
         .uri("/v1/workers")
@@ -83,14 +115,11 @@ async fn test_list_workers_returns_empty_when_no_pool() {
 
     let response = router.oneshot(request).await.unwrap();
 
-    // Assert HTTP 200 status.
     assert_eq!(response.status(), 200);
 
-    // Read and parse the response body as JSON.
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
 
-    // Assert the body is an empty JSON array.
     assert!(
         json.is_array(),
         "GET /v1/workers must return a JSON array, got: {}",
@@ -101,17 +130,10 @@ async fn test_list_workers_returns_empty_when_no_pool() {
 
 /// Verify that GET /v1/workers returns worker info when the pool
 /// contains workers.
-///
-/// Creates a `WorkerPool` with one mock `ManagedWorker` in `Idle`
-/// status, builds the router with `AppState::new_with_hardware()`,
-/// and verifies that the handler returns a JSON array with one entry
-/// containing `status: "idle"`.
 #[tokio::test]
 async fn test_list_workers_returns_pool_data() {
     let pool = mock_pool_with_one_worker();
 
-    // Build AppState with the mock worker pool.
-    // Using new_with_hardware to inject the workers pool.
     let hardware = Arc::new(tokio::sync::RwLock::new(
         anvilml_core::types::HardwareInfo::default(),
     ));
@@ -129,7 +151,6 @@ async fn test_list_workers_returns_pool_data() {
 
     let router = build_router(state);
 
-    // Dispatch a GET request to /v1/workers.
     let request = Request::builder()
         .method(Method::GET)
         .uri("/v1/workers")
@@ -138,14 +159,11 @@ async fn test_list_workers_returns_pool_data() {
 
     let response = router.oneshot(request).await.unwrap();
 
-    // Assert HTTP 200 status.
     assert_eq!(response.status(), 200);
 
-    // Read and parse the response body as JSON.
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
 
-    // Assert the body is a JSON array with one entry.
     assert!(
         json.is_array(),
         "GET /v1/workers must return a JSON array, got: {}",
@@ -154,9 +172,6 @@ async fn test_list_workers_returns_pool_data() {
     let arr = json.as_array().unwrap();
     assert_eq!(arr.len(), 1, "should return exactly 1 worker");
 
-    // Assert the worker has status "idle".
     assert_eq!(arr[0]["status"], "idle");
-
-    // Assert the worker has the expected identity.
     assert_eq!(arr[0]["id"], "worker-0");
 }

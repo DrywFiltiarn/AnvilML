@@ -5,6 +5,7 @@
 //! - Sending IPC messages via the bridge writer task (see `crate::bridge`)
 //! - Heartbeat keepalive with timeout watchdog
 //! - State machine transitions driven by events from the worker
+//! - Automatic crash/timeout recovery via respawn (see "Respawn" below)
 //! - Clean shutdown of all spawned tasks, triggered either by the worker
 //!   dying on its own or by an external shutdown request
 //!
@@ -12,6 +13,7 @@
 //! transitions between states based on events received from the worker:
 //! `Initializing` → `Idle` (on Ready), `Idle` → `Dead` (on Dying),
 //! `Busy` → `Idle` (on Completed/Failed/Cancelled), `Busy` → `Dead` (on Dying).
+//! `Dead`/`Respawning` → `Initializing` (on a successful respawn — see below).
 //!
 //! `ManagedWorker` does not read events off the transport itself — a single
 //! pool-wide demux task (`crate::demux`) owns the only `RouterTransport::recv()`
@@ -30,13 +32,38 @@
 //! firing that sender; `run()`'s `select!` loop has a dedicated arm that
 //! performs the full teardown sequence and then exits the loop. See `run()`'s
 //! doc comment for the exact sequence.
+//!
+//! # Respawn
+//!
+//! A worker is considered non-responsive — and therefore a candidate for
+//! respawn — in exactly two ways, both converging on the same recovery path
+//! (`do_respawn`):
+//!
+//! 1. **Unexpected child exit** — the subprocess has already terminated on
+//!    its own (`child.wait()` resolves). Nothing further needs killing.
+//! 2. **Heartbeat timeout** — the keepalive task's ping/pong watchdog gets no
+//!    response within `pong_timeout`. The subprocess may still be running
+//!    (e.g. wedged, or stuck holding GPU memory), so this path force-kills
+//!    it before respawning.
+//!
+//! Both paths set `Dead`, then call `do_respawn(consult_policy: true)`, which
+//! consults `RespawnPolicy::should_respawn` (crash-loop protection: bounded
+//! attempts within a time window, exponential backoff between attempts).
+//!
+//! A third path — **manual restart**, requested externally via `restart_rx`
+//! (see `POST /v1/workers/:id/restart` in `anvilml-server`) — force-kills the
+//! subprocess if still running and calls `do_respawn(consult_policy: false)`,
+//! bypassing `RespawnPolicy` entirely: an operator-requested restart is not
+//! rate-limited by crash policy, and is valid even when the worker is
+//! currently healthy (e.g. to reclaim leaked VRAM) or already `Dead` with
+//! exhausted automatic attempts.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anvilml_core::{AnvilError, GpuDevice, ServerConfig, WorkerStatus};
 use anvilml_ipc::{RouterTransport, WorkerEvent};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing;
 
@@ -56,8 +83,6 @@ use anvilml_ipc::WorkerMessage;
 /// channels, for testing). Consumed entirely by `run()` (the event loop),
 /// which also owns shutdown — see `run()`'s doc comment for the shutdown
 /// sequence and why there is no separate `shutdown()` method.
-#[allow(dead_code)] // child, device_index, and respawn_policy are for future respawn logic (P10-A1)
-#[derive(Debug)]
 pub struct ManagedWorker {
     /// Read-write locked so the run loop can write transitions while other
     /// tasks (e.g. the pool's status-change monitor) read concurrently.
@@ -88,8 +113,62 @@ pub struct ManagedWorker {
     /// Handle for signalling the heartbeat loop to shut down.
     heartbeat_handle: Option<HeartbeatHandle>,
 
-    /// Controls how dead workers are respawned (logic deferred to P10-A1).
+    /// Controls how dead workers are respawned — consulted by `do_respawn`
+    /// when `consult_policy` is `true` (both automatic-recovery paths). See
+    /// the module-level "Respawn" docs above.
     respawn_policy: RespawnPolicy,
+
+    /// Number of respawn attempts within the current `RespawnPolicy` time
+    /// window. Mutated in place by `RespawnPolicy::should_respawn`, which
+    /// also resets it to `0` when the window has expired. Only ever
+    /// consulted/mutated via `do_respawn`'s policy-gated path; the manual
+    /// restart path leaves this untouched entirely.
+    crash_count: u32,
+
+    /// The `Instant` of the most recent crash, consulted by
+    /// `RespawnPolicy::should_respawn` to determine whether the crash
+    /// window has expired. Set once at construction (an inert sentinel,
+    /// never consulted before the first real crash) and updated by
+    /// `do_respawn`'s policy-gated path immediately before each respawn
+    /// attempt.
+    last_crash: Instant,
+
+    /// Owned clone of the server configuration, retained so `do_respawn`
+    /// can call `Self::spawn()` again without the caller's `&ServerConfig`
+    /// reference — `run()` outlives the original `spawn()` call's borrow.
+    cfg: ServerConfig,
+
+    /// Owned clone of the GPU device this worker operates on, retained for
+    /// the same reason as `cfg` above.
+    device: GpuDevice,
+
+    /// Owned clone of the shared `RouterTransport`, retained for the same
+    /// reason as `cfg` above. Cheap to clone by design (`Arc`-backed).
+    transport: Arc<RouterTransport>,
+
+    /// Fires once when the keepalive task's heartbeat watchdog times out
+    /// (no matching pong within `pong_timeout`) — see the module-level
+    /// "Respawn" docs above for why this is a distinct trigger from
+    /// `child.wait()`. Recreated alongside `ready_tx` on every `spawn()`
+    /// call, including each respawn.
+    timeout_rx: oneshot::Receiver<()>,
+
+    /// Observes a monotonically increasing "restart generation" counter,
+    /// incremented by `WorkerPool::restart_worker()` each time an external
+    /// caller (the `POST /v1/workers/:id/restart` handler) requests a
+    /// manual restart. See the module-level "Respawn" docs above.
+    ///
+    /// Backed by `tokio::sync::watch` rather than `oneshot` deliberately:
+    /// a `oneshot` is single-use, but a worker may be manually restarted
+    /// any number of times over its supervised lifetime, including
+    /// multiple times across multiple respawns. `watch::Receiver` survives
+    /// being passed through to a respawned worker (it is `Clone`, and the
+    /// counter keeps counting), so `WorkerPool` only ever needs to hold
+    /// the sending half once, at initial spawn — unlike the restart
+    /// signal's first design (a `oneshot` pair reconstructed on every
+    /// respawn), there is no stale-sender problem here: the same sender
+    /// remains valid across every respawn this worker ever undergoes.
+    restart_rx: tokio::sync::watch::Receiver<u64>,
 
     /// The worker's stable identity string (e.g. `"worker-0"`).
     /// Used for structured logging throughout the worker's lifecycle.
@@ -126,7 +205,7 @@ pub struct ManagedWorker {
     /// itself. `None` from construction (as opposed to from firing) only
     /// occurs for test workers built via `new()` that don't exercise a
     /// real keepalive task at all.
-    ready_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    ready_tx: Option<oneshot::Sender<()>>,
 }
 impl ManagedWorker {
     /// Returns a clone of the status `Arc` so callers can observe state
@@ -149,6 +228,20 @@ impl ManagedWorker {
     /// * `bridge_handle` — Handle for the bridge writer task.
     /// * `keepalive_handle` — Handle for the keepalive heartbeat task.
     /// * `heartbeat_handle` — Handle for signalling heartbeat shutdown.
+    /// * `cfg` — The server configuration, retained for respawn. Tests that
+    ///   never exercise respawn can pass any valid `ServerConfig`.
+    /// * `device` — The GPU device, retained for respawn. Tests that never
+    ///   exercise respawn can pass any valid `GpuDevice`.
+    /// * `transport` — The shared `RouterTransport`, retained for respawn.
+    /// * `timeout_rx` — Fires on heartbeat timeout. Tests that don't
+    ///   exercise the heartbeat-timeout path can pass a receiver whose
+    ///   sender is held open (or immediately dropped — a dropped sender
+    ///   resolves `Err`, which this arm treats the same as a real fire,
+    ///   since either way there's no live heartbeat task left to ask).
+    /// * `restart_rx` — Observes the restart-generation counter. Tests
+    ///   that don't exercise the restart path can pass
+    ///   `tokio::sync::watch::channel(0).1` and never touch the matching
+    ///   sender.
     /// * `worker_id` — The worker's stable identity string.
     /// * `device_name` — The GPU device name (populated from `Ready` event in production).
     /// * `device_index` — The GPU device index (populated from `Ready` event in production).
@@ -169,12 +262,17 @@ impl ManagedWorker {
         bridge_handle: Option<JoinHandle<()>>,
         keepalive_handle: Option<JoinHandle<()>>,
         heartbeat_handle: Option<HeartbeatHandle>,
+        cfg: ServerConfig,
+        device: GpuDevice,
+        transport: Arc<RouterTransport>,
+        timeout_rx: oneshot::Receiver<()>,
+        restart_rx: tokio::sync::watch::Receiver<u64>,
         worker_id: String,
         device_name: String,
         device_index: u32,
         routes: Option<crate::demux::RouteTable>,
         route_key: Option<String>,
-        ready_tx: Option<tokio::sync::oneshot::Sender<()>>,
+        ready_tx: Option<oneshot::Sender<()>>,
     ) -> Self {
         Self {
             status: Arc::new(tokio::sync::RwLock::new(status)),
@@ -185,6 +283,13 @@ impl ManagedWorker {
             keepalive_handle,
             heartbeat_handle,
             respawn_policy: RespawnPolicy::default(),
+            crash_count: 0,
+            last_crash: Instant::now(),
+            cfg,
+            device,
+            transport,
+            timeout_rx,
+            restart_rx,
             worker_id,
             device_name,
             device_index,
@@ -193,8 +298,8 @@ impl ManagedWorker {
             ready_tx,
         }
     }
-    /// Spawn a Python worker subprocess, register its route with the
-    /// pool-wide demux task, and return the resulting `ManagedWorker`.
+    /// Spawn a Python worker subprocess and register its route with the
+    /// pool-wide demux task.
     ///
     /// # Arguments
     ///
@@ -214,6 +319,13 @@ impl ManagedWorker {
     ///   the table and its own key so `run()`'s shutdown arm can call
     ///   `demux::deregister` without the pool needing to track the key
     ///   separately.
+    /// * `restart_rx` — Observes the restart-generation counter (see this
+    ///   struct's `restart_rx` field doc). The caller (`WorkerPool` at
+    ///   initial spawn, or `do_respawn` on every respawn) passes the same
+    ///   underlying `watch` channel through every time — unlike
+    ///   `timeout_rx`/`ready_tx`, this is not reconstructed per spawn,
+    ///   since the sending half must remain valid for the worker's entire
+    ///   supervised lifetime, across any number of respawns.
     ///
     /// # Errors
     ///
@@ -231,13 +343,14 @@ impl ManagedWorker {
     /// route registration during which the worker's first ping could be
     /// delivered to a table with no entry for it yet. See `crate::demux`'s
     /// module docs for why that race matters.
-    #[tracing::instrument(skip(cfg, device, transport, routes), fields(worker_id, device_index = %device.index))]
+    #[tracing::instrument(skip(cfg, device, transport, routes, restart_rx), fields(worker_id, device_index = %device.index))]
     pub async fn spawn(
         cfg: &ServerConfig,
         device: &GpuDevice,
         transport: Arc<RouterTransport>,
         worker_id: String,
         routes: crate::demux::RouteTable,
+        restart_rx: tokio::sync::watch::Receiver<u64>,
     ) -> Result<Self, AnvilError> {
         // The port is the transport's bound port, not a separately
         // configured value — every worker shares the one ROUTER socket.
@@ -275,32 +388,42 @@ impl ManagedWorker {
             msg_rx,
         ));
 
-        // Weak reference avoids a borrow cycle: status is owned by
-        // ManagedWorker, and this callback is stored inside the keepalive
-        // task — a strong reference would mean neither could ever be
-        // dropped while the other lives.
-        let status_weak = Arc::downgrade(&status);
-        let worker_id_for_callback = worker_id.clone();
-        let on_timeout = move || {
-            let status_weak = status_weak.clone();
-            let worker_id = worker_id_for_callback.clone();
-            tracing::info!(
-                worker_id = %worker_id,
-                "keepalive timeout — spawning status transition task"
-            );
-            // on_timeout is Fn(), but transitioning status needs an async
-            // write lock — spawning a task is the only way to bridge that.
-            tokio::spawn(async move {
-                if let Some(s) = status_weak.upgrade() {
-                    *s.write().await = WorkerStatus::Dead;
-                }
-            });
-        };
-
         // Fires once, in run()'s Ready transition arm, to release the
         // keepalive task's start gate — see crate::keepalive's ready_rx
         // parameter for why pinging must not begin before Ready.
-        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (ready_tx, ready_rx) = oneshot::channel();
+
+        // Fires once, from the keepalive task's on_timeout callback, when
+        // no pong is received within pong_timeout — see the module-level
+        // "Respawn" docs above. Unlike the previous on_timeout (which
+        // upgraded a Weak<status> and wrote Dead directly from a detached
+        // task), this closure only signals timeout_tx — run()'s own
+        // heartbeat-timeout arm owns the Dead transition, the kill, and
+        // the respawn call, so there is exactly one place that decides
+        // what a timeout means, not two.
+        //
+        // Arc<Mutex<Option>> rather than plain Option: keepalive::start
+        // requires Fn() (not FnMut), but sending on the oneshot requires
+        // mutating state (take()). Option::take() needs &mut self on the
+        // Option, making the closure FnMut. Wrapping in Arc<Mutex<>> means
+        // the closure only captures an Arc by value — which is Copy-like
+        // via clone — and calls lock() through a shared &Arc reference,
+        // satisfying Fn. The send fires on the first timeout and subsequent
+        // calls are no-ops (take() returns None after the first fire).
+        let (timeout_tx, timeout_rx) = oneshot::channel();
+        let timeout_tx_slot = Arc::new(std::sync::Mutex::new(Some(timeout_tx)));
+        let worker_id_for_callback = worker_id.clone();
+        let on_timeout = move || {
+            tracing::info!(
+                worker_id = %worker_id_for_callback,
+                "keepalive timeout"
+            );
+            if let Ok(mut guard) = timeout_tx_slot.lock() {
+                if let Some(tx) = guard.take() {
+                    let _ = tx.send(());
+                }
+            }
+        };
 
         let (keepalive_handle, heartbeat_handle) = keepalive::start(
             worker_id.clone(),
@@ -336,7 +459,7 @@ impl ManagedWorker {
         )
         .await;
 
-        Ok(Self {
+        let worker = Self {
             status,
             msg_tx,
             event_tx,
@@ -345,14 +468,170 @@ impl ManagedWorker {
             keepalive_handle: Some(keepalive_handle),
             heartbeat_handle: Some(heartbeat_handle),
             respawn_policy: RespawnPolicy::default(),
+            crash_count: 0,
+            last_crash: Instant::now(),
+            cfg: cfg.clone(),
+            device: device.clone(),
+            transport,
+            timeout_rx,
+            restart_rx,
             worker_id,
             device_name,
             device_index: device.index,
             routes: Some(routes),
             route_key: Some(route_key),
             ready_tx: Some(ready_tx),
-        })
+        };
+
+        Ok(worker)
     }
+
+    /// Respawn this worker in place: call `Self::spawn()` again with the
+    /// same `cfg`/`device`/`transport`/`worker_id`/`routes` this worker was
+    /// originally constructed with, and — on success — overwrite every
+    /// field on `self` with the freshly spawned worker's fields.
+    ///
+    /// Called from three places in `run()`'s `select!` loop: the child-exit
+    /// arm, the heartbeat-timeout arm, and the restart-requested arm. The
+    /// caller is responsible for everything specific to *why* a respawn is
+    /// happening (logging the trigger, force-killing a still-alive child,
+    /// setting `Dead`) before calling this — `do_respawn` only knows how to
+    /// bring a new worker up, not why the old one needs replacing.
+    ///
+    /// # Arguments
+    ///
+    /// * `consult_policy` — `true` for both automatic-recovery paths (child
+    ///   exit, heartbeat timeout): consults `RespawnPolicy::should_respawn`
+    ///   for crash-loop protection, updates `last_crash`, and waits the
+    ///   policy's backoff delay before respawning. `false` for the manual
+    ///   restart path: skips all of the above and respawns immediately,
+    ///   regardless of `crash_count`/`last_crash` — an operator-requested
+    ///   restart is not subject to crash-loop protection.
+    ///
+    /// # Returns
+    ///
+    /// On success, a fresh `broadcast::Receiver<(String, WorkerEvent)>`
+    /// subscribed to the *new* worker's `event_tx` — the caller's `run()`
+    /// loop must replace its local `event_rx` binding with this, since the
+    /// old receiver is still subscribed to the now-replaced worker's
+    /// broadcast sender, which nothing will ever send on again.
+    ///
+    /// On failure, `self` is left exactly as it was before the call (still
+    /// `Dead`, all fields unchanged) and the caller decides how to proceed
+    /// — typically logging and remaining `Dead`. Failure occurs when
+    /// `consult_policy` is `true` and `RespawnPolicy::should_respawn`
+    /// returns `false` (attempts exhausted within the current window), or
+    /// when the underlying `Self::spawn()` call itself errors (e.g. the
+    /// subprocess fails to launch).
+    async fn do_respawn(
+        &mut self,
+        consult_policy: bool,
+    ) -> Result<broadcast::Receiver<(String, WorkerEvent)>, AnvilError> {
+        if consult_policy {
+            if !self
+                .respawn_policy
+                .should_respawn(&mut self.crash_count, self.last_crash)
+            {
+                tracing::warn!(
+                    worker_id = %self.worker_id,
+                    crash_count = %self.crash_count,
+                    "respawn attempts exhausted within window, remaining dead"
+                );
+                return Err(AnvilError::Internal(format!(
+                    "respawn attempts exhausted for worker {}",
+                    self.worker_id
+                )));
+            }
+
+            self.last_crash = Instant::now();
+
+            // should_respawn() increments crash_count by one (after any
+            // window-reset) immediately before returning true, so the
+            // zero-based attempt index next_delay_ms() expects is always
+            // crash_count - 1 — no separate attempt counter needed.
+            let delay_ms = self.respawn_policy.next_delay_ms(self.crash_count - 1);
+
+            tracing::info!(
+                worker_id = %self.worker_id,
+                delay_ms = %delay_ms,
+                crash_count = %self.crash_count,
+                "respawning worker after backoff delay"
+            );
+
+            *self.status.write().await = WorkerStatus::Respawning;
+
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        } else {
+            tracing::info!(
+                worker_id = %self.worker_id,
+                "respawning worker immediately (manual restart, policy bypassed)"
+            );
+            *self.status.write().await = WorkerStatus::Respawning;
+        }
+
+        // routes is None for workers built via new() in tests. Without a
+        // RouteTable we cannot call spawn() (the new subprocess would never
+        // receive events). Return Err so the caller's arm logs and breaks
+        // rather than panicking — this is the correct test behaviour: tests
+        // that pass a real child but no routes are testing crash detection,
+        // not the full respawn cycle.
+        let routes = match self.routes.clone() {
+            Some(r) => r,
+            None => {
+                return Err(AnvilError::Internal(
+                    "cannot respawn worker built without a RouteTable (new() test path)"
+                        .to_string(),
+                ));
+            }
+        };
+
+        // restart_rx is cloned, not reconstructed — see this struct's
+        // restart_rx field doc for why a watch::Receiver survives being
+        // passed through to a respawned worker, unlike the oneshot-backed
+        // timeout_rx/ready_tx pairs, which are freshly constructed inside
+        // spawn() on every call. WorkerPool's sender remains valid across
+        // this and every future respawn without needing replacement.
+        let new_worker = Self::spawn(
+            &self.cfg,
+            &self.device,
+            self.transport.clone(),
+            self.worker_id.clone(),
+            routes,
+            self.restart_rx.clone(),
+        )
+        .await?;
+
+        let new_event_rx = new_worker.event_tx.subscribe();
+
+        // Note: *self = new_worker replaces self.status with the new
+        // worker's fresh status Arc (starting at Initializing). WorkerPool's
+        // background monitoring task still holds a clone of the *old* status
+        // Arc (which is now isolated, frozen at Dead). This means WebSocket
+        // WorkerStatusChanged events for the respawned worker's lifecycle
+        // (Initializing → Idle, etc.) will not be broadcast by the existing
+        // polling task. This is a known, scoped limitation of this approach —
+        // fixing it fully would require the monitoring task to watch a shared
+        // slot for the current status Arc rather than holding a clone captured
+        // at spawn time. Out of scope for P10-A3; flagged here for follow-up.
+        *self = new_worker;
+
+        // Mirror what run() does at entry: drop this struct's own clone of
+        // event_tx so the demux task's clone is the only live sender. If
+        // self.event_tx were kept alive here, the broadcast channel would
+        // always have two senders (this one and the demux task's), meaning
+        // it would never close — and run()'s "broadcast channel closed"
+        // exit path would never fire after a respawn.
+        //
+        // Cannot do `drop(self.event_tx)` — that's a partial move out of
+        // `&mut self`, which Rust disallows. Use mem::replace to swap in a
+        // fresh, immediately-dropped sender instead. The value returned by
+        // replace (the real new_worker.event_tx clone) is dropped at the
+        // end of this statement, releasing that sender slot.
+        let _ = std::mem::replace(&mut self.event_tx, broadcast::channel(1).0);
+
+        Ok(new_event_rx)
+    }
+
     /// Run the managed worker's state machine event loop, consuming `self`.
     ///
     /// # State transitions
@@ -383,12 +662,31 @@ impl ManagedWorker {
     /// until this method fires `ready_tx` in the `Ready` transition arm —
     /// see `crate::keepalive`'s `ready_rx` parameter. Symmetrically, every
     /// path below that puts the worker into a confirmed-`Dead` state
-    /// (ready timeout, unexpected child exit, and the graceful shutdown
-    /// arm) calls `keepalive_handle.take().abort()` rather than merely
-    /// dropping the handle: dropping a `JoinHandle` detaches Rust's
-    /// interest in the task's result but does not stop the task itself,
-    /// which would otherwise keep running — and, if it had already passed
-    /// the `ready_rx` gate, keep pinging — a worker that no longer exists.
+    /// (ready timeout, unexpected child exit, heartbeat timeout, and the
+    /// graceful shutdown arm) calls `keepalive_handle.take().abort()` rather
+    /// than merely dropping the handle: dropping a `JoinHandle` detaches
+    /// Rust's interest in the task's result but does not stop the task
+    /// itself, which would otherwise keep running — and, if it had already
+    /// passed the `ready_rx` gate, keep pinging — a worker that no longer
+    /// exists.
+    ///
+    /// # Automatic recovery (crash / heartbeat timeout)
+    ///
+    /// See the module-level "Respawn" docs above for the full picture. In
+    /// brief: an unexpected child exit or a heartbeat timeout both set
+    /// `Dead` and call `do_respawn(true)` (policy-gated, with backoff). On
+    /// success the loop `continue`s with the new worker's state; on failure
+    /// (attempts exhausted, or the respawn itself failed) the loop logs and
+    /// `break`s, remaining `Dead` permanently.
+    ///
+    /// # Manual restart
+    ///
+    /// Firing `restart_rx`'s matching sender (held externally by
+    /// `WorkerPool`, in turn fired by the `POST /v1/workers/:id/restart`
+    /// handler) force-kills the subprocess if still running, sets `Dead`,
+    /// and calls `do_respawn(false)` — bypassing `RespawnPolicy` entirely.
+    /// Valid from any current state, including an already-`Dead` worker
+    /// whose automatic attempts were exhausted.
     ///
     /// # Shutdown
     ///
@@ -415,16 +713,19 @@ impl ManagedWorker {
     ///    force-kill it — dropping a `tokio::process::Child` does not
     ///    terminate the OS process, only the Rust handle to it
     ///
-    /// This is the only shutdown path: there is no separate method, since
-    /// `run(self)` already holds the only owned `ManagedWorker` there will
-    /// ever be once spawned. The loop's two other exit paths (ready timeout
-    /// and unexpected child exit) skip this sequence — each aborts the
-    /// keepalive task directly (see "Keepalive gating and abort" above)
-    /// and otherwise only drops the remaining task handles — because in
-    /// both cases the worker is already gone or unresponsive, so there is
-    /// nothing live to signal a graceful `Shutdown` message to.
+    /// This is the only graceful-stop path: there is no separate method,
+    /// since `run(self)` already holds the only owned `ManagedWorker` there
+    /// will ever be once spawned. The loop's other `Dead`-bound exit paths
+    /// (ready timeout, unexpected child exit, heartbeat timeout) skip this
+    /// sequence — each aborts the keepalive task directly (see "Keepalive
+    /// gating and abort" above) and otherwise only drops the remaining task
+    /// handles — because in each case the worker is already gone or
+    /// unresponsive, so there is nothing live to signal a graceful
+    /// `Shutdown` message to. Unlike those three, this arm does not attempt
+    /// a respawn afterward — graceful shutdown is a deliberate, permanent
+    /// stop, not a failure to recover from.
     #[tracing::instrument(skip(self, shutdown_rx), fields(worker_id = %self.worker_id))]
-    pub async fn run(mut self, shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
+    pub async fn run(mut self, shutdown_rx: oneshot::Receiver<()>) {
         let mut event_rx = self.event_tx.subscribe();
         let mut shutdown_rx = shutdown_rx;
 
@@ -433,12 +734,32 @@ impl ManagedWorker {
         // events into it — when the demux task exits, the channel closes
         // and the loop below exits. In tests constructing ManagedWorker
         // directly, the test itself holds the only remaining sender.
-        drop(self.event_tx);
+        //
+        // Uses mem::replace rather than `drop(self.event_tx)` to avoid a
+        // partial move out of `self`: a partial move prevents do_respawn()
+        // from later borrowing `&mut self` (E0382). Replacing with a dummy
+        // sender that is immediately dropped achieves the same effect —
+        // the real sender is released — without touching self's move state.
+        let _ = std::mem::replace(&mut self.event_tx, broadcast::channel(1).0);
 
-        // The loop's only exit condition is the broadcast channel closing
-        // (or an unexpected child exit, handled in the select below) —
-        // ready_timeout is re-armed each iteration rather than once, since
-        // it must stop firing the moment the worker leaves Initializing.
+        // Set once self.restart_rx's sender (held by WorkerPool) is
+        // observed dropped. tokio::sync::watch::Receiver::changed()
+        // resolves immediately (not by sleeping) on every call once the
+        // channel is closed and the current value already seen — looping
+        // back into select! and calling changed() again every iteration
+        // would spin this arm continuously instead of actually waiting.
+        // This flag lets the loop swap in a never-firing placeholder for
+        // that arm once closure is observed, exactly like the child/None
+        // and ready_timeout/Initializing placeholders elsewhere in this
+        // same select!.
+        let mut restart_rx_closed = false;
+
+        // The loop's exit conditions are: the broadcast channel closing,
+        // an unexpected child exit with respawn exhausted/failed, a
+        // heartbeat timeout with respawn exhausted/failed, or graceful
+        // shutdown — each handled in the select below. ready_timeout is
+        // re-armed each iteration rather than once, since it must stop
+        // firing the moment the worker leaves Initializing.
         loop {
             tracing::debug!(worker_id = %self.worker_id, "run loop iteration");
 
@@ -450,6 +771,20 @@ impl ManagedWorker {
             } else {
                 None
             };
+
+            // Reborrow self.timeout_rx and self.restart_rx as named locals
+            // before entering select! — same pattern as shutdown_rx above.
+            // tokio::select! pins all arm futures simultaneously before
+            // polling; if multiple arms reference different fields of self
+            // directly (e.g. &mut self.timeout_rx AND self.child.as_mut()
+            // inside an async block), the macro expansion can't see they're
+            // disjoint and treats them as conflicting &mut self borrows. Named
+            // reborrows break that: the select arms reference locals, not
+            // self fields, so the compiler sees no conflict. Without this,
+            // child.wait() silently falls through to the None/sleep branch
+            // every iteration — the child arm never fires.
+            let timeout_rx = &mut self.timeout_rx;
+            let restart_rx = &mut self.restart_rx;
 
             tokio::select! {
                 // Both branches of this async block must be the same
@@ -643,15 +978,148 @@ impl ManagedWorker {
                     if let Some(handle) = self.keepalive_handle.take() {
                         handle.abort();
                     }
-                    break;
+
+                    // The subprocess has already exited on its own —
+                    // nothing left to kill, proceed straight to the
+                    // policy-gated respawn cycle. See module-level
+                    // "Respawn" docs above.
+                    match self.do_respawn(true).await {
+                        Ok(new_event_rx) => {
+                            event_rx = new_event_rx;
+                            continue;
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                worker_id = %self.worker_id,
+                                error = %err,
+                                "respawn after unexpected exit did not succeed, remaining dead"
+                            );
+                            break;
+                        }
+                    }
+                }
+
+                // Fires once when the keepalive task's heartbeat watchdog
+                // times out — see module-level "Respawn" docs above. Unlike
+                // the child-exit arm, the subprocess may still be running
+                // (e.g. wedged on a ZMQ call), so it must be explicitly
+                // killed before respawning.
+                _ = &mut *timeout_rx => {
+                    tracing::warn!(
+                        worker_id = %self.worker_id,
+                        "heartbeat timeout, worker unresponsive"
+                    );
+
+                    if let Some(handle) = self.keepalive_handle.take() {
+                        handle.abort();
+                    }
+
+                    if let Some(mut child) = self.child.take() {
+                        if let Err(err) = child.kill().await {
+                            tracing::warn!(
+                                worker_id = %self.worker_id,
+                                error = %err,
+                                "failed to kill unresponsive worker subprocess"
+                            );
+                        }
+                    }
+
+                    *self.status.write().await = WorkerStatus::Dead;
+
+                    match self.do_respawn(true).await {
+                        Ok(new_event_rx) => {
+                            event_rx = new_event_rx;
+                            continue;
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                worker_id = %self.worker_id,
+                                error = %err,
+                                "respawn after heartbeat timeout did not succeed, remaining dead"
+                            );
+                            break;
+                        }
+                    }
+                }
+
+                // Fires when an external caller requests a manual restart
+                // — see module-level "Respawn" docs above. Valid from any
+                // current state, including an already-Dead worker.
+                // Unconditional: force-kill if still running, then respawn
+                // immediately, bypassing RespawnPolicy.
+                //
+                // changed() resolves on every new value the sender
+                // publishes, not just the first — see this struct's
+                // restart_rx field doc for why watch (not oneshot) is the
+                // right primitive for a signal that may legitimately fire
+                // more than once per worker. Once restart_rx_closed is
+                // true (WorkerPool's sender was dropped), a never-firing
+                // sleep is awaited instead of calling changed() again —
+                // same reasoning as the ready_timeout arm's None case
+                // above: a closed watch channel's changed() resolves
+                // immediately on every call rather than sleeping, so
+                // polling it again here would spin this arm every loop
+                // iteration instead of actually waiting.
+                changed_result = async {
+                    if restart_rx_closed {
+                        tokio::time::sleep(std::time::Duration::MAX).await;
+                        unreachable!("never-firing placeholder for closed restart_rx")
+                    } else {
+                        restart_rx.changed().await
+                    }
+                } => {
+                    if changed_result.is_err() {
+                        restart_rx_closed = true;
+                        continue;
+                    }
+
+                    tracing::info!(
+                        worker_id = %self.worker_id,
+                        "manual restart requested"
+                    );
+
+                    if let Some(handle) = &self.heartbeat_handle {
+                        handle.shutdown().await;
+                    }
+                    if let Some(handle) = self.keepalive_handle.take() {
+                        handle.abort();
+                    }
+
+                    if let Some(mut child) = self.child.take() {
+                        if let Err(err) = child.kill().await {
+                            tracing::warn!(
+                                worker_id = %self.worker_id,
+                                error = %err,
+                                "failed to kill worker subprocess during manual restart"
+                            );
+                        }
+                    }
+
+                    *self.status.write().await = WorkerStatus::Dead;
+
+                    match self.do_respawn(false).await {
+                        Ok(new_event_rx) => {
+                            event_rx = new_event_rx;
+                            continue;
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                worker_id = %self.worker_id,
+                                error = %err,
+                                "manual restart failed to respawn, remaining dead"
+                            );
+                            break;
+                        }
+                    }
                 }
 
                 // Fires once when the pool (or whatever holds the matching
                 // oneshot::Sender) requests a graceful shutdown. This is the
                 // only path that sends a Shutdown message to the Python
-                // worker and waits for/kills its subprocess — the other two
-                // break arms above assume the worker is already gone or
-                // unresponsive, so there is no live peer left to notify.
+                // worker and waits for/kills its subprocess — the other
+                // break/respawn arms above assume the worker is already
+                // gone or unresponsive, so there is no live peer left to
+                // notify, and none of them attempt this sequence.
                 _ = &mut shutdown_rx => {
                     tracing::info!(
                         worker_id = %self.worker_id,
@@ -772,23 +1240,24 @@ impl ManagedWorker {
             }
         }
 
-        // Reached by all four break paths (ready timeout, channel closed,
-        // unexpected child exit, and the shutdown arm above). Three of
-        // those four — every path except "channel closed" — already
-        // `.take()` and abort `keepalive_handle` as part of their own
-        // arm (see "Keepalive gating and abort" on this method's doc
-        // comment), so `drop(self.keepalive_handle)` below is a no-op for
-        // them (the Option is already None) and is only real cleanup for
-        // the "channel closed" path, which never touches keepalive_handle
-        // itself. `bridge_handle` is dropped here unconditionally, though
-        // it's a no-op for the shutdown arm, which already consumed it via
-        // `.take()` above. `heartbeat_handle` is only ever borrowed
-        // (`&self.heartbeat_handle`, in the shutdown arm's
-        // `HeartbeatHandle::shutdown()` call), never taken, so it reaches
-        // this drop as `Some` on every path. The child subprocess isn't
-        // waited on here for the three non-shutdown paths — if it's still
-        // alive, it's either exiting on its own or will be reaped when
-        // self drops.
+        // Reached by every break path (ready timeout, channel closed,
+        // unexpected child exit with respawn exhausted/failed, heartbeat
+        // timeout with respawn exhausted/failed, manual restart with
+        // respawn failed, and the shutdown arm above). All paths except
+        // "channel closed" already `.take()` and abort `keepalive_handle`
+        // as part of their own arm (see "Keepalive gating and abort" on
+        // this method's doc comment), so `drop(self.keepalive_handle)`
+        // below is a no-op for them (the Option is already None) and is
+        // only real cleanup for the "channel closed" path, which never
+        // touches keepalive_handle itself. `bridge_handle` is dropped here
+        // unconditionally, though it's a no-op for the shutdown arm, which
+        // already consumed it via `.take()` above. `heartbeat_handle` is
+        // only ever borrowed (`&self.heartbeat_handle`, in the shutdown and
+        // restart arms' `HeartbeatHandle::shutdown()` calls), never taken,
+        // so it reaches this drop as `Some` on every path. The child
+        // subprocess isn't waited on here for the non-shutdown paths — if
+        // it's still alive, it's either exiting on its own or will be
+        // reaped when self drops.
         drop(self.bridge_handle);
         drop(self.keepalive_handle);
         drop(self.heartbeat_handle);

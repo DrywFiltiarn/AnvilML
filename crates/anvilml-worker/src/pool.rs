@@ -3,16 +3,18 @@
 //! `WorkerPool` owns the shared `RouterTransport`, the shared
 //! `EventBroadcaster`, and the single demux task (`crate::demux`) that reads
 //! every worker's events off that transport. It provides methods to spawn
-//! workers for all detected devices, retrieve worker info snapshots, and
-//! broadcast status changes as `WsEvent::WorkerStatusChanged`.
+//! workers for all detected devices, retrieve worker info snapshots, broadcast
+//! status changes, and request worker restarts.
 //!
 //! `WorkerPool` does not hold `ManagedWorker` values directly. `ManagedWorker::run()`
 //! consumes the worker for the worker's entire lifetime, so the pool instead
 //! holds, per worker, exactly what it needs after spawning: a clone of the
 //! status `Arc` (for status snapshots and the polling monitor below), the
 //! `oneshot::Sender` half of the worker's shutdown signal (to request a
-//! graceful stop), and the `run()` task's `JoinHandle` (to await that stop
-//! actually completing). See `WorkerHandle`.
+//! graceful stop), the `watch::Sender` half of the worker's restart-generation
+//! counter (to request an unconditional restart — see `restart_worker()`), and
+//! the `run()` task's `JoinHandle` (to await that stop actually completing).
+//! See `WorkerHandle`.
 //!
 //! A background monitoring task polls each worker's status at a 100ms
 //! interval and broadcasts `WorkerStatusChanged` events when the status
@@ -50,12 +52,27 @@ struct WorkerHandle {
     /// the `ManagedWorker` itself, only this.
     status: Arc<tokio::sync::RwLock<WorkerStatus>>,
 
-    /// The sending half of this worker's shutdown signal. Firing it (via
-    /// `.send(())`) wakes the dedicated shutdown arm in `run()`'s
-    /// `select!` loop. `Option`-wrapped because `oneshot::Sender::send`
-    /// consumes `self` — `shutdown_all()` needs to take ownership of this
-    /// out of the handle to fire it.
+    /// The sending half of this worker's graceful-shutdown signal. Firing it
+    /// (via `.send(())`) wakes the dedicated shutdown arm in `run()`'s
+    /// `select!` loop, which performs a full teardown sequence (bridge
+    /// Shutdown message, subprocess kill, demux deregistration) and does
+    /// NOT attempt a respawn afterward. `Option`-wrapped because
+    /// `oneshot::Sender::send` consumes `self` — `shutdown_all()` needs to
+    /// take ownership of this out of the handle to fire it.
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+
+    /// The sending half of this worker's restart-generation counter. Sending
+    /// any new value (e.g. incrementing a generation counter) wakes
+    /// `run()`'s restart arm, which unconditionally force-kills the
+    /// subprocess and respawns it — bypassing `RespawnPolicy` entirely.
+    ///
+    /// Backed by `tokio::sync::watch` (not `oneshot`) so the same sender
+    /// remains valid across any number of respawns: `ManagedWorker::run()`
+    /// clones its `watch::Receiver` into each respawned worker rather than
+    /// constructing a new pair, meaning WorkerPool's sender here is the
+    /// single-source-of-truth restart signal for the worker's entire
+    /// supervised lifetime.
+    restart_tx: tokio::sync::watch::Sender<u64>,
 
     /// The `JoinHandle` for the task running this worker's `run()` loop.
     /// Awaited (with a bound) in `shutdown_all()` to confirm the worker's
@@ -66,8 +83,7 @@ struct WorkerHandle {
     worker_id: String,
 
     /// The GPU device name, captured at spawn time. See `get_worker_infos()`
-    /// for why this is a static label rather than read back from the
-    /// worker.
+    /// for why this is a static label rather than read back from the worker.
     device_name: String,
 }
 
@@ -80,10 +96,10 @@ struct WorkerHandle {
 /// identity (`"worker-0"`, `"worker-1"`, etc.).
 pub struct WorkerPool {
     /// Wrapped in a `tokio::sync::Mutex` (rather than a bare `Vec`) so that
-    /// `shutdown_all(&self)` can drain the vec through a shared reference —
-    /// `WorkerPool` is held behind an `Arc` shared with `AppState` and the
-    /// system stats tick task, so no method on this struct can ever take
-    /// `self` by value.
+    /// `shutdown_all(&self)` and `restart_worker(&self)` can access the vec
+    /// through a shared reference — `WorkerPool` is held behind an `Arc`
+    /// shared with `AppState` and the system stats tick task, so no method
+    /// on this struct can ever take `self` by value.
     workers: tokio::sync::Mutex<Vec<WorkerHandle>>,
 
     /// Stored for future dispatch routing logic (belongs in the scheduler).
@@ -162,12 +178,20 @@ impl WorkerPool {
             // subprocess environment variables also use.
             let worker_id = format!("worker-{i}");
 
+            // Build the restart watch channel once per worker. The sender
+            // stays here in WorkerHandle; the receiver is passed into
+            // spawn() and cloned through every subsequent respawn — see
+            // ManagedWorker's restart_rx field doc for why watch persists
+            // across respawns without needing replacement on our end.
+            let (restart_tx, restart_rx) = tokio::sync::watch::channel(0u64);
+
             let worker = ManagedWorker::spawn(
                 cfg,
                 device,
                 transport.clone(),
                 worker_id.clone(),
                 routes.clone(),
+                restart_rx,
             )
             .await?;
 
@@ -190,6 +214,7 @@ impl WorkerPool {
             workers.push(WorkerHandle {
                 status,
                 shutdown_tx: Some(shutdown_tx),
+                restart_tx,
                 run_handle,
                 worker_id,
                 device_name,
@@ -284,10 +309,12 @@ impl WorkerPool {
             .into_iter()
             .map(|(status, worker_id, device_name)| {
                 let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel();
+                let (restart_tx, _restart_rx) = tokio::sync::watch::channel(0u64);
                 let run_handle = tokio::spawn(async {});
                 WorkerHandle {
                     status,
                     shutdown_tx: Some(shutdown_tx),
+                    restart_tx,
                     run_handle,
                     worker_id,
                     device_name,
@@ -348,6 +375,66 @@ impl WorkerPool {
     /// the system stats tick can send their own events on the same bus.
     pub fn broadcaster(&self) -> &Arc<EventBroadcaster> {
         &self.broadcaster
+    }
+
+    /// Request an unconditional restart of the worker identified by
+    /// `worker_id`.
+    ///
+    /// Signals `run()`'s restart arm by incrementing the restart-generation
+    /// counter on the worker's `watch` channel. The arm force-kills the
+    /// subprocess (if still alive), sets `Dead`, transitions to `Respawning`,
+    /// then calls `ManagedWorker::spawn()` to bring up a fresh worker — all
+    /// without consulting `RespawnPolicy`. Valid from any current state,
+    /// including an already-`Dead` worker whose automatic respawn attempts
+    /// were exhausted.
+    ///
+    /// Returns immediately after signalling — it does not wait for the
+    /// respawn to complete. The caller can poll `GET /v1/workers` or watch
+    /// for `WorkerStatusChanged` WebSocket events to observe the transition
+    /// through `Dead` → `Respawning` → `Initializing` → `Idle`.
+    ///
+    /// # Errors
+    ///
+    /// * `AnvilError::WorkerNotFound(worker_id)` — no worker with the
+    ///   given id is registered in this pool.
+    /// * `AnvilError::Internal(...)` — the worker's `run()` task has
+    ///   already exited (its `restart_rx` was dropped), so the signal
+    ///   could not be delivered. This is expected if the worker crashed
+    ///   unrecoverably and its loop exited before this call arrived.
+    pub async fn restart_worker(&self, worker_id: &str) -> Result<(), AnvilError> {
+        let workers = self.workers.lock().await;
+
+        let handle = workers
+            .iter()
+            .find(|h| h.worker_id == worker_id)
+            .ok_or_else(|| AnvilError::WorkerNotFound(worker_id.to_string()))?;
+
+        // Increment the generation counter. watch::Sender::send_modify
+        // allows an in-place mutation without needing to borrow the old
+        // value separately, and always succeeds even if there are no
+        // receivers (which would mean run() already exited — detected by
+        // is_closed() below).
+        handle.restart_tx.send_modify(|gen| *gen += 1);
+
+        // A closed watch channel means all receivers (i.e. run()'s
+        // restart_rx clone inside the worker's select loop) have been
+        // dropped — the worker task has already exited. The signal was
+        // sent but will never be received. Surface this as an error so
+        // the caller (the HTTP handler) can return a meaningful response
+        // rather than silently 202-ing a no-op.
+        if handle.restart_tx.is_closed() {
+            return Err(AnvilError::Internal(format!(
+                "worker {} run() task has already exited; restart signal was not delivered",
+                worker_id
+            )));
+        }
+
+        tracing::info!(
+            worker_id = %worker_id,
+            "restart signal sent to worker"
+        );
+
+        Ok(())
     }
 
     /// Shut down every worker in the pool, then the demux task.
@@ -431,10 +518,10 @@ impl WorkerPool {
             };
 
             // A Err here means run()'s task has already exited on its own
-            // (e.g. ready timeout, or the worker crashed) — the receiver
-            // was dropped along with it. That's not a failure to act on;
-            // there's simply no running loop left to ask anything of, and
-            // the run_handle await just below will resolve immediately.
+            // (e.g. ready timeout, or the worker crashed and exhausted its
+            // respawn attempts) — the receiver was dropped along with it.
+            // That's not a failure to act on; the run_handle await just
+            // below will resolve immediately.
             let _ = shutdown_tx.send(());
 
             // Awaiting `&mut handle.run_handle` rather than the owned

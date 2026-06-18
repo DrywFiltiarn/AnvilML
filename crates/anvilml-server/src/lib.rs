@@ -22,7 +22,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use handlers::models::{get_model, list_models, rescan_models};
-use handlers::workers::list_workers;
+use handlers::workers::{list_workers, restart_worker};
 use ws::handler::ws_events;
 
 /// Build the HTTP router with all registered handlers.
@@ -30,9 +30,11 @@ use ws::handler::ws_events;
 /// Creates a new `Router`, mounts the health handler at `GET /health`,
 /// the system hardware info handler at `GET /v1/system`, the system env
 /// stub at `GET /v1/system/env`, the model list handler at `GET /v1/models`,
-/// the model detail handler at `GET /v1/models/:id`, and the WebSocket
-/// event stream at `GET /v1/events`, applies the shared `AppState` for
-/// injection into handlers, and wraps the router with middleware per
+/// the model detail handler at `GET /v1/models/:id`, the model rescan handler
+/// at `POST /v1/models/rescan`, the worker list handler at `GET /v1/workers`,
+/// the worker restart handler at `POST /v1/workers/{id}/restart`, and the
+/// WebSocket event stream at `GET /v1/events`, applies the shared `AppState`
+/// for injection into handlers, and wraps the router with middleware per
 /// ANVILML_DESIGN.md §12.3 (outermost-first):
 /// 1. `CorsLayer::permissive()` — allows all origins for local-only use.
 /// 2. `TraceLayer` — structured request/response logging via `tracing`.
@@ -66,6 +68,10 @@ pub fn build_router(state: AppState) -> Router {
         // Worker list — returns all workers and their current states.
         // Returns an empty array when no worker pool is configured.
         .route("/v1/workers", get(list_workers))
+        // Worker restart — signals an unconditional force-kill and respawn
+        // of the named worker, bypassing RespawnPolicy. Returns 202
+        // immediately; the respawn is asynchronous.
+        .route("/v1/workers/{id}/restart", post(restart_worker))
         // WebSocket event stream — accepts upgrade requests and forwards
         // broadcast events as JSON text frames to connected clients.
         .route("/v1/events", get(ws_events))
