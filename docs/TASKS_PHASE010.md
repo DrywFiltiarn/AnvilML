@@ -6,7 +6,7 @@
 | Name | Worker Crash Recovery |
 | Project | anvilml |
 | Status | Approved |
-| Depends on phases | 9, 901 |
+| Depends on phases | 9, 901, 902 (P10-A3 only — see Overview) |
 
 ## Overview
 
@@ -42,6 +42,15 @@ failure should reference this comment.
 Phase 011 (Dynamic Node Registry) depends on workers reaching Idle after respawn; the
 respawn logic landed here is the prerequisite for that behaviour.
 
+**`P10-A3` depends on the Phase 902 retrofit, not directly on `P10-A2`.** Phase 902 is a
+three-task retrofit, authored and completed after `P10-A2` finished, that fixed two
+unrelated defects in `crates/anvilml-worker/src/managed.rs` and `src/keepalive.rs`
+discovered by running the actual binary: a keepalive ping-before-Ready race, and a
+shutdown sequence that could stall for several seconds. See `docs/TASKS_PHASE902.md` for
+the full account. The practical consequence for `P10-A3` is described in its own Key
+implementation notes below — read `managed.rs` and `keepalive.rs` directly before
+planning, rather than assuming their shape from `P10-A2`'s own reports.
+
 ## Group Reference
 
 | Group | Subsystem | Tasks | Summary |
@@ -57,7 +66,8 @@ Phase 009 complete. `ManagedWorker` in `crates/anvilml-worker/src/managed.rs` ex
 broadcast via `EventBroadcaster`. `RespawnPolicy::should_respawn` correctly resets its crash
 counter against the configured time window (corrected in Phase 901 — see above). There is no
 in-flight job tracking on `ManagedWorker` at this point in the codebase; do not assume one
-exists.
+exists. For `P10-A3` specifically, Phase 902 must also be complete — it changed both
+`managed.rs` and `keepalive.rs` after `P10-A2`; see Overview above.
 
 ## Task Descriptions
 
@@ -112,10 +122,47 @@ backoff delay, consult `RespawnPolicy::should_respawn`, and either respawn or re
 - `crates/anvilml-worker/tests/managed_tests.rs` — extend; full crash-respawn-cycle test
 
 **Key implementation notes:**
-- Await the delay with `tokio::time::sleep(Duration::from_millis(policy.next_delay_ms(attempt)))` — never `std::thread::sleep`, which would block the async runtime.
-- Call `should_respawn(&mut crash_count, last_crash)` (Phase 901's corrected signature). If `true`: transition `Respawning`, broadcast `WorkerStatusChanged(Respawning)`, re-run `spawn()` with the same `cfg`/`device`/`transport`, and continue the same `run()` loop — `run()` must not return after a successful respawn. If `false`: remain `Dead` and log `tracing::info!(worker_id, "respawn attempts exhausted")`.
-- `tracing::info!(worker_id, attempt, delay_ms, "respawning worker")` on the `Respawning` transition.
-- The integration test in `managed_tests.rs` is the first test in this crate to kill a *real* spawned subprocess (not a pre-built channel) and observe the full `Dead → Respawning → Idle` sequence — budget test time accordingly and use a generous but bounded timeout.
+- Before planning, read `crates/anvilml-worker/src/managed.rs` and
+  `src/keepalive.rs` directly on disk in full. Both were modified by the Phase 902
+  retrofit after `P10-A2` completed (ready-gated keepalive, abort-on-Dead, a
+  watch-channel-based prompt shutdown) — do not infer their current shape from `P10-A2`'s
+  plan or implementation reports, which describe an earlier version of both files.
+- `ManagedWorker::spawn()`'s current signature, as of Phase 902, is:
+  `spawn(cfg: &ServerConfig, device: &GpuDevice, transport: Arc<RouterTransport>,
+  worker_id: String, routes: crate::demux::RouteTable) -> Result<Self, AnvilError>` —
+  five arguments, not three. `spawn()` registers its own route into `routes` internally
+  before returning (it does not return a separate route to register elsewhere), and also
+  constructs a fresh `ready_tx`/`ready_rx` pair for the new keepalive gate — do not
+  attempt to reuse or carry over the dead worker's old `ready_tx`.
+- `ManagedWorker` does not currently store owned `cfg`/`device` anywhere — only `routes`
+  is retained as a struct field (`Option<crate::demux::RouteTable>`). Both
+  `ServerConfig` and `GpuDevice` derive `Clone`, so storing an owned clone of each on the
+  struct (populated once in `spawn()`, alongside the existing `routes` field) is the
+  straightforward way to make them available again at respawn time. This is a structural
+  decision this task's plan step must state explicitly, not discover mid-implementation.
+- When respawning, reuse the existing `routes` field (the same `RouteTable` handle the
+  dead worker was already registered in) rather than constructing a new one — the new
+  `ManagedWorker::spawn()` call registers the respawned worker's fresh wire identity into
+  that same shared table, replacing the dead worker's now-stale entry at the same logical
+  slot. Constructing a fresh, empty `RouteTable` for the respawn would silently disconnect
+  the respawned worker from the demux task that is still running against the original
+  table.
+- Await the delay with `tokio::time::sleep(Duration::from_millis(policy.next_delay_ms(attempt)))`
+  — never `std::thread::sleep`, which would block the async runtime.
+- Call `should_respawn(&mut crash_count, last_crash)` (Phase 901's corrected signature). If
+  `true`: transition `Respawning`, broadcast `WorkerStatusChanged(Respawning)`, re-run
+  `spawn()` with the five-argument call shape above, and continue the same `run()` loop —
+  `run()` must not return after a successful respawn. If `false`: remain `Dead` and log
+  `tracing::info!(worker_id, "respawn attempts exhausted")`.
+- `tracing::info!(worker_id, attempt, delay_ms, "respawning worker")` on the `Respawning`
+  transition.
+- The respawned worker's keepalive will not send its first ping until its own fresh
+  `Ready` event is processed (Phase 902's ready-gate) — this is normal, not a regression
+  to investigate; do not add code to bypass or pre-fire the new worker's gate.
+- The integration test in `managed_tests.rs` is the first test in this crate to kill a
+  *real* spawned subprocess (not a pre-built channel) and observe the full
+  `Dead → Respawning → Idle` sequence — budget test time accordingly and use a generous
+  but bounded timeout.
 
 **Acceptance criterion:** `cargo test -p anvilml-worker --features mock-hardware` exits 0; `tests/managed_tests.rs` includes a test that kills the worker process and asserts the `Dead → Respawning → Idle` event sequence within the test's timeout.
 
@@ -151,6 +198,12 @@ cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu
 
 ## Known Constraints and Gotchas
 
+- `P10-A3` depends on the Phase 902 retrofit (`docs/TASKS_PHASE902.md`), which changed
+  both `managed.rs` and `keepalive.rs` after `P10-A2` completed — including
+  `ManagedWorker::spawn()`'s signature (now five arguments, including a `routes` handle
+  the function registers itself into) and a new per-worker `ready_tx`/keepalive-gate
+  pair. Read both files fresh from disk before planning `P10-A3`; do not assume their
+  shape from `P10-A2`'s plan or implementation reports.
 - `child.wait()` must be polled inside the `run()` loop's `tokio::select!` alongside the IPC channel, as one arm among several in a continuing loop — not a separate blocking call, and not in a function that returns after handling it once.
 - The respawn delay must be awaited with `tokio::time::sleep`, not `std::thread::sleep`.
 - `RespawnPolicy::should_respawn` takes `crash_count` by mutable reference as of Phase 901 — it performs the window-reset itself; do not re-implement reset logic at the call site.

@@ -1,0 +1,41 @@
+[
+  {
+    "id": "P902-A1",
+    "description": "anvilml-worker: managed.rs/keepalive.rs ready-gated keepalive plus abort-on-Dead",
+    "phase": "902",
+    "project": "anvilml",
+    "prereqs": [
+      "P10-A2"
+    ],
+    "context": "RETROFIT, already implemented \u2014 see docs/TASKS_PHASE902.md \u00a7P902-A1 and .forge/reports/P902-A1_implement.md for full detail. keepalive::start() gained ready_rx:oneshot::Receiver<()>, awaited before the ping loop; ManagedWorker gained ready_tx:Option<oneshot::Sender<()>>, fired in run()'s Initializing->Idle arm. ready-timeout/child-exit/shutdown arms changed from drop to keepalive_handle.take().abort(). cargo test -p anvilml-worker --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P902-A2",
+    "description": "anvilml-worker: keepalive.rs watch-based prompt shutdown",
+    "phase": "902",
+    "project": "anvilml",
+    "prereqs": [
+      "P902-A1"
+    ],
+    "context": "RETROFIT, already implemented \u2014 see docs/TASKS_PHASE902.md \u00a7P902-A2 and .forge/reports/P902-A2_implement.md for full detail. keepalive.rs: Mutex<bool> shutdown flag replaced with tokio::sync::watch::channel(false); both loop wait points race a new wait_for_shutdown() helper via select!. managed.rs: keepalive_handle.take().abort() moved to immediately after HeartbeatHandle::shutdown(), before the Shutdown message/writer-wait. cargo test -p anvilml-worker --features mock-hardware exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  },
+  {
+    "id": "P902-A3",
+    "description": "anvilml-ipc/anvilml-worker: RecvError and per-message demux error handling",
+    "phase": "902",
+    "project": "anvilml",
+    "prereqs": [
+      "P902-A2"
+    ],
+    "context": "RETROFIT, already implemented \u2014 see docs/TASKS_PHASE902.md \u00a7P902-A3 and .forge/reports/P902-A3_implement.md for full detail. New RecvError enum in anvilml-ipc/src/error.rs (SocketClosed,MissingIdentityFrame,MissingPayloadFrame,DecodeFailed); RouterTransport::recv()/recv_with_raw_identity() return RecvError; impl From<RecvError> for AnvilError added. demux::start() breaks only on SocketClosed, logs+continues on the other three. cargo test --workspace exits 0.",
+    "tags": [
+      "reasoning"
+    ]
+  }
+]
