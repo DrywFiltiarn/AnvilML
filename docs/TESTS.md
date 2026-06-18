@@ -1656,6 +1656,24 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Expected output:** Sequence numbers are strictly increasing (1, 2, 3, ...) with at least 5 values in 2 seconds.
 **Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- keepalive_tests::test_seq_increments` exits 0.
 
+## test_no_ping_before_ready (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/keepalive_tests.rs`
+**Context:** `keepalive::start()` takes a `ready_rx: oneshot::Receiver<()>` and awaits it once before entering the ping loop, so no `Ping` is ever sent to a worker that hasn't finished initializing — closes a defect found via a live `cargo run` trace where pings were sent before the corresponding `Ready` event was processed.
+**Tests:** Spawns a keepalive with an unfired `ready_tx`/`ready_rx` pair, waits briefly, asserts no `Ping` has arrived on the mpsc receiver, then fires `ready_tx` and asserts a `Ping` arrives promptly afterward.
+**Inputs:** `ready_rx` not yet resolved, then resolved via `ready_tx.send(())`.
+**Expected output:** No `Ping` sent while `ready_rx` is unresolved; a `Ping` is sent shortly after `ready_tx` fires.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- keepalive_tests::test_no_ping_before_ready` exits 0.
+
+## test_dropped_ready_tx_skips_heartbeat_entirely (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/keepalive_tests.rs`
+**Context:** If the `ready_tx` sender is dropped without ever firing — the worker hit the ready timeout or exited before reporting `Ready` — `ready_rx.await` resolves to `Err`, and the keepalive task must exit immediately rather than entering the ping loop at all, since there is no live worker left to heartbeat.
+**Tests:** Spawns a keepalive with a `ready_rx` whose matching `ready_tx` is dropped immediately (never sent), and asserts the task exits on its own without ever sending a `Ping`.
+**Inputs:** `ready_tx` dropped without calling `.send(())`.
+**Expected output:** The keepalive task returns immediately; the mpsc channel's `recv()` resolves to `Ok(None)` (sender side closed), not a timeout error — no `Ping` is ever sent.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- keepalive_tests::test_dropped_ready_tx_skips_heartbeat_entirely` exits 0.
+
 ## test_spawn_reaches_idle (anvilml-worker)
 
 **File:** `crates/anvilml-worker/tests/managed_tests.rs`
@@ -1704,11 +1722,38 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 ## test_shutdown_cleans_up_handles (anvilml-worker)
 
 **File:** `crates/anvilml-worker/tests/managed_tests.rs`
-**Context:** The `shutdown()` method must clean up all spawned tasks (bridge, keepalive, heartbeat) without panicking. This test verifies the shutdown sequence completes successfully.
-**Tests:** Creates a `ManagedWorker` with real bridge and keepalive handles, spawns `run()`, calls `shutdown()`, and verifies it completes without panicking.
-**Inputs:** Worker with active bridge and keepalive handles.
-**Expected output:** `shutdown()` completes without panic; all handles are dropped.
+**Context:** Shutdown is driven entirely through `run()`'s own shutdown arm — firing a `oneshot::Sender<()>` the caller holds, not a separate `shutdown()` method — and must complete its full sequence (stop the keepalive promptly, abort its handle, send the `Shutdown` IPC message, await the bridge writer with a bounded timeout, deregister any route, then return) without panicking, for a worker with real bridge writer and keepalive task handles.
+**Tests:** Creates a `ManagedWorker` with a real bridge writer task and a real keepalive task (its `ready_tx` fired immediately, since this test exercises the shutdown sequence itself, not the Ready gate), spawns `run()` with a real `oneshot` shutdown channel, waits briefly for `run()` to enter its select loop, fires the shutdown sender, and asserts `run()` returns within a bounded timeout without panicking.
+**Inputs:** Worker with active bridge writer and keepalive handles, `ready_tx` pre-fired, shutdown signalled via `oneshot::Sender::send(())`.
+**Expected output:** `run()` completes its shutdown sequence and returns within 10 seconds (the sequence's own internal bounds are roughly 7 seconds: a 2-second bridge-writer-await timeout plus up to 5 seconds for child teardown, though `child` is `None` in this test so that step is instant); the returned `JoinHandle`'s result is `Ok`, not a panic.
 **Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- managed_tests::test_shutdown_cleans_up_handles` exits 0.
+
+## test_spawned_task_updates_status (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The keepalive's `on_timeout` callback is synchronous, but updating worker status requires an async write-lock acquisition — the callback works around this by spawning a separate async task that does the actual status update. This is a regression test for that spawned-task mechanism, relocated from a `#[cfg(test)]` module formerly embedded directly in `managed.rs` (production source files contain no test code per coding standards).
+**Tests:** Constructs an `on_timeout` callback that records its own invocation in an `AtomicBool` and spawns a task that sets a shared `RwLock<WorkerStatus>` to `Dead` via a weak reference, invokes the callback directly, awaits an unrelated 2-second task to give the spawned task time to run, then asserts both that the callback fired and that the status is `Dead`.
+**Inputs:** A weak reference to a `RwLock<WorkerStatus>` initialised to `Idle`.
+**Expected output:** The callback's `AtomicBool` flag is `true`; the status is `Dead`.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- managed_tests::test_spawned_task_updates_status` exits 0.
+
+## test_run_shutdown_deregisters_route (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** `run()`'s shutdown arm deregisters the worker's route from the shared demux routing table when `routes`/`route_key` are populated — this verifies that `run()` itself calls `demux::deregister` as part of its shutdown sequence (see `demux_tests::test_deregister_removes_route` for `deregister()`'s own isolated behaviour). Constructed via `ManagedWorker::new()` with `routes`/`route_key` supplied directly rather than through `ManagedWorker::spawn()`, since that would also require a real Python subprocess to launch — this is still a faithful test of the deregistration step, which only depends on the two fields being populated, not on how they got that way.
+**Tests:** Pre-registers a route in a shared `RouteTable`, constructs a worker with that table and the matching key, spawns `run()` with a real shutdown channel, fires shutdown, awaits completion within a bounded timeout, and asserts the route is no longer present in the table.
+**Inputs:** A `RouteTable` with one pre-registered entry; a worker constructed with `routes`/`route_key` pointing at that same entry.
+**Expected output:** `run()` completes its shutdown sequence within 10 seconds; the route is absent from the table afterward.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- managed_tests::test_run_shutdown_deregisters_route` exits 0.
+
+## test_run_ready_event_releases_keepalive_gate (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** Verifies, end-to-end through `run()` itself rather than `keepalive::start()` in isolation (see `keepalive_tests::test_no_ping_before_ready` for the unit-level check), that `run()`'s `Initializing → Idle` transition actually fires the worker's `ready_tx`, releasing a real keepalive task's start gate.
+**Tests:** Constructs a worker `Initializing`, with a real keepalive task and an unfired `ready_tx`, spawns `run()`, asserts no `Ping` arrives on the shared mpsc channel while still `Initializing`, sends a `Ready` event through the broadcast channel, and asserts a `Ping` arrives promptly afterward.
+**Inputs:** Worker in `Initializing` state with a real keepalive task; a `Ready` event sent after an initial no-ping assertion window.
+**Expected output:** No `Ping` sent before the `Ready` event is processed; a `Ping` is sent within 300ms after it is.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- managed_tests::test_run_ready_event_releases_keepalive_gate` exits 0.
 
 ## test_spawn_all_workers_idle (anvilml-worker)
 
@@ -1745,6 +1790,15 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** 1 `ManagedWorker` in `Idle` status, `RouterTransport::bind()`, `EventBroadcaster::new()`.
 **Expected output:** Compiles successfully — no compilation error.
 **Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- pool_tests::test_reexport_worker_pool` exits 0.
+
+## test_shutdown_all_completes_against_inert_handles (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/pool_tests.rs`
+**Context:** `WorkerPool::shutdown_all()` must return promptly even for a worker whose `run()` task was never actually started (an "inert" handle) — without a real run loop to drive shutdown, the only thing this test can verify is that `shutdown_all()` itself doesn't hang waiting on something that will never resolve, which is exactly the regression a bounded internal timeout is meant to prevent.
+**Tests:** Constructs a pool with one worker built via the `make_test_worker` helper (no real `run()` task spawned), calls `shutdown_all()` wrapped in a 15-second outer timeout, asserts it completes within that bound, then calls `get_worker_infos()` and asserts the pool's worker list is empty afterward.
+**Inputs:** 1 `ManagedWorker` in `Idle` status with no `run()` task ever spawned for it.
+**Expected output:** `shutdown_all()` resolves within 15 seconds; `get_worker_infos()` returns an empty list afterward (the pool's worker list is drained via `mem::take` and never repopulated).
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- pool_tests::test_shutdown_all_completes_against_inert_handles` exits 0.
 
 ## test_list_workers_returns_empty_when_no_pool (anvilml-server)
 
@@ -1839,10 +1893,10 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 ## test_child_exit_transitions_dead (anvilml-worker)
 
 **File:** `crates/anvilml-worker/tests/managed_tests.rs`
-**Context:** The `ManagedWorker::run()` loop has a `child.wait()` arm in its `tokio::select!` block that detects unexpected subprocess exit. This test creates a real child process (a shell command that sleeps briefly then exits) and passes it to `ManagedWorker::new()`. The run loop's `child.wait()` arm fires when the child exits, transitioning the status to `Dead`.
-**Tests:** A real child subprocess is spawned via `tokio::process::Command`, passed to `ManagedWorker::new()` with `Initializing` status, and the run loop is spawned. The test polls the status until it becomes `Dead` (or times out after 5 seconds). Asserts the final status is `Dead`.
-**Inputs:** Child process `sh -c "sleep 0.5 && exit 1"`, `ManagedWorker` in `Initializing` state, no bridge reader running.
-**Expected output:** Status transitions from `Initializing` to `Dead` within 5 seconds. The `child.wait()` arm fires, the status is set to `Dead`, and a `Dying` event is broadcast.
+**Context:** The `ManagedWorker::run()` loop has a `child.wait()` arm in its `tokio::select!` block that detects unexpected subprocess exit. This test creates a real child process that sleeps briefly then exits and passes it to `ManagedWorker::new()`. The run loop's `child.wait()` arm fires when the child exits, transitioning the status to `Dead`. The spawn command is `cfg`-gated by platform — `sh` is not on `PATH` by default on Windows — but the test's assertions are identical either way, since it never checks the child's exit code, only that the status transition fires once the process exits at all.
+**Tests:** A real child subprocess is spawned via `tokio::process::Command` (`sh -c "sleep 0.5 && exit 1"` on non-Windows; `ping -n 1 -w 500 127.0.0.1` on Windows, a dependency-free sleep substitute since `ping.exe` ships with every Windows install), passed to `ManagedWorker::new()` with `Initializing` status and no demux table (so no `Ready` event can ever arrive), and the run loop is spawned. The test polls the status every 100ms until it becomes `Dead` (or times out after 5 seconds). Asserts the final status is `Dead`.
+**Inputs:** A child process that exits after ~0.5 seconds; `ManagedWorker` in `Initializing` state, no bridge reader or demux task running.
+**Expected output:** Status transitions from `Initializing` to `Dead` within 5 seconds — the `child.wait()` arm fires and sets the status. This test does not assert on any broadcast event; only the status transition is checked.
 **Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- managed_tests::test_child_exit_transitions_dead` exits 0.
 
 ## test_demux_dispatches_event_to_registered_route (anvilml-worker)
@@ -1862,3 +1916,21 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** A message from an identity with no matching entry in the routing table.
 **Expected output:** The event is dropped (logged at WARN); no panic, no delivery to the unrelated registered route.
 **Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- demux_tests::test_demux_drops_event_for_unregistered_identity` exits 0.
+
+## test_demux_survives_undecodable_payload (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/demux_tests.rs`
+**Context:** Regression test for the bug described in `anvilml_ipc::RecvError`'s doc comment: `demux::start()`'s loop used to treat every `recv()` failure as fatal to the transport as a whole, breaking the loop (and stopping the only demux task in the process) over a single malformed message from any one peer. Only a genuine socket-level failure is actually fatal — a bad payload from one peer is a per-message problem that should be logged and skipped, with every other worker's events unaffected.
+**Tests:** Connects two DEALER sockets to a bound `RouterTransport`. Sends plain ASCII bytes (not valid msgpack) from the first ("bad") DEALER, asserts the demux task's `JoinHandle::is_finished()` is still `false` afterward, then sends a real, registered `WorkerEvent::Pong { seq: 99 }` from the second ("good") DEALER and asserts it is still correctly delivered to that worker's broadcast channel, identified by wire identity.
+**Inputs:** Plain ASCII bytes (`b"not valid msgpack"`) from one unregistered peer, followed by a real encoded `WorkerEvent::Pong { seq: 99 }` from a second, registered peer.
+**Expected output:** The demux task survives the undecodable payload (`is_finished() == false`); the second peer's real event is still broadcast correctly afterward, with the correct wire identity and event contents.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- demux_tests::test_demux_survives_undecodable_payload` exits 0.
+
+## test_deregister_removes_route (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/demux_tests.rs`
+**Context:** Regression test for the memory-leak concern that motivated adding `deregister()` in the first place — before it existed, the routing table only ever grew, so a crashed or shut-down worker's entry (and the broadcast channel it holds open) would persist for the lifetime of the process across every respawn. Unlike the other tests in this file, this one only touches the in-memory table directly — no real transport or DEALER socket is needed, since `register`/`deregister` don't depend on anything `start()`'s task does with the table.
+**Tests:** Registers a route, asserts it is present, deregisters it, asserts it is absent, then calls `deregister()` again on the same now-absent key and asserts this does not panic.
+**Inputs:** One route registered under key `"0"`; the same key deregistered twice in succession.
+**Expected output:** The route is present after `register()`, absent after `deregister()`, and a second `deregister()` call on an already-absent key completes without panicking — covering the case of a worker crashing before its own `spawn()` call ever reaches registration.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- demux_tests::test_deregister_removes_route` exits 0.
