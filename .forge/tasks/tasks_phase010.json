@@ -29,9 +29,9 @@
     "phase": "10",
     "project": "anvilml",
     "prereqs": [
-      "P902-A3"
+      "P10-A2"
     ],
-    "context": "Read crates/anvilml-worker/src/managed.rs and src/keepalive.rs on disk before planning \u2014 P902 retrofit (docs/TASKS_PHASE902.md) changed both after P10-A2. See docs/TASKS_PHASE010.md \u00a7P10-A3 for the full respawn-cycle spec: spawn() call shape, cfg/device storage decision, route-reuse requirement. Implement the Dead->Respawning->Idle cycle per that spec using tokio::time::sleep (never std::thread::sleep) and should_respawn(&mut crash_count,last_crash). managed_tests.rs: kill subprocess, assert full sequence within timeout. cargo test -p anvilml-worker --features mock-hardware exits 0.",
+    "context": "Extend Dead path from P10-A2: after respawn_delay (next_delay_ms via tokio::time::sleep, not std::thread::sleep), call should_respawn(&mut crash_count,last_crash); true: transition Respawning, broadcast WorkerStatusChanged(Respawning), re-run spawn() with same cfg/device/transport, continue run() loop; false: remain Dead, tracing::info!(worker_id,\"respawn attempts exhausted\"). tracing::info!(worker_id,attempt,delay_ms) on Respawning. managed_tests.rs: kill subprocess -> Dead->Respawning->Idle within timeout. cargo test -p anvilml-worker --features mock-hardware exits 0.",
     "tags": [
       "reasoning"
     ]
