@@ -12,7 +12,7 @@ pub mod messages;
 pub mod transport;
 pub mod ws;
 
-pub use error::TransportError;
+pub use error::{RecvError, TransportError};
 pub use messages::{decode_event, encode_message, IpcError, WorkerEvent, WorkerMessage};
 pub use transport::{render_identity, RouterTransport};
 pub use ws::EventBroadcaster;

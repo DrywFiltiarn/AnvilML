@@ -25,7 +25,7 @@ use tokio::sync::{broadcast, Mutex};
 use tokio::task::JoinHandle;
 use tracing;
 
-use anvilml_ipc::{RouterTransport, WorkerEvent};
+use anvilml_ipc::{RecvError, RouterTransport, WorkerEvent};
 
 /// Destination for events addressed to one worker: its display label (for
 /// logging) and the broadcast channel its `ManagedWorker` subscribes to.
@@ -75,8 +75,18 @@ pub async fn deregister(routes: &RouteTable, key: &str) {
 /// since it means a peer is talking to the ROUTER that was never
 /// registered — not necessarily a misconfiguration, since a worker whose
 /// `spawn()` call hasn't returned yet is indistinguishable from one that
-/// will never register at all from inside this loop. The task runs until
-/// `transport.recv()` returns an error (e.g. socket closed).
+/// will never register at all from inside this loop.
+///
+/// The task runs until `transport.recv()` returns
+/// [`RecvError::SocketClosed`](anvilml_ipc::RecvError::SocketClosed) — the
+/// one variant that means the transport itself is gone. Every other
+/// `RecvError` variant (missing identity frame, missing payload frame,
+/// failed decode) is a problem with one single message from one peer, not
+/// with the socket as a whole; this loop logs those at WARN and continues,
+/// since this is the only demux task for the entire process — stopping it
+/// over one malformed message would silently kill event delivery for every
+/// other worker sharing the same ROUTER socket, not just the one that sent
+/// the bad message.
 pub fn start(transport: Arc<RouterTransport>, routes: RouteTable) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
@@ -108,12 +118,26 @@ pub fn start(transport: Arc<RouterTransport>, routes: RouteTable) -> JoinHandle<
                         }
                     }
                 }
-                Err(e) => {
+                Err(RecvError::SocketClosed(e)) => {
                     // The socket itself is gone — every worker loses its
                     // event feed simultaneously, so this is fatal for the
                     // demux task as a whole, not per-worker recoverable.
                     tracing::warn!(error = %e, "demux recv failed, stopping");
                     break;
+                }
+                Err(
+                    e @ (RecvError::MissingIdentityFrame
+                    | RecvError::MissingPayloadFrame
+                    | RecvError::DecodeFailed(_)),
+                ) => {
+                    // A problem with this one message from one peer — the
+                    // socket itself is still alive, and every other worker's
+                    // events are unaffected. Logging and falling through to
+                    // the next loop iteration is what keeps one malformed
+                    // message (from a worker, or from any other peer that
+                    // connects and sends garbage) from silently killing
+                    // event delivery for the entire pool.
+                    tracing::warn!(error = %e, "demux recv failed for one message, continuing");
                 }
             }
         }

@@ -33,9 +33,9 @@ use zeromq::{
     ZmqMessage,
 };
 
+use crate::error::RecvError;
 use crate::TransportError;
 use crate::{decode_event, encode_message, WorkerEvent, WorkerMessage};
-use anvilml_core::AnvilError;
 
 /// A ZeroMQ ROUTER socket wrapper for sending messages to and receiving
 /// events from AnvilML workers.
@@ -227,41 +227,41 @@ impl RouterTransport {
     ///
     /// # Errors
     ///
-    /// Returns `AnvilError::Ipc` if the socket encounters a ZeroMQ error (e.g.
-    /// connection lost, closed socket), if the identity frame is missing (protocol
-    /// violation), if the payload frame is missing, or if the msgpack payload cannot
-    /// be decoded into a `WorkerEvent`.
+    /// Returns [`RecvError`] — see that type's documentation for which of
+    /// its four variants is genuinely fatal to the transport
+    /// (`SocketClosed`) versus a per-message problem that a caller reading
+    /// in a loop should be able to recover from (every other variant):
+    /// `SocketClosed` if the socket encounters a ZeroMQ error (e.g.
+    /// connection lost, closed socket); `MissingIdentityFrame` if the
+    /// identity frame is missing; `MissingPayloadFrame` if the payload
+    /// frame is missing; `DecodeFailed` if the msgpack payload cannot be
+    /// decoded into a `WorkerEvent`.
     ///
     /// # Logging
     ///
     /// Logs at DEBUG level: `tracing::debug!(worker_id = %worker_id, event_type = ?event,
     /// "event received from worker")`.
-    pub async fn recv(&self) -> Result<(String, WorkerEvent), AnvilError> {
+    pub async fn recv(&self) -> Result<(String, WorkerEvent), RecvError> {
         // Locks only against other recv() callers — in practice never
         // contended, since exactly one task (anvilml-worker's demux task)
         // calls recv() for the transport's entire lifetime. See module docs.
         let mut recv_half = self.recv_half.lock().await;
 
         // A ZmqError here indicates a socket-level failure (connection
-        // lost, closed socket). Mapped to AnvilError::Ipc since the design
-        // doc specifies recv() returns AnvilError.
-        let msg = recv_half
-            .recv()
-            .await
-            .map_err(|e| AnvilError::Ipc(format!("ROUTER recv failed: {e}")))?;
+        // lost, closed socket) — the one genuinely fatal case. `#[from]`
+        // on RecvError::SocketClosed handles the conversion.
+        let msg = recv_half.recv().await?;
 
         // Extract the identity frame (frame 0). The ROUTER socket always
         // prepends the peer's identity as the first frame. If this frame
-        // is missing, the message violates the ROUTER protocol contract.
-        let identity_bytes = msg
-            .get(0)
-            .ok_or_else(|| AnvilError::Ipc("ROUTER recv returned no identity frame".to_string()))?;
+        // is missing, this single message violates the ROUTER protocol
+        // contract — the socket itself is still alive.
+        let identity_bytes = msg.get(0).ok_or(RecvError::MissingIdentityFrame)?;
 
         // Extract the payload frame (frame 1). This contains the msgpack-encoded
-        // WorkerEvent. If missing, the message is incomplete.
-        let payload_bytes = msg
-            .get(1)
-            .ok_or_else(|| AnvilError::Ipc("ROUTER recv returned no payload frame".to_string()))?;
+        // WorkerEvent. If missing, this single message is incomplete — the
+        // socket itself is still alive.
+        let payload_bytes = msg.get(1).ok_or(RecvError::MissingPayloadFrame)?;
 
         // Convert the identity bytes to a UTF-8 string. Worker identities
         // are typically ASCII strings (e.g. "worker-0", "test-worker-0").
@@ -271,10 +271,10 @@ impl RouterTransport {
 
         // Decode the msgpack payload into a WorkerEvent. This uses the
         // `_type` discriminator field to select the correct enum variant.
-        // IpcError is mapped to AnvilError::Ipc per the design doc's
-        // specification that recv() returns AnvilError.
-        let event =
-            decode_event(payload_bytes.as_ref()).map_err(|e| AnvilError::Ipc(e.to_string()))?;
+        // A decode failure here is specific to this one message's payload
+        // — the socket itself is still alive. `#[from]` on
+        // RecvError::DecodeFailed handles the conversion from IpcError.
+        let event = decode_event(payload_bytes.as_ref())?;
 
         // Log the received event with structured fields for log aggregation.
         // The event_type field captures the WorkerEvent variant for indexing.
@@ -311,27 +311,19 @@ impl RouterTransport {
     /// Same as [`recv`](Self::recv).
     pub async fn recv_with_raw_identity(
         &self,
-    ) -> Result<(Vec<u8>, String, WorkerEvent), AnvilError> {
+    ) -> Result<(Vec<u8>, String, WorkerEvent), RecvError> {
         let mut recv_half = self.recv_half.lock().await;
 
-        let msg = recv_half
-            .recv()
-            .await
-            .map_err(|e| AnvilError::Ipc(format!("ROUTER recv failed: {e}")))?;
+        let msg = recv_half.recv().await?;
 
-        let identity_bytes = msg
-            .get(0)
-            .ok_or_else(|| AnvilError::Ipc("ROUTER recv returned no identity frame".to_string()))?;
+        let identity_bytes = msg.get(0).ok_or(RecvError::MissingIdentityFrame)?;
 
-        let payload_bytes = msg
-            .get(1)
-            .ok_or_else(|| AnvilError::Ipc("ROUTER recv returned no payload frame".to_string()))?;
+        let payload_bytes = msg.get(1).ok_or(RecvError::MissingPayloadFrame)?;
 
         let raw_identity = identity_bytes.to_vec();
         let worker_id = render_identity(identity_bytes);
 
-        let event =
-            decode_event(payload_bytes.as_ref()).map_err(|e| AnvilError::Ipc(e.to_string()))?;
+        let event = decode_event(payload_bytes.as_ref())?;
 
         tracing::debug!(
             worker_id = %worker_id,
