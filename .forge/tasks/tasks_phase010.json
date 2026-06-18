@@ -7,44 +7,34 @@
     "prereqs": [
       "P9-C1"
     ],
-    "context": "Create crates/anvilml-worker/src/respawn.rs: RespawnPolicy{delay_ms:u64,max_attempts:u32,window_s:u32}. pub fn should_respawn(&self,crash_count:u32,last_crash:Instant)->bool. pub fn next_delay_ms(&self,attempt:u32)->u64 (exponential backoff capped at 30s). Tests: max_attempts exceeded->false; within window->true; delay sequence correct. cargo test -p anvilml-worker --features mock-hardware -- respawn exits 0 >=4 tests.",
+    "context": "Implement RespawnPolicy in crates/anvilml-worker/src/respawn.rs. Fields: {delay_ms:u64,max_attempts:u32,window_s:u32} all pub. should_respawn(&self,crash_count:&mut u32,last_crash:Instant)->bool: reset *crash_count=0 if last_crash.elapsed()>=window_s, return false if *crash_count>=max_attempts, else *crash_count+=1 and return true. next_delay_ms(&self,attempt:u32)->u64: delay_ms*2^attempt capped at 30000ms. Tests in tests/respawn_tests.rs: >=4 covering max exceeded, within window, window reset, backoff sequence. cargo test -p anvilml-worker --features mock-hardware -- respawn exits 0.",
     "tags": []
   },
   {
     "id": "P10-A2",
-    "description": "anvilml-worker: managed.rs detect unexpected child exit and transition to Dead",
+    "description": "anvilml-worker/server: complete crash detection, respawn cycle, and operator restart",
     "phase": "10",
     "project": "anvilml",
     "prereqs": [
-      "P901-A3"
+      "P901-A3",
+      "P10-A1"
     ],
-    "context": "Extend the continuous run() loop (P901-A1): add self.child.as_mut().unwrap().wait() as a third select! arm alongside event_rx.recv(). On unexpected exit: transition status to Dead; broadcast WorkerStatusChanged(Dead); tracing::info!(worker_id,exit_code,\"worker exited unexpectedly\"). No respawn here (P10-A3). Job-failure notification out of scope (JobScheduler does not exist until P13-A3) \u2014 leave // TODO(P14) comment at the Dead transition instead. tests/managed_tests.rs: kill spawned child -> Dead observed. cargo test -p anvilml-worker --features mock-hardware exits 0.",
+    "context": "Read managed.rs, pool.rs, keepalive.rs on disk. Add 7 fields to ManagedWorker (crash_count,last_crash,cfg,device,transport,timeout_rx:oneshot::Receiver<()>,restart_rx:watch::Receiver<u64>); event_tx->Option<Sender>. do_respawn(&mut self,consult_policy): policy+backoff when true, spawn()+*self=new. Add timeout+restart arms; loop_child=self.child.take() before each select!. WorkerPool::restart_worker() increments watch counter. POST /v1/workers/{id}/restart->202. Tests assert Dead||Respawning. cargo test --workspace --features mock-hardware exits 0.",
     "tags": [
       "reasoning"
     ]
   },
   {
     "id": "P10-A3",
-    "description": "anvilml-worker: managed.rs respawn cycle after Dead using RespawnPolicy",
+    "description": "anvilml-worker/server: verify Phase 010 implementation and document findings",
     "phase": "10",
     "project": "anvilml",
     "prereqs": [
       "P10-A2"
     ],
-    "context": "Extend Dead path from P10-A2: after respawn_delay (next_delay_ms via tokio::time::sleep, not std::thread::sleep), call should_respawn(&mut crash_count,last_crash); true: transition Respawning, broadcast WorkerStatusChanged(Respawning), re-run spawn() with same cfg/device/transport, continue run() loop; false: remain Dead, tracing::info!(worker_id,\"respawn attempts exhausted\"). tracing::info!(worker_id,attempt,delay_ms) on Respawning. managed_tests.rs: kill subprocess -> Dead->Respawning->Idle within timeout. cargo test -p anvilml-worker --features mock-hardware exits 0.",
+    "context": "Verification-only task \u2014 no source code changes. Read managed.rs, pool.rs, handlers/workers.rs, managed_tests.rs, pool_tests.rs, workers_tests.rs on disk. Run: cargo fmt --all --check; cargo clippy --workspace --features mock-hardware -- -D warnings; cargo test --workspace --features mock-hardware. Produce .forge/reports/P10-A3_implement.md documenting as-built architecture vs P10-A2 plan. If any test fails or clippy warning exists, write under Blockers and stop \u2014 do not attempt fixes. Status=COMPLETE only if all three commands exit 0.",
     "tags": [
       "reasoning"
     ]
-  },
-  {
-    "id": "P10-B1",
-    "description": "anvilml-server: POST /v1/workers/:id/restart handler",
-    "phase": "10",
-    "project": "anvilml",
-    "prereqs": [
-      "P10-A3"
-    ],
-    "context": "Create handlers/workers.rs restart_worker(State<AppState>,Path<String>): lookup worker by id in WorkerPool; if not found 404; send Shutdown IPC message; force-kill after 5s; respawn. Return 202. Mount POST /v1/workers/:id/restart in build_router. Integration test: restart a worker; GET /v1/workers shows Idle within 30s. cargo test -p anvilml-server --features mock-hardware exits 0.",
-    "tags": []
   }
 ]
