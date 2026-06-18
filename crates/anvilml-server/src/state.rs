@@ -142,6 +142,9 @@ impl AppState {
         model_dirs: Vec<anvilml_core::ModelDirConfig>,
         workers: Arc<anvilml_worker::WorkerPool>,
     ) -> Self {
+        // Borrow the broadcaster that the pool was already constructed with,
+        // so AppState.broadcaster and pool.broadcaster() are the same Arc.
+        let broadcaster = workers.broadcaster().clone();
         Self {
             start_time: std::time::Instant::now(),
             version: version.into(),
@@ -150,9 +153,7 @@ impl AppState {
             db,
             registry,
             model_dirs,
-            // The broadcaster is shared across all handlers and spawned tasks.
-            // Cloning AppState clones the Arc, not the sender itself.
-            broadcaster: Arc::new(crate::ws::EventBroadcaster::new()),
+            broadcaster,
             workers: Some(workers),
         }
     }
