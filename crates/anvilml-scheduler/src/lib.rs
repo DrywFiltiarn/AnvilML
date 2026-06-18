@@ -7,5 +7,5 @@
 //! **Hard constraints:** No knowledge of HTTP request/response types.
 //! The scheduler speaks in jobs, graphs, and VRAM — not routes or handlers.
 
-#[allow(dead_code)]
-pub fn stub() {}
+pub mod node_registry;
+pub use node_registry::NodeTypeRegistry;

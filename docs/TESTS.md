@@ -1934,3 +1934,47 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** One route registered under key `"0"`; the same key deregistered twice in succession.
 **Expected output:** The route is present after `register()`, absent after `deregister()`, and a second `deregister()` call on an already-absent key completes without panicking — covering the case of a worker crashing before its own `spawn()` call ever reaches registration.
 **Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- demux_tests::test_deregister_removes_route` exits 0.
+## test_update_populates_registry (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/node_registry_tests.rs`
+**Context:** `NodeTypeRegistry::update_from_worker` inserts `NodeTypeDescriptor` values into the internal hash map keyed by `type_name`. `get`, `all_types`, and `is_empty` reflect the updated state. No I/O, no subprocess, no env vars — pure in-memory operations.
+**Tests:** Creates an empty registry, calls `update_from_worker` with two descriptors (`LoadModel`, `KSampler`), asserts `get` returns each by name, `all_types().len() == 2`, and `is_empty() == false`.
+**Inputs:** `worker_id = "worker-0"`, two `NodeTypeDescriptor` values with distinct `type_name`.
+**Expected output:** `get("LoadModel")` returns the descriptor; `get("KSampler")` returns the descriptor; `all_types().len() == 2`; `is_empty() == false`.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- node_registry` exits 0.
+
+## test_get_returns_none_for_unknown_type (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/node_registry_tests.rs`
+**Context:** `get` returns `None` when the requested `type_name` has never been registered. Tests the lookup path with an empty registry.
+**Tests:** Creates a default (empty) registry and calls `get("NonExistent")`.
+**Inputs:** `type_name = "NonExistent"`.
+**Expected output:** `get("NonExistent") == None`.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- node_registry` exits 0.
+
+## test_all_types_returns_all_descriptors (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/node_registry_tests.rs`
+**Context:** `all_types` returns all registered descriptors. Verifies both count and content match the inputs.
+**Tests:** Populates registry with 3 descriptors (A, B, C), calls `all_types`, asserts length is 3 and each type_name is present.
+**Inputs:** `worker_id = "worker-0"`, three `NodeTypeDescriptor` values.
+**Expected output:** `all_types().len() == 3`; type names A, B, and C are all present in the returned vec.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- node_registry` exits 0.
+
+## test_is_empty_before_and_after_update (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/node_registry_tests.rs`
+**Context:** `is_empty` correctly reports the registry state — `true` on a fresh registry, `false` after any update.
+**Tests:** Asserts `is_empty()` is `true` on default, calls `update_from_worker` with one descriptor, asserts `is_empty()` is `false`.
+**Inputs:** `worker_id = "worker-0"`, one `NodeTypeDescriptor`.
+**Expected output:** `is_empty() == true` before update; `is_empty() == false` after.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- node_registry` exits 0.
+
+## test_update_from_worker_merges (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/node_registry_tests.rs`
+**Context:** `update_from_worker` implements merge semantics: existing entries are preserved when a new batch arrives that does not contain them. This is critical because different workers may register different node type subsets.
+**Tests:** Updates registry with type A from worker-0, then updates with type B from worker-1 (no A). Verifies both A and B are still present.
+**Inputs:** First update: `[A]` from `worker-0`; second update: `[B]` from `worker-1`.
+**Expected output:** After both updates, `get("A") == Some(...)` and `get("B") == Some(...)` and `all_types().len() == 2`.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- node_registry` exits 0.
