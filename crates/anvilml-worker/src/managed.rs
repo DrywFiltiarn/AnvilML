@@ -5,7 +5,8 @@
 //! - Sending IPC messages via the bridge writer task (see `crate::bridge`)
 //! - Heartbeat keepalive with timeout watchdog
 //! - State machine transitions driven by events from the worker
-//! - Clean shutdown of all spawned tasks
+//! - Clean shutdown of all spawned tasks, triggered either by the worker
+//!   dying on its own or by an external shutdown request
 //!
 //! The state machine tracks the worker's lifecycle state (`WorkerStatus`) and
 //! transitions between states based on events received from the worker:
@@ -17,8 +18,18 @@
 //! call and forwards each worker's events into that worker's `event_tx`. See
 //! `crate::demux` for why a per-worker reader was unsound.
 //!
-//! Join handles are `Option<JoinHandle>` so `shutdown()` can take ownership
-//! and drop them to abort the task, since `tokio::JoinHandle` has no `Clone`.
+//! Join handles are `Option<JoinHandle>` so `run()`'s shutdown arm can take
+//! ownership and drop them to abort the task, since `tokio::JoinHandle` has
+//! no `Clone`.
+//!
+//! **There is no standalone `shutdown()` method.** `run(self)` consumes the
+//! worker for its entire lifetime, so a separate method requiring an owned
+//! `ManagedWorker` later (after `run()` has already taken it) cannot exist —
+//! `WorkerPool` only ever holds `run()`'s `JoinHandle` plus a
+//! `oneshot::Sender<()>` once a worker is spawned. Requesting shutdown means
+//! firing that sender; `run()`'s `select!` loop has a dedicated arm that
+//! performs the full teardown sequence and then exits the loop. See `run()`'s
+//! doc comment for the exact sequence.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,44 +50,17 @@ use crate::spawn::build_command;
 /// Re-exported from `anvilml_ipc` for use in the bridge channel type.
 use anvilml_ipc::WorkerMessage;
 
-/// Everything `WorkerPool::spawn_all` needs to register a freshly spawned
-/// worker in the pool-wide demux routing table.
-///
-/// Returned alongside `ManagedWorker` from `spawn()` rather than stored as a
-/// field on `ManagedWorker` itself, since nothing past the moment of
-/// construction needs the IPC identity bytes or a spare `event_tx` clone
-/// again — keeping them out of the struct avoids carrying state for the
-/// worker's entire lifetime to serve a single post-construction read.
-pub struct RouteInfo {
-    /// The raw ZMQ routing identity, matching `ANVILML_WORKER_ID`.
-    pub ipc_identity: Vec<u8>,
-    /// The human-readable display label (e.g. `"worker-0"`).
-    pub display_id: String,
-    /// A clone of this worker's event broadcast sender. The demux task
-    /// forwards events addressed to `ipc_identity` into this channel.
-    pub event_tx: broadcast::Sender<(String, WorkerEvent)>,
-}
-
 /// A managed worker subprocess with state machine supervision.
 ///
 /// Created via `spawn()` (launches the subprocess) or `new()` (pre-built
-/// channels, for testing). Consumed by `run()` (the event loop) or
-/// `shutdown()` (clean termination).
-///
-/// # Shutdown sequence
-///
-/// `shutdown()` performs the following steps in order:
-/// 1. Signal the heartbeat to stop via `HeartbeatHandle::shutdown()`
-/// 2. Send a `Shutdown` message to the bridge (best-effort)
-/// 3. Drop `msg_tx` to signal the bridge writer to exit
-/// 4. Drop the bridge handle to abort the writer task if it hasn't exited
-/// 5. Drop the keepalive handle to abort the keepalive task
+/// channels, for testing). Consumed entirely by `run()` (the event loop),
+/// which also owns shutdown — see `run()`'s doc comment for the shutdown
+/// sequence and why there is no separate `shutdown()` method.
 #[allow(dead_code)] // child, device_index, and respawn_policy are for future respawn logic (P10-A1)
 #[derive(Debug)]
 pub struct ManagedWorker {
     /// Read-write locked so the run loop can write transitions while other
     /// tasks (e.g. the pool's status-change monitor) read concurrently.
-    #[cfg_attr(test, allow(dead_code))] // tests need access to verify state transitions
     pub(crate) status: Arc<tokio::sync::RwLock<WorkerStatus>>,
 
     /// Sender for the message channel. The bridge writer task receives from
@@ -93,9 +77,9 @@ pub struct ManagedWorker {
     /// subprocess.
     child: Option<tokio::process::Child>,
 
-    /// `Option`-wrapped so `shutdown()` can take ownership and await it.
-    /// There is no reader handle here — see the module docs for why a
-    /// single pool-wide demux task replaced the per-worker reader.
+    /// `Option`-wrapped so `run()`'s shutdown arm can take ownership and
+    /// await it. There is no reader handle here — see the module docs for
+    /// why a single pool-wide demux task replaced the per-worker reader.
     bridge_handle: Option<JoinHandle<()>>,
 
     /// Handle for the keepalive heartbeat task. `Option`-wrapped for shutdown.
@@ -119,6 +103,19 @@ pub struct ManagedWorker {
     /// The GPU device index. Updated from the `Ready` event in `run()`,
     /// for the same reason as `device_name`.
     device_index: u32,
+
+    /// The pool-wide demux routing table, so `run()`'s shutdown arm can
+    /// remove this worker's entry on the way out. `None` for workers built
+    /// via `new()` without a real demux task (most unit tests) — in that
+    /// case deregistration is a no-op, not an error, since there is no
+    /// table to leak an entry in.
+    routes: Option<crate::demux::RouteTable>,
+
+    /// This worker's key in `routes`, rendered by `anvilml_ipc::render_identity`
+    /// from the same `ipc_identity` bytes used to address `send()` calls.
+    /// Stored alongside `routes` (both present or both absent) since neither
+    /// is useful without the other.
+    route_key: Option<String>,
 }
 impl ManagedWorker {
     /// Returns a clone of the status `Arc` so callers can observe state
@@ -144,6 +141,10 @@ impl ManagedWorker {
     /// * `worker_id` — The worker's stable identity string.
     /// * `device_name` — The GPU device name (populated from `Ready` event in production).
     /// * `device_index` — The GPU device index (populated from `Ready` event in production).
+    /// * `routes` — The pool-wide demux routing table, for deregistration on
+    ///   shutdown. `None` when the test has no demux task running.
+    /// * `route_key` — This worker's key in `routes`. `None` iff `routes` is
+    ///   `None` — the two are only ever meaningful together.
     #[allow(clippy::too_many_arguments)] // test constructor with many parameters
     pub fn new(
         status: WorkerStatus,
@@ -156,6 +157,8 @@ impl ManagedWorker {
         worker_id: String,
         device_name: String,
         device_index: u32,
+        routes: Option<crate::demux::RouteTable>,
+        route_key: Option<String>,
     ) -> Self {
         Self {
             status: Arc::new(tokio::sync::RwLock::new(status)),
@@ -169,10 +172,12 @@ impl ManagedWorker {
             worker_id,
             device_name,
             device_index,
+            routes,
+            route_key,
         }
     }
-    /// Spawn a Python worker subprocess and return a `ManagedWorker` plus
-    /// the `RouteInfo` its caller must register with the pool's demux task.
+    /// Spawn a Python worker subprocess, register its route with the
+    /// pool-wide demux task, and return the resulting `ManagedWorker`.
     ///
     /// # Arguments
     ///
@@ -184,6 +189,14 @@ impl ManagedWorker {
     ///   broadcasts — never the IPC routing key, since it won't match the
     ///   ZMQ identity the Python worker actually registers (see
     ///   `ANVILML_WORKER_ID` in `build_worker_env()`).
+    /// * `routes` — The pool-wide demux routing table. `spawn()` registers
+    ///   this worker's route before returning (rather than leaving
+    ///   registration to the caller) so the same code path that knows the
+    ///   IPC identity bytes also owns writing — and later, on shutdown,
+    ///   erasing — the table entry derived from them. The worker retains
+    ///   the table and its own key so `run()`'s shutdown arm can call
+    ///   `demux::deregister` without the pool needing to track the key
+    ///   separately.
     ///
     /// # Errors
     ///
@@ -193,13 +206,22 @@ impl ManagedWorker {
     ///
     /// On Linux, `PR_SET_PDEATHSIG` is set so the worker is killed if the
     /// parent supervisor dies.
-    #[tracing::instrument(skip(cfg, device, transport), fields(worker_id, device_index = %device.index))]
+    ///
+    /// # Registration ordering
+    ///
+    /// Registration happens here, before `spawn()` returns — not afterward
+    /// by the caller — so there is no window between subprocess spawn and
+    /// route registration during which the worker's first ping could be
+    /// delivered to a table with no entry for it yet. See `crate::demux`'s
+    /// module docs for why that race matters.
+    #[tracing::instrument(skip(cfg, device, transport, routes), fields(worker_id, device_index = %device.index))]
     pub async fn spawn(
         cfg: &ServerConfig,
         device: &GpuDevice,
         transport: Arc<RouterTransport>,
         worker_id: String,
-    ) -> Result<(Self, RouteInfo), AnvilError> {
+        routes: crate::demux::RouteTable,
+    ) -> Result<Self, AnvilError> {
         // The port is the transport's bound port, not a separately
         // configured value — every worker shares the one ROUTER socket.
         let port = transport.port;
@@ -225,8 +247,9 @@ impl ManagedWorker {
         // display label here would make every send() fail with
         // "Destination client not found by identity", since ZMQ never
         // registered that string. bridge::start is writer-only; the demux
-        // task (started later by WorkerPool, using RouteInfo below) is the
-        // only reader of this worker's events — see crate::demux.
+        // task (already running by the time spawn() is called — see
+        // "Registration ordering" above) is the only reader of this
+        // worker's events — see crate::demux.
         let ipc_identity_bytes = device.index.to_string().into_bytes();
         let bridge_handle = Some(bridge::start(
             transport.clone(),
@@ -277,32 +300,34 @@ impl ManagedWorker {
             "worker spawned"
         );
 
-        // event_tx is cloned a third time here (bridge::start no longer
-        // takes a clone, but the struct field and RouteInfo each still
-        // need their own) so WorkerPool can hand RouteInfo's clone to the
-        // demux task without reaching into the struct after construction.
-        let route_info = RouteInfo {
-            ipc_identity: ipc_identity_bytes,
-            display_id: worker_id.clone(),
-            event_tx: event_tx.clone(),
-        };
+        // Registered here, immediately, rather than handed back to the
+        // caller as a RouteInfo to register later — see "Registration
+        // ordering" above. render_identity is the single source of truth
+        // for key rendering; using anything else here risks a mismatch
+        // against what RouterTransport::recv() renders for the same bytes.
+        let route_key = anvilml_ipc::render_identity(&ipc_identity_bytes);
+        crate::demux::register(
+            &routes,
+            route_key.clone(),
+            (worker_id.clone(), event_tx.clone()),
+        )
+        .await;
 
-        Ok((
-            Self {
-                status,
-                msg_tx,
-                event_tx,
-                child: Some(child),
-                bridge_handle,
-                keepalive_handle: Some(keepalive_handle),
-                heartbeat_handle: Some(heartbeat_handle),
-                respawn_policy: RespawnPolicy::default(),
-                worker_id,
-                device_name,
-                device_index: device.index,
-            },
-            route_info,
-        ))
+        Ok(Self {
+            status,
+            msg_tx,
+            event_tx,
+            child: Some(child),
+            bridge_handle,
+            keepalive_handle: Some(keepalive_handle),
+            heartbeat_handle: Some(heartbeat_handle),
+            respawn_policy: RespawnPolicy::default(),
+            worker_id,
+            device_name,
+            device_index: device.index,
+            routes: Some(routes),
+            route_key: Some(route_key),
+        })
     }
     /// Run the managed worker's state machine event loop, consuming `self`.
     ///
@@ -327,9 +352,37 @@ impl ManagedWorker {
     /// If no `Ready` event is received within 60 seconds, the worker is
     /// considered unresponsive and transitions to `Dead`. This prevents
     /// workers from hanging indefinitely in the `Initializing` state.
-    #[tracing::instrument(skip(self), fields(worker_id = %self.worker_id))]
-    pub async fn run(mut self) {
+    ///
+    /// # Shutdown
+    ///
+    /// `shutdown_rx` is the caller's means of requesting a graceful stop —
+    /// firing the matching `oneshot::Sender` (held by `WorkerPool`) wakes
+    /// the loop's shutdown arm, which runs the following sequence in order
+    /// and then returns:
+    /// 1. Signal the heartbeat to stop via `HeartbeatHandle::shutdown()`
+    /// 2. Send a `Shutdown` message to the bridge (best-effort, may fail
+    ///    if the channel is already closed)
+    /// 3. Drop `msg_tx` to signal the bridge writer to exit
+    /// 4. Await the bridge writer (bounded to 2s), so `Shutdown` is
+    ///    actually transmitted before proceeding
+    /// 5. Drop the keepalive handle to abort the keepalive task
+    /// 6. Deregister this worker's route from the demux table (no-op if
+    ///    `routes`/`route_key` are `None`)
+    /// 7. Wait up to 5 seconds for the subprocess to exit on its own, then
+    ///    force-kill it — dropping a `tokio::process::Child` does not
+    ///    terminate the OS process, only the Rust handle to it
+    ///
+    /// This is the only shutdown path: there is no separate method, since
+    /// `run(self)` already holds the only owned `ManagedWorker` there will
+    /// ever be once spawned. The loop's two other exit paths (ready timeout
+    /// and unexpected child exit) skip this sequence — they only drop the
+    /// three task handles — because in both cases the worker is already
+    /// gone or unresponsive, so there is nothing live to signal a graceful
+    /// `Shutdown` message to.
+    #[tracing::instrument(skip(self, shutdown_rx), fields(worker_id = %self.worker_id))]
+    pub async fn run(mut self, shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
         let mut event_rx = self.event_tx.subscribe();
+        let mut shutdown_rx = shutdown_rx;
 
         // In production, the pool's demux task (crate::demux) holds the
         // only remaining clone of this sender and forwards this worker's
@@ -516,11 +569,130 @@ impl ManagedWorker {
                     // will observe the Dead status instead.
                     break;
                 }
+
+                // Fires once when the pool (or whatever holds the matching
+                // oneshot::Sender) requests a graceful shutdown. This is the
+                // only path that sends a Shutdown message to the Python
+                // worker and waits for/kills its subprocess — the other two
+                // break arms above assume the worker is already gone or
+                // unresponsive, so there is no live peer left to notify.
+                _ = &mut shutdown_rx => {
+                    tracing::info!(
+                        worker_id = %self.worker_id,
+                        "shutdown requested, beginning teardown"
+                    );
+
+                    // Stop pinging before the worker is told to shut down,
+                    // so no ping races the Shutdown message sent below.
+                    if let Some(handle) = &self.heartbeat_handle {
+                        handle.shutdown().await;
+                    }
+
+                    // Best-effort: the writer drains this from the channel
+                    // below regardless of whether this particular send()
+                    // succeeds.
+                    self.msg_tx.send(WorkerMessage::Shutdown).await.ok();
+
+                    // The writer's `while let Some(msg) = msg_rx.recv().await`
+                    // only exits once every sender is dropped AND the buffer
+                    // is drained — so dropping here cannot discard the
+                    // Shutdown message just sent. This is a partial move out
+                    // of self.msg_tx, legal here because run() owns self by
+                    // value for its whole body and nothing below uses self
+                    // as a complete struct again — only its remaining
+                    // individual fields.
+                    drop(self.msg_tx);
+
+                    // A bare send().await only guarantees the message
+                    // reached the channel buffer, not that the writer task
+                    // has since been scheduled to pull it off and call
+                    // transport.send(). Awaiting the handle (bounded, in
+                    // case the writer is itself stuck on a bad transport)
+                    // is what actually guarantees delivery before shutdown
+                    // proceeds.
+                    if let Some(writer_handle) = self.bridge_handle.take() {
+                        if tokio::time::timeout(Duration::from_secs(2), writer_handle)
+                            .await
+                            .is_err()
+                        {
+                            tracing::warn!(
+                                worker_id = %self.worker_id,
+                                "bridge writer task did not finish within grace \
+                                 period during shutdown"
+                            );
+                        }
+                        // No reader handle to abort here — the demux task is
+                        // pool-wide and outlives any single worker's
+                        // shutdown. WorkerPool aborts it once, after every
+                        // worker has stopped.
+                    }
+
+                    drop(self.keepalive_handle.take());
+
+                    // Remove this worker's entry from the demux table so it
+                    // doesn't accumulate stale routes across crashes and
+                    // respawns — see crate::demux::deregister's doc comment
+                    // for why an ever-growing table is the failure mode this
+                    // guards against. No-op when routes/route_key are None
+                    // (workers built via new() without a real demux task).
+                    if let (Some(routes), Some(key)) = (&self.routes, &self.route_key) {
+                        crate::demux::deregister(routes, key).await;
+                    }
+
+                    // Without this wait, the OS process survives the
+                    // supervisor exiting: dropping tokio::process::Child
+                    // only drops Rust's handle, never the underlying
+                    // process.
+                    if let Some(mut child) = self.child.take() {
+                        match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
+                            Ok(Ok(status)) => {
+                                tracing::debug!(
+                                    worker_id = %self.worker_id,
+                                    exit_code = ?status.code(),
+                                    "worker subprocess exited cleanly during shutdown"
+                                );
+                            }
+                            Ok(Err(err)) => {
+                                tracing::warn!(
+                                    worker_id = %self.worker_id,
+                                    error = %err,
+                                    "error waiting on worker subprocess during shutdown"
+                                );
+                            }
+                            Err(_) => {
+                                // Grace period elapsed: force-kill so the
+                                // process can't outlive the supervisor.
+                                tracing::warn!(
+                                    worker_id = %self.worker_id,
+                                    "worker subprocess did not exit within grace \
+                                     period, killing"
+                                );
+                                if let Err(err) = child.kill().await {
+                                    tracing::warn!(
+                                        worker_id = %self.worker_id,
+                                        error = %err,
+                                        "failed to kill worker subprocess"
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    tracing::debug!(worker_id = %self.worker_id, "worker shutdown complete");
+                    break;
+                }
             }
         }
 
-        // The child subprocess isn't waited on here — if it's still alive,
-        // it's either exiting on its own or will be reaped when self drops.
+        // Reached by all four break paths (ready timeout, channel closed,
+        // unexpected child exit, and the shutdown arm above). The shutdown
+        // arm already dropped bridge_handle/keepalive_handle explicitly as
+        // part of its sequence — these drops are a no-op for that path
+        // (the Options are already None) and the only real cleanup for the
+        // other three, which never run the shutdown sequence above. The
+        // child subprocess isn't waited on here for those three paths — if
+        // it's still alive, it's either exiting on its own or will be
+        // reaped when self drops.
         drop(self.bridge_handle);
         drop(self.keepalive_handle);
         drop(self.heartbeat_handle);
@@ -529,268 +701,5 @@ impl ManagedWorker {
             worker_id = %self.worker_id,
             "worker run loop ended"
         );
-    }
-    /// Shut down the managed worker cleanly, consuming `self`.
-    ///
-    /// 1. Signal the heartbeat to stop via `HeartbeatHandle::shutdown()`
-    /// 2. Send a `Shutdown` message to the bridge (best-effort, may fail
-    ///    if the channel is already closed)
-    /// 3. Drop `msg_tx` to signal the bridge writer to exit
-    /// 4. Await the bridge writer (bounded), so `Shutdown` is actually
-    ///    transmitted before this function returns
-    /// 5. Drop the keepalive handle to abort the keepalive task
-    /// 6. Wait up to 5 seconds for the subprocess to exit on its own, then
-    ///    force-kill it — dropping a `tokio::process::Child` does not
-    ///    terminate the OS process, only the Rust handle to it
-    #[tracing::instrument(skip(self), fields(worker_id = %self.worker_id))]
-    pub async fn shutdown(mut self) {
-        // Stop pinging before the worker is told to shut down, so no ping
-        // races the Shutdown message sent below.
-        if let Some(handle) = &self.heartbeat_handle {
-            handle.shutdown().await;
-        }
-
-        // Best-effort: the writer drains this from the channel below
-        // regardless of whether this particular send() succeeds.
-        self.msg_tx.send(WorkerMessage::Shutdown).await.ok();
-
-        // The writer's `while let Some(msg) = msg_rx.recv().await` only
-        // exits once every sender is dropped AND the buffer is drained —
-        // so dropping here cannot discard the Shutdown message just sent.
-        drop(self.msg_tx);
-
-        // A bare send().await only guarantees the message reached the
-        // channel buffer, not that the writer task has since been
-        // scheduled to pull it off and call transport.send() — tokio's
-        // scheduler is cooperative, and nothing else in this function
-        // naturally yields long enough for that to happen on its own.
-        // Awaiting the handle (bounded, in case the writer is itself
-        // stuck on a bad transport) is what actually guarantees delivery
-        // before shutdown proceeds; previously this just dropped the
-        // handle immediately, which aborts nothing and guarantees nothing.
-        if let Some(writer_handle) = self.bridge_handle.take() {
-            if tokio::time::timeout(Duration::from_secs(2), writer_handle)
-                .await
-                .is_err()
-            {
-                tracing::warn!(
-                    worker_id = %self.worker_id,
-                    "bridge writer task did not finish within grace period during shutdown"
-                );
-            }
-            // No reader handle to abort here — the demux task is
-            // pool-wide and outlives any single worker's shutdown.
-            // WorkerPool aborts it once, after every worker has stopped.
-        }
-
-        drop(self.keepalive_handle);
-
-        // Without this wait, the OS process survives the supervisor
-        // exiting: dropping tokio::process::Child only drops Rust's
-        // handle, never the underlying process. This is also why
-        // with_graceful_shutdown alone was insufficient — it drains HTTP
-        // connections but has no awareness of worker subprocesses at all.
-        if let Some(mut child) = self.child.take() {
-            match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
-                Ok(Ok(status)) => {
-                    tracing::debug!(
-                        worker_id = %self.worker_id,
-                        exit_code = ?status.code(),
-                        "worker subprocess exited cleanly during shutdown"
-                    );
-                }
-                Ok(Err(err)) => {
-                    tracing::warn!(
-                        worker_id = %self.worker_id,
-                        error = %err,
-                        "error waiting on worker subprocess during shutdown"
-                    );
-                }
-                Err(_) => {
-                    // Grace period elapsed: force-kill so the process
-                    // can't outlive the supervisor that's exiting.
-                    tracing::warn!(
-                        worker_id = %self.worker_id,
-                        "worker subprocess did not exit within grace period, killing"
-                    );
-                    if let Err(err) = child.kill().await {
-                        tracing::warn!(
-                            worker_id = %self.worker_id,
-                            error = %err,
-                            "failed to kill worker subprocess"
-                        );
-                    }
-                }
-            }
-        }
-
-        tracing::debug!(
-            worker_id = %self.worker_id,
-            "worker shutdown"
-        );
-    }
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Verify that the spawned task in the keepalive callback successfully
-    /// updates the worker status. This is a regression test for the
-    /// mechanism where the synchronous on_timeout callback spawns an async
-    /// task that acquires the write lock and sets the status to Dead.
-    #[tokio::test]
-    async fn test_spawned_task_updates_status() {
-        let status = Arc::new(tokio::sync::RwLock::new(WorkerStatus::Idle));
-        let weak = Arc::downgrade(&status);
-
-        let callback_fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let callback_fired_clone = Arc::clone(&callback_fired);
-
-        let on_timeout = move || {
-            let weak = weak.clone();
-            callback_fired.store(true, std::sync::atomic::Ordering::SeqCst);
-            tokio::spawn(async move {
-                if let Some(s) = weak.upgrade() {
-                    *s.write().await = WorkerStatus::Dead;
-                }
-            });
-        };
-
-        let handle = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        });
-
-        on_timeout();
-
-        let _ = handle.await;
-
-        assert!(
-            callback_fired_clone.load(std::sync::atomic::Ordering::SeqCst),
-            "callback should have fired"
-        );
-
-        let final_status = *status.read().await;
-        assert_eq!(
-            final_status,
-            WorkerStatus::Dead,
-            "status should be Dead, got {:?}",
-            final_status
-        );
-    }
-
-    /// Verify that the ManagedWorker processes events from the broadcast channel.
-    ///
-    /// This test creates a ManagedWorker in Initializing status, spawns run(),
-    /// sends a Ready event, and verifies the status transitions to Idle.
-    #[tokio::test]
-    async fn test_managed_worker_processes_ready_event() {
-        let (msg_tx, _msg_rx) = mpsc::channel(16);
-        let (event_tx, _event_rx) = broadcast::channel(16);
-
-        let worker = ManagedWorker::new(
-            WorkerStatus::Initializing,
-            msg_tx,
-            event_tx.clone(),
-            None,
-            None, // bridge_handle
-            None,
-            None,
-            "test-worker".to_string(),
-            "test-device".to_string(),
-            0, // device_index
-        );
-
-        let status = worker.get_status();
-
-        let run_handle = tokio::spawn(worker.run());
-
-        // run() must reach event_rx.subscribe() before this send, or the
-        // event is published with no subscriber yet and lost.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        let ready_event = WorkerEvent::Ready {
-            worker_id: "test-worker".to_string(),
-            device_index: 0,
-            device_name: "test-device".to_string(),
-            device_type: "cpu".to_string(),
-            vram_total_mib: 8192,
-            vram_free_mib: 8000,
-            torch_version: "2.4.0".to_string(),
-            fp16: true,
-            bf16: true,
-            fp8: false,
-            flash_attention: false,
-            node_types: Vec::new(),
-        };
-        let _ = event_tx.send(("test-worker".to_string(), ready_event));
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let final_status = *status.read().await;
-        assert_eq!(
-            final_status,
-            WorkerStatus::Idle,
-            "status should be Idle after Ready event, got {:?}",
-            final_status
-        );
-
-        // Dropping the only remaining sender is what lets run()'s loop
-        // observe RecvError::Closed and exit.
-        drop(event_tx);
-        let _ = run_handle.await;
-    }
-
-    /// Verify that the ManagedWorker processes Completed events from Busy state.
-    #[tokio::test]
-    async fn test_managed_worker_processes_completed_event() {
-        let (msg_tx, _msg_rx) = mpsc::channel(16);
-        let (event_tx, _event_rx) = broadcast::channel(16);
-
-        let worker = ManagedWorker::new(
-            WorkerStatus::Idle,
-            msg_tx,
-            event_tx.clone(),
-            None,
-            None, // bridge_handle
-            None,
-            None,
-            "test-worker".to_string(),
-            "test-device".to_string(),
-            0, // device_index
-        );
-
-        let status = worker.get_status();
-
-        let run_handle = tokio::spawn(worker.run());
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // Simulates job dispatch, which normally happens via the
-        // scheduler — there is no dispatch path to call directly here.
-        {
-            let mut s = status.write().await;
-            *s = WorkerStatus::Busy;
-        }
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        let completed_event = WorkerEvent::Completed {
-            job_id: uuid::Uuid::new_v4(),
-            elapsed_ms: 5000,
-        };
-        let _ = event_tx.send(("test-worker".to_string(), completed_event));
-
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        let final_status = *status.read().await;
-        assert_eq!(
-            final_status,
-            WorkerStatus::Idle,
-            "status should be Idle after Completed event, got {:?}",
-            final_status
-        );
-
-        drop(event_tx);
-        let _ = run_handle.await;
     }
 }

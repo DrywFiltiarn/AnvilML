@@ -46,6 +46,24 @@ pub async fn register(routes: &RouteTable, key: String, route: Route) {
     routes.lock().await.insert(key, route);
 }
 
+/// Remove one worker's route from the table, keyed the same way as
+/// `register()`.
+///
+/// Without this, a crashed or shut-down worker's entry stays in the table
+/// forever — the broadcast channel its `Route` holds has no live receiver,
+/// so every subsequent event for that identity is a wasted lookup and a
+/// `send()` into the void, and the table itself grows without bound across
+/// repeated respawns. Calling this during a worker's own shutdown keeps the
+/// table's size bounded by the number of *currently live* workers, not the
+/// number that have ever existed.
+///
+/// A no-op if `key` isn't present — deregistering twice, or deregistering a
+/// worker that never successfully registered (e.g. it crashed before
+/// `spawn_all` reached the registration call), is not an error.
+pub async fn deregister(routes: &RouteTable, key: &str) {
+    routes.lock().await.remove(key);
+}
+
 /// Spawn the demux task and return its `JoinHandle`.
 ///
 /// `routes` must be keyed using `anvilml_ipc::render_identity()` — the same

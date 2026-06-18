@@ -45,12 +45,14 @@ fn mock_pool_with_one_worker() -> WorkerPool {
         "worker-0".to_string(),
         "mock-device".to_string(),
         0, // device_index
+        None, // routes — no real demux task in this test
+        None, // route_key
     );
 
     // Build the pool with one mock worker.
     WorkerPool::new(
         vec![(
-            Arc::new(mock_worker),
+            mock_worker.get_status(),
             "worker-0".to_string(),
             "mock-device".to_string(),
         )],

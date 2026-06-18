@@ -6,7 +6,7 @@
 //! this is its replacement, exercising `demux::start` instead.
 
 use anvilml_ipc::{RouterTransport, WorkerEvent};
-use anvilml_worker::{register_route, start_demux, RouteTable};
+use anvilml_worker::{deregister_route, register_route, start_demux, RouteTable};
 use rmp_serde;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -165,4 +165,42 @@ async fn test_demux_drops_event_for_unregistered_identity() {
     // unregistered identity has no channel to receive from by definition.
     // The test passes if this point is reached without panic or hang.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+}
+
+/// Verify that `deregister()` removes a previously `register()`-ed route,
+/// and that deregistering an already-absent key is a no-op rather than a
+/// panic.
+///
+/// This is the regression test for the memory-leak concern that motivated
+/// adding `deregister()` in the first place: before it existed, the
+/// routing table only ever grew (`register`, never removed), so a crashed
+/// or shut-down worker's entry — and the broadcast channel it holds open —
+/// would persist for the lifetime of the process across every respawn.
+/// Unlike the two tests above, this doesn't need a real transport or
+/// DEALER socket — `register`/`deregister` only touch the in-memory table,
+/// independent of anything `start()`'s task does with it.
+#[tokio::test]
+async fn test_deregister_removes_route() {
+    let routes: RouteTable = Arc::new(Mutex::new(HashMap::new()));
+    let key = "0".to_string();
+    let (event_tx, _event_rx) = broadcast::channel(16);
+
+    register_route(&routes, key.clone(), ("worker-0".to_string(), event_tx)).await;
+
+    assert!(
+        routes.lock().await.contains_key(&key),
+        "route should be present after register()"
+    );
+
+    deregister_route(&routes, &key).await;
+
+    assert!(
+        !routes.lock().await.contains_key(&key),
+        "route should be absent after deregister()"
+    );
+
+    // Deregistering an already-absent key must not panic — covers the
+    // case of a worker crashing before its own spawn() call ever reaches
+    // registration.
+    deregister_route(&routes, &key).await;
 }

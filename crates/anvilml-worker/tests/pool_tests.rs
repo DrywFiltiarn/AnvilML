@@ -1,8 +1,14 @@
 //! Integration tests for the `WorkerPool` struct.
 //!
 //! These tests verify pool construction, worker info retrieval, and
-//! status change broadcasting. Tests use `ManagedWorker::new()` with
-//! pre-built channels (bypassing subprocess spawning).
+//! status change broadcasting. `WorkerPool::new()` (the test constructor)
+//! takes pre-built `(status, worker_id, device_name)` triples rather than
+//! `ManagedWorker` values — the pool no longer holds `ManagedWorker`
+//! instances at all once `run()` has consumed them, so its test
+//! constructor mirrors the same shape. `make_test_worker` below still
+//! builds a real `ManagedWorker` (via `ManagedWorker::new()` with
+//! pre-built channels) purely so its `get_status()` accessor can hand
+//! back the same status `Arc` a test will later write to directly.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,7 +45,10 @@ fn make_test_worker(
         None, // heartbeat_handle
         worker_id.to_string(),
         device_name.to_string(),
-        0, // device_index
+        0,    // device_index
+        None, // routes — these tests exercise the pool's test constructor,
+        // which never starts a real demux task
+        None, // route_key
     );
 
     (worker, event_tx)
@@ -61,7 +70,7 @@ async fn test_spawn_all_workers_idle() {
         let worker_id = format!("worker-{i}");
         let device_name = format!("MockGPU-{i}");
         let (worker, _event_tx) = make_test_worker(WorkerStatus::Idle, &worker_id, &device_name);
-        pool_workers.push((Arc::new(worker), worker_id, device_name));
+        pool_workers.push((worker.get_status(), worker_id, device_name));
     }
 
     // Construct the pool using the test constructor.
@@ -114,7 +123,7 @@ async fn test_broadcaster_returns_reference() {
 
     let pool = WorkerPool::new(
         vec![(
-            Arc::new(worker),
+            worker.get_status(),
             "test-worker-broadcaster".to_string(),
             "test-device".to_string(),
         )],
@@ -148,12 +157,15 @@ async fn test_pool_broadcasts_status_change() {
         "test-device-broadcast",
     );
 
-    // Capture the worker's status Arc for direct manipulation.
+    // Capture the worker's status Arc for direct manipulation. Captured
+    // before WorkerPool::new() consumes the same Arc via .get_status() —
+    // both calls return clones of the same underlying RwLock, so writes
+    // through this handle are visible to the pool's copy.
     let status = worker.get_status();
 
     let _pool = WorkerPool::new(
         vec![(
-            Arc::new(worker),
+            worker.get_status(),
             "test-worker-broadcast".to_string(),
             "test-device-broadcast".to_string(),
         )],
@@ -247,7 +259,7 @@ async fn test_reexport_worker_pool() {
     // Use the re-exported type from the crate root.
     let _pool: WorkerPoolReexport = WorkerPoolReexport::new(
         vec![(
-            Arc::new(worker),
+            worker.get_status(),
             "test-worker-reexport".to_string(),
             "test-device".to_string(),
         )],
@@ -257,4 +269,60 @@ async fn test_reexport_worker_pool() {
 
     // If this compiles, the re-export is correct.
     // The test passes if no compilation error occurs.
+}
+
+/// Verify that `shutdown_all()` completes without hanging or panicking
+/// against pools built via the `new()` test constructor.
+///
+/// `new()`'s synthesized `WorkerHandle`s have a `run_handle` that's an
+/// already-instantly-finished task (`tokio::spawn(async {})`) and a
+/// `shutdown_tx` whose paired receiver was dropped immediately — so this
+/// test cannot exercise `run()`'s actual teardown sequence (there is no
+/// real `run()` task here to drive), but it does exercise `shutdown_all()`'s
+/// own control flow: draining the vec, firing into an already-closed
+/// receiver (expected to be a harmless `Err` from `send()`, not a panic),
+/// and awaiting a `run_handle` that resolves immediately. Real end-to-end
+/// coverage of `run()`'s shutdown arm lives in
+/// `managed_tests::test_run_shutdown_deregisters_route`, which drives an
+/// actual `run()` task.
+#[tokio::test]
+async fn test_shutdown_all_completes_against_inert_handles() {
+    let transport = Arc::new(RouterTransport::bind().await.expect("bind should succeed"));
+    let broadcaster = Arc::new(EventBroadcaster::new());
+
+    let (worker, _event_tx) = make_test_worker(
+        WorkerStatus::Idle,
+        "test-worker-shutdown-all",
+        "test-device",
+    );
+
+    let pool = WorkerPool::new(
+        vec![(
+            worker.get_status(),
+            "test-worker-shutdown-all".to_string(),
+            "test-device".to_string(),
+        )],
+        transport,
+        broadcaster,
+    );
+
+    // The only assertion this test can make without a real run() task is
+    // that shutdown_all() itself returns promptly rather than hanging —
+    // a hang here would mean shutdown_all() is blocking on something that
+    // never resolves for an inert handle, which is exactly the kind of
+    // regression a bounded timeout in shutdown_all() is meant to prevent.
+    let result = tokio::time::timeout(Duration::from_secs(15), pool.shutdown_all()).await;
+    assert!(
+        result.is_ok(),
+        "shutdown_all() should complete well within its own internal \
+         per-worker timeout when given an already-finished run_handle"
+    );
+
+    // After shutdown_all(), the pool's worker list should be empty —
+    // it's drained via mem::take and never repopulated.
+    let infos = pool.get_worker_infos().await;
+    assert!(
+        infos.is_empty(),
+        "pool should report no workers after shutdown_all()"
+    );
 }

@@ -6,6 +6,14 @@
 //!
 //! The `ManagedWorker::new()` constructor is used for tests, while
 //! `ManagedWorker::spawn()` is used in production.
+//!
+//! `run()` takes a `oneshot::Receiver<()>` as its shutdown signal. Most
+//! tests here don't exercise shutdown at all — they close the worker by
+//! dropping `event_tx` instead — so the `spawn_run()` helper below wraps
+//! `tokio::spawn(worker.run(shutdown_rx))` with a throwaway, never-fired
+//! sender. Tests that do exercise shutdown (e.g. `test_shutdown_cleans_up_handles`,
+//! `test_run_shutdown_deregisters_route`) construct their own
+//! `oneshot::channel()` directly so they can hold and fire the sender.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -60,9 +68,39 @@ fn make_test_worker_with_index(
         worker_id.to_string(),
         device_name.to_string(),
         device_index,
+        None, // routes — no real demux task in these tests
+        None, // route_key
     );
 
     (worker, event_tx)
+}
+
+/// Spawn `worker.run()` with a shutdown channel whose sender is kept alive
+/// but never fired, for tests that only care about event-driven state
+/// transitions and close the worker via `drop(event_tx)` rather than an
+/// explicit shutdown request.
+///
+/// The sender must outlive `run()`, not be dropped immediately: a
+/// `oneshot::Receiver` resolves (with `Err`) the instant its paired
+/// `Sender` is dropped, and `run()`'s `select!` arm on `&mut shutdown_rx`
+/// doesn't distinguish a real `Ok(())` send from that `Err` — either one
+/// wins the race and fires the shutdown arm. Binding the sender to a
+/// leading-underscore `_shutdown_tx` (as an earlier version of this helper
+/// did) drops it at the end of this function's statement, before `run()`
+/// has even been polled once — `run()` then tears down almost immediately
+/// on every call, which is silent here but causes every caller's
+/// state-transition assertions to fail, since the loop is already gone by
+/// the time the test sends its event. Capturing the sender in the spawned
+/// async block (moved in, never sent on, dropped only when the task itself
+/// ends) keeps it alive for exactly as long as `run()` runs.
+fn spawn_run(worker: ManagedWorker) -> tokio::task::JoinHandle<()> {
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        // shutdown_tx is moved into this future purely to keep it alive;
+        // it's never sent on, so run()'s shutdown arm never fires from it.
+        let _shutdown_tx = shutdown_tx;
+        worker.run(shutdown_rx).await
+    })
 }
 
 /// Verify that the worker transitions from Initializing to Idle on a Ready event.
@@ -83,7 +121,7 @@ async fn test_spawn_reaches_idle() {
 
     // Spawn run() first — it subscribes to the broadcast channel
     // and enters the event processing loop.
-    let run_handle = tokio::spawn(worker.run());
+    let run_handle = spawn_run(worker);
 
     // Give run() time to subscribe to the broadcast channel and enter
     // the select loop. This is critical — events sent before run()
@@ -144,7 +182,7 @@ async fn test_ready_timeout_dead() {
 
     let status = worker.get_status();
 
-    let run_handle = tokio::spawn(worker.run());
+    let run_handle = spawn_run(worker);
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -191,7 +229,7 @@ async fn test_dying_event_transitions_dead() {
 
     let status = worker.get_status();
 
-    let run_handle = tokio::spawn(worker.run());
+    let run_handle = spawn_run(worker);
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -223,8 +261,8 @@ async fn test_dying_event_transitions_dead() {
 ///
 /// The callback mechanism in production spawns a task that sets the status
 /// to Dead. This test verifies the callback fires. The spawned task's
-/// ability to update status is verified by the unit test
-/// `managed::tests::test_spawned_task_updates_status`.
+/// ability to update status is verified by `test_spawned_task_updates_status`
+/// below.
 #[tokio::test]
 async fn test_keepalive_timeout_sets_dead() {
     // Track whether the on_timeout callback was invoked.
@@ -263,11 +301,13 @@ async fn test_keepalive_timeout_sets_dead() {
         Some(heartbeat_handle),
         "test-worker-keepalive".to_string(),
         "test-device".to_string(),
-        0, // device_index
+        0,    // device_index
+        None, // routes — no real demux task in this test
+        None, // route_key
     );
 
     // Spawn run() first.
-    let run_handle = tokio::spawn(worker.run());
+    let run_handle = spawn_run(worker);
 
     // Wait for the keepalive timeout to fire (10s) plus buffer (5s).
     let _ = timeout(Duration::from_secs(15), run_handle).await;
@@ -294,7 +334,7 @@ async fn test_status_transitions_idle_to_busy_to_idle() {
 
     let status = worker.get_status();
 
-    let run_handle = tokio::spawn(worker.run());
+    let run_handle = spawn_run(worker);
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -331,14 +371,24 @@ async fn test_status_transitions_idle_to_busy_to_idle() {
     let _ = run_handle.await;
 }
 
-/// Verify that shutdown cleans up all handles and the worker exits.
+/// Verify that firing the shutdown signal causes `run()`'s shutdown arm to
+/// execute its full teardown sequence and the loop to exit cleanly.
 ///
-/// Preconditions: Worker is running (has spawned tasks).
-/// Inputs: shutdown() call.
-/// Expected output: All join handles are None, worker exits cleanly.
+/// This replaces the old `ManagedWorker::shutdown()`-based test: that
+/// method no longer exists, since `run(self)` now owns the worker for its
+/// entire lifetime and shutdown is requested by firing the matching
+/// `oneshot::Sender` rather than calling a separate method on an owned
+/// value. The old test had to construct a second, never-run worker
+/// (`worker2`) purely so it would have something owned to call
+/// `.shutdown()` on — that workaround is gone; this test fires the signal
+/// at the same worker that's actually running.
+///
+/// Preconditions: Worker is running via `run()`.
+/// Inputs: a fired `shutdown_tx`.
+/// Expected output: `run()`'s task completes within the grace period,
+/// without panicking.
 #[tokio::test]
 async fn test_shutdown_cleans_up_handles() {
-    // Create a fresh set of channels and handles for the shutdown test.
     let transport = Arc::new(RouterTransport::bind().await.expect("bind should succeed"));
 
     let (msg_tx, msg_rx) = mpsc::channel(16);
@@ -372,54 +422,44 @@ async fn test_shutdown_cleans_up_handles() {
         Some(heartbeat_handle),
         "test-worker-shutdown".to_string(),
         "test-device".to_string(),
-        0, // device_index
+        0,    // device_index
+        None, // routes — no real demux task in this test
+        None, // route_key
     );
 
-    // Spawn run() for the worker — it will block on event_rx.recv().
-    let run_handle = tokio::spawn(worker.run());
+    // Spawn run() with a real shutdown channel this time, rather than the
+    // spawn_run() helper's fire-and-forget one — this test needs to hold
+    // shutdown_tx so it can fire it below.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let run_handle = tokio::spawn(worker.run(shutdown_rx));
 
-    // Give run() a moment to start its select loop.
+    // Give run() a moment to enter its select loop before signalling
+    // shutdown — otherwise the signal could arrive before run() has
+    // started polling shutdown_rx at all. In practice tokio::select!
+    // registers all its futures before the first poll completes, so this
+    // sleep is a safety margin rather than a strict requirement.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Create a new worker to test shutdown (since run() consumed the first).
-    let (msg_tx2, _msg_rx2) = mpsc::channel(16);
-    let (event_tx2, _event_rx2) = broadcast::channel(16);
+    // Fire the shutdown signal — this should cause run()'s shutdown arm to
+    // execute its full teardown sequence (heartbeat stop, Shutdown
+    // message, bridge writer await, keepalive drop, demux deregister
+    // no-op, child wait/kill no-op since child is None here) and then
+    // break out of the loop.
+    let _ = shutdown_tx.send(());
 
-    let wh2 = anvilml_worker::start(
-        transport.clone(),
-        b"test-worker-shutdown-2".to_vec(),
-        "test-worker-shutdown-2".to_string(),
-        _msg_rx2,
+    // The shutdown sequence's own internal timeouts cap it at roughly 7s
+    // (2s bridge writer + 5s child, though child is None here so that
+    // step is instant) — 10s leaves comfortable margin without letting a
+    // genuinely wedged run() hang the test suite.
+    let result = timeout(Duration::from_secs(10), run_handle).await;
+    assert!(
+        result.is_ok(),
+        "run() should complete its shutdown sequence within 10 seconds"
     );
-
-    let (kh2, hh2) = keepalive::start(
-        "test-worker-shutdown-2".to_string(),
-        msg_tx2.clone(),
-        _event_rx2,
-        Duration::from_secs(30),
-        Duration::from_secs(10),
-        || {},
+    assert!(
+        result.unwrap().is_ok(),
+        "run()'s task should exit cleanly, not panic, during shutdown"
     );
-
-    let worker2 = ManagedWorker::new(
-        WorkerStatus::Idle,
-        msg_tx2,
-        event_tx2,
-        None,
-        Some(wh2),
-        Some(kh2),
-        Some(hh2),
-        "test-worker-shutdown-2".to_string(),
-        "test-device".to_string(),
-        0, // device_index
-    );
-
-    // Call shutdown — this should drop all handles cleanly without panicking.
-    worker2.shutdown().await;
-
-    // Abort the first run() task since it blocks on event_rx.recv().
-    run_handle.abort();
-    let _ = run_handle.await;
 }
 
 /// Verify that `run()` processes two sequential events on a single invocation,
@@ -453,7 +493,7 @@ async fn test_run_processes_multiple_sequential_events() {
 
     // Spawn run() — it subscribes to the broadcast channel and enters the
     // select loop.
-    let run_handle = tokio::spawn(worker.run());
+    let run_handle = spawn_run(worker);
 
     // Give run() time to subscribe to the broadcast channel and enter
     // the select loop. This is critical — events sent before run()
@@ -582,14 +622,16 @@ async fn test_child_exit_transitions_dead() {
         None,        // heartbeat_handle
         "test-child-exit".to_string(),
         "test-device".to_string(),
-        0, // device_index
+        0,    // device_index
+        None, // routes — no real demux task in this test
+        None, // route_key
     );
 
     let status = worker.get_status();
 
     // Spawn run() — it subscribes to the broadcast channel and enters
     // the event processing loop, including the new child.wait() arm.
-    let run_handle = tokio::spawn(worker.run());
+    let run_handle = spawn_run(worker);
 
     // Wait for the child to exit and the status to transition to Dead.
     // The child exits after 0.5 seconds, so we need a generous timeout.
@@ -622,4 +664,120 @@ async fn test_child_exit_transitions_dead() {
     // Close the channel to let run() exit.
     drop(event_tx);
     let _ = run_handle.await;
+}
+
+/// Verify that the spawned task in the keepalive callback successfully
+/// updates the worker status. This is a regression test for the
+/// mechanism where the synchronous on_timeout callback spawns an async
+/// task that acquires the write lock and sets the status to Dead.
+///
+/// Relocated from `managed.rs`'s former embedded `#[cfg(test)]` module —
+/// production source files contain no test code, per coding standards.
+#[tokio::test]
+async fn test_spawned_task_updates_status() {
+    let status = Arc::new(tokio::sync::RwLock::new(WorkerStatus::Idle));
+    let weak = Arc::downgrade(&status);
+
+    let callback_fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let callback_fired_clone = Arc::clone(&callback_fired);
+
+    let on_timeout = move || {
+        let weak = weak.clone();
+        callback_fired.store(true, std::sync::atomic::Ordering::SeqCst);
+        tokio::spawn(async move {
+            if let Some(s) = weak.upgrade() {
+                *s.write().await = WorkerStatus::Dead;
+            }
+        });
+    };
+
+    let handle = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    });
+
+    on_timeout();
+
+    let _ = handle.await;
+
+    assert!(
+        callback_fired_clone.load(std::sync::atomic::Ordering::SeqCst),
+        "callback should have fired"
+    );
+
+    let final_status = *status.read().await;
+    assert_eq!(
+        final_status,
+        WorkerStatus::Dead,
+        "status should be Dead, got {:?}",
+        final_status
+    );
+}
+
+/// Verify that firing a real, running worker's shutdown signal removes its
+/// entry from the demux routing table as part of `run()`'s shutdown arm —
+/// not just that `demux::deregister` works in isolation (see
+/// `demux_tests::test_deregister_removes_route` for that), but that
+/// `run()` actually calls it during its shutdown sequence when
+/// `routes`/`route_key` are populated.
+///
+/// Uses `ManagedWorker::new()` with `routes`/`route_key` supplied directly
+/// (rather than going through `ManagedWorker::spawn()`, which would also
+/// require a real Python subprocess to launch successfully) — this is
+/// still a faithful test of `run()`'s deregistration step, since that step
+/// only depends on the two fields being populated, not on how they got
+/// that way.
+#[tokio::test]
+async fn test_run_shutdown_deregisters_route() {
+    use anvilml_worker::demux::RouteTable;
+    use std::collections::HashMap;
+
+    let routes: RouteTable = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let key = "test-worker-deregister".to_string();
+
+    let (msg_tx, _msg_rx) = mpsc::channel(16);
+    let (event_tx, _event_rx) = broadcast::channel(16);
+
+    anvilml_worker::demux::register(
+        &routes,
+        key.clone(),
+        ("test-worker-deregister".to_string(), event_tx.clone()),
+    )
+    .await;
+
+    assert!(
+        routes.lock().await.contains_key(&key),
+        "precondition: route should be present before shutdown"
+    );
+
+    let worker = ManagedWorker::new(
+        WorkerStatus::Idle,
+        msg_tx,
+        event_tx,
+        None, // child
+        None, // bridge_handle
+        None, // keepalive_handle
+        None, // heartbeat_handle
+        "test-worker-deregister".to_string(),
+        "test-device".to_string(),
+        0,
+        Some(routes.clone()),
+        Some(key.clone()),
+    );
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let run_handle = tokio::spawn(worker.run(shutdown_rx));
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _ = shutdown_tx.send(());
+
+    let result = timeout(Duration::from_secs(10), run_handle).await;
+    assert!(
+        result.is_ok(),
+        "run() should complete its shutdown sequence within 10 seconds"
+    );
+
+    assert!(
+        !routes.lock().await.contains_key(&key),
+        "route should be deregistered after run()'s shutdown arm completes"
+    );
 }
