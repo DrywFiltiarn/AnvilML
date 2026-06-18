@@ -5,7 +5,7 @@
     "phase": "11",
     "project": "anvilml",
     "prereqs": [
-      "P10-B1"
+      "P10-A3"
     ],
     "context": "Create crates/anvilml-scheduler/src/node_registry.rs: NodeTypeRegistry{types:Arc<RwLock<HashMap<String,NodeTypeDescriptor>>>}. pub async fn update_from_worker(&self,types:Vec<NodeTypeDescriptor>). pub async fn get(&self,type_name:&str)->Option<NodeTypeDescriptor>. pub async fn all_types(&self)->Vec<NodeTypeDescriptor>. pub async fn is_empty(&self)->bool. tracing::debug!(worker_id,node_count,\"node registry updated\"). cargo test -p anvilml-scheduler --features mock-hardware -- node_registry exits 0 >=4 tests.",
     "tags": []
