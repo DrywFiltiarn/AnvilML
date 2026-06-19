@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-worker"
-version = "0.1.25"
+version = "0.1.26"
 edition.workspace = true
 
 [dependencies]
@@ -10,6 +10,18 @@ anvilml-ipc = { path = "../anvilml-ipc" }
 libc = "0.2"
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+# windows-sys does not compile on non-Windows targets, so it must live under
+# a target-gated dependency table rather than [dependencies]. Mirrors the
+# role libc plays for the Linux PR_SET_PDEATHSIG path in spawn.rs: provides
+# the raw Win32 Job Object API used for orphan cleanup of worker subprocesses
+# when the supervisor process is killed abruptly (e.g. Task Manager "End
+# task"), which PR_SET_PDEATHSIG cannot cover since it is Linux-only.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+] }
 
 [dev-dependencies]
 bytes = { workspace = true }

@@ -72,6 +72,9 @@ use crate::keepalive::{self, HeartbeatHandle};
 use crate::respawn::RespawnPolicy;
 use crate::spawn::build_command;
 
+#[cfg(windows)]
+use crate::job_object::WorkerJobHandle;
+
 /// A message sent from the Rust supervisor to a Python worker subprocess.
 ///
 /// Re-exported from `anvilml_ipc` for use in the bridge channel type.
@@ -102,6 +105,30 @@ pub struct ManagedWorker {
     /// `None` when constructed via `new()` for testing without a real
     /// subprocess.
     child: Option<tokio::process::Child>,
+
+    /// Windows-only orphan-cleanup handle — see `crate::job_object` module
+    /// docs. `None` for workers built via `new()` (no real subprocess to
+    /// assign to a job) and, on the real `spawn()` path, only if job
+    /// creation itself failed (logged as a warning; the worker still
+    /// starts, simply without the abrupt-kill safety net on Windows).
+    /// Dropping this — including implicitly, when this struct is replaced
+    /// wholesale during respawn — closes the job and, if the assigned
+    /// process is still alive, kills it. No explicit teardown call is
+    /// needed on any shutdown/respawn path: the existing `child.kill()`
+    /// calls already terminate the process first in the normal case, so by
+    /// the time this drops, the job has nothing left to kill.
+    //
+    // Intentionally write-only: this field's only purpose is to keep the
+    // job object's handle count above zero for as long as `ManagedWorker`
+    // lives, and to trigger KILL_ON_JOB_CLOSE via its Drop impl when the
+    // worker is replaced or the struct itself is dropped. No code ever
+    // needs to read it back. dead_code's "is never read" warning is a
+    // false positive for this pattern — a value kept alive purely for a
+    // side-effecting Drop — so it is allowed explicitly rather than worked
+    // around with a synthetic read.
+    #[cfg(windows)]
+    #[allow(dead_code)]
+    job_handle: Option<WorkerJobHandle>,
 
     /// `Option`-wrapped so `run()`'s shutdown arm can take ownership and
     /// await it. There is no reader handle here — see the module docs for
@@ -294,6 +321,8 @@ impl ManagedWorker {
             msg_tx,
             event_tx: Some(event_tx),
             child,
+            #[cfg(windows)]
+            job_handle: None,
             bridge_handle,
             keepalive_handle,
             heartbeat_handle,
@@ -393,6 +422,48 @@ impl ManagedWorker {
         let mut cmd = build_command(cfg, device, port);
 
         let child = cmd.spawn().map_err(AnvilError::Io)?;
+
+        // Windows orphan cleanup: assign the freshly-spawned child to a new
+        // per-worker Job Object configured with KILL_ON_JOB_CLOSE — see
+        // crate::job_object module docs. Must happen immediately after
+        // spawn, while raw_handle() is guaranteed to return Some (the
+        // child has not yet been polled to completion). A failure here is
+        // logged and treated as non-fatal: the worker still starts and
+        // functions normally, it simply loses the abrupt-kill safety net
+        // that PR_SET_PDEATHSIG already provides unconditionally on Linux.
+        #[cfg(windows)]
+        let job_handle = match child.raw_handle() {
+            Some(raw) => {
+                // SAFETY: `raw` is the process handle of `child`, which was
+                // just spawned above and has not been polled to completion,
+                // so the handle is valid and open for the duration of this
+                // call.
+                match unsafe { WorkerJobHandle::new(raw as windows_sys::Win32::Foundation::HANDLE) }
+                {
+                    Ok(handle) => Some(handle),
+                    Err(err) => {
+                        tracing::warn!(
+                            worker_id = %worker_id,
+                            error = %err,
+                            "failed to create Windows job object for worker orphan cleanup; \
+                             worker will not be auto-killed if anvilml is terminated abruptly"
+                        );
+                        None
+                    }
+                }
+            }
+            None => {
+                // raw_handle() returns None only if the child has already
+                // exited — vanishingly unlikely immediately after a
+                // successful spawn(), but handled rather than unwrapped.
+                tracing::warn!(
+                    worker_id = %worker_id,
+                    "worker process handle unavailable immediately after spawn; \
+                     skipping Windows job object orphan cleanup for this worker"
+                );
+                None
+            }
+        };
 
         // status is now supplied by the caller — WorkerPool::spawn_all at
         // initial spawn, do_respawn on every respawn — so the same Arc
@@ -509,6 +580,8 @@ impl ManagedWorker {
             msg_tx,
             event_tx: Some(event_tx),
             child: Some(child),
+            #[cfg(windows)]
+            job_handle,
             bridge_handle,
             keepalive_handle: Some(keepalive_handle),
             heartbeat_handle: Some(heartbeat_handle),

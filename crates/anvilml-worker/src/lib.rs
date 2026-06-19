@@ -10,6 +10,8 @@
 pub mod bridge;
 pub mod demux;
 pub mod env;
+#[cfg(windows)]
+pub mod job_object;
 pub mod keepalive;
 pub mod managed;
 pub mod pool;
