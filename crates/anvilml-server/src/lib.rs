@@ -22,6 +22,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use handlers::models::{get_model, list_models, rescan_models};
+use handlers::nodes::list_nodes;
 use handlers::workers::{list_workers, restart_worker};
 use ws::handler::ws_events;
 
@@ -72,6 +73,9 @@ pub fn build_router(state: AppState) -> Router {
         // of the named worker, bypassing RespawnPolicy. Returns 202
         // immediately; the respawn is asynchronous.
         .route("/v1/workers/{id}/restart", post(restart_worker))
+        // Node types — returns all node types registered by workers that
+        // have reached Ready. Returns 503 if no worker has ever reached Ready.
+        .route("/v1/nodes", get(list_nodes))
         // WebSocket event stream — accepts upgrade requests and forwards
         // broadcast events as JSON text frames to connected clients.
         .route("/v1/events", get(ws_events))

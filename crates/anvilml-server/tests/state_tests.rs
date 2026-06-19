@@ -3,7 +3,11 @@
 #[tokio::test]
 async fn test_app_state_new() {
     let before = std::time::Instant::now();
-    let state = anvilml_server::AppState::new("0.1.0").await;
+    let state = anvilml_server::AppState::new(
+        "0.1.0",
+        std::sync::Arc::new(anvilml_core::NodeTypeRegistry::new().await),
+    )
+    .await;
     let after = std::time::Instant::now();
 
     // Verify the version was stored correctly.
@@ -27,7 +31,11 @@ async fn test_app_state_new() {
 /// String field.
 #[tokio::test]
 async fn test_app_state_clone() {
-    let state = anvilml_server::AppState::new("0.1.0").await;
+    let state = anvilml_server::AppState::new(
+        "0.1.0",
+        std::sync::Arc::new(anvilml_core::NodeTypeRegistry::new().await),
+    )
+    .await;
     let cloned = state.clone();
 
     assert_eq!(cloned.version, state.version);
@@ -40,7 +48,11 @@ async fn test_app_state_clone() {
 #[tokio::test]
 async fn test_app_state_version_from_env() {
     let crate_version = env!("CARGO_PKG_VERSION");
-    let state = anvilml_server::AppState::new(crate_version).await;
+    let state = anvilml_server::AppState::new(
+        crate_version,
+        std::sync::Arc::new(anvilml_core::NodeTypeRegistry::new().await),
+    )
+    .await;
 
     assert_eq!(state.version, crate_version);
 }

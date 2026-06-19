@@ -148,6 +148,13 @@ async fn main() {
         .await
         .expect("failed to bind IPC transport");
 
+    // The node type registry is shared across the worker pool and AppState.
+    // Constructed once before spawn_all() so the same Arc can be cloned
+    // into every worker's spawn() call — a fresh registry per worker would
+    // mean each worker's node types never accumulate into one shared,
+    // queryable set.
+    let node_registry = Arc::new(NodeTypeRegistry::new().await);
+
     // Spawn managed workers for all detected GPU devices.
     // Each worker is a Python subprocess that executes inference nodes.
     // The worker pool spawns a background monitoring task per worker that
@@ -166,14 +173,8 @@ async fn main() {
         pool.clone(),
         Arc::new(ModelStore::new(pool.clone()).await),
         cfg.model_dirs.clone(),
+        Arc::clone(&node_registry),
     );
-
-    // The node type registry is shared across the worker pool and (in
-    // P11-A3) AppState. Constructed once, here, before spawn_all() so the
-    // same Arc can be cloned into every worker's spawn() call — a fresh
-    // registry per worker would mean each worker's node types never
-    // accumulate into one shared, queryable set.
-    let node_registry = Arc::new(NodeTypeRegistry::new().await);
 
     let workers = WorkerPool::spawn_all(
         &cfg,
@@ -201,6 +202,7 @@ async fn main() {
         registry,
         cfg.model_dirs.clone(),
         Arc::new(workers),
+        Arc::clone(&node_registry),
     );
 
     // Run the initial model directory scan at startup. This populates the

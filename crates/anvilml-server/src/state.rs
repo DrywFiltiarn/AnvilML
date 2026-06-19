@@ -61,6 +61,13 @@ pub struct AppState {
     /// `GET /v1/workers` handler returns an empty JSON array when this
     /// field is `None`.
     pub workers: Option<Arc<anvilml_worker::WorkerPool>>,
+
+    /// Thread-safe node type registry populated from worker Ready events.
+    ///
+    /// Shared via `Arc` so all handlers can query registered node types
+    /// without cloning the registry. The registry is populated when
+    /// workers report their capabilities via the `Ready` event.
+    pub node_registry: Arc<anvilml_core::NodeTypeRegistry>,
 }
 
 impl AppState {
@@ -76,7 +83,17 @@ impl AppState {
     /// It is intended for use in tests and stubs — production code should
     /// use `new_with_hardware` instead. The `db` field is initialised with
     /// an in-memory pool.
-    pub async fn new(version: impl Into<String>) -> Self {
+    ///
+    /// # Arguments
+    ///
+    /// * `version` — The server version string (e.g. from `CARGO_PKG_VERSION`).
+    /// * `node_registry` — A pre-built `Arc<NodeTypeRegistry>` for querying
+    ///   registered node types. In tests, construct with
+    ///   `Arc::new(anvilml_core::NodeTypeRegistry::new().await)`.
+    pub async fn new(
+        version: impl Into<String>,
+        node_registry: Arc<anvilml_core::NodeTypeRegistry>,
+    ) -> Self {
         // Use open_in_memory() to create an in-memory pool with migrations
         // already applied. This is critical — the ModelStore queries tables
         // that only exist after migrations run. Using raw SqlitePool::connect
@@ -107,6 +124,9 @@ impl AppState {
             // Workers pool is None for stub/test mode — the workers handler
             // returns an empty array when workers is None.
             workers: None,
+            // The node registry is shared via Arc — all handlers that need
+            // to query registered node types access the same registry.
+            node_registry,
         }
     }
 
@@ -134,6 +154,9 @@ impl AppState {
     /// * `workers` — The managed worker pool, already spawned via
     ///   `WorkerPool::spawn_all()`. Provides worker state for the
     ///   `/v1/workers` handler and the system stats tick.
+    /// * `node_registry` — A pre-built `Arc<NodeTypeRegistry>` shared with
+    ///   the worker pool so node types reported by workers accumulate into
+    ///   one queryable set.
     pub fn new_with_hardware(
         version: impl Into<String>,
         hardware: Arc<tokio::sync::RwLock<anvilml_core::types::HardwareInfo>>,
@@ -141,6 +164,7 @@ impl AppState {
         registry: Arc<anvilml_registry::ModelStore>,
         model_dirs: Vec<anvilml_core::ModelDirConfig>,
         workers: Arc<anvilml_worker::WorkerPool>,
+        node_registry: Arc<anvilml_core::NodeTypeRegistry>,
     ) -> Self {
         // Borrow the broadcaster that the pool was already constructed with,
         // so AppState.broadcaster and pool.broadcaster() are the same Arc.
@@ -155,6 +179,7 @@ impl AppState {
             model_dirs,
             broadcaster,
             workers: Some(workers),
+            node_registry,
         }
     }
 
@@ -174,12 +199,16 @@ impl AppState {
     /// * `db` — A file-backed `SqlitePool` opened via `anvilml_registry::open()`.
     /// * `registry` — A pre-built `Arc<ModelStore>` for model metadata CRUD.
     /// * `model_dirs` — Configured model directories for the scanner.
+    /// * `node_registry` — A pre-built `Arc<NodeTypeRegistry>` shared with
+    ///   the worker pool so node types reported by workers accumulate into
+    ///   one queryable set.
     pub fn new_with_hardware_no_workers(
         version: impl Into<String>,
         hardware: Arc<tokio::sync::RwLock<anvilml_core::types::HardwareInfo>>,
         db: sqlx::SqlitePool,
         registry: Arc<anvilml_registry::ModelStore>,
         model_dirs: Vec<anvilml_core::ModelDirConfig>,
+        node_registry: Arc<anvilml_core::NodeTypeRegistry>,
     ) -> Self {
         Self {
             start_time: std::time::Instant::now(),
@@ -193,6 +222,7 @@ impl AppState {
             // Cloning AppState clones the Arc, not the sender itself.
             broadcaster: Arc::new(crate::ws::EventBroadcaster::new()),
             workers: None,
+            node_registry,
         }
     }
 }

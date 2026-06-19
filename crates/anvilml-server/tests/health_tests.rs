@@ -1,7 +1,9 @@
+use anvilml_core::NodeTypeRegistry;
 use anvilml_server::{build_router, AppState};
 use axum::body::to_bytes;
 use axum::http::{Method, Request};
 use serde_json::Value;
+use std::sync::Arc;
 use tower::util::ServiceExt;
 
 /// Verify that the health handler returns HTTP 200 with a JSON body
@@ -13,7 +15,7 @@ use tower::util::ServiceExt;
 /// serialization) without binding a live TCP listener.
 #[tokio::test]
 async fn test_health_returns_200_with_status_key() {
-    let state = AppState::new("test-version").await;
+    let state = AppState::new("test-version", Arc::new(NodeTypeRegistry::new().await)).await;
 
     // Build the router via the production `build_router` function.
     let router = build_router(state);

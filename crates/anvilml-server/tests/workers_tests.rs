@@ -3,7 +3,7 @@
 //! Tests cover: empty workers list when no pool is configured, and
 //! worker info returned when a pool with a mock worker is present.
 
-use anvilml_core::{GpuDevice, ServerConfig, WorkerStatus};
+use anvilml_core::{GpuDevice, NodeTypeRegistry, ServerConfig, WorkerStatus};
 use anvilml_ipc::{EventBroadcaster, RouterTransport};
 use anvilml_server::{build_router, AppState};
 use anvilml_worker::{ManagedWorker, WorkerPool};
@@ -104,7 +104,7 @@ fn mock_pool_with_one_worker() -> WorkerPool {
 /// AppState.workers is None (test/stub mode).
 #[tokio::test]
 async fn test_list_workers_returns_empty_when_no_pool() {
-    let state = AppState::new("test-version").await;
+    let state = AppState::new("test-version", Arc::new(NodeTypeRegistry::new().await)).await;
 
     let router = build_router(state);
 
@@ -148,6 +148,7 @@ async fn test_list_workers_returns_pool_data() {
         ),
         Vec::new(),
         Arc::new(pool),
+        Arc::new(NodeTypeRegistry::new().await),
     );
 
     let router = build_router(state);

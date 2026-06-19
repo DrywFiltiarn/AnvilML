@@ -1996,3 +1996,21 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** First update: empty `Vec` from `"mock-worker"`; second update: one `NodeTypeDescriptor` from `"worker-1"`.
 **Expected output:** `is_empty()` sequence: `true → true → false`. `has_been_updated()` sequence: `false → true → true`.
 **Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- node_registry` exits 0.
+
+## test_nodes_returns_503_when_registry_not_updated (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/nodes_tests.rs`
+**Context:** The `GET /v1/nodes` handler returns 503 when no worker has ever reached `Ready`. The registry's `has_been_updated()` flag is `false` on a fresh registry, so the handler returns `WorkersUnavailable`. Uses `Router::oneshot` to exercise the full handler pipeline without a live TCP listener.
+**Tests:** Builds `AppState` with a fresh `NodeTypeRegistry` (never updated), sends GET `/v1/nodes`, asserts HTTP 503, parses the JSON error body, and verifies `"error" == "workers_unavailable"` and the message mentions "no worker has reached Ready".
+**Inputs:** GET `/v1/nodes`, `AppState::new("test-version", Arc::new(NodeTypeRegistry::new().await))`.
+**Expected output:** HTTP 503 with JSON body `{"error":"workers_unavailable","message":"no worker has reached Ready","request_id":"..."}`.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware --test nodes_tests test_nodes_returns_503_when_registry_not_updated` exits 0.
+
+## test_nodes_returns_200_after_worker_ready (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/nodes_tests.rs`
+**Context:** The `GET /v1/nodes` handler returns 200 with an empty array when a mock worker has reached `Ready` with zero node types. The registry's `has_been_updated()` flag is `true` (set by `update_from_worker` even with an empty types list), so the handler returns 200. Uses `Router::oneshot` to exercise the full handler pipeline without a live TCP listener.
+**Tests:** Builds a `NodeTypeRegistry`, calls `update_from_worker("worker-0", vec![])` to simulate a mock worker reaching Ready with zero node types, wraps it in `Arc`, passes it to `AppState::new`, sends GET `/v1/nodes`, asserts HTTP 200, and verifies the body is an empty JSON array `[]`.
+**Inputs:** GET `/v1/nodes`, `AppState::new("test-version", Arc::new(registry))` where `registry.update_from_worker("worker-0", vec![]).await` was called.
+**Expected output:** HTTP 200 with JSON body `[]`.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware --test nodes_tests test_nodes_returns_200_after_worker_ready` exits 0.

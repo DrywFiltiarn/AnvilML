@@ -5,7 +5,7 @@
 //! Each test uses an in-memory database via `open_in_memory()` to
 //! ensure test isolation.
 
-use anvilml_core::{ModelDirConfig, ModelKind, ModelMeta};
+use anvilml_core::{ModelDirConfig, ModelKind, ModelMeta, NodeTypeRegistry};
 use anvilml_registry::{open_in_memory, ModelStore};
 use anvilml_server::{build_router, AppState};
 use axum::body::to_bytes;
@@ -13,6 +13,7 @@ use axum::http::{Method, Request};
 use chrono::Utc;
 use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tower::util::ServiceExt;
 
 /// Verify that GET /v1/models returns HTTP 200 with an empty JSON array
@@ -25,7 +26,7 @@ use tower::util::ServiceExt;
 async fn test_list_models_empty() {
     // Build AppState with an empty in-memory database — the ModelStore
     // has no models, so the list endpoint should return [].
-    let state = AppState::new("test-version").await;
+    let state = AppState::new("test-version", Arc::new(NodeTypeRegistry::new().await)).await;
 
     // Build the router via the production `build_router` function.
     let router = build_router(state);
@@ -98,6 +99,7 @@ async fn test_list_models_with_kind_filter() {
         pool.clone(),
         std::sync::Arc::new(store),
         Vec::new(),
+        Arc::new(NodeTypeRegistry::new().await),
     );
 
     let router = build_router(state);
@@ -160,7 +162,7 @@ async fn test_list_models_with_kind_filter() {
 /// The `AnvilError::ModelNotFound` variant maps to 404 via `IntoResponse`.
 #[tokio::test]
 async fn test_get_model_not_found() {
-    let state = AppState::new("test-version").await;
+    let state = AppState::new("test-version", Arc::new(NodeTypeRegistry::new().await)).await;
 
     let router = build_router(state);
 
@@ -193,7 +195,7 @@ async fn test_get_model_not_found() {
 #[tokio::test]
 async fn test_rescan_returns_202() {
     // Build AppState with empty model_dirs (the default from AppState::new).
-    let state = AppState::new("test-version").await;
+    let state = AppState::new("test-version", Arc::new(NodeTypeRegistry::new().await)).await;
 
     let router = build_router(state);
 
@@ -252,6 +254,7 @@ async fn test_rescan_populates_registry() {
         pool,
         std::sync::Arc::new(store),
         model_dirs,
+        Arc::new(NodeTypeRegistry::new().await),
     );
 
     let router = build_router(state);
@@ -348,6 +351,7 @@ async fn test_rescan_infer_kind_and_dtype() {
         pool,
         std::sync::Arc::new(store),
         model_dirs,
+        Arc::new(NodeTypeRegistry::new().await),
     );
 
     let router = build_router(state);
