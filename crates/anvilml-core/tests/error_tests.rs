@@ -83,14 +83,15 @@ fn test_job_not_found_status_code() {
     assert_eq!(err.status_code(), StatusCode::NOT_FOUND);
 }
 
-/// Verifies that `AnvilError::InvalidGraph` maps to `StatusCode::BAD_REQUEST` (400).
+/// Verifies that `AnvilError::InvalidGraph` maps to `StatusCode::UNPROCESSABLE_ENTITY` (422).
 ///
-/// The client submitted a graph with validation errors — the input
-/// data is malformed and must be corrected.
+/// The client submitted a well-formed JSON request with a semantically
+/// invalid graph — per RFC 4918 this maps to 422 Unprocessable Entity,
+/// not 400 Bad Request.
 #[test]
 fn test_invalid_graph_status_code() {
     let err = AnvilError::InvalidGraph(vec!["missing node".to_string()]);
-    assert_eq!(err.status_code(), StatusCode::BAD_REQUEST);
+    assert_eq!(err.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 /// Verifies that `AnvilError::CycleDetected` maps to `StatusCode::BAD_REQUEST` (400).

@@ -22,7 +22,8 @@ use uuid::Uuid;
 /// - `Io` — filesystem I/O errors from `std::io::Error`
 /// - `Serde`, `Ipc`, `PayloadTooLarge` — serialization and communication failures
 /// - `WorkerNotFound`, `JobNotFound`, `ModelNotFound` — resource-not-found errors
-/// - `InvalidGraph`, `CycleDetected` — graph validation failures
+/// - `InvalidGraph` — graph semantic validation failure (422)
+/// - `CycleDetected` — graph structural failure (400)
 /// - `WorkersUnavailable` — all workers busy or dead
 /// - `Internal` — unexpected internal failures
 /// - `Toml`, `EnvVar` — configuration loading errors (pre-existing)
@@ -91,8 +92,9 @@ pub enum AnvilError {
     ///
     /// Produced when a submitted job graph fails validation — e.g. a node
     /// type is unknown, a connection references a non-existent node, or a
-    /// required field is missing. Maps to `400 Bad Request` because the
-    /// client submitted invalid data.
+    /// required field is missing. Maps to `422 Unprocessable Entity` because
+    /// the client submitted a well-formed request with semantically invalid
+    /// data (per RFC 4918).
     #[error("invalid graph: {0:?}")]
     InvalidGraph(Vec<String>),
 
@@ -159,7 +161,8 @@ impl AnvilError {
     /// - `Db`, `Io`, `Serde`, `Ipc`, `Internal` → `500 Internal Server Error`
     /// - `PayloadTooLarge` → `413 Payload Too Large`
     /// - `WorkerNotFound`, `JobNotFound`, `ModelNotFound` → `404 Not Found`
-    /// - `InvalidGraph`, `CycleDetected`, `Toml`, `EnvVar` → `400 Bad Request`
+    /// - `InvalidGraph` → `422 Unprocessable Entity` (RFC 4918 — semantic validation failure)
+    /// - `CycleDetected`, `Toml`, `EnvVar` → `400 Bad Request`
     /// - `WorkersUnavailable` → `503 Service Unavailable`
     pub fn status_code(&self) -> StatusCode {
         match self {
@@ -178,11 +181,15 @@ impl AnvilError {
             | AnvilError::JobNotFound(_)
             | AnvilError::ModelNotFound(_) => StatusCode::NOT_FOUND,
 
+            // Graph validation failure — the request is well-formed JSON but
+            // the graph semantics are invalid (unknown types, duplicate IDs,
+            // etc.). Per RFC 4918 this maps to 422 Unprocessable Entity.
+            AnvilError::InvalidGraph(_) => StatusCode::UNPROCESSABLE_ENTITY,
+
             // Invalid input — the client submitted bad data.
-            AnvilError::InvalidGraph(_)
-            | AnvilError::CycleDetected(_)
-            | AnvilError::Toml(_)
-            | AnvilError::EnvVar { .. } => StatusCode::BAD_REQUEST,
+            AnvilError::CycleDetected(_) | AnvilError::Toml(_) | AnvilError::EnvVar { .. } => {
+                StatusCode::BAD_REQUEST
+            }
 
             // Temporarily unable to process — all workers are busy/dead.
             AnvilError::WorkersUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,

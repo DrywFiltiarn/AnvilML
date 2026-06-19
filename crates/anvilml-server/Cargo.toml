@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-server"
-version = "0.1.20"
+version = "0.1.21"
 edition.workspace = true
 
 [dependencies]
@@ -19,6 +19,7 @@ tokio = { workspace = true }
 tower-http = { workspace = true }
 tracing = { workspace = true }
 utoipa = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 anvilml-registry = { path = "../anvilml-registry" }
@@ -28,7 +29,6 @@ serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
-uuid = { workspace = true }
 
 [features]
 # Forward mock-hardware to anvilml-hardware so MockDetector is compiled in.

@@ -2140,3 +2140,30 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Edge from `NodeAny.out` (Any) to `NodeModel.model` (Model).
 **Expected output:** `Ok(ValidatedGraph)` (no type error).
 **Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_any_slot_type_compatible` exits 0.
+
+## test_submit_job_returns_503_when_no_workers (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** `POST /v1/jobs` handler returns 503 when the node type registry is empty (no workers have ever reached Ready). The handler checks `is_empty()` before attempting validation.
+**Tests:** Builds `AppState` with a fresh `NodeTypeRegistry` that has never had `update_from_worker` called, sends POST `/v1/jobs` with an empty graph, asserts 503 with error body `{"error": "workers_unavailable"}`.
+**Inputs:** POST body `{"graph": {}, "settings": {}}`, fresh `NodeTypeRegistry`.
+**Expected output:** HTTP 503, `error: "workers_unavailable"`.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware -- test_submit_job_returns_503_when_no_workers` exits 0.
+
+## test_submit_job_returns_422_with_unknown_node_type (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** `POST /v1/jobs` handler returns 422 when the submitted graph contains an unknown node type. The handler calls `validate_graph` which checks type registration against the registry.
+**Tests:** Builds registry with `LoadModel` registered, sends POST `/v1/jobs` with a graph containing a node of type `"GhostNode"`, asserts 422 with error body `{"error": "invalid_graph"}` and message containing "GhostNode".
+**Inputs:** POST body `{"graph": {"nodes": [{"id": "n1", "type": "GhostNode"}]}, "settings": {}}`, registry with `LoadModel`.
+**Expected output:** HTTP 422, `error: "invalid_graph"`, message contains "GhostNode".
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware -- test_submit_job_returns_422_with_unknown_node_type` exits 0.
+
+## test_submit_job_returns_202_with_valid_graph (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** `POST /v1/jobs` handler returns 202 when the submitted graph is valid. The handler calls `validate_graph` which passes all six validation checks.
+**Tests:** Builds registry with `LoadModel` registered, sends POST `/v1/jobs` with a valid graph containing a single `LoadModel` node, asserts 202 with a response body containing a valid `job_id` UUID and `queue_position: 0`.
+**Inputs:** POST body `{"graph": {"nodes": [{"id": "n1", "type": "LoadModel"}]}, "settings": {}}`, registry with `LoadModel`.
+**Expected output:** HTTP 202, `job_id` is a valid UUID, `queue_position: 0`.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware -- test_submit_job_returns_202_with_valid_graph` exits 0.
