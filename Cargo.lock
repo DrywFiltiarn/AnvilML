@@ -176,15 +176,18 @@ dependencies = [
 
 [[package]]
 name = "anvilml-scheduler"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
+ "anvilml-ipc",
  "anvilml-registry",
  "anvilml-worker",
  "chrono",
  "indexmap",
  "serde_json",
+ "serial_test",
+ "sqlx",
  "tokio",
  "tracing",
  "uuid",

@@ -1,15 +1,18 @@
 [package]
 name = "anvilml-scheduler"
-version = "0.1.6"
+version = "0.1.7"
 edition.workspace = true
 
 [dependencies]
 anvilml-core = { path = "../anvilml-core" }
 anvilml-hardware = { path = "../anvilml-hardware" }
+anvilml-ipc = { path = "../anvilml-ipc" }
 anvilml-registry = { path = "../anvilml-registry" }
 anvilml-worker = { path = "../anvilml-worker" }
+chrono = { workspace = true }
 indexmap = "2.7"
 serde_json = { workspace = true }
+sqlx = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
@@ -20,3 +23,5 @@ mock-hardware = ["anvilml-hardware/mock-hardware"]
 
 [dev-dependencies]
 chrono = { workspace = true }
+serial_test = "3.1"
+sqlx = { workspace = true }

@@ -2329,3 +2329,75 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** `VramLedger::new()`, `register_device(0, 24576)`, `register_device(1, 12288)`, `reserve(0, 20480)`.
 **Expected output:** Device 1: 12 GB fits. Device 0: 4 GB fits, 4097 does not.
 **Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_multiple_devices_independent` exits 0.
+
+## test_submit_valid_graph (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** `JobScheduler::submit()` validates a computation graph, persists the job to SQLite, enqueues it, and broadcasts a `JobQueued` WebSocket event. Uses `open_in_memory()` for database isolation. Annotated with `#[serial]` because `open_in_memory()` creates a single-connection SQLite pool that cannot be safely shared across concurrent Tokio tasks.
+**Tests:** Submits a valid graph containing a single `LoadModel` node. Verifies `submit()` returns `Ok(SubmitJobResponse)` with a valid UUID and queue position 1. Then calls `get_job()` to verify the persisted job has `status=Queued`, `queue_position=Some(1)`, and a `created_at` timestamp within the current second.
+**Inputs:** `SubmitJobRequest{graph: {nodes: [{id: "model", type: "LoadModel"}]}, settings: JobSettings::default()}`.
+**Expected output:** `Ok(SubmitJobResponse{job_id: <valid UUID>, queue_position: 1})` and `get_job()` returns `Some(Job{status: Queued, queue_position: Some(1)})`.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- scheduler` exits 0.
+
+## test_submit_invalid_graph (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** Graph validation runs before any database INSERT or queue push. A graph with an unknown node type must fail validation and produce `AnvilError::InvalidGraph` without persisting anything.
+**Tests:** Submits a graph containing a `NonExistent` node type. Verifies `submit()` returns `Err(AnvilError::InvalidGraph(errors))` where `errors` mentions "NonExistent". Then calls `list_jobs()` to verify no jobs were persisted.
+**Inputs:** `SubmitJobRequest{graph: {nodes: [{id: "ghost", type: "NonExistent"}]}, settings: JobSettings::default()}`.
+**Expected output:** `Err(AnvilError::InvalidGraph([error mentioning "NonExistent"]))` and `list_jobs()` returns empty vec.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- scheduler` exits 0.
+
+## test_get_job_returns_job (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** The round-trip from `submit()` → persist → `get_job()` preserves all job fields correctly, including custom settings.
+**Tests:** Submits a job with `device_preference: Some("cuda:0")`, then calls `get_job()` and verifies the returned job has the same `id`, `status`, `settings.device_preference`, and `queue_position`.
+**Inputs:** `SubmitJobRequest{graph: valid LoadModel graph, settings: {device_preference: Some("cuda:0")}}`.
+**Expected output:** `get_job()` returns `Some(Job{id: <submitted_id>, status: Queued, settings: {device_preference: Some("cuda:0")}, queue_position: Some(1)})`.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- scheduler` exits 0.
+
+## test_get_job_missing_returns_none (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** Querying for a UUID that was never submitted should return `Ok(None)`, not an error.
+**Tests:** Calls `get_job()` with a freshly generated UUID that was never submitted. Verifies the result is `Ok(None)`.
+**Inputs:** `Uuid::new_v4()` (a random UUID never submitted).
+**Expected output:** `Ok(None)` — no error, just not found.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- scheduler` exits 0.
+
+## test_list_jobs_returns_all (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** `list_jobs()` returns all submitted jobs in descending `created_at` order (most recent first).
+**Tests:** Submits three jobs with 10ms delays between each, then calls `list_jobs(None, None, None)` and verifies the result has length 3 and is ordered by `created_at` descending.
+**Inputs:** Three valid `LoadModel` graphs submitted with small delays.
+**Expected output:** `Ok(vec![job3, job2, job1])` where `job3.created_at >= job2.created_at >= job1.created_at`.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- scheduler` exits 0.
+
+## test_list_jobs_filter_by_status (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** `list_jobs(status=Some(...))` filters jobs by their status. After submitting two jobs, one is manually updated to `Failed` in the database (simulating dispatch loop behavior).
+**Tests:** Submits two jobs, manually updates one to `Failed` via direct SQL, then calls `list_jobs(Some(Queued), None, None)` and verifies only the Queued job is returned. Also calls `list_jobs(Some(Failed), None, None)` and verifies the failed job is returned with its error message.
+**Inputs:** Two valid `LoadModel` graphs, one manually updated to `Failed` status with `error = "test failure"`.
+**Expected output:** `list_jobs(Queued)` returns 1 job; `list_jobs(Failed)` returns 1 job with `error = Some("test failure")`.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- scheduler` exits 0.
+
+## test_list_jobs_with_limit (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** `list_jobs(limit=Some(n))` returns at most `n` jobs, ordered by `created_at` descending.
+**Tests:** Submits five jobs with 10ms delays, then calls `list_jobs(None, Some(2), None)` and verifies exactly 2 jobs are returned (the most recent ones).
+**Inputs:** Five valid `LoadModel` graphs with small delays, `limit = Some(2)`.
+**Expected output:** `Ok(vec![job5, job4])` — exactly 2 jobs, the most recent ones.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- scheduler` exits 0.
+
+## test_list_jobs_with_before_filter (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** `list_jobs(before=Some(t))` returns only jobs created strictly before the given time.
+**Tests:** Submits one job, records the current time, waits 50ms, submits two more jobs. Calls `list_jobs(None, None, Some(after_first))` and verifies only the first job is returned.
+**Inputs:** Three valid `LoadModel` graphs submitted with a 50ms gap after the first, `before = <time between first and second>`.
+**Expected output:** `Ok(vec![job1])` — only the first job, created before the filter time.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- scheduler` exits 0.
