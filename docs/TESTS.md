@@ -2014,3 +2014,39 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** GET `/v1/nodes`, `AppState::new("test-version", Arc::new(registry))` where `registry.update_from_worker("worker-0", vec![]).await` was called.
 **Expected output:** HTTP 200 with JSON body `[]`.
 **Acceptance command:** `cargo test -p anvilml-server --features mock-hardware --test nodes_tests test_nodes_returns_200_after_worker_ready` exits 0.
+
+## test_registry_populated_after_import (worker)
+
+**File:** `worker/tests/test_nodes_base.py`
+**Context:** The `worker.nodes` package provides the dynamic node registration infrastructure. On first import, ``_ensure_imported()`` scans the package directory for sibling ``.py`` files and imports each one. This test verifies that importing ``worker.nodes`` does not raise and ``NODE_REGISTRY`` is accessible as a dict. At this stage no concrete node modules exist, so the registry is empty — this test verifies the import path works without errors.
+**Tests:** Imports ``worker.nodes``, asserts ``NODE_REGISTRY`` is a dict.
+**Inputs:** ``import worker.nodes``.
+**Expected output:** No exception raised; ``NODE_REGISTRY`` is a ``dict``.
+**Acceptance command:** ``ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_base.py::test_registry_populated_after_import`` exits 0.
+
+## test_register_decorator_adds_class (worker)
+
+**File:** `worker/tests/test_nodes_base.py`
+**Context:** The ``@register`` decorator validates that a node class exposes all six required metadata attributes (``NODE_TYPE``, ``CATEGORY``, ``DISPLAY_NAME``, ``DESCRIPTION``, ``INPUT_SLOTS``, ``OUTPUT_SLOTS``), raises ``TypeError`` if any is missing, then stores the class in ``NODE_REGISTRY`` keyed by ``NODE_TYPE``. This test verifies the registration path works correctly with a minimal concrete node class. Each test uses the ``registry_clean`` autouse fixture that clears ``NODE_REGISTRY`` before each test to ensure isolation.
+**Tests:** Defines a concrete node class with all six required attributes, applies ``@register``, and asserts the class appears in ``NODE_REGISTRY`` under the correct key.
+**Inputs:** A class decorated with ``@register`` and all required attributes.
+**Expected output:** ``NODE_REGISTRY["TestNode"]`` returns the test class.
+**Acceptance command:** ``ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_base.py::test_register_decorator_adds_class`` exits 0.
+
+## test_base_node_cannot_be_instantiated (worker)
+
+**File:** `worker/tests/test_nodes_base.py`
+**Context:** ``BaseNode`` is an abstract base class (ABC) that enforces implementation of the ``execute()`` method. Direct instantiation must fail with ``TypeError``, preventing accidental use of the abstract class.
+**Tests:** Attempts to call ``BaseNode()`` directly and asserts that ``TypeError`` is raised.
+**Inputs:** ``BaseNode()`` call.
+**Expected output:** ``TypeError`` raised — ABC enforcement works.
+**Acceptance command:** ``ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_base.py::test_base_node_cannot_be_instantiated`` exits 0.
+
+## test_slot_spec_dataclass (worker)
+
+**File:** `worker/tests/test_nodes_base.py`
+**Context:** ``SlotSpec`` is a ``@dataclass`` that declares one input or output slot on a node. It has three fields: ``name: str``, ``slot_type: str``, and ``optional: bool = False``. This test verifies the dataclass creates instances with correct field values and defaults.
+**Tests:** Constructs a ``SlotSpec`` with just name and slot_type, asserts the optional field defaults to ``False``. Also constructs one with explicit ``optional=True`` and verifies that value.
+**Inputs:** ``SlotSpec("input1", "MODEL")``, ``SlotSpec("seed", "Int", optional=True)``.
+**Expected output:** ``name="input1"``, ``slot_type="MODEL"``, ``optional=False`` for the first; ``optional=True`` for the second.
+**Acceptance command:** ``ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_base.py::test_slot_spec_dataclass`` exits 0.

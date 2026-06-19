@@ -34,6 +34,68 @@ import os
 import sys
 
 from worker.ipc import connect, recv_message, send_event
+from worker.nodes import NODE_REGISTRY
+
+
+def _import_nodes() -> None:
+    """Import the ``worker.nodes`` package to trigger auto-import.
+
+    Importing ``worker.nodes`` runs the module-level ``_ensure_imported()``
+    function in ``worker.nodes.__init__``, which scans the package
+    directory for sibling ``.py`` files and imports each one.  Any
+    concrete node classes decorated with ``@register`` are then
+    recorded in ``NODE_REGISTRY``.
+
+    This function is a no-op after the first call because the
+    auto-import mechanism in ``__init__.py`` is idempotent.
+    """
+    # Importing the package triggers the auto-import loop in
+    # __init__.py, which scans for and imports sibling node modules.
+    # The NODE_REGISTRY dict is populated by @register decorators
+    # at import time.
+    import worker.nodes  # noqa: F401
+
+
+def _build_node_types_list() -> list[dict]:
+    """Build the ``node_types`` list for the ``Ready`` IPC event.
+
+    Iterates ``NODE_REGISTRY`` and converts each entry into a dict
+    matching the ``NodeTypeDescriptor`` Rust struct shape:
+    ``{type_name, display_name, category, description, inputs, outputs}``.
+
+    Each ``SlotSpec`` is converted to a dict with ``name``,
+    ``slot_type``, and ``optional`` keys.
+
+    Returns:
+        A list of node type descriptor dicts, one per registered
+        node type. The list is empty when no concrete node modules
+        have been imported yet (e.g. during initial setup).
+    """
+    node_types: list[dict] = []
+
+    for type_name, node_cls in NODE_REGISTRY.items():
+        # Convert SlotSpec objects to plain dicts for msgpack
+        # serialisation. The Rust NodeTypeDescriptor expects
+        # these as plain dicts, not dataclass instances.
+        inputs = [
+            {"name": s.name, "slot_type": s.slot_type, "optional": s.optional}
+            for s in node_cls.INPUT_SLOTS
+        ]
+        outputs = [
+            {"name": s.name, "slot_type": s.slot_type, "optional": s.optional}
+            for s in node_cls.OUTPUT_SLOTS
+        ]
+
+        node_types.append({
+            "type_name": type_name,
+            "display_name": node_cls.DISPLAY_NAME,
+            "category": node_cls.CATEGORY,
+            "description": node_cls.DESCRIPTION,
+            "inputs": inputs,
+            "outputs": outputs,
+        })
+
+    return node_types
 
 
 def main() -> None:
@@ -73,6 +135,17 @@ def main() -> None:
     # and sets its identity so the ROUTER can route messages back to us.
     connect(port, worker_id)
 
+    # Import all registered node types. This triggers the auto-import
+    # mechanism in worker.nodes.__init__, which scans for and imports
+    # sibling node modules. Concrete node classes decorated with @register
+    # are then recorded in NODE_REGISTRY.
+    _import_nodes()
+
+    # Build the node types list from the populated registry. This
+    # converts each registered node class into a dict matching the
+    # NodeTypeDescriptor Rust struct shape for the Ready event.
+    node_types = _build_node_types_list()
+
     # Build and send the Ready event. This is the synchronisation point
     # between Rust and Python — the Rust supervisor transitions the
     # worker to Idle only on receipt of a valid Ready event.
@@ -93,7 +166,7 @@ def main() -> None:
         "bf16": True,
         "fp8": True,
         "flash_attention": True,
-        "node_types": [],
+        "node_types": node_types,
     }
     send_event(ready_event)
 
