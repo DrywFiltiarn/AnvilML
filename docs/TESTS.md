@@ -2167,3 +2167,93 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** POST body `{"graph": {"nodes": [{"id": "n1", "type": "LoadModel"}]}, "settings": {}}`, registry with `LoadModel`.
 **Expected output:** HTTP 202, `job_id` is a valid UUID, `queue_position: 0`.
 **Acceptance command:** `cargo test -p anvilml-server --features mock-hardware -- test_submit_job_returns_202_with_valid_graph` exits 0.
+
+## test_push_pop_fifo_order (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/queue_tests.rs`
+**Context:** `JobQueue::push` and `JobQueue::pop_front` maintain FIFO ordering. Three jobs are pushed, then popped three times and the order is verified.
+**Tests:** Push three jobs with distinct UUIDs, pop three times, assert each popped job's UUID matches the push order.
+**Inputs:** Three `Job` values with distinct UUIDs.
+**Expected output:** Pop order matches push order.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_push_pop_fifo_order` exits 0.
+
+## test_pop_empty_returns_none (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/queue_tests.rs`
+**Context:** Popping from an empty queue must return `None` without panicking. This is the base case for `pop_front`.
+**Tests:** Constructs a fresh `JobQueue`, calls `pop_front`, asserts `None`.
+**Inputs:** None (empty queue).
+**Expected output:** `None`.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_pop_empty_returns_none` exits 0.
+
+## test_cancel_returns_true_and_removes (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/queue_tests.rs`
+**Context:** `JobQueue::cancel` returns `true` for an existing job and removes it from the queue. After cancellation, `get` returns `None`, `len` decreases, and `pop_front` returns `None`.
+**Tests:** Push one job, cancel it by UUID, assert `true` return, verify `get` returns `None`, `len == 0`, and `pop_front` returns `None`.
+**Inputs:** One `Job` value.
+**Expected output:** `cancel` returns `true`, queue is empty afterward.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_cancel_returns_true_and_removes` exits 0.
+
+## test_cancel_returns_false_for_missing_id (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/queue_tests.rs`
+**Context:** `JobQueue::cancel` returns `false` when the UUID does not match any job in the queue. The queue state must be unchanged.
+**Tests:** Push one job, cancel with a different UUID, assert `false` return and that the existing job is still accessible.
+**Inputs:** One `Job` value plus an unknown UUID.
+**Expected output:** `cancel` returns `false`, queue unchanged.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_cancel_returns_false_for_missing_id` exits 0.
+
+## test_get_returns_job_by_id (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/queue_tests.rs`
+**Context:** `JobQueue::get` returns a reference to the job matching the given UUID via the index map lookup.
+**Tests:** Push one job, call `get` with its UUID, assert the returned reference has matching `id` and `status` fields.
+**Inputs:** One `Job` value.
+**Expected output:** `get` returns `Some(&job)` with matching fields.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_get_returns_job_by_id` exits 0.
+
+## test_list_returns_all_jobs_in_order (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/queue_tests.rs`
+**Context:** `JobQueue::list` returns all jobs in FIFO dispatch order as a `Vec<&Job>`.
+**Tests:** Push three jobs, call `list`, assert length is 3 and each element's UUID matches the push order.
+**Inputs:** Three `Job` values.
+**Expected output:** `Vec` of length 3, order matches push order.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_list_returns_all_jobs_in_order` exits 0.
+
+## test_len_after_operations (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/queue_tests.rs`
+**Context:** `JobQueue::len` correctly tracks the count through push, pop_front, and cancel operations.
+**Tests:** Push three jobs (len=3), pop one (len=2), cancel one (len=1), pop one (len=0). Asserts len at each step.
+**Inputs:** Three `Job` values, series of push/pop/cancel calls.
+**Expected output:** `len()` matches expected count at each step.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_len_after_operations` exits 0.
+
+## test_cancel_last_item (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/queue_tests.rs`
+**Context:** Cancelling the last item in the queue exercises the `index == last_index` branch in `cancel`, where the swap is a no-op.
+**Tests:** Push two jobs, cancel the last one, assert the first job remains and len is 1.
+**Inputs:** Two `Job` values.
+**Expected output:** Last item removed, first item remains, len == 1.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_cancel_last_item` exits 0.
+
+## test_cancel_first_item_with_displacement (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/queue_tests.rs`
+**Context:** Cancelling the first item triggers swap-remove with displacement: the last item moves to position 0. This verifies the displaced item's index is correctly updated in `by_id`.
+**Tests:** Push three jobs, cancel the first, then pop two items and verify the remaining two are in the correct order (last item displaced to front, then middle item).
+**Inputs:** Three `Job` values.
+**Expected output:** After cancel first, pop order is: last item, then middle item.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_cancel_first_item_with_displacement` exits 0.
+
+## test_multiple_cancellations (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/queue_tests.rs`
+**Context:** Multiple consecutive cancellations must maintain queue integrity. Cancelling non-sequential items tests that index tracking remains correct after each swap-remove.
+**Tests:** Push five jobs, cancel three (indices 1, 2, 3), assert remaining two are accessible and cancelled ones are not.
+**Inputs:** Five `Job` values.
+**Expected output:** Jobs 0 and 4 remain; jobs 1, 2, 3 are gone; len == 2.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_multiple_cancellations` exits 0.
