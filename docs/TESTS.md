@@ -2050,3 +2050,93 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** ``SlotSpec("input1", "MODEL")``, ``SlotSpec("seed", "Int", optional=True)``.
 **Expected output:** ``name="input1"``, ``slot_type="MODEL"``, ``optional=False`` for the first; ``optional=True`` for the second.
 **Acceptance command:** ``ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_base.py::test_slot_spec_dataclass`` exits 0.
+
+## test_missing_nodes_array (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** `validate_graph` receives a graph JSON without a `"nodes"` field. Verifies the function returns an error about the missing nodes array and does not panic on malformed input.
+**Tests:** Submits a graph with only `"edges": []`, asserts `validate_graph` returns `Err` with exactly one error message containing "nodes" and "missing".
+**Inputs:** `{"edges": []}` (no `"nodes"` field).
+**Expected output:** `Err` with one message about missing nodes array.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_missing_nodes_array` exits 0.
+
+## test_duplicate_node_ids (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** `validate_graph` receives a graph with two nodes sharing the same `"id"` value. Verifies that the duplicate ID is detected and reported.
+**Tests:** Populates registry with `LoadModel`, submits a graph with two nodes both having `"id": "n1"`, asserts the error list contains a message with "duplicate" and "n1".
+**Inputs:** Two nodes with `"id": "n1"`, `"type": "LoadModel"`.
+**Expected output:** `Err` with duplicate ID error naming "n1".
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_duplicate_node_ids` exits 0.
+
+## test_unknown_node_type (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** `validate_graph` receives a graph with a node whose type is not registered in the node type registry. Verifies the unknown type is reported.
+**Tests:** Populates registry with only `LoadModel`, submits a graph with a node of type `"NonExistent"`, asserts the error list contains a message with "NonExistent" and "unknown type".
+**Inputs:** Node with `"id": "n1"`, `"type": "NonExistent"`.
+**Expected output:** `Err` with unknown type error naming "NonExistent".
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_unknown_node_type` exits 0.
+
+## test_bad_edge_ref_missing_node (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** `validate_graph` receives a graph with an edge referencing a source node that does not exist in the nodes list. Verifies the missing node is reported.
+**Tests:** Populates registry with `LoadModel`, submits a graph with one node and an edge whose `"node_id"` is `"ghost"`, asserts the error list contains a message with "ghost" and "missing source node".
+**Inputs:** Edge with `"node_id": "ghost"`, `"output_slot": "model"`, `"target": "sampler"`, `"target_slot": "model"`.
+**Expected output:** `Err` with missing node error naming "ghost".
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_bad_edge_ref_missing_node` exits 0.
+
+## test_bad_edge_ref_missing_slot (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** `validate_graph` receives a graph with an edge referencing an output slot that does not exist on the source node's type descriptor. Verifies the missing slot is reported.
+**Tests:** Populates registry with `LoadModel` (outputs `"model"` only), submits a graph with an edge whose `"output_slot"` is `"nonexistent"`, asserts the error list contains a message with "nonexistent" and "no output slot".
+**Inputs:** Edge with `"node_id": "model"`, `"output_slot": "nonexistent"`, `"target": "sampler"`, `"target_slot": "model"`.
+**Expected output:** `Err` with missing slot error naming "nonexistent".
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_bad_edge_ref_missing_slot` exits 0.
+
+## test_slot_type_mismatch (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** `validate_graph` receives a graph with an edge connecting a `Model` output slot to an `Image` input slot. These types are incompatible (neither is `Any`), so validation fails.
+**Tests:** Populates registry with `LoadModel` (outputs `Model`) and `SaveImage` (inputs `Image`), submits a graph connecting them, asserts the error list contains "type mismatch", "Model", and "Image".
+**Inputs:** Edge from `LoadModel.model` (Model) to `SaveImage.image` (Image).
+**Expected output:** `Err` with type mismatch error naming both types.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_slot_type_mismatch` exits 0.
+
+## test_cycle_detected (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** `validate_graph` receives a graph with a cycle: A → B → C → A. Verifies that Kahn's algorithm detects the cycle and reports all three nodes.
+**Tests:** Populates registry with `NodeA`, `NodeB`, `NodeC` (each with Latent input/output), submits a graph with a cyclic edge set, asserts the error list contains "cycle" and names all three nodes.
+**Inputs:** Nodes A, B, C with edges A→B, B→C, C→A.
+**Expected output:** `Err` with cycle error naming all three nodes.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_cycle_detected` exits 0.
+
+## test_valid_graph_returns_ok (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** `validate_graph` receives a complete valid DAG: LoadModel → Sampler → VaeDecode → SaveImage. All six validation checks pass, so the function returns `Ok(ValidatedGraph)`.
+**Tests:** Populates registry with all four node types and their correct slot signatures, submits a fully-connected DAG with matching slot types, asserts `validate_graph` returns `Ok(ValidatedGraph)`.
+**Inputs:** Full valid graph with LoadModel, Sampler, VaeDecode, SaveImage and correct edges.
+**Expected output:** `Ok(ValidatedGraph)` wrapping the original graph value.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_valid_graph_returns_ok` exits 0.
+
+## test_multiple_errors_collected (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** `validate_graph` receives a graph with both duplicate IDs and an unknown type in the same submission. Verifies that both errors are returned in a single `Err` response (non-fail-fast behaviour).
+**Tests:** Populates registry with only `LoadModel`, submits a graph with two nodes sharing `"id": "n1"`, one of type `LoadModel` and one of type `NonExistent`, asserts the error list has ≥ 2 entries containing both "duplicate" and "NonExistent".
+**Inputs:** Two nodes with `"id": "n1"`, types `LoadModel` and `NonExistent`.
+**Expected output:** `Err` with ≥ 2 error strings (duplicate ID + unknown type).
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_multiple_errors_collected` exits 0.
+
+## test_any_slot_type_compatible (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** `validate_graph` receives a graph with an edge connecting a `SlotType::Any` output to a `SlotType::Model` input. Verifies that the `Any` type is compatible with any concrete type, so no type mismatch error is produced.
+**Tests:** Populates registry with `NodeAny` (outputs `Any`) and `NodeModel` (inputs `Model`), submits a graph connecting them, asserts `validate_graph` returns `Ok(ValidatedGraph)`.
+**Inputs:** Edge from `NodeAny.out` (Any) to `NodeModel.model` (Model).
+**Expected output:** `Ok(ValidatedGraph)` (no type error).
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_any_slot_type_compatible` exits 0.

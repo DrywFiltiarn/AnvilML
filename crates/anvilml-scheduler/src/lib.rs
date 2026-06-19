@@ -16,3 +16,5 @@
 // `crates/anvilml-scheduler/tests/node_registry_tests.rs`, which imports
 // `anvilml_scheduler::NodeTypeRegistry`) keep working unchanged.
 pub use anvilml_core::NodeTypeRegistry;
+
+pub mod dag;
