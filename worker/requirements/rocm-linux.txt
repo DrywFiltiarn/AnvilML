@@ -1,0 +1,5 @@
+--index-url https://rocm.nightlies.amd.com/v2/gfx120X-all/
+
+torch
+torchaudio
+torchvision

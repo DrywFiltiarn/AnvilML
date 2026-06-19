@@ -2257,3 +2257,75 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Five `Job` values.
 **Expected output:** Jobs 0 and 4 remain; jobs 1, 2, 3 are gone; len == 2.
 **Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_multiple_cancellations` exits 0.
+
+## test_register_device_and_would_fit (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/ledger_tests.rs`
+**Context:** `VramLedger::register_device` stores the device's total VRAM and initialises its reservation counter to zero. `would_fit` then checks whether a requested amount would fit within the unreserved portion. This is the happy path — the core registration + capacity check flow.
+**Tests:** Registers device 0 with 24576 MiB (24 GB), then checks that an 8192 MiB request fits.
+**Inputs:** `VramLedger::new()`, `register_device(0, 24576)`, `would_fit(0, 8192)`.
+**Expected output:** `would_fit` returns `true`.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_register_device_and_would_fit` exits 0.
+
+## test_would_fit_unknown_device_returns_false (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/ledger_tests.rs`
+**Context:** `VramLedger::would_fit` returns `false` for a device index that was never registered. This tests the negative path — calling `would_fit` with an unregistered device must return `false` rather than panicking or returning a misleading value.
+**Tests:** Creates a fresh ledger (no devices registered), calls `would_fit(99, 1024)`.
+**Inputs:** `VramLedger::new()`, `would_fit(99, 1024)`.
+**Expected output:** `would_fit` returns `false`.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_would_fit_unknown_device_returns_false` exits 0.
+
+## test_reserve_reduces_free_vram (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/ledger_tests.rs`
+**Context:** `VramLedger::reserve` increments the reservation counter, reducing the available free VRAM. This test verifies the full reserve lifecycle: register, reserve, check `would_fit` before and after.
+**Tests:** Registers a 24 GB device, reserves 8 GB, verifies 16 GB still fits but 17 GB does not.
+**Inputs:** `VramLedger::new()`, `register_device(0, 24576)`, `reserve(0, 8192)`, `would_fit(0, 16384)`, `would_fit(0, 16385)`.
+**Expected output:** 16 GB fits, 17 GB does not fit.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_reserve_reduces_free_vram` exits 0.
+
+## test_release_restores_free_vram (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/ledger_tests.rs`
+**Context:** `VramLedger::release` decrements the reservation counter, restoring the previously reserved VRAM to the free pool. This tests the full reserve → release lifecycle.
+**Tests:** Registers a 24 GB device, reserves 8 GB, releases 4 GB, verifies the remaining free capacity increased accordingly.
+**Inputs:** `VramLedger::new()`, `register_device(0, 24576)`, `reserve(0, 8192)`, `release(0, 4096)`, `would_fit(0, 20480)`, `would_fit(0, 20481)`.
+**Expected output:** 20 GB fits, 20481 MiB does not fit.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_release_restores_free_vram` exits 0.
+
+## test_reserve_overflow_panics (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/ledger_tests.rs`
+**Context:** `VramLedger::reserve` panics with `assert!` when the reservation would exceed total VRAM. This is intentional — over-reservation represents a programming error in the dispatch loop (which should have called `would_fit` first).
+**Tests:** Registers a 24 GB device, reserves 20 GB, then attempts to reserve 8 GB more (total would be 28 GB > 24 GB). The `reserve` method must panic.
+**Inputs:** `VramLedger::new()`, `register_device(0, 24576)`, `reserve(0, 20480)`, `reserve(0, 8192)`.
+**Expected output:** `reserve` panics with message containing "VRAM reservation overflow".
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_reserve_overflow_panics` exits 0.
+
+## test_duplicate_registration_is_noop (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/ledger_tests.rs`
+**Context:** `VramLedger::register_device` is idempotent — calling it twice for the same device index is a no-op. This prevents duplicate registration errors from repeated discovery scans.
+**Tests:** Registers device 0 with 24 GB twice, then checks that `would_fit(0, 24576)` still returns `true` (reservation is zero, not double-counted).
+**Inputs:** `VramLedger::new()`, `register_device(0, 24576)` called twice.
+**Expected output:** `would_fit(0, 24576)` returns `true`.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_duplicate_registration_is_noop` exits 0.
+
+## test_release_underflow_panics (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/ledger_tests.rs`
+**Context:** `VramLedger::release` panics with `assert!` when the release would underflow (reservation cannot go negative). This represents a bug in the release logic.
+**Tests:** Registers a 24 GB device, reserves 4 GB, then attempts to release 8 GB. The `release` method must panic.
+**Inputs:** `VramLedger::new()`, `register_device(0, 24576)`, `reserve(0, 4096)`, `release(0, 8192)`.
+**Expected output:** `release` panics with message containing "VRAM release underflow".
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_release_underflow_panics` exits 0.
+
+## test_multiple_devices_independent (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/ledger_tests.rs`
+**Context:** `VramLedger` tracks reservations per device index independently. Reserving on device 0 must not affect device 1's available capacity.
+**Tests:** Registers two devices with different VRAM totals (24 GB and 12 GB), reserves 20 GB on device 0, verifies device 1's capacity is unaffected.
+**Inputs:** `VramLedger::new()`, `register_device(0, 24576)`, `register_device(1, 12288)`, `reserve(0, 20480)`.
+**Expected output:** Device 1: 12 GB fits. Device 0: 4 GB fits, 4097 does not.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_multiple_devices_independent` exits 0.

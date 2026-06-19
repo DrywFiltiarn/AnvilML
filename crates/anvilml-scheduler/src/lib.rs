@@ -21,4 +21,5 @@ pub mod types;
 pub use types::GraphError;
 
 pub mod dag;
+pub mod ledger;
 pub mod queue;
