@@ -1,3 +1,15 @@
+# ROCm (Linux) — AMD GPU torch stack.
+#
+# Pinned to gfx120X-all (RDNA4 desktop, e.g. RX 9070 / gfx1201).
+# AMD's nightly ROCm wheels are published per-arch; this file targets one
+# arch only. Differentiating by detected GFX target is deferred — see
+# ANVILML_DESIGN.md.
+#
+# Pre-release wheels only: install with `pip install --pre -r rocm-linux.txt`.
+# `--pre` cannot be set from inside a requirements file — it must be passed
+# on the pip command line.
+#
+# Manual install only for now; not yet wired into install_worker_deps.sh.
 --index-url https://rocm.nightlies.amd.com/v2/gfx120X-all/
 
 torch
