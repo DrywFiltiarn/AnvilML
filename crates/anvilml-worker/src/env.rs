@@ -64,6 +64,15 @@ pub fn build_worker_env(
     #[cfg(feature = "mock-hardware")]
     env.insert("ANVILML_WORKER_MOCK".into(), "1".into());
 
+    // Manual override: forces Python worker mock mode even in a real-hardware
+    // (non mock-hardware) build. Lets a real-hardware binary spawn a mock
+    // worker without recompiling. Exact value "1" required; anything else
+    // (including unset) is a no-op. Read from the supervisor's own process
+    // environment at spawn time, not from ServerConfig/anvilml.toml.
+    if std::env::var("ANVILML_FORCE_WORKER_MOCK").as_deref() == Ok("1") {
+        env.insert("ANVILML_WORKER_MOCK".into(), "1".into());
+    }
+
     env
 }
 

@@ -1017,6 +1017,7 @@ There is no combined select loop. There is no socket clone problem. The ROUTER s
 | `ANVILML_DEVICE_INDEX` | GPU device index (u32 decimal) |
 | `ANVILML_DEVICE_TYPE` | `"cuda"`, `"rocm"`, or `"cpu"` |
 | `ANVILML_WORKER_MOCK` | `"1"` if the `mock-hardware` feature is active, else unset |
+| `ANVILML_FORCE_WORKER_MOCK` | Runtime override — if `"1"`, forces `ANVILML_WORKER_MOCK="1"` regardless of compiled features |
 | `ANVILML_LOG_LEVEL` | Inherited from server config |
 | `ANVILML_MAX_IPC_PAYLOAD_MIB` | Maximum IPC message size in MiB |
 

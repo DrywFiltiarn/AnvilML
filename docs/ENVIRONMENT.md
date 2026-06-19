@@ -177,10 +177,12 @@ Do not set them manually in production; they are listed here for test reference.
 | `ANVILML_MOCK_VRAM_MIB` | Mock hardware VRAM | integer MiB |
 | `ANVILML_MOCK_DEVICE_NAME` | Mock hardware device name | any string |
 | `ANVILML_MOCK_NODE_DELAY_MS` | Artificial delay per mock node execute | integer ms |
+| `ANVILML_FORCE_WORKER_MOCK` | Forces `ANVILML_WORKER_MOCK=1` into the worker subprocess even when compiled without `mock-hardware`. Set in the supervisor's own shell env before launching `anvilml`. | `1` = force mock; unset or any other value = no effect |
 
 `ANVILML_WORKER_MOCK` is set by the Rust supervisor when the `mock-hardware` cargo
 feature is active. Tests that spawn real worker subprocesses must set it themselves
 within the test scope and restore it unconditionally on exit (see §11.3).
+`ANVILML_FORCE_WORKER_MOCK` is a second, independent trigger for the same effect, checked at runtime regardless of the `mock-hardware` feature. It exists for manually pairing a real-hardware binary with a mock Python worker (e.g. local testing without GPU/torch). It does not affect `anvilml-hardware`'s GPU detection — only the Python worker side is mocked.
 
 ---
 

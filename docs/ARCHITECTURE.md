@@ -264,7 +264,7 @@ Any new dependency must maintain this order. Violations are a compilation error.
 
 | Feature | Declared in | Forwarded by | Effect |
 |:--------|:------------|:-------------|:-------|
-| `mock-hardware` | `anvilml-hardware` | `anvilml-worker`, `anvilml-scheduler`, `anvilml-server`, `backend` | Replaces GPU detection with `MockDetector` driven by `ANVILML_MOCK_*` env vars. **All CI builds use this flag.** Never enabled in release builds. |
+| `mock-hardware` | `anvilml-hardware` | `anvilml-worker`, `anvilml-scheduler`, `anvilml-server`, `backend` | Replaces GPU detection with `MockDetector` driven by `ANVILML_MOCK_*` env vars. **All CI builds use this flag.** Never enabled in release builds. (`ANVILML_FORCE_WORKER_MOCK=1` triggers the same effect on a non-`mock-hardware` binary — see `ENVIRONMENT.md §3.5`.) |
 
 **Forwarding rule** — every crate that depends (directly or transitively) on
 `anvilml-hardware` must declare:
