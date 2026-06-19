@@ -196,6 +196,13 @@ impl WorkerPool {
             // across respawns without needing replacement on our end.
             let (restart_tx, restart_rx) = tokio::sync::watch::channel(0u64);
 
+            // Allocated here, once, for this worker's entire supervised lifetime —
+            // not inside ManagedWorker::spawn(). spawn_all's monitor task below and
+            // WorkerHandle.status both capture this exact Arc; ManagedWorker::spawn
+            // and every later do_respawn() reuse it rather than building a new one,
+            // so a respawn can never strand the monitor on an abandoned instance.
+            let status = Arc::new(tokio::sync::RwLock::new(WorkerStatus::Initializing));
+
             let worker = ManagedWorker::spawn(
                 cfg,
                 device,
@@ -204,6 +211,7 @@ impl WorkerPool {
                 routes.clone(),
                 restart_rx,
                 Arc::clone(&node_registry),
+                status.clone(),
             )
             .await?;
 
@@ -213,7 +221,6 @@ impl WorkerPool {
             // stable label for WorkerInfo snapshots, not the live value.
             let device_name = device.name.clone();
 
-            let status = worker.get_status();
             let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
             // run() is spawned immediately — this is the fix for the

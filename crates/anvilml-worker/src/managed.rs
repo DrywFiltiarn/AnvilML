@@ -349,6 +349,14 @@ impl ManagedWorker {
     ///   every respawn) passes the same `Arc` through every time, exactly
     ///   like `restart_rx` above — a fresh registry per respawn would
     ///   silently lose every node type this worker previously reported.
+    /// * `status` — The worker's shared status handle, owned for its entire
+    ///   supervised lifetime by `WorkerPool` (`WorkerHandle.status`) and the
+    ///   pool's background status-monitor task. The caller (`WorkerPool::
+    ///   spawn_all` at initial spawn, or `do_respawn` on every respawn)
+    ///   passes the same `Arc` through every time — exactly like
+    ///   `restart_rx` and `node_registry` above. A fresh `Arc` per respawn
+    ///   would silently strand the pool's monitor on the old, abandoned
+    ///   instance, which is the Phase 10 bug this parameter exists to close.
     ///
     /// # Errors
     ///
@@ -366,6 +374,7 @@ impl ManagedWorker {
     /// route registration during which the worker's first ping could be
     /// delivered to a table with no entry for it yet. See `crate::demux`'s
     /// module docs for why that race matters.
+    #[allow(clippy::too_many_arguments)] // production constructor threading through caller-owned handles (cfg, device, transport, routes, restart_rx, node_registry, status) — each is independently documented above; bundling into a params struct would only move the same surface area, not reduce it
     #[tracing::instrument(skip(cfg, device, transport, routes, restart_rx, node_registry), fields(worker_id, device_index = %device.index))]
     pub async fn spawn(
         cfg: &ServerConfig,
@@ -375,6 +384,7 @@ impl ManagedWorker {
         routes: crate::demux::RouteTable,
         restart_rx: tokio::sync::watch::Receiver<u64>,
         node_registry: Arc<NodeTypeRegistry>,
+        status: Arc<tokio::sync::RwLock<WorkerStatus>>,
     ) -> Result<Self, AnvilError> {
         // The port is the transport's bound port, not a separately
         // configured value — every worker shares the one ROUTER socket.
@@ -383,10 +393,20 @@ impl ManagedWorker {
 
         let child = cmd.spawn().map_err(AnvilError::Io)?;
 
-        // Starts Initializing; only the Ready event (handled in run())
-        // advances it, so a worker that never reports Ready stays here
-        // until the run loop's ready-timeout kills it.
-        let status = Arc::new(tokio::sync::RwLock::new(WorkerStatus::Initializing));
+        // status is now supplied by the caller — WorkerPool::spawn_all at
+        // initial spawn, do_respawn on every respawn — so the same Arc
+        // survives the worker's entire supervised lifetime. See this
+        // method's `status` parameter doc and ManagedWorker's `status`
+        // field doc for why: WorkerPool's status-monitor task and
+        // WorkerHandle.status capture this Arc once and never re-fetch it,
+        // so a worker that allocated its own Arc on every respawn would
+        // leave both permanently observing a stale, abandoned instance.
+        //
+        // Reset to Initializing explicitly rather than trusting the
+        // caller passed it in that state — only the Ready event (handled
+        // in run()) advances it from here, so a worker that never reports
+        // Ready stays here until the run loop's ready-timeout kills it.
+        *status.write().await = WorkerStatus::Initializing;
 
         // Bounded at 16 so a wedged bridge applies backpressure to senders
         // (keepalive, shutdown) rather than growing without limit.
@@ -642,6 +662,7 @@ impl ManagedWorker {
             routes,
             self.restart_rx.clone(),
             node_registry,
+            self.status.clone(),
         )
         .await?;
 
