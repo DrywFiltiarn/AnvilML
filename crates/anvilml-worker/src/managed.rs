@@ -374,7 +374,8 @@ impl ManagedWorker {
     /// route registration during which the worker's first ping could be
     /// delivered to a table with no entry for it yet. See `crate::demux`'s
     /// module docs for why that race matters.
-    #[allow(clippy::too_many_arguments)] // production constructor threading through caller-owned handles (cfg, device, transport, routes, restart_rx, node_registry, status) — each is independently documented above; bundling into a params struct would only move the same surface area, not reduce it
+    #[allow(clippy::too_many_arguments)]
+    // production constructor threading through caller-owned handles (cfg, device, transport, routes, restart_rx, node_registry, status) — each is independently documented above; bundling into a params struct would only move the same surface area, not reduce it
     #[tracing::instrument(skip(cfg, device, transport, routes, restart_rx, node_registry), fields(worker_id, device_index = %device.index))]
     pub async fn spawn(
         cfg: &ServerConfig,
