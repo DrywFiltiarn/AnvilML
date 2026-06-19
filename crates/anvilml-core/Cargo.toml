@@ -1,16 +1,19 @@
 [package]
 name = "anvilml-core"
-version = "0.1.13"
+version = "0.1.14"
 edition.workspace = true
 
 [dependencies]
 axum = { workspace = true }
 chrono = { workspace = true }
+hashbrown = "0.17"
 serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true, features = ["chrono"] }
 thiserror = { workspace = true }
+tokio = { workspace = true }
 toml = { workspace = true }
+tracing = { workspace = true }
 utoipa = { workspace = true }
 uuid = { workspace = true }
 

@@ -78,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
@@ -98,17 +98,20 @@ dependencies = [
 
 [[package]]
 name = "anvilml-core"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "axum",
  "chrono",
+ "hashbrown 0.17.1",
  "serde",
  "serde_json",
  "serial_test",
  "sqlx",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "toml",
+ "tracing",
  "utoipa",
  "uuid",
 ]
@@ -173,13 +176,12 @@ dependencies = [
 
 [[package]]
 name = "anvilml-scheduler"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
  "anvilml-registry",
  "anvilml-worker",
- "hashbrown 0.17.1",
  "tokio",
  "tracing",
 ]
@@ -212,7 +214,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-worker"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",

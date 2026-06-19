@@ -1978,3 +1978,21 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** First update: `[A]` from `worker-0`; second update: `[B]` from `worker-1`.
 **Expected output:** After both updates, `get("A") == Some(...)` and `get("B") == Some(...)` and `all_types().len() == 2`.
 **Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- node_registry` exits 0.
+
+## test_managed_worker_forwards_to_node_registry (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/pool_tests.rs`
+**Context:** P11-A2 wires `NodeTypeRegistry` (relocated to `anvilml-core` to break a dependency cycle — see `anvilml_core::node_registry`'s module doc) into `ManagedWorker`'s `Ready` event handler. This test verifies the wiring's static shape — `ManagedWorker::new()` accepts `Some(Arc<NodeTypeRegistry>)` without a compile error — and verifies `update_from_worker`'s contract directly, including the mock-worker empty-`node_types` case. It does **not** drive a real `Ready` event through `run()`'s `select!` loop; see the test's own doc comment for why that approach was tried and abandoned, and what `test_run_ready_event_releases_keepalive_gate` (in `managed_tests.rs`) already covers instead for the loop-delivery side of this wiring.
+**Tests:** Constructs a `ManagedWorker` with `Some(registry)`, then calls `update_from_worker` with two `NodeTypeDescriptor`s and asserts both are retrievable and `all_types().len() == 2`. Separately constructs a second, empty registry and asserts `is_empty()` stays `true` and `has_been_updated()` flips from `false` to `true` after an update with an empty `Vec` (the mock-hardware `Ready` event case) — see `test_has_been_updated_distinguishes_never_updated_from_empty_update` for the focused unit test of this exact distinction.
+**Inputs:** Two descriptors (`LoadModel`, `KSampler`) on the first registry; an empty `Vec<NodeTypeDescriptor>` on the second.
+**Expected output:** `all_types().len() == 2`, `get("LoadModel")`/`get("KSampler")` both `Some(...)`; second registry's `is_empty()` is `true` both before and after its update (the map gains no entries); `has_been_updated()` is `false` before and `true` after.
+**Acceptance command:** `cargo test -p anvilml-worker --features mock-hardware -- test_managed_worker_forwards_to_node_registry` exits 0.
+
+## test_has_been_updated_distinguishes_never_updated_from_empty_update (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/node_registry_tests.rs`
+**Context:** `is_empty()` reflects only the underlying map's contents, so it cannot distinguish "no worker has ever reached `Ready`" from "a worker reached `Ready` and reported zero node types" — both leave the map empty. `NodeTypeRegistry` gained a separate `has_been_updated()` method (and an internal `AtomicBool` flag, set once on the first `update_from_worker` call and never unset) specifically for this distinction, which P11-A3's `GET /v1/nodes` 503-vs-200 logic depends on.
+**Tests:** Asserts both `is_empty()` and `has_been_updated()` are in their initial state on a fresh registry; calls `update_from_worker` with an empty `Vec`; asserts `is_empty()` stays `true` but `has_been_updated()` becomes `true`; calls `update_from_worker` again with one real descriptor; asserts `is_empty()` becomes `false` and `has_been_updated()` remains `true`.
+**Inputs:** First update: empty `Vec` from `"mock-worker"`; second update: one `NodeTypeDescriptor` from `"worker-1"`.
+**Expected output:** `is_empty()` sequence: `true → true → false`. `has_been_updated()` sequence: `false → true → true`.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- node_registry` exits 0.

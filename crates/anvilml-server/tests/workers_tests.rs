@@ -82,6 +82,7 @@ fn mock_pool_with_one_worker() -> WorkerPool {
         None, // routes — no real demux task in this test
         None, // route_key
         None, // ready_tx — no real keepalive task in this test
+        None, // node_registry — not exercising registry path in this test
     );
 
     WorkerPool::new(

@@ -61,7 +61,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anvilml_core::{AnvilError, GpuDevice, ServerConfig, WorkerStatus};
+use anvilml_core::{AnvilError, GpuDevice, NodeTypeRegistry, ServerConfig, WorkerStatus};
 use anvilml_ipc::{RouterTransport, WorkerEvent};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -207,6 +207,15 @@ pub struct ManagedWorker {
     /// occurs for test workers built via `new()` that don't exercise a
     /// real keepalive task at all.
     ready_tx: Option<oneshot::Sender<()>>,
+
+    /// The node type registry, populated from this worker's `Ready` event
+    /// via `NodeTypeRegistry::update_from_worker`. `None` for test workers
+    /// built via `new()` that don't exercise the registry path; in
+    /// production, `spawn()` always receives a non-`None` value and the
+    /// respawn path (`do_respawn`) always forwards the same `Arc` through
+    /// to the next `spawn()` call, so a real worker's registry handle
+    /// never goes away across any number of respawns.
+    node_registry: Option<Arc<NodeTypeRegistry>>,
 }
 impl ManagedWorker {
     /// Returns a clone of the status `Arc` so callers can observe state
@@ -254,6 +263,10 @@ impl ManagedWorker {
     ///   release the keepalive task's start gate. `None` for tests that
     ///   don't construct a real keepalive task (the common case) or that
     ///   fire their own `ready_tx` directly before calling `new()`.
+    /// * `node_registry` — The node type registry for forwarding `Ready`
+    ///   event node types. `None` for tests that don't exercise the
+    ///   registry path; production code (via `spawn()`) always provides
+    ///   `Some`.
     #[allow(clippy::too_many_arguments)] // test constructor with many parameters
     pub fn new(
         status: WorkerStatus,
@@ -274,6 +287,7 @@ impl ManagedWorker {
         routes: Option<crate::demux::RouteTable>,
         route_key: Option<String>,
         ready_tx: Option<oneshot::Sender<()>>,
+        node_registry: Option<Arc<NodeTypeRegistry>>,
     ) -> Self {
         Self {
             status: Arc::new(tokio::sync::RwLock::new(status)),
@@ -297,6 +311,7 @@ impl ManagedWorker {
             routes,
             route_key,
             ready_tx,
+            node_registry,
         }
     }
     /// Spawn a Python worker subprocess and register its route with the
@@ -327,6 +342,13 @@ impl ManagedWorker {
     ///   `timeout_rx`/`ready_tx`, this is not reconstructed per spawn,
     ///   since the sending half must remain valid for the worker's entire
     ///   supervised lifetime, across any number of respawns.
+    /// * `node_registry` — The node type registry that this worker's
+    ///   `Ready` event node types are forwarded into, so the scheduler can
+    ///   learn which node types are available at runtime. The caller
+    ///   (`WorkerPool::spawn_all` at initial spawn, or `do_respawn` on
+    ///   every respawn) passes the same `Arc` through every time, exactly
+    ///   like `restart_rx` above — a fresh registry per respawn would
+    ///   silently lose every node type this worker previously reported.
     ///
     /// # Errors
     ///
@@ -344,7 +366,7 @@ impl ManagedWorker {
     /// route registration during which the worker's first ping could be
     /// delivered to a table with no entry for it yet. See `crate::demux`'s
     /// module docs for why that race matters.
-    #[tracing::instrument(skip(cfg, device, transport, routes, restart_rx), fields(worker_id, device_index = %device.index))]
+    #[tracing::instrument(skip(cfg, device, transport, routes, restart_rx, node_registry), fields(worker_id, device_index = %device.index))]
     pub async fn spawn(
         cfg: &ServerConfig,
         device: &GpuDevice,
@@ -352,6 +374,7 @@ impl ManagedWorker {
         worker_id: String,
         routes: crate::demux::RouteTable,
         restart_rx: tokio::sync::watch::Receiver<u64>,
+        node_registry: Arc<NodeTypeRegistry>,
     ) -> Result<Self, AnvilError> {
         // The port is the transport's bound port, not a separately
         // configured value — every worker shares the one ROUTER socket.
@@ -482,6 +505,7 @@ impl ManagedWorker {
             routes: Some(routes),
             route_key: Some(route_key),
             ready_tx: Some(ready_tx),
+            node_registry: Some(node_registry),
         };
 
         Ok(worker)
@@ -586,12 +610,30 @@ impl ManagedWorker {
             }
         };
 
+        // node_registry is None for the same class of test worker as
+        // routes above — built via new() without exercising the registry
+        // path. Mirrors the routes guard immediately above rather than
+        // unwrapping/panicking: a worker that was never given a registry
+        // genuinely cannot forward one to a respawned copy, and that is a
+        // test-construction fact, not a bug to crash on.
+        let node_registry = match self.node_registry.clone() {
+            Some(r) => r,
+            None => {
+                return Err(AnvilError::Internal(
+                    "cannot respawn worker built without a NodeTypeRegistry (new() test path)"
+                        .to_string(),
+                ));
+            }
+        };
+
         // restart_rx is cloned, not reconstructed — see this struct's
         // restart_rx field doc for why a watch::Receiver survives being
         // passed through to a respawned worker, unlike the oneshot-backed
         // timeout_rx/ready_tx pairs, which are freshly constructed inside
         // spawn() on every call. WorkerPool's sender remains valid across
         // this and every future respawn without needing replacement.
+        // node_registry is forwarded the same way, for the same reason —
+        // see this struct's node_registry field doc.
         let new_worker = Self::spawn(
             &self.cfg,
             &self.device,
@@ -599,6 +641,7 @@ impl ManagedWorker {
             self.worker_id.clone(),
             routes,
             self.restart_rx.clone(),
+            node_registry,
         )
         .await?;
 
@@ -799,6 +842,9 @@ impl ManagedWorker {
                                 WorkerEvent::Ready {
                                     device_name,
                                     device_index,
+                                    torch_version,
+                                    fp8,
+                                    node_types,
                                     ..
                                 } => {
                                     // The worker's actual device_name/index
@@ -813,6 +859,28 @@ impl ManagedWorker {
                                         event_type = ?event,
                                         "processing event"
                                     );
+
+                                    // Forwarded regardless of the status
+                                    // transition below: node types are a
+                                    // property of this Ready event, not of
+                                    // the Initializing -> Idle transition,
+                                    // so a registry update must not be
+                                    // skipped on the (currently unreachable
+                                    // in production, but exercised by some
+                                    // tests) path where Ready arrives while
+                                    // already Idle/Busy. update_from_worker
+                                    // is called even when node_types is
+                                    // empty (the mock-hardware case) — see
+                                    // NodeTypeRegistry's is_empty() doc and
+                                    // TASKS_PHASE011.md's "Known Constraints"
+                                    // for why an empty-but-updated registry
+                                    // is distinct from a never-updated one.
+                                    if let Some(registry) = &self.node_registry {
+                                        registry
+                                            .update_from_worker(&self.worker_id, node_types.clone())
+                                            .await;
+                                    }
+
                                     let mut s = self.status.write().await;
                                     match *s {
                                         WorkerStatus::Initializing => {
@@ -820,9 +888,19 @@ impl ManagedWorker {
                                             // point: the worker can now
                                             // accept jobs.
                                             *s = WorkerStatus::Idle;
+                                            // Mandatory INFO log point per
+                                            // ENVIRONMENT.md §9 — Workers:
+                                            // "Worker reached Ready". The
+                                            // five fields below are exactly
+                                            // those §9 requires; do not add
+                                            // or remove fields without also
+                                            // updating that table.
                                             tracing::info!(
                                                 worker_id = %self.worker_id,
                                                 device = %device_name,
+                                                torch_version = %torch_version,
+                                                fp8 = %fp8,
+                                                node_count = node_types.len(),
                                                 "worker reached Ready"
                                             );
                                             // Release the keepalive task's

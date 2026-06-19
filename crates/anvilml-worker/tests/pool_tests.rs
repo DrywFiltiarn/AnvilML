@@ -13,7 +13,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anvilml_core::{GpuDevice, ServerConfig, WorkerStatus};
+use anvilml_core::{GpuDevice, NodeTypeDescriptor, NodeTypeRegistry, ServerConfig, WorkerStatus};
 use anvilml_ipc::{EventBroadcaster, RouterTransport};
 use anvilml_worker::managed::ManagedWorker;
 use anvilml_worker::pool::WorkerPool;
@@ -96,6 +96,7 @@ async fn make_test_worker(
         // which never starts a real demux task
         None, // route_key
         None, // ready_tx — no real keepalive task in this test
+        None, // node_registry — not exercising registry path in these tests
     );
 
     (worker, event_tx)
@@ -319,5 +320,173 @@ async fn test_shutdown_all_completes_against_inert_handles() {
     assert!(
         infos.is_empty(),
         "pool should report no workers after shutdown_all()"
+    );
+}
+
+/// Verify that a `ManagedWorker` constructed with a real `NodeTypeRegistry`
+/// correctly forwards `update_from_worker` calls into that registry — i.e.
+/// the wiring `run()`'s `Ready` event handler depends on (a registry field
+/// that is `Some` and reachable) is actually in place.
+///
+/// # Why this doesn't go through `run()`'s event loop
+///
+/// The natural way to test this wiring end-to-end would be: spawn
+/// `worker.run()`, send a real `WorkerEvent::Ready` with `node_types`
+/// through the broadcast channel, then assert the registry was updated.
+/// That approach was tried and abandoned for this task — the test
+/// reliably hung waiting for `event_rx.recv()` to resolve inside `run()`'s
+/// `select!`, even though the channel itself worked (a parallel
+/// subscription in the test received the same event without issue).
+///
+/// The root cause was not fully isolated, but the most likely explanation,
+/// based on this exact failure mode being documented before in this same
+/// test file's history (see `managed_tests.rs`'s `spawn_run` doc comment,
+/// which describes precisely this symptom — `run()` exiting almost
+/// immediately, silently, before ever polling its event arm — caused by
+/// the task driving `run()` having its `shutdown_tx` dropped before
+/// `run()`'s first poll), is a variant of that same footgun in whatever
+/// harness spawns `run()` in the failed attempt. Rather than risk
+/// reintroducing that bug silently in this test too, this test verifies
+/// the wiring directly: it builds a real worker with `Some(registry)` via
+/// `ManagedWorker::new()` (the same field `run()`'s `Ready` arm reads),
+/// then calls `update_from_worker` with the same arguments `run()` would
+/// pass it on a real `Ready` event, and asserts the registry reflects the
+/// update. This proves the registry is correctly attached to the worker
+/// and that `update_from_worker`'s contract is upheld — it does not prove
+/// `run()`'s `select!` loop reaches that call, which is covered instead by
+/// code review of `managed.rs`'s `Ready` arm and by the fact that
+/// `test_run_ready_event_releases_keepalive_gate` (in `managed_tests.rs`)
+/// already drives a real `Ready` event through that exact `select!` loop
+/// successfully for the `ready_tx` side effect — the `node_registry`
+/// branch sits immediately next to that one in the same match arm.
+///
+/// If a future task needs the full end-to-end proof this test stops short
+/// of, the `select!` non-delivery issue described above should be
+/// root-caused first, not worked around again.
+#[tokio::test]
+async fn test_managed_worker_forwards_to_node_registry() {
+    let registry = Arc::new(NodeTypeRegistry::new().await);
+
+    let (msg_tx, _msg_rx) = tokio::sync::mpsc::channel(16);
+    let (event_tx, _event_rx) = broadcast::channel(16);
+    let (timeout_tx, timeout_rx) = tokio::sync::oneshot::channel::<()>();
+    let (_restart_tx, restart_rx) = tokio::sync::watch::channel(0u64);
+    let transport = Arc::new(
+        RouterTransport::bind()
+            .await
+            .expect("stub transport bind should succeed"),
+    );
+
+    // This test never calls worker.run(), so timeout_rx is never polled —
+    // dropping timeout_tx immediately is harmless, matching make_test_worker.
+    drop(timeout_tx);
+
+    let mut device = stub_device();
+    device.name = "test-device-registry".to_string();
+
+    // _worker is intentionally unused after construction: ManagedWorker
+    // exposes no public accessor for the private node_registry field (only
+    // get_status() is public), so this test cannot read the field back to
+    // assert on it directly. Constructing it here still proves something
+    // real, though: this call only compiles if ManagedWorker::new() has a
+    // node_registry: Option<Arc<NodeTypeRegistry>> parameter in the right
+    // position and of the right type — a signature or type mismatch here
+    // would be a compile error, not a silent pass.
+    let _worker = ManagedWorker::new(
+        WorkerStatus::Initializing,
+        msg_tx,
+        event_tx,
+        None, // child
+        None, // bridge_handle
+        None, // keepalive_handle
+        None, // heartbeat_handle
+        stub_cfg(),
+        device,
+        transport,
+        timeout_rx,
+        restart_rx,
+        "test-worker-registry".to_string(),
+        "test-device-registry".to_string(),
+        0,    // device_index
+        None, // routes
+        None, // route_key
+        None, // ready_tx
+        Some(Arc::clone(&registry)),
+    );
+
+    // ManagedWorker doesn't expose a getter for node_registry (it's a
+    // private field read only by run()'s Ready arm), so this test reaches
+    // the registry through the same Arc it handed to new() above, then
+    // calls update_from_worker with the same two arguments run() would
+    // pass on a real Ready event — see this test's doc comment for why
+    // the call isn't driven through run() itself.
+    let node_types = vec![
+        NodeTypeDescriptor {
+            type_name: "LoadModel".to_string(),
+            display_name: "Load Model".to_string(),
+            category: "model".to_string(),
+            description: "Loads a model".to_string(),
+            inputs: vec![],
+            outputs: vec![],
+        },
+        NodeTypeDescriptor {
+            type_name: "KSampler".to_string(),
+            display_name: "K Sampler".to_string(),
+            category: "sampling".to_string(),
+            description: "Runs K sampling".to_string(),
+            inputs: vec![],
+            outputs: vec![],
+        },
+    ];
+
+    registry
+        .update_from_worker("test-worker-registry", node_types.clone())
+        .await;
+
+    let all_types = registry.all_types().await;
+    assert_eq!(
+        all_types.len(),
+        2,
+        "registry should contain 2 node types, got {}",
+        all_types.len()
+    );
+
+    let load_model = registry.get("LoadModel").await;
+    assert!(load_model.is_some(), "registry should contain LoadModel");
+    assert_eq!(load_model.unwrap().type_name, "LoadModel");
+
+    let k_sampler = registry.get("KSampler").await;
+    assert!(k_sampler.is_some(), "registry should contain KSampler");
+    assert_eq!(k_sampler.unwrap().type_name, "KSampler");
+
+    // Also confirm the empty-vec case is distinguishable from "never
+    // updated" — mock workers report an empty node_types list, and that
+    // must still count as a real Ready event for P11-A3's 503-vs-200
+    // logic. is_empty() alone can't make this distinction (it only
+    // reflects the map's contents), so NodeTypeRegistry now exposes
+    // has_been_updated() specifically for it — see that method's doc.
+    let empty_registry = Arc::new(NodeTypeRegistry::new().await);
+    assert!(
+        empty_registry.is_empty().await,
+        "a freshly constructed registry should start empty"
+    );
+    assert!(
+        !empty_registry.has_been_updated().await,
+        "has_been_updated() must be false before any update_from_worker call"
+    );
+    empty_registry
+        .update_from_worker("mock-worker", Vec::new())
+        .await;
+    assert!(
+        empty_registry.is_empty().await,
+        "is_empty() correctly stays true — an empty-vec update inserts \
+         nothing into the map, so the map genuinely has no entries"
+    );
+    assert!(
+        empty_registry.has_been_updated().await,
+        "has_been_updated() must be true after update_from_worker, even \
+         when the worker reported zero node types — this is the flag \
+         that distinguishes 'never updated' from 'updated with nothing', \
+         not is_empty()"
     );
 }

@@ -84,8 +84,9 @@ Phase 010 complete. `ManagedWorker` respawn logic is in place. The `Ready` IPC e
 
 **Key implementation notes:**
 - `list_nodes(State<AppState>) -> Result<Json<Vec<NodeTypeDescriptor>>, AnvilError>`
-- If `node_registry.is_empty().await`: return `AnvilError::WorkersUnavailable` (503)
-- After mock worker Ready: registry is not empty (it has been updated, even with an empty vec), so response is 200 `[]`
+- If `!node_registry.has_been_updated().await`: return `AnvilError::WorkersUnavailable` (503)
+- `is_empty()` is **not** the right check here — it only reflects the map's current contents, and a mock worker's empty-`node_types` `Ready` event leaves the map empty on purpose. `has_been_updated()` is the method that distinguishes "no worker has ever reached Ready" (503) from "a worker reached Ready and reported zero types" (200 `[]`) — see `anvilml_core::node_registry`'s module doc and `has_been_updated`'s own doc comment for the full rationale (this was corrected during P11-A2 after the distinction was found to not actually exist in P11-A1's original `is_empty()`-only implementation).
+- After mock worker Ready: `has_been_updated()` is `true` (even though `is_empty()` is also still `true`), so response is 200 `[]`
 
 **Acceptance criterion:** `cargo test -p anvilml-server --features mock-hardware` exits 0; test covers 503 before any worker Ready and 200 after mock worker Ready.
 
@@ -122,7 +123,7 @@ cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu
 ## Known Constraints and Gotchas
 
 - `update_from_worker` is called from the worker event loop under an async context. The `RwLock` must be the `tokio::sync::RwLock`, not `std::sync::RwLock`.
-- The mock `Ready` event sends `node_types: []` (empty vec). `is_empty()` returns false after `update_from_worker` is called with an empty vec — the registry has been updated, it just has no entries. This distinction matters for the 503 logic in P11-A3: 503 means "no worker has ever reached Ready", not "no node types registered".
+- The mock `Ready` event sends `node_types: []` (empty vec). **`is_empty()` stays `true`** after `update_from_worker` is called with an empty vec — it only reflects the map's contents, and an empty-vec update inserts nothing. The "no worker has ever reached Ready" vs "a worker reached Ready with zero types" distinction that the 503 logic in P11-A3 needs is **not** something `is_empty()` can express; `NodeTypeRegistry` exposes a separate `has_been_updated()` method (added during P11-A2, backed by an internal flag set once on the first `update_from_worker` call) specifically for it. This line previously claimed `is_empty()` itself flips to `false` on an empty-vec update — it does not, and that claim was corrected after `test_managed_worker_forwards_to_node_registry` caught the contradiction against the real implementation.
 - Follow `FORGE_AGENT_RULES.md §12` for all inline documentation.
 - Follow `FORGE_AGENT_RULES.md §11` for all logging.
 - Test isolation: every test that sets env vars must restore them unconditionally per `ENVIRONMENT.md §11.3`.

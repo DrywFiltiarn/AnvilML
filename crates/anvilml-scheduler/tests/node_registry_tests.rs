@@ -170,3 +170,51 @@ async fn test_update_from_worker_merges() {
     assert!(registry.get("B").await.is_some());
     assert_eq!(registry.all_types().await.len(), 2);
 }
+
+/// Verify that `has_been_updated` distinguishes "no worker has ever
+/// reached `Ready`" from "a worker reached `Ready` and reported zero node
+/// types" — a distinction `is_empty` cannot make on its own, since both
+/// cases leave the underlying map empty. This matters for P11-A3's
+/// `GET /v1/nodes` handler: it returns 503 only in the former case.
+#[tokio::test]
+async fn test_has_been_updated_distinguishes_never_updated_from_empty_update() {
+    let registry = NodeTypeRegistry::new().await;
+
+    // Before any update: both flags reflect "nothing has happened yet".
+    assert!(registry.is_empty().await);
+    assert!(!registry.has_been_updated().await);
+
+    // A worker reaches Ready but reports zero node types (the mock-worker
+    // case). The map stays empty, but has_been_updated must flip to true.
+    registry.update_from_worker("mock-worker", Vec::new()).await;
+
+    assert!(
+        registry.is_empty().await,
+        "is_empty() should still be true — an empty-vec update inserts \
+         nothing into the map"
+    );
+    assert!(
+        registry.has_been_updated().await,
+        "has_been_updated() should be true — a Ready event occurred, \
+         even though it carried no node types"
+    );
+
+    // has_been_updated() never resets to false, even once real types
+    // are registered afterward.
+    registry
+        .update_from_worker(
+            "worker-1",
+            vec![NodeTypeDescriptor {
+                type_name: "LoadModel".to_string(),
+                display_name: "Load Model".to_string(),
+                category: "loading".to_string(),
+                description: "Loads a model".to_string(),
+                inputs: vec![],
+                outputs: vec![],
+            }],
+        )
+        .await;
+
+    assert!(!registry.is_empty().await);
+    assert!(registry.has_been_updated().await);
+}

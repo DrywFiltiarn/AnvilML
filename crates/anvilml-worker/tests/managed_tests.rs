@@ -169,6 +169,7 @@ async fn make_test_worker_with_index(
         None, // routes — no real demux task in these tests
         None, // route_key
         None, // ready_tx — no real keepalive task in these tests
+        None, // node_registry — not exercising registry path in these tests
     );
 
     (worker, event_tx, timeout_tx, restart_tx, transport)
@@ -376,6 +377,7 @@ async fn test_keepalive_timeout_sets_dead() {
         None,
         None,
         None,
+        None, // node_registry — not exercising registry path in this test
     );
 
     let run_handle = spawn_run(worker);
@@ -479,6 +481,7 @@ async fn test_shutdown_cleans_up_handles() {
         None,
         None,
         None,
+        None, // node_registry — not exercising registry path in this test
     );
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -620,6 +623,7 @@ async fn test_child_exit_transitions_dead() {
         None,
         None,
         None,
+        None, // node_registry — not exercising registry path in this test
     );
 
     let status = worker.get_status();
@@ -747,6 +751,7 @@ async fn test_run_shutdown_deregisters_route() {
         Some(routes.clone()),
         Some(key.clone()),
         None,
+        None, // node_registry — not exercising registry path in this test
     );
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -807,6 +812,7 @@ async fn test_run_ready_event_releases_keepalive_gate() {
         None,
         None,
         Some(ready_tx),
+        None, // node_registry — not exercising registry path in this test
     );
 
     let run_handle = spawn_run(worker);
@@ -914,6 +920,10 @@ async fn test_respawn_cycle_entered_after_child_exit() {
         None,
         None,
         None,
+        None, // node_registry — routes is also None here, so do_respawn
+              // returns Err before ever reaching the node_registry check;
+              // this test verifies the Dead/Respawning transition is
+              // entered, not a full respawn cycle (see test doc above).
     );
 
     let status = worker.get_status();

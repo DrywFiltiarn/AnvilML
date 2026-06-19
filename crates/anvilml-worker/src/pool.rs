@@ -26,7 +26,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anvilml_core::{AnvilError, GpuDevice, ServerConfig, WorkerInfo, WorkerStatus};
+use anvilml_core::{
+    AnvilError, GpuDevice, NodeTypeRegistry, ServerConfig, WorkerInfo, WorkerStatus,
+};
 use anvilml_ipc::{EventBroadcaster, RouterTransport};
 use tracing;
 
@@ -128,6 +130,14 @@ impl WorkerPool {
     /// * `devices` — The list of GPU devices to spawn workers for.
     /// * `transport` — The shared `RouterTransport` for IPC communication.
     /// * `broadcaster` — The shared `EventBroadcaster` for WebSocket events.
+    /// * `node_registry` — The node type registry. Each worker's `Ready`
+    ///   event node types are forwarded into this registry, via
+    ///   `ManagedWorker::spawn()`, so the scheduler can learn which node
+    ///   types are available at runtime. `WorkerPool` does not retain this
+    ///   `Arc` itself — only `AppState` (see `anvilml-server`) holds a
+    ///   long-lived reference for `GET /v1/nodes` — `spawn_all` exists
+    ///   purely to thread the same `Arc` the caller already owns into
+    ///   every worker it spawns.
     ///
     /// # Errors
     ///
@@ -158,12 +168,13 @@ impl WorkerPool {
     /// is the fix for `run()` never being invoked at all in earlier
     /// revisions of this method, which left every worker stuck in
     /// `Initializing` forever since nothing was driving its event loop.
-    #[tracing::instrument(skip(cfg, devices, transport, broadcaster), fields(worker_count = %devices.len()))]
+    #[tracing::instrument(skip(cfg, devices, transport, broadcaster, node_registry), fields(worker_count = %devices.len()))]
     pub async fn spawn_all(
         cfg: &ServerConfig,
         devices: &[GpuDevice],
         transport: Arc<RouterTransport>,
         broadcaster: Arc<EventBroadcaster>,
+        node_registry: Arc<NodeTypeRegistry>,
     ) -> Result<Self, AnvilError> {
         let mut workers = Vec::with_capacity(devices.len());
 
@@ -192,6 +203,7 @@ impl WorkerPool {
                 worker_id.clone(),
                 routes.clone(),
                 restart_rx,
+                Arc::clone(&node_registry),
             )
             .await?;
 

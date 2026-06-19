@@ -16,6 +16,7 @@ mod config {
     pub use anvilml_core::{load, ConfigOverrides};
 }
 
+use anvilml_core::NodeTypeRegistry;
 use anvilml_hardware::detect_all_devices;
 use anvilml_ipc::RouterTransport;
 use anvilml_registry::{open, ModelStore};
@@ -167,11 +168,19 @@ async fn main() {
         cfg.model_dirs.clone(),
     );
 
+    // The node type registry is shared across the worker pool and (in
+    // P11-A3) AppState. Constructed once, here, before spawn_all() so the
+    // same Arc can be cloned into every worker's spawn() call — a fresh
+    // registry per worker would mean each worker's node types never
+    // accumulate into one shared, queryable set.
+    let node_registry = Arc::new(NodeTypeRegistry::new().await);
+
     let workers = WorkerPool::spawn_all(
         &cfg,
         &hardware_info.gpus,
         Arc::new(transport),
         temp_state.broadcaster.clone(),
+        Arc::clone(&node_registry),
     )
     .await
     .expect("failed to spawn worker pool");
