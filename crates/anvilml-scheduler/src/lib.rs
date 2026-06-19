@@ -17,4 +17,7 @@
 // `anvilml_scheduler::NodeTypeRegistry`) keep working unchanged.
 pub use anvilml_core::NodeTypeRegistry;
 
+pub mod types;
+pub use types::GraphError;
+
 pub mod dag;

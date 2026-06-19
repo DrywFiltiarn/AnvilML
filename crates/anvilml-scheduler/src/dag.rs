@@ -16,6 +16,7 @@ use std::collections::HashSet;
 use indexmap::IndexMap;
 use serde_json::Value;
 
+use crate::types::GraphError;
 use anvilml_core::{NodeTypeDescriptor, NodeTypeRegistry, SlotType};
 
 /// A graph that has passed all validation checks.
@@ -59,13 +60,17 @@ pub async fn validate_graph(
     graph: &Value,
     registry: &NodeTypeRegistry,
 ) -> Result<ValidatedGraph, Vec<String>> {
-    let mut errors = Vec::new();
+    let mut errors: Vec<GraphError> = Vec::new();
+    let mut struct_errors: Vec<String> = Vec::new();
 
     // Check 1: structural — nodes array must exist and be an array.
     // This is checked first because every subsequent check depends on
     // having a valid nodes slice. If this fails, we can skip the rest.
+    // Structural errors are collected as strings since they don't map to
+    // any GraphError variant — there is no typed equivalent for
+    // "nodes field is missing" or "nodes is not an array".
     if let Some(err) = check_nodes_array(graph) {
-        errors.push(err);
+        struct_errors.push(err);
     }
 
     // Extract nodes array early so we can skip remaining checks if
@@ -73,7 +78,17 @@ pub async fn validate_graph(
     // we cannot meaningfully check IDs, types, or edges without nodes.
     let nodes = match extract_nodes(graph) {
         Some(n) => n,
-        None => return Err(errors),
+        None => {
+            // Convert collected GraphErrors to strings and merge with
+            // structural errors. Non-fail-fast: callers get the complete
+            // diagnostic picture even when nodes array is missing.
+            let string_errors: Vec<String> = errors
+                .into_iter()
+                .map(|e| e.to_string())
+                .chain(struct_errors)
+                .collect();
+            return Err(string_errors);
+        }
     };
 
     // Check 2: no duplicate node IDs.
@@ -104,10 +119,16 @@ pub async fn validate_graph(
         errors.push(err);
     }
 
-    // If any errors were collected, return them all at once.
-    // Non-fail-fast: callers get the complete diagnostic picture.
-    if !errors.is_empty() {
-        return Err(errors);
+    // If any errors were collected, convert typed errors to strings
+    // and merge with structural errors. Non-fail-fast: callers get the
+    // complete diagnostic picture.
+    if !errors.is_empty() || !struct_errors.is_empty() {
+        let string_errors: Vec<String> = errors
+            .into_iter()
+            .map(|e| e.to_string())
+            .chain(struct_errors)
+            .collect();
+        return Err(string_errors);
     }
 
     Ok(ValidatedGraph(graph.clone()))
@@ -143,7 +164,7 @@ fn check_nodes_array(graph: &Value) -> Option<String> {
 ///
 /// Uses `HashSet` because duplicate detection requires O(1) average-case
 /// membership testing per element — a `Vec` would be O(n) per lookup.
-fn check_duplicate_ids(nodes: &[&Value]) -> Vec<String> {
+fn check_duplicate_ids(nodes: &[&Value]) -> Vec<GraphError> {
     let mut seen = HashSet::new();
     let mut duplicates = Vec::new();
 
@@ -156,7 +177,7 @@ fn check_duplicate_ids(nodes: &[&Value]) -> Vec<String> {
         // If the ID was already seen, this is a duplicate — record it
         // and continue scanning (non-fail-fast).
         if !seen.insert(id.to_string()) {
-            duplicates.push(format!("validation failed: duplicate node id \"{id}\""));
+            duplicates.push(GraphError::DuplicateNodeId(id.to_string()));
         }
     }
 
@@ -165,16 +186,12 @@ fn check_duplicate_ids(nodes: &[&Value]) -> Vec<String> {
 
 /// For each node, look up its `"type"` in the registry.
 ///
-/// Unknown types produce error strings. The registry is queried via
-/// `get()` which is an async method on `NodeTypeRegistry`.
-async fn check_node_types(nodes: &[&Value], registry: &NodeTypeRegistry) -> Vec<String> {
+/// Unknown types produce `GraphError::UnknownNodeType`. The registry
+/// is queried via `get()` which is an async method on `NodeTypeRegistry`.
+async fn check_node_types(nodes: &[&Value], registry: &NodeTypeRegistry) -> Vec<GraphError> {
     let mut errors = Vec::new();
 
     for node in nodes {
-        let node_id = node
-            .get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("<missing id>");
         let node_type = node
             .get("type")
             .and_then(|v| v.as_str())
@@ -184,9 +201,10 @@ async fn check_node_types(nodes: &[&Value], registry: &NodeTypeRegistry) -> Vec<
         // means this type was never reported by any worker — the
         // graph references a node type that doesn't exist.
         if registry.get(node_type).await.is_none() {
-            errors.push(format!(
-                "validation failed: node \"{node_id}\" has unknown type \"{node_type}\""
-            ));
+            // Use node_type as the type_name. The Display impl uses
+            // the same value for both node and type placeholders,
+            // which matches the current error message format.
+            errors.push(GraphError::UnknownNodeType(node_type.to_string()));
         }
     }
 
@@ -207,7 +225,7 @@ async fn check_edge_refs(
     graph: &Value,
     nodes: &[&Value],
     registry: &NodeTypeRegistry,
-) -> Vec<String> {
+) -> Vec<GraphError> {
     // Build a lookup map from node id to NodeTypeDescriptor.
     // We look up each node's type in the registry to get slot info.
     // IndexMap preserves insertion order for deterministic error
@@ -245,9 +263,12 @@ async fn check_edge_refs(
         // checking for this edge (the slot can't be validated
         // without a source node).
         if node_desc_map.get(source_id).is_none() {
-            errors.push(format!(
-                "validation failed: edge references missing source node \"{source_id}\""
-            ));
+            // Missing source node — use empty slot to distinguish
+            // from the "missing slot" case in the Display impl.
+            errors.push(GraphError::UnknownEdgeRef {
+                node_id: source_id.to_string(),
+                slot: String::new(),
+            });
             continue;
         }
 
@@ -265,9 +286,10 @@ async fn check_edge_refs(
         let slot_found = source_desc.outputs.iter().any(|s| s.name == output_slot);
 
         if !slot_found {
-            errors.push(format!(
-                "validation failed: node \"{source_id}\" has no output slot \"{output_slot}\""
-            ));
+            errors.push(GraphError::UnknownEdgeRef {
+                node_id: source_id.to_string(),
+                slot: output_slot.to_string(),
+            });
         }
     }
 
@@ -285,7 +307,7 @@ async fn check_slot_compatibility(
     graph: &Value,
     nodes: &[&Value],
     registry: &NodeTypeRegistry,
-) -> Vec<String> {
+) -> Vec<GraphError> {
     // Build a map from node id to NodeTypeDescriptor for slot type
     // lookups. This avoids repeated async registry calls per edge.
     let mut node_desc_map: IndexMap<&str, NodeTypeDescriptor> = IndexMap::new();
@@ -364,11 +386,10 @@ async fn check_slot_compatibility(
             // either is `Any`. This implements the standard "Any slot
             // accepts any connection" rule used in node-based editors.
             if !types_compatible(src_type, tgt_type) {
-                errors.push(format!(
-                    "validation failed: slot type mismatch on edge from \
-                     \"{source_id}.{output_slot}\" ({src_type:?}) to \
-                     \"{target}.{target_slot}\" ({tgt_type:?})"
-                ));
+                errors.push(GraphError::SlotTypeMismatch {
+                    from: src_type,
+                    to: tgt_type,
+                });
             }
         }
     }
@@ -395,7 +416,7 @@ fn types_compatible(a: SlotType, b: SlotType) -> bool {
 /// Build an adjacency list from edges and run Kahn's algorithm.
 ///
 /// If not all nodes are processed (i.e., the queue empties before
-/// all nodes are visited), a cycle exists. Returns an error string
+/// all nodes are visited), a cycle exists. Returns `Some(GraphError)`
 /// naming the cycle participants.
 ///
 /// Kahn's algorithm is chosen over DFS because:
@@ -403,7 +424,7 @@ fn types_compatible(a: SlotType, b: SlotType) -> bool {
 ///   in-degree > 0 after the algorithm completes).
 /// - Combined with `IndexMap` for deterministic iteration, cycle
 ///   member lists are reproducible across runs.
-fn check_acyclic(graph: &Value, nodes: &[&Value]) -> Option<String> {
+fn check_acyclic(graph: &Value, nodes: &[&Value]) -> Option<GraphError> {
     let node_ids: HashSet<&str> = nodes
         .iter()
         .filter_map(|n| n.get("id").and_then(|v| v.as_str()))
@@ -482,16 +503,13 @@ fn check_acyclic(graph: &Value, nodes: &[&Value]) -> Option<String> {
     // IndexMap preserves insertion order, so the cycle list is
     // deterministic.
     if processed < edge_count {
-        let cycle_nodes: Vec<&str> = in_degree
+        let cycle_nodes: Vec<String> = in_degree
             .iter()
             .filter(|(_, &deg)| deg > 0)
-            .map(|(&id, _)| id)
+            .map(|(&id, _)| id.to_string())
             .collect();
 
-        return Some(format!(
-            "validation failed: cycle detected involving nodes: {}",
-            cycle_nodes.join(", ")
-        ));
+        return Some(GraphError::CycleDetected(cycle_nodes));
     }
 
     None
