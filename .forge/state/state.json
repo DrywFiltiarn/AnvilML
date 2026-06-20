@@ -83,16 +83,17 @@
     "P15-A3",
     "P902-A1",
     "P902-A2",
-    "P902-A3"
+    "P902-A3",
+    "P902-A4"
   ],
-  "in_progress": "P902-A4",
+  "in_progress": "P902-A5",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-20T19:33:32+0200",
+  "last_updated": "2026-06-20T20:04:52+0200",
   "plan_approved": true,
-  "current_plan": "The code is already in the correct state (merged into P902-A2). This task's plan documents the verification steps the ACT agent should execute to confirm correctness and close the task.\n\n1. **Verify Cargo.toml entries in `crates/anvilml-server`.** Confirm `anvilml-artifacts = { path = \"../anvilml-artifacts\" }` exists in `[dependencies]` and `anvilml-ipc = { path = \"../anvilml-ipc\" }` also exists. Both must be present.\n\n2. **Verify Cargo.toml entries in `backend`.** Confirm `anvilml-artifacts = { path = \"../crates/anvilml-artifacts\" }` exists in `[dependencies]` and `anvilml-ipc = { path = \"../crates/anvilml-ipc\" }` also exists. Both must be present.\n\n3. **Verify source file imports in `crates/anvilml-server/src/state.rs`.** Confirm line 3 reads `use anvilml_artifacts::ArtifactStore;` (not `anvilml_ipc::ArtifactStore`). Confirm no `anvilml_ipc::ArtifactStore` appears anywhere in the file.\n\n4. **Verify source file imports in `backend/src/main.rs`.** Confirm line 19 reads `use anvilml_artifacts::ArtifactStore;` and line 22 reads `use anvilml_ipc::{EventBroadcaster, RouterTransport};`. Confirm no `anvilml_ipc::ArtifactStore` appears anywhere in the file.\n\n5. **Verify test file imports across all 10 anvilml-server test files.** Each must have `use anvilml_artifacts::ArtifactStore;` on its import line. Files that also need `EventBroadcaster` must retain `use anvilml_ipc::EventBroadcaster;` or `use anvilml_ipc::{EventBroadcaster, ...};`. No file may contain `anvilml_ipc::ArtifactStore`.\n\n6. **Run full workspace tests.** Execute `cargo test --workspace --features mock-hardware` and confirm exit 0. Record the test count and compare against the pre-phase baseline.\n\n7. **Run workspace-wide grep for stale references.** Execute `grep -rn \"anvilml_ipc::ArtifactStore\" crates/anvilml-server/ backend/` and confirm zero matches.",
-  "plan_approval_message_id": "1517943642751500459",
+  "current_plan": "1. **Open `crates/anvilml-server/src/lib.rs`.** Read lines 1\u20139 to confirm the\n   current doc comment text and identify the exact string to replace.\n\n2. **Replace the crate-level doc comment.** The existing comment spans lines 1\u20139:\n   ```\n   //! HTTP and WebSocket server for AnvilML.\n   //!\n   //! This crate owns the axum router, all HTTP handlers (health, system,\n   //! jobs, models, workers, artifacts, nodes), the WebSocket broadcaster,\n   //! and the artifact store. Handlers call into scheduler, worker, and\n   //! registry crates only \u2014 no business logic lives here.\n   //!\n   //! **Hard constraints:** No business logic. All handlers delegate to\n   //! the scheduler, worker pool, and model registry.\n   ```\n   Replace with:\n   ```\n   //! HTTP and WebSocket server for AnvilML.\n   //!\n   //! This crate owns the axum router, all HTTP handlers (health, system,\n   //! jobs, models, workers, artifacts, nodes), and the WebSocket broadcaster.\n   //! Handlers call into scheduler, worker, and registry crates only \u2014 no\n   //! business logic lives here.\n   //!\n   //! **Hard constraints:** No business logic. All handlers delegate to\n   //! the scheduler, worker pool, and model registry.\n   ```\n   Specific changes:\n   - Remove `the WebSocket broadcaster,` \u2192 `and the WebSocket broadcaster.`\n     (replaced comma with \"and\" + period to end the sentence)\n   - Remove `and the artifact store.` entirely\n   - The phrase \"artifacts\" stays in the handler parenthetical because the crate\n     owns the HTTP handlers for artifacts (they serve artifact data over HTTP),\n     not the storage itself.\n\n3. **Verify no other occurrences.** Run `grep -rn 'artifact store' crates/anvilml-server/`\n   to confirm this is the only occurrence in the crate. (The task description\n   confirms the target is `grep -n 'artifact store' crates/anvilml-server/src/lib.rs`\n   returning no hits.)\n\n4. **Verify `cargo doc -p anvilml-server` builds.** The doc comment is the only\n   change; cargo doc must succeed with zero warnings.",
+  "plan_approval_message_id": "1517952948246679703",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1517943640972988643",
+  "plan_report_message_id": "1517952946455707770",
   "impl_report_message_id": null
 }
