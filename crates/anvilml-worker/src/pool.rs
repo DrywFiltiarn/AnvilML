@@ -212,6 +212,7 @@ impl WorkerPool {
                 restart_rx,
                 Arc::clone(&node_registry),
                 status.clone(),
+                Arc::clone(&broadcaster),
             )
             .await?;
 
@@ -423,34 +424,58 @@ impl WorkerPool {
     ///
     /// Encodes the `WorkerMessage::Execute` payload via msgpack and routes
     /// it through the shared `RouterTransport` to the worker identified
-    /// by `worker_id`. This is the dispatch loop's sole mechanism for
+    /// by `device_index`. This is the dispatch loop's sole mechanism for
     /// delivering jobs to workers — the transport is encapsulated within
     /// the worker crate and never exposed publicly.
     ///
+    /// # Why `device_index`, not the display `worker_id`
+    ///
+    /// `WorkerHandle.worker_id` (e.g. `"worker-0"`) is a human-readable
+    /// label used in logs, the HTTP API, and the database — it has no
+    /// relationship to the ZeroMQ ROUTER socket's notion of peer
+    /// identity. The actual wire identity each worker subprocess
+    /// registers under is its bare device index as a string (see
+    /// `ManagedWorker::spawn`'s `ipc_identity_bytes`, and `worker/ipc.py`'s
+    /// `setsockopt(zmq.IDENTITY, ...)` on the Python side) — `"0"`,
+    /// `"1"`, etc., not `"worker-0"`. Sending to `worker_id.as_bytes()`
+    /// addresses a peer the ROUTER has never seen, which ZeroMQ reports
+    /// as `ZmqError::Other("Destination client not found by identity")`.
+    /// Deriving the wire identity from `device_index` here — the same
+    /// way `ManagedWorker::spawn` does — keeps both sides of the
+    /// identity scheme in sync without requiring callers to know about
+    /// this distinction.
+    ///
     /// # Arguments
     ///
-    /// * `worker_id` — The stable worker identity (e.g. `"worker-0"`).
+    /// * `device_index` — The target worker's GPU device index, matching
+    ///   the index used to derive its ZMQ wire identity at spawn time.
     /// * `msg` — The `WorkerMessage::Execute` variant to send.
     ///
     /// # Errors
     ///
-    /// Returns `AnvilError::Transport` if the message could not be sent
-    /// through the transport (e.g., the worker is disconnected).
+    /// Returns `AnvilError::Ipc` if the message could not be sent through
+    /// the transport (e.g., the worker is disconnected).
     pub async fn send_execute(
         &self,
-        worker_id: &str,
+        device_index: u32,
         msg: &WorkerMessage,
     ) -> Result<(), AnvilError> {
+        // The wire identity is the device index rendered as a decimal
+        // string — must match ManagedWorker::spawn's ipc_identity_bytes
+        // and worker/ipc.py's zmq.IDENTITY exactly, byte for byte.
+        let wire_identity = device_index.to_string();
+
         // Delegate to the internal transport. The transport is wrapped in
         // Arc<RouterTransport> which is shared across the pool; send() is
         // already protected by its own internal mutex (send_half).
         self.transport
-            .send(worker_id.as_bytes(), msg)
+            .send(wire_identity.as_bytes(), msg)
             .await
             .map_err(|e| AnvilError::Ipc(e.to_string()))?;
 
         tracing::debug!(
-            worker_id = %worker_id,
+            device_index,
+            wire_identity = %wire_identity,
             msg_type = %format!("{:?}", msg),
             "message sent to worker"
         );

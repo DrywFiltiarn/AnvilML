@@ -62,7 +62,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anvilml_core::{AnvilError, GpuDevice, NodeTypeRegistry, ServerConfig, WorkerStatus};
-use anvilml_ipc::{RouterTransport, WorkerEvent};
+use anvilml_ipc::{EventBroadcaster, RouterTransport, WorkerEvent};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing;
@@ -243,6 +243,18 @@ pub struct ManagedWorker {
     /// to the next `spawn()` call, so a real worker's registry handle
     /// never goes away across any number of respawns.
     node_registry: Option<Arc<NodeTypeRegistry>>,
+
+    /// The shared event broadcaster, used in `run()` to forward terminal
+    /// job-lifecycle events (`Completed`, `Failed`, `ImageReady`, ...) to
+    /// the scheduler's event loop via `broadcast_worker_event`. `None`
+    /// for test workers built via `new()` that don't exercise this path
+    /// (mirrors `node_registry`'s `Option` pattern for the same reason).
+    /// Without this field, `run()` previously only updated this worker's
+    /// own `WorkerStatus` (Busy → Idle) on a terminal event and silently
+    /// discarded the event itself — meaning the job's database status
+    /// was never updated and the job stayed `Running` forever, even
+    /// though the worker had already finished it and gone back to Idle.
+    broadcaster: Option<Arc<EventBroadcaster>>,
 }
 impl ManagedWorker {
     /// Returns a clone of the status `Arc` so callers can observe state
@@ -341,6 +353,7 @@ impl ManagedWorker {
             route_key,
             ready_tx,
             node_registry,
+            broadcaster: None,
         }
     }
     /// Spawn a Python worker subprocess and register its route with the
@@ -386,6 +399,11 @@ impl ManagedWorker {
     ///   `restart_rx` and `node_registry` above. A fresh `Arc` per respawn
     ///   would silently strand the pool's monitor on the old, abandoned
     ///   instance, which is the Phase 10 bug this parameter exists to close.
+    /// * `broadcaster` — Shared with the scheduler via `JobScheduler`'s own
+    ///   `Arc<EventBroadcaster>`, so `run()` can forward terminal job
+    ///   events (`Completed`, `Failed`, `ImageReady`) to the scheduler's
+    ///   event loop. Without this, `run()` can only update this worker's
+    ///   own status — it has no way to tell the scheduler a job finished.
     ///
     /// # Errors
     ///
@@ -404,8 +422,8 @@ impl ManagedWorker {
     /// delivered to a table with no entry for it yet. See `crate::demux`'s
     /// module docs for why that race matters.
     #[allow(clippy::too_many_arguments)]
-    // production constructor threading through caller-owned handles (cfg, device, transport, routes, restart_rx, node_registry, status) — each is independently documented above; bundling into a params struct would only move the same surface area, not reduce it
-    #[tracing::instrument(skip(cfg, device, transport, routes, restart_rx, node_registry), fields(worker_id, device_index = %device.index))]
+    // production constructor threading through caller-owned handles (cfg, device, transport, routes, restart_rx, node_registry, status, broadcaster) — each is independently documented above; bundling into a params struct would only move the same surface area, not reduce it
+    #[tracing::instrument(skip(cfg, device, transport, routes, restart_rx, node_registry, broadcaster), fields(worker_id, device_index = %device.index))]
     pub async fn spawn(
         cfg: &ServerConfig,
         device: &GpuDevice,
@@ -415,6 +433,7 @@ impl ManagedWorker {
         restart_rx: tokio::sync::watch::Receiver<u64>,
         node_registry: Arc<NodeTypeRegistry>,
         status: Arc<tokio::sync::RwLock<WorkerStatus>>,
+        broadcaster: Arc<EventBroadcaster>,
     ) -> Result<Self, AnvilError> {
         // The port is the transport's bound port, not a separately
         // configured value — every worker shares the one ROUTER socket.
@@ -600,6 +619,7 @@ impl ManagedWorker {
             route_key: Some(route_key),
             ready_tx: Some(ready_tx),
             node_registry: Some(node_registry),
+            broadcaster: Some(broadcaster),
         };
 
         Ok(worker)
@@ -720,6 +740,19 @@ impl ManagedWorker {
             }
         };
 
+        // broadcaster is None for the same class of test worker as routes
+        // and node_registry above. Mirrors both guards immediately above
+        // for the same reason.
+        let broadcaster = match self.broadcaster.clone() {
+            Some(b) => b,
+            None => {
+                return Err(AnvilError::Internal(
+                    "cannot respawn worker built without an EventBroadcaster (new() test path)"
+                        .to_string(),
+                ));
+            }
+        };
+
         // restart_rx is cloned, not reconstructed — see this struct's
         // restart_rx field doc for why a watch::Receiver survives being
         // passed through to a respawned worker, unlike the oneshot-backed
@@ -737,6 +770,7 @@ impl ManagedWorker {
             self.restart_rx.clone(),
             node_registry,
             self.status.clone(),
+            broadcaster,
         )
         .await?;
 
@@ -1023,35 +1057,65 @@ impl ManagedWorker {
                                         event_type = ?event,
                                         "processing event"
                                     );
-                                    let mut s = self.status.write().await;
-                                    match *s {
-                                        WorkerStatus::Idle => {
-                                            if matches!(&event, WorkerEvent::Dying { .. }) {
-                                                *s = WorkerStatus::Dead;
-                                            }
-                                        }
-                                        WorkerStatus::Busy => {
-                                            match &event {
-                                                WorkerEvent::Completed { .. } |
-                                                WorkerEvent::Failed { .. } |
-                                                WorkerEvent::Cancelled { .. } => {
-                                                    *s = WorkerStatus::Idle;
-                                                }
-                                                WorkerEvent::Dying { .. } => {
+                                    {
+                                        let mut s = self.status.write().await;
+                                        match *s {
+                                            WorkerStatus::Idle => {
+                                                if matches!(&event, WorkerEvent::Dying { .. }) {
                                                     *s = WorkerStatus::Dead;
                                                 }
-                                                _ => {}
+                                            }
+                                            WorkerStatus::Busy => {
+                                                match &event {
+                                                    WorkerEvent::Completed { .. } |
+                                                    WorkerEvent::Failed { .. } |
+                                                    WorkerEvent::Cancelled { .. } => {
+                                                        *s = WorkerStatus::Idle;
+                                                    }
+                                                    WorkerEvent::Dying { .. } => {
+                                                        *s = WorkerStatus::Dead;
+                                                    }
+                                                    _ => {}
+                                                }
+                                            }
+                                            WorkerStatus::Dead | WorkerStatus::Respawning => {
+                                                // Terminal: nothing transitions
+                                                // a worker back out of these.
+                                            }
+                                            WorkerStatus::Initializing => {
+                                                // Only Ready (handled above)
+                                                // moves out of this state.
                                             }
                                         }
-                                        WorkerStatus::Dead | WorkerStatus::Respawning => {
-                                            // Terminal: nothing transitions
-                                            // a worker back out of these.
-                                        }
-                                        WorkerStatus::Initializing => {
-                                            // Only Ready (handled above)
-                                            // moves out of this state.
-                                        }
+                                        // Lock dropped here, before the
+                                        // broadcast below — forwarding the
+                                        // event doesn't need this worker's
+                                        // own status held, and holding it
+                                        // across the call would block any
+                                        // concurrent status read for no
+                                        // reason.
                                     }
+
+                                    // Forward to the scheduler's event loop.
+                                    // Updating local `status` above (Busy →
+                                    // Idle) makes this worker available for
+                                    // the *next* dispatch, but it does
+                                    // nothing for the job that just
+                                    // finished — without this forward, the
+                                    // scheduler's event loop (subscribed
+                                    // via `EventBroadcaster::
+                                    // subscribe_worker_events`) never
+                                    // learns the job completed, and the
+                                    // job's database row stays `Running`
+                                    // forever even though the worker has
+                                    // already moved on. `None` only for
+                                    // test workers built via `new()` that
+                                    // don't exercise this path — see this
+                                    // struct's `broadcaster` field doc.
+                                    if let Some(broadcaster) = &self.broadcaster {
+                                        broadcaster.broadcast_worker_event(event);
+                                    }
+
                                     None
                                 }
                             };

@@ -217,10 +217,31 @@ impl AppState {
     /// Create a new AppState with hardware detection results but without
     /// a worker pool.
     ///
-    /// This constructor is used for the temporary AppState at server
-    /// startup to obtain the `EventBroadcaster` before spawning workers.
-    /// The `workers` field is `None`; production code should use
-    /// `new_with_hardware` with a populated worker pool instead.
+    /// Constructs an `AppState` without a worker pool, for tests that
+    /// exercise non-worker-dependent handlers (system, models) and don't
+    /// need `state.workers` populated.
+    ///
+    /// # Broadcaster identity warning
+    ///
+    /// This constructor fabricates its own `EventBroadcaster::new()`
+    /// internally (see the `broadcaster` field below) rather than
+    /// accepting one from the caller. That is fine for the tests that
+    /// currently call this — they never assert on cross-component
+    /// broadcaster delivery. It is **not** fine as a way to obtain a
+    /// broadcaster to hand to a `WorkerPool` that a *different*
+    /// `JobScheduler`/`AppState` also needs to observe: a
+    /// `tokio::sync::broadcast` channel only delivers to receivers
+    /// subscribed to that exact sender, so wiring the worker pool to
+    /// this constructor's self-fabricated broadcaster while the real
+    /// scheduler's event loop subscribes to a separately-constructed one
+    /// means every `WorkerEvent` the pool broadcasts has zero
+    /// subscribers and is silently dropped — this was a real production
+    /// bug in `backend/src/main.rs`'s startup sequence (since fixed: the
+    /// broadcaster is now constructed once in `main()` and shared
+    /// explicitly with both `JobScheduler::new` and
+    /// `WorkerPool::spawn_all`, bypassing this constructor entirely for
+    /// that purpose). Do not reintroduce a call to this function as a
+    /// way to "get a broadcaster" for wiring up a real worker pool.
     ///
     /// # Arguments
     ///

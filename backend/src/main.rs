@@ -166,52 +166,105 @@ async fn main() {
     // and event broadcaster. The queue and ledger are freshly initialised
     // — the queue starts empty and the ledger has no registered devices
     // (VRAM checks are added in Phase 014).
+    //
+    // The broadcaster is constructed once, here, and shared by both the
+    // scheduler (which the event loop subscribes to via
+    // `scheduler.broadcaster()`) and the worker pool below (which calls
+    // `broadcast_worker_event` on it from `ManagedWorker::run()`). These
+    // two consumers MUST share the exact same `Arc<EventBroadcaster>`
+    // instance — a `tokio::sync::broadcast` channel only delivers to
+    // receivers subscribed to that specific sender, so a second,
+    // independently-constructed `EventBroadcaster` has its own separate
+    // channel with zero subscribers, and every `broadcast_worker_event`
+    // call against it silently goes nowhere (logged at DEBUG as "no
+    // subscribers", easy to miss). This was previously the case: the
+    // temporary `AppState` built below (now removed) called
+    // `new_with_hardware_no_workers`, which fabricates its own
+    // `EventBroadcaster::new()` internally rather than accepting one —
+    // so the worker pool was wired to a broadcaster the event loop was
+    // never subscribed to, and `Completed`/`Failed` events vanished
+    // silently even though every other part of the pipeline (dispatch,
+    // VRAM, IPC addressing) was correct.
+    let broadcaster = Arc::new(EventBroadcaster::new());
+
     let scheduler = Arc::new(JobScheduler::new(
         Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
         Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
         Arc::clone(&node_registry),
         pool.clone(),
-        Arc::new(EventBroadcaster::new()),
+        Arc::clone(&broadcaster),
         Arc::clone(&artifact_store),
     ));
+
+    // Restore any jobs left in `Queued` status by a prior process (e.g. an
+    // unclean shutdown, or simply a restart) into the freshly-constructed
+    // in-memory queue above. Without this, such jobs sit in the database
+    // forever — invisible to the dispatch loop — and queue_position for
+    // new submissions silently undercounts. Must happen before any HTTP
+    // traffic is accepted and before the dispatch loop starts, so it can't
+    // race with a concurrent submit().
+    scheduler
+        .rehydrate_queue()
+        .await
+        .expect("failed to rehydrate job queue from database");
+
+    // Register every detected device's VRAM capacity with the dispatch
+    // loop's VRAM ledger. The ledger starts with zero registered devices
+    // (see `VramLedger::new()` above) — without this loop, every device
+    // index is "unknown" to `would_fit`, which treats an unregistered
+    // device as having zero free VRAM, so the dispatch loop would never
+    // dispatch a single job regardless of how many workers are Idle.
+    // Must happen before `start_dispatch_loop` below, so the ledger is
+    // fully populated before the loop's first dispatch attempt.
+    for gpu in &hardware_info.gpus {
+        scheduler
+            .register_device(gpu.index, gpu.vram_total_mib)
+            .await;
+        tracing::info!(
+            index = gpu.index,
+            vram_total_mib = gpu.vram_total_mib,
+            "registered device with VRAM ledger"
+        );
+    }
 
     // Spawn managed workers for all detected GPU devices.
     // Each worker is a Python subprocess that executes inference nodes.
     // The worker pool spawns a background monitoring task per worker that
     // broadcasts status changes to connected WebSocket clients.
-    // We need an EventBroadcaster for the worker pool. Since the full
-    // AppState requires the workers pool (circular dependency), we
-    // create a temporary AppState first to obtain the broadcaster.
     //
-    // However, hardware_info must be borrowed for spawn_all() before
-    // it is moved into the temp AppState. We handle this by cloning
-    // hardware_info for the temp state (acceptable cost — one hardware
-    // snapshot is small, and the clone is dropped immediately after).
-    let temp_state = AppState::new_with_hardware_no_workers(
-        env!("CARGO_PKG_VERSION"),
-        Arc::new(tokio::sync::RwLock::new(hardware_info.clone())),
-        pool.clone(),
-        Arc::new(ModelStore::new(pool.clone()).await),
-        cfg.model_dirs.clone(),
-        Arc::clone(&node_registry),
-        scheduler.clone(),
-        Arc::clone(&artifact_store),
-    );
-
+    // Passes the same `broadcaster` constructed above — see that
+    // variable's doc comment for why this must not be a second,
+    // independently-constructed `EventBroadcaster`.
     let workers = WorkerPool::spawn_all(
         &cfg,
         &hardware_info.gpus,
         Arc::new(transport),
-        temp_state.broadcaster.clone(),
+        Arc::clone(&broadcaster),
         Arc::clone(&node_registry),
     )
     .await
     .expect("failed to spawn worker pool");
 
-    // Drop the temp state — we only needed its broadcaster.
-    // The temp hardware Arc is dropped here, freeing the original
-    // hardware_info clone.
-    drop(temp_state);
+    // Wrap the worker pool in an Arc now so it can be shared between the
+    // dispatch loop, the event loop, AppState, and the later shutdown call.
+    let workers = Arc::new(workers);
+
+    // Start the scheduler's two background tasks. Without these, jobs are
+    // accepted via POST /v1/jobs and persisted as Queued, but nothing ever
+    // moves them to Running/Completed/Failed:
+    //
+    // - `start_dispatch_loop` selects an Idle worker and sends Execute for
+    //   queued jobs (wakes on submit() or a worker becoming Idle).
+    // - `start_event_loop` subscribes to WorkerEvent::Completed/Failed and
+    //   updates job status in the DB accordingly.
+    //
+    // Both return a JoinHandle for a task that runs for the lifetime of the
+    // process. We bind both handles (an unused JoinHandle still represents
+    // a live, running task — tokio tasks are NOT cancelled on drop, only
+    // detached) so they are available to be aborted explicitly during
+    // graceful shutdown below, rather than left to run past listener close.
+    let dispatch_handle = scheduler.start_dispatch_loop(Arc::clone(&workers));
+    let event_loop_handle = scheduler.start_event_loop();
 
     // Create the real shared application state with the worker pool included.
     // env!("CARGO_PKG_VERSION") is a compile-time literal that implements
@@ -223,7 +276,7 @@ async fn main() {
         pool,
         registry,
         cfg.model_dirs.clone(),
-        Arc::new(workers),
+        Arc::clone(&workers),
         Arc::clone(&node_registry),
         scheduler,
         artifact_store,
@@ -257,11 +310,8 @@ async fn main() {
 
     // Build the axum router with all registered handlers wired to their routes.
     // AppState is Clone because its fields (Arc, Vec, String) are all Clone.
-    // The workers field was populated before this point, so the router
-    // has access to the worker pool via state.workers.
-    // Clone the workers Arc before moving state into the router, so we can
-    // pass it to stats_tick::start() after the router is built.
-    let workers = state.workers.clone().unwrap();
+    // `workers` (bound above, before AppState construction) is the same Arc
+    // now stored in state.workers — no need to re-derive it from state here.
     let router = build_router(state);
 
     // Build the bind address from the resolved config values.
@@ -311,11 +361,21 @@ async fn main() {
 
     // `with_graceful_shutdown` only stops axum from accepting new HTTP
     // connections and waits for in-flight requests to finish — it has no
-    // knowledge of the worker subprocesses spawned via `WorkerPool`. Without
-    // this call, Ctrl+C (or SIGTERM) left every Python worker process
-    // running after the supervisor exited, since dropping a
-    // `tokio::process::Child` does not terminate the underlying OS process.
+    // knowledge of the worker subprocesses spawned via `WorkerPool`, nor of
+    // the scheduler's two background loops. Without this call, Ctrl+C (or
+    // SIGTERM) left every Python worker process running after the
+    // supervisor exited, since dropping a `tokio::process::Child` does not
+    // terminate the underlying OS process.
     // `shutdown_all` sends each worker a graceful `Shutdown` IPC message and
     // force-kills any that don't exit within their grace period.
     workers.shutdown_all().await;
+
+    // Stop the dispatch and event loops explicitly. Both loop forever by
+    // design (`loop { ... }` with no exit condition), so once the listener
+    // is closed and workers are shut down there is nothing left for them
+    // to do — abort() is safe here because neither loop holds a resource
+    // that needs orderly async cleanup beyond what's already been done by
+    // shutdown_all() above.
+    dispatch_handle.abort();
+    event_loop_handle.abort();
 }

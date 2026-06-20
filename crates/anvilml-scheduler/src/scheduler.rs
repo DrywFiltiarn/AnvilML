@@ -362,6 +362,91 @@ impl JobScheduler {
         Ok(jobs)
     }
 
+    /// Rehydrate the in-memory `JobQueue` from SQLite at startup.
+    ///
+    /// The in-memory queue (`self.queue`) is constructed fresh and empty by
+    /// the caller on every process start — it is never itself persisted.
+    /// Job *records* survive a restart in SQLite, but a `Queued` job from
+    /// a prior process has no entry in the new process's in-memory queue
+    /// until this method runs. Without calling this once at startup, two
+    /// problems follow: the dispatch loop has nothing to dispatch even
+    /// though `Queued` rows exist in the DB, and `submit()`'s
+    /// `queue_position` (derived from `self.queue.lock().await.len()`)
+    /// undercounts by however many `Queued` jobs already existed before
+    /// this process started — in the extreme case of an otherwise-empty
+    /// in-memory queue, every first post-restart submission reports
+    /// position 1 regardless of how many jobs are still genuinely ahead
+    /// of it in SQLite.
+    ///
+    /// Jobs are loaded in `created_at` ascending order (oldest first) and
+    /// pushed in that order, preserving original FIFO dispatch order
+    /// across the restart — `list_jobs` returns descending order for the
+    /// list-jobs API's UI use case, so the result is reversed here rather
+    /// than adding a second sort mode to `list_jobs` for one caller.
+    ///
+    /// Must be called exactly once, after `JobScheduler::new` and before
+    /// `start_dispatch_loop`, and before the server starts accepting
+    /// `POST /v1/jobs` requests — calling it after new submissions have
+    /// already landed in the queue would duplicate or reorder entries.
+    ///
+    /// # Returns
+    ///
+    /// The number of jobs rehydrated into the queue, for startup logging.
+    /// `Err(AnvilError::Db(_))` if the underlying `list_jobs` query fails.
+    pub async fn rehydrate_queue(&self) -> Result<usize, AnvilError> {
+        // Oldest-first so push() reproduces original FIFO order; list_jobs
+        // returns newest-first, so reverse after fetching.
+        let mut queued_jobs = self.list_jobs(Some(JobStatus::Queued), None, None).await?;
+        queued_jobs.reverse();
+
+        let count = queued_jobs.len();
+        let mut queue = self.queue.lock().await;
+        for job in queued_jobs {
+            queue.push(job);
+        }
+        drop(queue);
+
+        tracing::info!(count, "rehydrated queue from database");
+
+        Ok(count)
+    }
+
+    /// Register a GPU device's total VRAM capacity with the dispatch
+    /// loop's VRAM ledger.
+    ///
+    /// The `VramLedger` starts empty (no registered devices) when the
+    /// scheduler is constructed — registration is a separate step so
+    /// that the scheduler itself has no dependency on hardware detection
+    /// timing. The caller (`main.rs`, after `detect_all_devices`) must
+    /// call this once per detected `GpuDevice` before the dispatch loop
+    /// starts, or `VramLedger::would_fit` will return `false` for every
+    /// device unconditionally — `would_fit` treats an unregistered
+    /// device index as having zero free VRAM, by design (see its doc
+    /// comment), since a missing registration is indistinguishable from
+    /// "no capacity" without this explicit call. The dispatch loop's
+    /// VRAM-fit check (`dispatch_once`) would then silently `break` out
+    /// of its dispatch attempt for every queued job on every tick — with
+    /// no log line, since a deliberately-empty queue and an
+    /// unregistered-device skip are otherwise indistinguishable from the
+    /// loop's perspective.
+    ///
+    /// Calling this more than once for the same device index is a no-op
+    /// (delegates to `VramLedger::register_device`, which is itself
+    /// idempotent) — safe to call again after a model rescan or device
+    /// re-detection without double-counting capacity.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` — The GPU device index, matching `GpuDevice::index`.
+    /// * `vram_total_mib` — The device's total VRAM in mebibytes, matching
+    ///   `GpuDevice::vram_total_mib`.
+    pub async fn register_device(&self, index: u32, vram_total_mib: u32) {
+        self.ledger
+            .lock()
+            .await
+            .register_device(index, vram_total_mib);
+    }
+
     /// Start the dispatch loop background task.
     ///
     /// This method spawns a tokio task that runs the dispatch loop for the
@@ -630,7 +715,7 @@ impl JobScheduler {
             // If send fails, log and continue — the job remains in the
             // queue (it was popped but the dispatch is incomplete).
             // TODO: P14-A4 will add job re-enqueue on send failure.
-            if let Err(e) = workers.send_execute(&worker_id, &msg).await {
+            if let Err(e) = workers.send_execute(device_index, &msg).await {
                 tracing::warn!(
                     job_id = %job.id,
                     worker_id = %worker_id,
