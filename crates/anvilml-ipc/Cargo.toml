@@ -1,18 +1,14 @@
 [package]
 name = "anvilml-ipc"
-version = "0.1.8"
+version = "0.1.9"
 edition.workspace = true
 
 [dependencies]
 anvilml-core = { path = "../anvilml-core" }
-base64 = "0.22"
 bytes = { workspace = true }
-chrono = { workspace = true }
 rmp-serde = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = "0.10"
-sqlx = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

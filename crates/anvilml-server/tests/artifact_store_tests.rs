@@ -4,7 +4,7 @@
 //! saved artifact, save idempotency (INSERT OR IGNORE), and get returning
 //! None for unknown hashes.
 
-use anvilml_ipc::ArtifactStore;
+use anvilml_artifacts::ArtifactStore;
 use serial_test::serial;
 use tempfile::TempDir;
 use uuid::Uuid;

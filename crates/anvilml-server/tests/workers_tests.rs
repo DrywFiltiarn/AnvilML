@@ -3,8 +3,8 @@
 //! Tests cover: empty workers list when no pool is configured, and
 //! worker info returned when a pool with a mock worker is present.
 
+use anvilml_artifacts::ArtifactStore;
 use anvilml_core::{GpuDevice, NodeTypeRegistry, ServerConfig, WorkerStatus};
-use anvilml_ipc::ArtifactStore;
 use anvilml_scheduler::scheduler::JobScheduler;
 use anvilml_server::{build_router, AppState};
 use anvilml_worker::{ManagedWorker, WorkerPool};

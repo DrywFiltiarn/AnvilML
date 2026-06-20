@@ -5,9 +5,10 @@
 //! when the graph contains an unknown node type (registry with LoadModel
 //! only), and 202 when the graph is valid (delegated to JobScheduler).
 
+use anvilml_artifacts::ArtifactStore;
 use anvilml_core::types::{NodeTypeDescriptor, SlotDescriptor, SlotType};
 use anvilml_core::NodeTypeRegistry;
-use anvilml_ipc::{ArtifactStore, EventBroadcaster};
+use anvilml_ipc::EventBroadcaster;
 use anvilml_scheduler::{ledger::VramLedger, queue::JobQueue, scheduler::JobScheduler};
 use anvilml_server::{build_router, AppState};
 use axum::body::to_bytes;

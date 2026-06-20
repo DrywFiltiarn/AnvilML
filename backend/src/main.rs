@@ -16,9 +16,10 @@ mod config {
     pub use anvilml_core::{load, ConfigOverrides};
 }
 
+use anvilml_artifacts::ArtifactStore;
 use anvilml_core::NodeTypeRegistry;
 use anvilml_hardware::detect_all_devices;
-use anvilml_ipc::{ArtifactStore, EventBroadcaster, RouterTransport};
+use anvilml_ipc::{EventBroadcaster, RouterTransport};
 use anvilml_registry::{open, ModelStore};
 use anvilml_scheduler::{ledger::VramLedger, queue::JobQueue, scheduler::JobScheduler};
 use anvilml_server::{build_router, AppState};

@@ -6,8 +6,9 @@
 //! Tests use a real `ArtifactStore` so they exercise the full pipeline
 //! from database metadata through the HTTP handler to the filesystem.
 
+use anvilml_artifacts::ArtifactStore;
 use anvilml_core::NodeTypeRegistry;
-use anvilml_ipc::{ArtifactStore, EventBroadcaster};
+use anvilml_ipc::EventBroadcaster;
 use anvilml_scheduler::{ledger::VramLedger, queue::JobQueue, scheduler::JobScheduler};
 use anvilml_server::{build_router, AppState};
 use std::sync::Arc;

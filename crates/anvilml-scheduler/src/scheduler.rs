@@ -13,10 +13,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use anvilml_artifacts::ArtifactStore;
 use anvilml_core::{
     types::WsEvent, AnvilError, Job, JobSettings, JobStatus, SubmitJobRequest, SubmitJobResponse,
 };
-use anvilml_ipc::{ArtifactStore, EventBroadcaster, WorkerMessage};
+use anvilml_ipc::{EventBroadcaster, WorkerMessage};
 use anvilml_worker::pool::WorkerPool;
 use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};

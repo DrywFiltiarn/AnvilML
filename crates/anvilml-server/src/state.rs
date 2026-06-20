@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anvilml_ipc::ArtifactStore;
+use anvilml_artifacts::ArtifactStore;
 
 /// AppState holds shared server state accessible to all HTTP handlers.
 ///

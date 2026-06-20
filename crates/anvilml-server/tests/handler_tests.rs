@@ -9,9 +9,10 @@
 //! `Router::oneshot` does not set up this extension, so we use
 //! `axum::serve` with a `TcpListener` for these tests.
 
+use anvilml_artifacts::ArtifactStore;
 use anvilml_core::types::WsEvent;
 use anvilml_core::NodeTypeRegistry;
-use anvilml_ipc::{ArtifactStore, EventBroadcaster};
+use anvilml_ipc::EventBroadcaster;
 use anvilml_scheduler::{ledger::VramLedger, queue::JobQueue, scheduler::JobScheduler};
 use anvilml_server::{build_router, AppState};
 use std::sync::Arc;

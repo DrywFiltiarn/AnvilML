@@ -80,6 +80,7 @@ dependencies = [
 name = "anvilml"
 version = "0.1.14"
 dependencies = [
+ "anvilml-artifacts",
  "anvilml-core",
  "anvilml-hardware",
  "anvilml-ipc",
@@ -149,17 +150,13 @@ dependencies = [
 
 [[package]]
 name = "anvilml-ipc"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anvilml-core",
- "base64",
  "bytes",
- "chrono",
  "rmp-serde",
  "serde",
  "serde_json",
- "sha2 0.10.9",
- "sqlx",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -197,6 +194,7 @@ dependencies = [
 name = "anvilml-scheduler"
 version = "0.1.10"
 dependencies = [
+ "anvilml-artifacts",
  "anvilml-core",
  "anvilml-hardware",
  "anvilml-ipc",
@@ -217,6 +215,7 @@ dependencies = [
 name = "anvilml-server"
 version = "0.1.24"
 dependencies = [
+ "anvilml-artifacts",
  "anvilml-core",
  "anvilml-hardware",
  "anvilml-ipc",

@@ -18,8 +18,9 @@
 
 use std::sync::Arc;
 
+use anvilml_artifacts::ArtifactStore;
 use anvilml_core::types::WsEvent;
-use anvilml_ipc::{ArtifactStore, EventBroadcaster, WorkerEvent};
+use anvilml_ipc::{EventBroadcaster, WorkerEvent};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use chrono::Utc;

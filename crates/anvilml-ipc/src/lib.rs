@@ -7,13 +7,11 @@
 //! **Hard constraints:** ZeroMQ routing is handled automatically — this crate
 //! never manipulates identities or performs manual message routing.
 
-pub mod artifact_store;
 pub mod error;
 pub mod messages;
 pub mod transport;
 pub mod ws;
 
-pub use artifact_store::ArtifactStore;
 pub use error::{RecvError, TransportError};
 pub use messages::{decode_event, encode_message, IpcError, WorkerEvent, WorkerMessage};
 pub use transport::{render_identity, RouterTransport};

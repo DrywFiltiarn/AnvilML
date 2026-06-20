@@ -13,11 +13,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use anvilml_artifacts::ArtifactStore;
 use anvilml_core::{
     JobSettings, NodeTypeDescriptor, NodeTypeRegistry, SlotDescriptor, SlotType, SubmitJobRequest,
     WorkerStatus,
 };
-use anvilml_ipc::{ArtifactStore, EventBroadcaster};
+use anvilml_ipc::EventBroadcaster;
 use anvilml_registry::open_in_memory;
 use anvilml_scheduler::ledger::VramLedger;
 use anvilml_scheduler::queue::JobQueue;

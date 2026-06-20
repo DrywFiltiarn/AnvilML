@@ -1,7 +1,7 @@
 use anvilml_core::NodeTypeRegistry;
 use std::sync::Arc;
 
-use anvilml_ipc::ArtifactStore;
+use anvilml_artifacts::ArtifactStore;
 use anvilml_scheduler::scheduler::JobScheduler;
 use anvilml_server::AppState;
 

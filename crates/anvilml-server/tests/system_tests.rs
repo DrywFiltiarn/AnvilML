@@ -2,8 +2,8 @@
 //!
 //! Tests cover: system env stub and system hardware info.
 
+use anvilml_artifacts::ArtifactStore;
 use anvilml_core::NodeTypeRegistry;
-use anvilml_ipc::ArtifactStore;
 use anvilml_registry::{open_in_memory, ModelStore};
 use anvilml_scheduler::scheduler::JobScheduler;
 use anvilml_server::{build_router, AppState};

@@ -8,6 +8,7 @@ name = "anvilml"
 path = "src/main.rs"
 
 [dependencies]
+anvilml-artifacts = { path = "../crates/anvilml-artifacts" }
 anvilml-core = { path = "../crates/anvilml-core" }
 anvilml-hardware = { path = "../crates/anvilml-hardware" }
 anvilml-registry = { path = "../crates/anvilml-registry" }

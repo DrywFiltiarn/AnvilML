@@ -3,8 +3,8 @@
 //! Tests cover: 503 when no worker has reached Ready, and 200 with
 //! an empty array after a mock worker reaches Ready.
 
+use anvilml_artifacts::ArtifactStore;
 use anvilml_core::NodeTypeRegistry;
-use anvilml_ipc::ArtifactStore;
 use anvilml_scheduler::scheduler::JobScheduler;
 use anvilml_server::{build_router, AppState};
 use axum::body::to_bytes;

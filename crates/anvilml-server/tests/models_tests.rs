@@ -5,8 +5,8 @@
 //! Each test uses an in-memory database via `open_in_memory()` to
 //! ensure test isolation.
 
+use anvilml_artifacts::ArtifactStore;
 use anvilml_core::{ModelDirConfig, ModelKind, ModelMeta, NodeTypeRegistry};
-use anvilml_ipc::ArtifactStore;
 use anvilml_registry::{open_in_memory, ModelStore};
 use anvilml_scheduler::ledger::VramLedger;
 use anvilml_scheduler::queue::JobQueue;
