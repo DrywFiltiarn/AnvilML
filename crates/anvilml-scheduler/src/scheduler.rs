@@ -499,7 +499,7 @@ impl JobScheduler {
         ledger: &Arc<tokio::sync::Mutex<VramLedger>>,
         db: &SqlitePool,
         workers: &WorkerPool,
-        _broadcaster: &Arc<EventBroadcaster>,
+        broadcaster: &Arc<EventBroadcaster>,
     ) {
         let idle_workers = workers.get_idle_workers().await;
         if idle_workers.is_empty() {
@@ -639,6 +639,14 @@ impl JobScheduler {
                 );
                 continue;
             }
+
+            // Broadcast JobStarted so WebSocket clients know execution has
+            // begun on a specific worker. This is the second event in the
+            // lifecycle sequence: JobQueued → JobStarted → ...
+            broadcaster.send(WsEvent::JobStarted {
+                job_id: job.id,
+                worker_id: worker_id.clone(),
+            });
 
             // Mandatory INFO log point per ENVIRONMENT.md §9 — "Scheduler:
             // Job dispatched" with job_id and worker_id fields.

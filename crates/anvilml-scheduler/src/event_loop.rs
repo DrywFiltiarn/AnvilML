@@ -1,4 +1,4 @@
-//! Event loop for processing worker events (Completed, Failed, ImageReady).
+//! Event loop for processing worker events (Completed, Failed, ImageReady, Progress).
 //!
 //! This module implements the event subscription loop that receives
 //! `WorkerEvent` messages from the `EventBroadcaster` and updates
@@ -13,8 +13,10 @@
 //!    broadcasts `WsEvent::JobFailed`.
 //! 5. On `ImageReady`: decodes base64 image, persists via `ArtifactStore`,
 //!    broadcasts `WsEvent::JobImageReady`.
-//! 6. On unknown events: logs at DEBUG and continues.
-//! 7. On channel closure: logs at WARN and exits.
+//! 6. On `Progress`: relays to WebSocket clients via `WsEvent::JobProgress`
+//!    (no DB write — progress is transient UI state).
+//! 7. On unknown events: logs at DEBUG and continues.
+//! 8. On channel closure: logs at WARN and exits.
 
 use std::sync::Arc;
 
@@ -112,6 +114,7 @@ pub fn start_event_loop(scheduler: &JobScheduler) -> tokio::task::JoinHandle<()>
 /// - `Completed` → update DB, release VRAM, broadcast WsEvent
 /// - `Failed` → update DB with error, release VRAM, broadcast WsEvent
 /// - `ImageReady` → decode base64, persist artifact, broadcast WsEvent
+/// - `Progress` → relay to WebSocket clients via WsEvent::JobProgress
 /// - Other variants → log at DEBUG and continue (future phases handle these)
 ///
 /// # Arguments
@@ -164,8 +167,30 @@ async fn handle_event(
             )
             .await;
         }
+        WorkerEvent::Progress {
+            job_id,
+            step,
+            total_steps,
+            preview_b64,
+        } => {
+            // Relay Progress to WebSocket clients without DB write.
+            // Progress events are transient UI updates — only terminal
+            // statuses (Completed, Failed, Cancelled) are persisted.
+            tracing::debug!(
+                job_id = %job_id,
+                step = step,
+                total_steps = total_steps,
+                "progress event relayed"
+            );
+            broadcaster.send(WsEvent::JobProgress {
+                job_id,
+                step,
+                total_steps,
+                preview_b64,
+            });
+        }
         // Unknown event variant — log at DEBUG and continue.
-        // Progress, Cancelled, Ready, Pong, Dying, and MemoryReport events
+        // Cancelled, Ready, Pong, Dying, and MemoryReport events
         // are handled by future phases.
         _ => {
             tracing::debug!(event_type = ?event, "ignoring non-terminal worker event");

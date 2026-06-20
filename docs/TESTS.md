@@ -2689,3 +2689,21 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Graph with single `StepNode` (a dynamically-created test node with `EMITS_PROGRESS=True`).
 **Expected output:** 3 Progress events captured by the emit capture, each with correct fields and in sequential order.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_executor.py -v` exits 0.
+
+## test_full_event_sequence_order (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/progress_tests.rs`
+**Context:** The event loop now handles `WorkerEvent::Progress` by relaying it to WebSocket clients via `WsEvent::JobProgress`. The dispatch loop also broadcasts `WsEvent::JobStarted` after sending an Execute message. This test verifies the complete observable lifecycle sequence: JobStarted → JobProgress×3 → JobCompleted, with correct field values for each event.
+**Tests:** Creates in-memory DB, scheduler, registry with LoadModel node. Subscribes to WsEvent channel. Starts event loop. Submits a job and manually sets it Running. Sends events in order: JobStarted (direct WsEvent broadcast), Progress(step=1, no preview), Progress(step=2, with preview), Progress(step=3, with preview), Completed. Collects all events via `ws_rx.recv()` with timeouts. Asserts each event's variant and field values.
+**Inputs:** Job with LoadModel graph, 3 Progress events (steps 1-3, total=3), 1 Completed event (elapsed_ms=4567).
+**Expected output:** 4 WsEvent variants received in correct order: JobStarted{job_id, worker_id="worker-0"}, JobProgress{step=1, preview=None}, JobProgress{step=2, preview=Some("preview-step-2")}, JobProgress{step=3, preview=Some("preview-step-3")}. Job status transitions to "completed". VRAM released.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_full_event_sequence_order` exits 0.
+
+## test_progress_no_preview (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/progress_tests.rs`
+**Context:** The most common Progress event has no preview image (preview_b64=None). This test verifies that such events are relayed correctly and do not affect job status or VRAM reservations.
+**Tests:** Creates in-memory DB, scheduler, registry. Subscribes to WsEvent channel. Starts event loop. Submits a job, sets it Running. Sends a single Progress event (step=5, total_steps=50, preview_b64=None). Verifies WsEvent::JobProgress is broadcast with correct fields. Verifies job status remains "running" and VRAM reservation is unchanged.
+**Inputs:** Progress event with step=5, total_steps=50, preview_b64=None.
+**Expected output:** WsEvent::JobProgress{job_id, step=5, total_steps=50, preview_b64=None} broadcast. Job status remains "running". VRAM reservation unchanged at 4096 MiB.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_progress_no_preview` exits 0.
