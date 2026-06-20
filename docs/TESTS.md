@@ -2401,3 +2401,48 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Three valid `LoadModel` graphs submitted with a 50ms gap after the first, `before = <time between first and second>`.
 **Expected output:** `Ok(vec![job1])` — only the first job, created before the filter time.
 **Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- scheduler` exits 0.
+
+## test_submit_job_returns_503_when_no_workers (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** The `POST /v1/jobs` handler delegates to `JobScheduler::submit()`. With an empty node registry, the scheduler's `validate_graph()` returns errors for any graph missing the `nodes` array, producing a 422 response instead of the old 503. Uses `test_scheduler()` helper which creates a `JobScheduler` backed by an in-memory SQLite pool.
+**Tests:** Builds `AppState` with an empty `NodeTypeRegistry` and a scheduler, sends POST `/v1/jobs` with an empty graph `{}`, asserts HTTP 422 with `error: "invalid_graph"`.
+**Inputs:** POST `/v1/jobs` with `{"graph": {}, "settings": {}}`, `AppState::new("test-version", empty_registry, scheduler)`.
+**Expected output:** HTTP 422 with JSON body `{"error":"invalid_graph",...}`.
+**Acceptance command:** `cargo test -p anvilml-server --test jobs_tests -- test_submit_job_returns_503_when_no_workers` exits 0.
+
+## test_submit_job_returns_422_with_unknown_node_type (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** The `POST /v1/jobs` handler delegates to `JobScheduler::submit()` which validates the graph against the node type registry. A graph containing an unknown node type (`GhostNode`) fails validation. Uses `test_scheduler()` helper with a registry that has `LoadModel` registered.
+**Tests:** Builds a registry with `LoadModel` registered, sends POST `/v1/jobs` with a graph containing `GhostNode`, asserts HTTP 422 with `error: "invalid_graph"` and message mentioning `GhostNode`.
+**Inputs:** POST `/v1/jobs` with a graph containing `{"id": "n1", "type": "GhostNode"}`, `AppState::new("test-version", registry_with_loadmodel, scheduler)`.
+**Expected output:** HTTP 422 with JSON body `{"error":"invalid_graph","message":"...",...}` where message contains `GhostNode`.
+**Acceptance command:** `cargo test -p anvilml-server --test jobs_tests -- test_submit_job_returns_422_with_unknown_node_type` exits 0.
+
+## test_submit_job_returns_202_with_valid_graph (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** The `POST /v1/jobs` handler delegates to `JobScheduler::submit()` which validates, persists, enqueues, and broadcasts a `JobQueued` event. Returns 202 with a real job ID and queue position (1-based). Uses `test_scheduler()` helper with a registry that has `LoadModel` registered.
+**Tests:** Builds a registry with `LoadModel` registered, sends POST `/v1/jobs` with a valid graph containing a `LoadModel` node, asserts HTTP 202 with a valid `job_id` UUID and `queue_position: 1`.
+**Inputs:** POST `/v1/jobs` with a valid graph containing `{"id": "n1", "type": "LoadModel"}`, `AppState::new("test-version", registry_with_loadmodel, scheduler)`.
+**Expected output:** HTTP 202 with JSON body containing valid `job_id` (UUID string) and `queue_position: 1`.
+**Acceptance command:** `cargo test -p anvilml-server --test jobs_tests -- test_submit_job_returns_202_with_valid_graph` exits 0.
+
+## test_list_jobs_returns_queued_jobs (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** The `GET /v1/jobs` handler delegates to `JobScheduler::list_jobs()` which builds a dynamic SQL query with optional filters. Returns jobs ordered by `created_at` descending. Uses `test_scheduler()` helper with a registry that has `LoadModel` registered.
+**Tests:** Submits a job via POST `/v1/jobs`, then calls GET `/v1/jobs`, asserts HTTP 200 with a JSON array containing at least one job with `status: "Queued"`.
+**Inputs:** GET `/v1/jobs`, `AppState::new("test-version", registry_with_loadmodel, scheduler)`.
+**Expected output:** HTTP 200 with JSON array containing at least one job where `status == "Queued"`.
+**Acceptance command:** `cargo test -p anvilml-server --test jobs_tests -- test_list_jobs_returns_queued_jobs` exits 0.
+
+## test_get_job_returns_404_for_unknown_id (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** The `GET /v1/jobs/{id}` handler delegates to `JobScheduler::get_job()` which queries the database. Returns 404 with `error: "job_not_found"` when no matching job exists. Uses `test_scheduler()` helper with an empty registry.
+**Tests:** Calls GET `/v1/jobs/{uuid}` with a random UUID that was never submitted, asserts HTTP 404 with `error: "job_not_found"`.
+**Inputs:** GET `/v1/jobs/{random_uuid}`, `AppState::new("test-version", empty_registry, scheduler)`.
+**Expected output:** HTTP 404 with JSON body `{"error":"job_not_found",...}`.
+**Acceptance command:** `cargo test -p anvilml-server --test jobs_tests -- test_get_job_returns_404_for_unknown_id` exits 0.

@@ -68,6 +68,13 @@ pub struct AppState {
     /// without cloning the registry. The registry is populated when
     /// workers report their capabilities via the `Ready` event.
     pub node_registry: Arc<anvilml_core::NodeTypeRegistry>,
+
+    /// The job scheduler — owns the job queue, VRAM ledger, and event
+    /// broadcaster.
+    ///
+    /// Used by the job handlers to submit, query, and list jobs. Shared
+    /// via `Arc` so all handlers access the same scheduler instance.
+    pub scheduler: Arc<anvilml_scheduler::JobScheduler>,
 }
 
 impl AppState {
@@ -90,9 +97,13 @@ impl AppState {
     /// * `node_registry` — A pre-built `Arc<NodeTypeRegistry>` for querying
     ///   registered node types. In tests, construct with
     ///   `Arc::new(anvilml_core::NodeTypeRegistry::new().await)`.
+    /// * `scheduler` — A pre-built `Arc<JobScheduler>` for job management.
+    ///   In tests, construct with a scheduler backed by the same in-memory
+    ///   pool that `open_in_memory()` creates.
     pub async fn new(
         version: impl Into<String>,
         node_registry: Arc<anvilml_core::NodeTypeRegistry>,
+        scheduler: Arc<anvilml_scheduler::JobScheduler>,
     ) -> Self {
         // Use open_in_memory() to create an in-memory pool with migrations
         // already applied. This is critical — the ModelStore queries tables
@@ -124,9 +135,8 @@ impl AppState {
             // Workers pool is None for stub/test mode — the workers handler
             // returns an empty array when workers is None.
             workers: None,
-            // The node registry is shared via Arc — all handlers that need
-            // to query registered node types access the same registry.
             node_registry,
+            scheduler,
         }
     }
 
@@ -157,6 +167,8 @@ impl AppState {
     /// * `node_registry` — A pre-built `Arc<NodeTypeRegistry>` shared with
     ///   the worker pool so node types reported by workers accumulate into
     ///   one queryable set.
+    /// * `scheduler` — A pre-built `Arc<JobScheduler>` for job management.
+    #[expect(clippy::too_many_arguments, reason = "constructor parameter list")]
     pub fn new_with_hardware(
         version: impl Into<String>,
         hardware: Arc<tokio::sync::RwLock<anvilml_core::types::HardwareInfo>>,
@@ -165,6 +177,7 @@ impl AppState {
         model_dirs: Vec<anvilml_core::ModelDirConfig>,
         workers: Arc<anvilml_worker::WorkerPool>,
         node_registry: Arc<anvilml_core::NodeTypeRegistry>,
+        scheduler: Arc<anvilml_scheduler::JobScheduler>,
     ) -> Self {
         // Borrow the broadcaster that the pool was already constructed with,
         // so AppState.broadcaster and pool.broadcaster() are the same Arc.
@@ -180,6 +193,7 @@ impl AppState {
             broadcaster,
             workers: Some(workers),
             node_registry,
+            scheduler,
         }
     }
 
@@ -202,6 +216,7 @@ impl AppState {
     /// * `node_registry` — A pre-built `Arc<NodeTypeRegistry>` shared with
     ///   the worker pool so node types reported by workers accumulate into
     ///   one queryable set.
+    /// * `scheduler` — A pre-built `Arc<JobScheduler>` for job management.
     pub fn new_with_hardware_no_workers(
         version: impl Into<String>,
         hardware: Arc<tokio::sync::RwLock<anvilml_core::types::HardwareInfo>>,
@@ -209,6 +224,7 @@ impl AppState {
         registry: Arc<anvilml_registry::ModelStore>,
         model_dirs: Vec<anvilml_core::ModelDirConfig>,
         node_registry: Arc<anvilml_core::NodeTypeRegistry>,
+        scheduler: Arc<anvilml_scheduler::JobScheduler>,
     ) -> Self {
         Self {
             start_time: std::time::Instant::now(),
@@ -223,6 +239,7 @@ impl AppState {
             broadcaster: Arc::new(crate::ws::EventBroadcaster::new()),
             workers: None,
             node_registry,
+            scheduler,
         }
     }
 }

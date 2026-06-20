@@ -4,6 +4,8 @@ pub mod models;
 pub mod nodes;
 pub mod system;
 pub mod workers;
+pub use jobs::get_job;
+pub use jobs::list_jobs;
 pub use jobs::submit_job;
 pub use nodes::list_nodes;
 pub use system::get_env;

@@ -72,16 +72,17 @@
     "P12-A2",
     "P12-B1",
     "P13-A1",
-    "P13-A2"
+    "P13-A2",
+    "P13-A3"
   ],
-  "in_progress": "P13-A3",
+  "in_progress": "P13-B1",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-19T23:25:25+0200",
+  "last_updated": "2026-06-20T07:33:25+0200",
   "plan_approved": true,
-  "current_plan": "1. **Add `sqlx` dependency to `anvilml-scheduler/Cargo.toml`.**\n   Add `sqlx = { workspace = true }` to the `[dependencies]` section. This is needed for `SqlitePool` and `sqlx::query` in the scheduler. The workspace dependency already has `[\"runtime-tokio\", \"sqlite\", \"json\"]` features, which are exactly what this task needs.\n\n2. **Create `crates/anvilml-scheduler/src/scheduler.rs`.**\n   Implement the `JobScheduler` struct and its methods:\n\n   ```rust\n   pub struct JobScheduler {\n       queue: Arc<tokio::sync::Mutex<JobQueue>>,\n       ledger: Arc<tokio::sync::Mutex<VramLedger>>,\n       node_registry: Arc<NodeTypeRegistry>,\n       db: SqlitePool,\n       broadcaster: Arc<EventBroadcaster>,\n   }\n   ```\n\n   Use `tokio::sync::Mutex` (not `std::sync::Mutex`) because the queue and ledger will be held across `.await` points in Phase 014's dispatch loop. This is a hard constraint from the task context.\n\n   **`new()` constructor:** Takes all five fields as arguments. No async work \u2014 just stores them. Add `#[tracing::instrument]` for observability.\n\n   **`submit()` method:**\n   - Call `validate_graph(&req.graph, &self.node_registry).await` to validate the graph. On `Err`, return `AnvilError::InvalidGraph(errors)`.\n   - Generate a new UUID for the job ID: `Uuid::new_v4()`.\n   - Create a `Job` struct with `status: JobStatus::Queued`, `created_at: Utc::now()`, and all other fields set to defaults/None. The `queue_position` is set to the current queue length + 1.\n   - INSERT the job into SQLite: `INSERT INTO jobs (id, status, graph, settings, created_at, started_at, completed_at, worker_id, error, queue_position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` using `sqlx::query` with positional parameters. The `graph` and `settings` fields are serialised as JSON strings via `serde_json::to_string`. Timestamps are serialised as ISO 8601 strings via `chrono`'s `to_rfc3339()`.\n   - Push the job to the queue: `self.queue.lock().await.push(job.clone())`.\n   - Broadcast the event: `self.broadcaster.broadcast(WsEvent::JobQueued { job_id, queue_position })`.\n   - Return `SubmitJobResponse { job_id, queue_position }`.\n\n   **`get_job()` method:**\n   - Query `SELECT * FROM jobs WHERE id = ?` using `sqlx::query_as` with the UUID as a hex string.\n   - Map the row to a `Job` struct. Since `sqlx::query_as` requires a type that implements `FromRow`, we need a helper struct or use `query` + manual deserialization. Given that `Job` derives `Serialize/Deserialize` but not `FromRow`, use `sqlx::query` with `fetch_optional` and manually construct the `Job` from the row columns.\n   - Return `Some(job)` if found, `None` if not found (no error \u2014 the handler will translate to 404).\n\n   **`list_jobs()` method:**\n   - Build a dynamic SQL query with optional `WHERE status = ?`, `ORDER BY created_at DESC`, `LIMIT ?`, and `WHERE created_at < ?` (before filter).\n   - Use `sqlx::query` with `fetch_all` and manually construct `Job` objects from each row.\n   - Return the vector of jobs.\n\n3. **Update `crates/anvilml-scheduler/src/lib.rs`.**\n   Add `pub mod scheduler;` and `pub use scheduler::JobScheduler;` after the existing module declarations.\n\n4. **Create `crates/anvilml-scheduler/tests/scheduler_tests.rs`.**\n   Write \u2265 5 tests covering:\n   - Submit valid graph \u2192 job persisted with Queued status, queue position 1\n   - Submit invalid graph \u2192 returns AnvilError::InvalidGraph\n   - get_job returns the submitted job\n   - list_jobs returns all submitted jobs\n   - list_jobs filtered by status returns only matching jobs\n\n   Use `anvilml_registry::open_in_memory()` for the test database pool. Use `NodeTypeRegistry::new().await` for the registry. Populate the registry with at least `LoadModel` so graph validation passes.\n\n5. **Bump `anvilml-scheduler` version** from `0.1.6` to `0.1.7` in `Cargo.toml`.",
-  "plan_approval_message_id": "1517640895913132282",
+  "current_plan": "",
+  "plan_approval_message_id": "1517763224131473579",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1517640893383839764",
+  "plan_report_message_id": "1517763222084784310",
   "impl_report_message_id": null
 }

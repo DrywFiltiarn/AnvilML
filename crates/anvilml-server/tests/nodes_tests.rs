@@ -4,6 +4,8 @@
 //! an empty array after a mock worker reaches Ready.
 
 use anvilml_core::NodeTypeRegistry;
+use anvilml_ipc::EventBroadcaster;
+use anvilml_scheduler::{ledger::VramLedger, queue::JobQueue, scheduler::JobScheduler};
 use anvilml_server::{build_router, AppState};
 use axum::body::to_bytes;
 use axum::http::{Method, Request};
@@ -24,7 +26,15 @@ async fn test_nodes_returns_503_when_registry_not_updated() {
     // Build AppState with a fresh, never-updated registry.
     // The registry's `updated` flag is false, so the handler should
     // return 503.
-    let state = AppState::new("test-version", Arc::new(NodeTypeRegistry::new().await)).await;
+    let registry = Arc::new(NodeTypeRegistry::new().await);
+    let scheduler = Arc::new(JobScheduler::new(
+        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
+        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
+        registry.clone(),
+        anvilml_registry::open_in_memory().await.unwrap(),
+        Arc::new(EventBroadcaster::new()),
+    ));
+    let state = AppState::new("test-version", registry, scheduler).await;
 
     // Build the router via the production `build_router` function.
     let router = build_router(state);
@@ -77,8 +87,16 @@ async fn test_nodes_returns_200_after_worker_ready() {
     let registry = NodeTypeRegistry::new().await;
     registry.update_from_worker("worker-0", vec![]).await;
 
-    // Build AppState with the updated registry.
-    let state = AppState::new("test-version", Arc::new(registry)).await;
+    // Build AppState with the updated registry and a scheduler.
+    let arc_registry = Arc::new(registry);
+    let scheduler = Arc::new(JobScheduler::new(
+        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
+        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
+        arc_registry.clone(),
+        anvilml_registry::open_in_memory().await.unwrap(),
+        Arc::new(EventBroadcaster::new()),
+    ));
+    let state = AppState::new("test-version", arc_registry, scheduler).await;
 
     // Build the router via the production `build_router` function.
     let router = build_router(state);

@@ -11,6 +11,8 @@
 
 use anvilml_core::types::WsEvent;
 use anvilml_core::NodeTypeRegistry;
+use anvilml_ipc::EventBroadcaster;
+use anvilml_scheduler::{ledger::VramLedger, queue::JobQueue, scheduler::JobScheduler};
 use anvilml_server::{build_router, AppState};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -27,7 +29,15 @@ use tokio::net::TcpListener;
 /// No preconditions — the server binds to a random OS-assigned port.
 #[tokio::test]
 async fn test_events_route_returns_101() {
-    let state = AppState::new("test-version", Arc::new(NodeTypeRegistry::new().await)).await;
+    let registry = Arc::new(NodeTypeRegistry::new().await);
+    let scheduler = Arc::new(JobScheduler::new(
+        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
+        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
+        registry.clone(),
+        anvilml_registry::open_in_memory().await.unwrap(),
+        Arc::new(EventBroadcaster::new()),
+    ));
+    let state = AppState::new("test-version", registry, scheduler).await;
     let router = build_router(state);
 
     // Convert the Router into a make-service with ConnectInfo support.
@@ -96,7 +106,15 @@ async fn test_events_route_returns_101() {
 /// `EventBroadcaster`.
 #[tokio::test]
 async fn test_events_delivers_broadcast_event() {
-    let state = AppState::new("test-version", Arc::new(NodeTypeRegistry::new().await)).await;
+    let registry = Arc::new(NodeTypeRegistry::new().await);
+    let scheduler = Arc::new(JobScheduler::new(
+        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
+        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
+        registry.clone(),
+        anvilml_registry::open_in_memory().await.unwrap(),
+        Arc::new(EventBroadcaster::new()),
+    ));
+    let state = AppState::new("test-version", registry, scheduler).await;
     let router = build_router(state.clone());
 
     // Convert the Router into a make-service with ConnectInfo support.

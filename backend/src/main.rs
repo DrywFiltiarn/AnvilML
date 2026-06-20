@@ -18,8 +18,9 @@ mod config {
 
 use anvilml_core::NodeTypeRegistry;
 use anvilml_hardware::detect_all_devices;
-use anvilml_ipc::RouterTransport;
+use anvilml_ipc::{EventBroadcaster, RouterTransport};
 use anvilml_registry::{open, ModelStore};
+use anvilml_scheduler::{ledger::VramLedger, queue::JobQueue, scheduler::JobScheduler};
 use anvilml_server::{build_router, AppState};
 use anvilml_worker::WorkerPool;
 use std::sync::Arc;
@@ -155,6 +156,18 @@ async fn main() {
     // queryable set.
     let node_registry = Arc::new(NodeTypeRegistry::new().await);
 
+    // Build the job scheduler with the node registry, database pool,
+    // and event broadcaster. The queue and ledger are freshly initialised
+    // — the queue starts empty and the ledger has no registered devices
+    // (VRAM checks are added in Phase 014).
+    let scheduler = Arc::new(JobScheduler::new(
+        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
+        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
+        Arc::clone(&node_registry),
+        pool.clone(),
+        Arc::new(EventBroadcaster::new()),
+    ));
+
     // Spawn managed workers for all detected GPU devices.
     // Each worker is a Python subprocess that executes inference nodes.
     // The worker pool spawns a background monitoring task per worker that
@@ -174,6 +187,7 @@ async fn main() {
         Arc::new(ModelStore::new(pool.clone()).await),
         cfg.model_dirs.clone(),
         Arc::clone(&node_registry),
+        scheduler.clone(),
     );
 
     let workers = WorkerPool::spawn_all(
@@ -203,6 +217,7 @@ async fn main() {
         cfg.model_dirs.clone(),
         Arc::new(workers),
         Arc::clone(&node_registry),
+        scheduler,
     );
 
     // Run the initial model directory scan at startup. This populates the

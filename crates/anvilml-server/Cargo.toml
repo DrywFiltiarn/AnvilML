@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-server"
-version = "0.1.21"
+version = "0.1.22"
 edition.workspace = true
 
 [dependencies]
@@ -11,6 +11,7 @@ anvilml-registry = { path = "../anvilml-registry" }
 anvilml-scheduler = { path = "../anvilml-scheduler" }
 anvilml-worker = { path = "../anvilml-worker" }
 axum = { workspace = true }
+chrono = { workspace = true }
 serde = { workspace = true }
 sqlx = { workspace = true }
 serde_json = { workspace = true }

@@ -21,7 +21,7 @@ use axum::Router;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
-use handlers::jobs::submit_job;
+use handlers::jobs::{get_job, list_jobs, submit_job};
 use handlers::models::{get_model, list_models, rescan_models};
 use handlers::nodes::list_nodes;
 use handlers::workers::{list_workers, restart_worker};
@@ -77,10 +77,16 @@ pub fn build_router(state: AppState) -> Router {
         // Node types — returns all node types registered by workers that
         // have reached Ready. Returns 503 if no worker has ever reached Ready.
         .route("/v1/nodes", get(list_nodes))
-        // Job submission — validates the graph and returns a placeholder
-        // job ID. Returns 503 if no workers are available, 422 if
-        // validation fails, 202 if the graph is valid.
+        // Job submission — delegates to the JobScheduler which validates
+        // the graph, persists the job to SQLite, enqueues it for dispatch,
+        // and broadcasts a JobQueued event. Returns 422 if validation
+        // fails, 202 if the graph is valid.
         .route("/v1/jobs", post(submit_job))
+        // Job list — returns all jobs, optionally filtered by status,
+        // limit, and before timestamp. Ordered by created_at DESC.
+        .route("/v1/jobs", get(list_jobs))
+        // Job detail — returns a single job by ID, or 404 if not found.
+        .route("/v1/jobs/{id}", get(get_job))
         // WebSocket event stream — accepts upgrade requests and forwards
         // broadcast events as JSON text frames to connected clients.
         .route("/v1/events", get(ws_events))

@@ -1,4 +1,6 @@
 use anvilml_core::NodeTypeRegistry;
+use anvilml_ipc::EventBroadcaster;
+use anvilml_scheduler::{ledger::VramLedger, queue::JobQueue, scheduler::JobScheduler};
 use anvilml_server::{build_router, AppState};
 use axum::body::to_bytes;
 use axum::http::{Method, Request};
@@ -15,7 +17,15 @@ use tower::util::ServiceExt;
 /// serialization) without binding a live TCP listener.
 #[tokio::test]
 async fn test_health_returns_200_with_status_key() {
-    let state = AppState::new("test-version", Arc::new(NodeTypeRegistry::new().await)).await;
+    let registry = Arc::new(NodeTypeRegistry::new().await);
+    let scheduler = Arc::new(JobScheduler::new(
+        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
+        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
+        registry.clone(),
+        anvilml_registry::open_in_memory().await.unwrap(),
+        Arc::new(EventBroadcaster::new()),
+    ));
+    let state = AppState::new("test-version", registry, scheduler).await;
 
     // Build the router via the production `build_router` function.
     let router = build_router(state);

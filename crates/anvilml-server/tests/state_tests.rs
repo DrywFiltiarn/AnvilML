@@ -1,13 +1,22 @@
+use anvilml_core::NodeTypeRegistry;
+use anvilml_ipc::EventBroadcaster;
+use anvilml_scheduler::{ledger::VramLedger, queue::JobQueue, scheduler::JobScheduler};
+use anvilml_server::AppState;
+
 /// Verify that AppState::new() sets start_time to a recent instant and
 /// stores the version string correctly.
 #[tokio::test]
 async fn test_app_state_new() {
     let before = std::time::Instant::now();
-    let state = anvilml_server::AppState::new(
-        "0.1.0",
-        std::sync::Arc::new(anvilml_core::NodeTypeRegistry::new().await),
-    )
-    .await;
+    let registry = std::sync::Arc::new(NodeTypeRegistry::new().await);
+    let scheduler = std::sync::Arc::new(JobScheduler::new(
+        std::sync::Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
+        std::sync::Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
+        registry.clone(),
+        anvilml_registry::open_in_memory().await.unwrap(),
+        std::sync::Arc::new(EventBroadcaster::new()),
+    ));
+    let state = AppState::new("0.1.0", registry, scheduler).await;
     let after = std::time::Instant::now();
 
     // Verify the version was stored correctly.
@@ -31,11 +40,15 @@ async fn test_app_state_new() {
 /// String field.
 #[tokio::test]
 async fn test_app_state_clone() {
-    let state = anvilml_server::AppState::new(
-        "0.1.0",
-        std::sync::Arc::new(anvilml_core::NodeTypeRegistry::new().await),
-    )
-    .await;
+    let registry = std::sync::Arc::new(NodeTypeRegistry::new().await);
+    let scheduler = std::sync::Arc::new(JobScheduler::new(
+        std::sync::Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
+        std::sync::Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
+        registry.clone(),
+        anvilml_registry::open_in_memory().await.unwrap(),
+        std::sync::Arc::new(EventBroadcaster::new()),
+    ));
+    let state = AppState::new("0.1.0", registry, scheduler).await;
     let cloned = state.clone();
 
     assert_eq!(cloned.version, state.version);
@@ -48,11 +61,15 @@ async fn test_app_state_clone() {
 #[tokio::test]
 async fn test_app_state_version_from_env() {
     let crate_version = env!("CARGO_PKG_VERSION");
-    let state = anvilml_server::AppState::new(
-        crate_version,
-        std::sync::Arc::new(anvilml_core::NodeTypeRegistry::new().await),
-    )
-    .await;
+    let registry = std::sync::Arc::new(NodeTypeRegistry::new().await);
+    let scheduler = std::sync::Arc::new(JobScheduler::new(
+        std::sync::Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
+        std::sync::Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
+        registry.clone(),
+        anvilml_registry::open_in_memory().await.unwrap(),
+        std::sync::Arc::new(EventBroadcaster::new()),
+    ));
+    let state = AppState::new(crate_version, registry, scheduler).await;
 
     assert_eq!(state.version, crate_version);
 }

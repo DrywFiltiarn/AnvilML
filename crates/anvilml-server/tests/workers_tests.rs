@@ -5,6 +5,7 @@
 
 use anvilml_core::{GpuDevice, NodeTypeRegistry, ServerConfig, WorkerStatus};
 use anvilml_ipc::{EventBroadcaster, RouterTransport};
+use anvilml_scheduler::{ledger::VramLedger, queue::JobQueue, scheduler::JobScheduler};
 use anvilml_server::{build_router, AppState};
 use anvilml_worker::{ManagedWorker, WorkerPool};
 use axum::body::to_bytes;
@@ -104,7 +105,15 @@ fn mock_pool_with_one_worker() -> WorkerPool {
 /// AppState.workers is None (test/stub mode).
 #[tokio::test]
 async fn test_list_workers_returns_empty_when_no_pool() {
-    let state = AppState::new("test-version", Arc::new(NodeTypeRegistry::new().await)).await;
+    let registry = Arc::new(NodeTypeRegistry::new().await);
+    let scheduler = Arc::new(JobScheduler::new(
+        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
+        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
+        registry.clone(),
+        anvilml_registry::open_in_memory().await.unwrap(),
+        Arc::new(EventBroadcaster::new()),
+    ));
+    let state = AppState::new("test-version", registry, scheduler).await;
 
     let router = build_router(state);
 
@@ -138,6 +147,14 @@ async fn test_list_workers_returns_pool_data() {
     let hardware = Arc::new(tokio::sync::RwLock::new(
         anvilml_core::types::HardwareInfo::default(),
     ));
+    let registry = Arc::new(NodeTypeRegistry::new().await);
+    let scheduler = Arc::new(JobScheduler::new(
+        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
+        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
+        registry.clone(),
+        anvilml_registry::open_in_memory().await.unwrap(),
+        Arc::new(EventBroadcaster::new()),
+    ));
     let state = AppState::new_with_hardware(
         "test-version",
         hardware,
@@ -148,7 +165,8 @@ async fn test_list_workers_returns_pool_data() {
         ),
         Vec::new(),
         Arc::new(pool),
-        Arc::new(NodeTypeRegistry::new().await),
+        registry,
+        scheduler,
     );
 
     let router = build_router(state);
