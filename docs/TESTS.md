@@ -2590,3 +2590,48 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** String `"nonexistent_hash_abcdef1234567890"`.
 **Expected output:** `get()` returns `None` — no error, no panic.
 **Acceptance command:** `cargo test -p anvilml-server --features mock-hardware -- test_get_returns_none_for_unknown_hash` exits 0.
+
+## test_list_artifacts_empty (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/artifacts_tests.rs`
+**Context:** The `GET /v1/artifacts` handler returns an empty JSON array when the artifact store has no artifacts. Uses a real TCP listener with `axum::serve` and raw TCP streams (same pattern as `handler_tests.rs`).
+**Tests:** Builds the router with a default `AppState` containing an empty `ArtifactStore`, sends `GET /v1/artifacts`, asserts HTTP 200, `Content-Type: application/json`, and body `[]`.
+**Inputs:** `GET /v1/artifacts`, `AppState::new("test-version")` with empty store.
+**Expected output:** HTTP 200, `Content-Type: application/json`, body `[]`.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware --test artifacts_tests -- test_list_artifacts_empty --exact` exits 0.
+
+## test_list_artifacts_filtered (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/artifacts_tests.rs`
+**Context:** The `GET /v1/artifacts?job_id=<uuid>` handler filters artifacts by job ID. Uses a real TCP listener. Two artifacts are saved via `ArtifactStore` with different job IDs, then the list endpoint is called with and without the filter.
+**Tests:** Saves two artifacts with different `job_id` values, calls `GET /v1/artifacts?job_id=<id1>` and asserts exactly 1 artifact returned, then calls `GET /v1/artifacts` (no filter) and asserts exactly 2 artifacts returned.
+**Inputs:** Two artifacts saved via `ArtifactStore::save()` with distinct `Uuid::v4()` job IDs.
+**Expected output:** Filtered list returns 1 artifact; unfiltered list returns 2 artifacts.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware --test artifacts_tests -- test_list_artifacts_filtered --exact` exits 0.
+
+## test_serve_artifact_returns_png (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/artifacts_tests.rs`
+**Context:** The `GET /v1/artifacts/:hash` handler serves raw artifact bytes with `Content-Type: image/png`. Uses a real TCP listener. One artifact is saved via `ArtifactStore`, then served by hash.
+**Tests:** Saves an artifact, retrieves its hash from the returned `ArtifactMeta`, calls `GET /v1/artifacts/<hash>`, asserts HTTP 200, `Content-Type: image/png`, non-empty body, and body matches the original bytes exactly.
+**Inputs:** 20-byte PNG-like byte sequence saved via `ArtifactStore::save()`.
+**Expected output:** HTTP 200, `Content-Type: image/png`, body length 20, body bytes identical to original.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware --test artifacts_tests -- test_serve_artifact_returns_png --exact` exits 0.
+
+## test_serve_artifact_not_found (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/artifacts_tests.rs`
+**Context:** The `GET /v1/artifacts/:hash` handler returns HTTP 404 with `error: "artifact_not_found"` when the hash does not match any saved artifact. Uses a real TCP listener with an empty store.
+**Tests:** Sends `GET /v1/artifacts/<fake_hash>` with a 64-char hex string that was never saved, asserts HTTP 404 and `error` field is `"artifact_not_found"`.
+**Inputs:** `GET /v1/artifacts/0000000000000000000000000000000000000000000000000000000000000000`, empty store.
+**Expected output:** HTTP 404, JSON body with `"error": "artifact_not_found"`.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware --test artifacts_tests -- test_serve_artifact_not_found --exact` exits 0.
+
+## test_artifact_not_found_status_code (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/error_tests.rs`
+**Context:** `AnvilError::ArtifactNotFound` maps to HTTP 404 — the artifact resource does not exist in the store.
+**Tests:** `AnvilError::ArtifactNotFound("abc123".to_string()).status_code()` returns `StatusCode::NOT_FOUND`.
+**Inputs:** `AnvilError::ArtifactNotFound("abc123".to_string())`.
+**Expected output:** `status_code() == StatusCode::NOT_FOUND`.
+**Acceptance command:** `cargo test -p anvilml-core --features mock-hardware -- test_artifact_not_found_status_code` exits 0.

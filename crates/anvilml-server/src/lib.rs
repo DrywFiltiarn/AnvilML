@@ -21,6 +21,7 @@ use axum::Router;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
+use handlers::artifacts::{list_artifacts, serve_artifact};
 use handlers::jobs::{get_job, list_jobs, submit_job};
 use handlers::models::{get_model, list_models, rescan_models};
 use handlers::nodes::list_nodes;
@@ -87,6 +88,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/jobs", get(list_jobs))
         // Job detail — returns a single job by ID, or 404 if not found.
         .route("/v1/jobs/{id}", get(get_job))
+        // Artifact list — returns all artifact metadata, optionally filtered
+        // by job ID. Returns an empty array when no artifacts match.
+        .route("/v1/artifacts", get(list_artifacts))
+        // Artifact serve — returns raw artifact bytes (PNG image) by content
+        // hash. Returns 404 if no artifact with the given hash exists.
+        .route("/v1/artifacts/{hash}", get(serve_artifact))
         // WebSocket event stream — accepts upgrade requests and forwards
         // broadcast events as JSON text frames to connected clients.
         .route("/v1/events", get(ws_events))

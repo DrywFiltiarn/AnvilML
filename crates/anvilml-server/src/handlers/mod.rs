@@ -1,9 +1,11 @@
+pub mod artifacts;
 pub mod health;
 pub mod jobs;
 pub mod models;
 pub mod nodes;
 pub mod system;
 pub mod workers;
+pub use artifacts::{list_artifacts, serve_artifact};
 pub use jobs::get_job;
 pub use jobs::list_jobs;
 pub use jobs::submit_job;

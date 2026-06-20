@@ -16,12 +16,13 @@ use uuid::Uuid;
 /// method returns the HTTP status code that `into_response()` would produce,
 /// enabling unit-testable status-code logic without needing an axum test client.
 ///
-/// The 14 variants cover the error categories specified in
+/// The 15 variants cover the error categories specified in
 /// `ANVILML_DESIGN.md §5.2`:
 /// - `Db` — database errors from `sqlx::Error`
 /// - `Io` — filesystem I/O errors from `std::io::Error`
 /// - `Serde`, `Ipc`, `PayloadTooLarge` — serialization and communication failures
-/// - `WorkerNotFound`, `JobNotFound`, `ModelNotFound` — resource-not-found errors
+/// - `WorkerNotFound`, `JobNotFound`, `ModelNotFound`, `ArtifactNotFound` —
+///   resource-not-found errors
 /// - `InvalidGraph` — graph semantic validation failure (422)
 /// - `CycleDetected` — graph structural failure (400)
 /// - `WorkersUnavailable` — all workers busy or dead
@@ -114,6 +115,14 @@ pub enum AnvilError {
     #[error("model not found: {0}")]
     ModelNotFound(String),
 
+    /// Artifact not found.
+    ///
+    /// Produced when a client requests an artifact by hash but no artifact
+    /// with that hash exists in the store. Maps to `404 Not Found` because
+    /// the resource (artifact) does not exist.
+    #[error("artifact not found: {0}")]
+    ArtifactNotFound(String),
+
     /// Workers unavailable.
     ///
     /// Produced when all registered workers are busy, dead, or failing
@@ -179,7 +188,8 @@ impl AnvilError {
             // Resource not found — the client referenced a non-existent ID.
             AnvilError::WorkerNotFound(_)
             | AnvilError::JobNotFound(_)
-            | AnvilError::ModelNotFound(_) => StatusCode::NOT_FOUND,
+            | AnvilError::ModelNotFound(_)
+            | AnvilError::ArtifactNotFound(_) => StatusCode::NOT_FOUND,
 
             // Graph validation failure — the request is well-formed JSON but
             // the graph semantics are invalid (unknown types, duplicate IDs,
@@ -249,6 +259,7 @@ impl AnvilError {
             AnvilError::InvalidGraph(_) => "invalid_graph",
             AnvilError::CycleDetected(_) => "cycle_detected",
             AnvilError::ModelNotFound(_) => "model_not_found",
+            AnvilError::ArtifactNotFound(_) => "artifact_not_found",
             AnvilError::WorkersUnavailable(_) => "workers_unavailable",
             AnvilError::Internal(_) => "internal",
             AnvilError::Toml(_) => "toml",
