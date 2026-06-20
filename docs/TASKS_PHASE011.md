@@ -118,6 +118,15 @@ Phase 010 complete. `ManagedWorker` respawn logic is in place. The `Ready` IPC e
 cargo test --workspace --features mock-hardware
 ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v
 cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu
+# Runnable Proof (manual): GET /v1/nodes reflects registry state before and after worker Ready
+cargo run --features mock-hardware &
+sleep 1
+curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8488/v1/nodes
+# -> 503 (no worker has reached Ready yet)
+sleep 5
+curl -s http://127.0.0.1:8488/v1/nodes | python3 -c "import sys,json; d=json.load(sys.stdin); assert isinstance(d, list)"
+# -> 200 with a JSON array of registered NodeTypeDescriptor entries
+kill %1
 ```
 
 ## Known Constraints and Gotchas

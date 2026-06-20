@@ -98,6 +98,16 @@ Phase 014 complete. Mock jobs produce `WorkerEvent::ImageReady { job_id, image_b
 cargo test --workspace --features mock-hardware
 ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v
 cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu
+# Runnable Proof (manual): a SaveImage node produces a retrievable PNG artifact
+cargo run --features mock-hardware &
+sleep 30
+JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' \
+  -d '{"graph":{"nodes":[{"id":"n1","type":"SaveImage"}]},"settings":{}}' | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+sleep 3
+HASH=$(curl -s "http://127.0.0.1:8488/v1/artifacts?job_id=$JOB_ID" | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['hash'])")
+curl -s -o /dev/null -w "%{content_type}" "http://127.0.0.1:8488/v1/artifacts/$HASH"
+# -> image/png (non-empty body; PNG bytes retrievable by hash)
+kill %1
 ```
 
 ## Known Constraints and Gotchas

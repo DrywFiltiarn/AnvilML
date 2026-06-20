@@ -76,6 +76,17 @@ Phase 015 complete. `NodeContext` carries an `emit` callable. `WorkerEvent::Prog
 cargo test --workspace --features mock-hardware
 ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v
 cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu
+# Runnable Proof (manual): live job lifecycle events observed over WebSocket
+cargo run --features mock-hardware &
+sleep 30
+( timeout 10 websocat ws://127.0.0.1:8488/v1/events > /tmp/events.log & )
+sleep 1
+curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' \
+  -d '{"graph":{"nodes":[{"id":"n1","type":"SaveImage"}]},"settings":{}}' > /dev/null
+sleep 9
+grep -q "JobQueued" /tmp/events.log && grep -q "JobCompleted" /tmp/events.log
+# -> /tmp/events.log contains JobQueued ... JobImageReady ... JobCompleted in order
+kill %1
 ```
 
 ## Known Constraints and Gotchas

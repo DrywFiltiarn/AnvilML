@@ -101,6 +101,17 @@ Phase 011 complete. `NodeTypeRegistry` exists and is populated from worker `Read
 cargo test --workspace --features mock-hardware
 ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v
 cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu
+# Runnable Proof (manual): POST /v1/jobs validation against a live mock server
+cargo run --features mock-hardware &
+sleep 5
+curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' \
+  -d '{"graph":{"nodes":[{"id":"n1","type":"GhostNode"}]},"settings":{}}' \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['error']=='invalid_graph'"
+# -> 422 {"error":"invalid_graph",...} (unknown node type)
+curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' \
+  -d '{"graph":{"nodes":[]},"settings":{}}'
+# -> 202 (an empty-nodes graph is structurally valid)
+kill %1
 ```
 
 ## Known Constraints and Gotchas

@@ -81,6 +81,17 @@ Phase 016 complete. `JobScheduler` has running dispatch and event subscription l
 cargo test --workspace --features mock-hardware
 ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v
 cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu
+# Runnable Proof (manual): submit and immediately cancel a job
+cargo run --features mock-hardware &
+sleep 30
+JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' \
+  -d '{"graph":{"nodes":[]},"settings":{}}' | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+curl -s -o /dev/null -w "%{http_code}" -X POST "http://127.0.0.1:8488/v1/jobs/$JOB_ID/cancel"
+# -> 202 (cancel accepted, whether job was still Queued or already Running)
+sleep 1
+curl -s "http://127.0.0.1:8488/v1/jobs/$JOB_ID" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['status'] in ('Cancelled','Completed')"
+# -> status is a terminal state (Cancelled, or Completed if the race favored execution)
+kill %1
 ```
 
 ## Known Constraints and Gotchas

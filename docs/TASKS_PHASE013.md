@@ -120,6 +120,14 @@ Phase 012 complete. `validate_graph` and `ValidatedGraph` exist in `anvilml-sche
 cargo test --workspace --features mock-hardware
 ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v
 cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu
+# Runnable Proof (manual): submit a job and retrieve it as a real persisted record
+cargo run --features mock-hardware &
+sleep 5
+JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' \
+  -d '{"graph":{"nodes":[]},"settings":{}}' | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+curl -s "http://127.0.0.1:8488/v1/jobs/$JOB_ID" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['status']=='Queued'"
+# -> 200 {"status":"Queued",...} (job persisted in SQLite, retrievable by id)
+kill %1
 ```
 
 ## Known Constraints and Gotchas

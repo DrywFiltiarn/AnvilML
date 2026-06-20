@@ -70,7 +70,12 @@ Phase 020 complete: all 6 CI jobs pass, `TESTS.md` catalogue complete, clippy cl
 
 ```bash
 cargo test --workspace --features mock-hardware
-curl http://127.0.0.1:8488/v1/system/versions
+# Runnable Proof (manual): version introspection endpoint on a live server
+cargo run --features mock-hardware &
+sleep 5
+curl -s http://127.0.0.1:8488/v1/system/versions | python3 -c "import sys,json; d=json.load(sys.stdin); assert all(d[k] for k in ('anvilml','python','torch','worker_protocol'))"
+# -> 200 with anvilml, python, torch, worker_protocol all non-empty
+kill %1
 ```
 
 ## Known Constraints and Gotchas

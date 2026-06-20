@@ -433,6 +433,7 @@ The `x86_64-pc-windows-gnu` target must be installed: `rustup target add x86_64-
 | `docs/FORGE_AGENT_RULES.md` | Agents | Behavioural contract: git rules, task atomicity, code quality obligations, prohibited actions |
 | `docs/FORGE_TASK_AUTHORING_SPEC.md` | Task authors + agents | task JSON and TASKS_PHASE doc format; sizing rules; context field guide |
 | `docs/PHASES.md` | Agents + humans | Phase registry: number, name, vertical slice delivered, Runnable Proof per phase |
+| `docs/RUNNABLE_PROOF.md` | Agents + humans | Project-wide index of every phase's Runnable Proof, excluding standard test gates |
 | `docs/TESTS.md` | Agents + humans | Test catalogue: every test, its context, inputs, and expected outputs |
 | `docs/TASKS_PHASE*.md` | Agents | Per-phase narrative: overview, task descriptions, interfaces, Runnable Proof |
 

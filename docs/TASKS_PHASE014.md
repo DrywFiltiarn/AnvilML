@@ -96,6 +96,19 @@ Phase 013 complete. `JobScheduler` with `submit`, `get_job`, `list_jobs` exists.
 cargo test --workspace --features mock-hardware
 ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v
 cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu
+# Runnable Proof (manual): a submitted mock job is dispatched and reaches Completed
+cargo run --features mock-hardware &
+sleep 30
+JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' \
+  -d '{"graph":{"nodes":[]},"settings":{}}' | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+for i in $(seq 1 10); do
+  STATUS=$(curl -s "http://127.0.0.1:8488/v1/jobs/$JOB_ID" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+  [ "$STATUS" = "Completed" ] && break
+  sleep 1
+done
+[ "$STATUS" = "Completed" ]
+# -> loop exits with $STATUS == "Completed" within 10s of dispatch
+kill %1
 ```
 
 ## Known Constraints and Gotchas
