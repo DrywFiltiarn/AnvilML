@@ -21,6 +21,10 @@ pub struct ArtifactMeta {
     pub job_id: Uuid,
     /// SHA-256 hex digest of the artifact contents (64 lowercase hex chars).
     pub hash: String,
+    /// Image width in pixels, if the artifact is a PNG image. Zero when unknown.
+    pub width: u32,
+    /// Image height in pixels, if the artifact is a PNG image. Zero when unknown.
+    pub height: u32,
     /// Filesystem path to the artifact file.
     pub path: String,
     /// Size of the artifact file on disk in bytes.

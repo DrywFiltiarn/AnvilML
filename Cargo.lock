@@ -195,7 +195,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-server"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
@@ -208,6 +208,8 @@ dependencies = [
  "futures",
  "serde",
  "serde_json",
+ "serial_test",
+ "sha2 0.10.9",
  "sqlx",
  "sysinfo",
  "tempfile",

@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-server"
-version = "0.1.22"
+version = "0.1.23"
 edition.workspace = true
 
 [dependencies]
@@ -13,6 +13,7 @@ anvilml-worker = { path = "../anvilml-worker" }
 axum = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
+sha2 = "0.10"
 sqlx = { workspace = true }
 serde_json = { workspace = true }
 sysinfo = "0.33"
@@ -27,6 +28,7 @@ anvilml-registry = { path = "../anvilml-registry" }
 chrono = { workspace = true }
 futures = "0.3"
 serde_json = { workspace = true }
+serial_test = "3.5"
 tempfile = { workspace = true }
 tokio = { workspace = true }
 tower = { version = "0.5", features = ["util"] }

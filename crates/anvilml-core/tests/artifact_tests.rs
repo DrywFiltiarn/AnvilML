@@ -20,6 +20,8 @@ fn test_artifact_meta_json_roundtrip() {
         id: "artifact-001".to_string(),
         job_id: Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap(),
         hash: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2".to_string(),
+        width: 1920,
+        height: 1080,
         path: "/artifacts/output_001.png".to_string(),
         size_bytes: 2_456_789,
         created_at: Utc::now(),
@@ -38,6 +40,8 @@ fn test_artifact_meta_json_roundtrip() {
     assert_eq!(restored.hash, artifact.hash);
     assert_eq!(restored.path, artifact.path);
     assert_eq!(restored.size_bytes, artifact.size_bytes);
+    assert_eq!(restored.width, artifact.width);
+    assert_eq!(restored.height, artifact.height);
     assert_eq!(restored.created_at, artifact.created_at);
 }
 
@@ -91,6 +95,8 @@ fn test_artifact_hash_format() {
         id: "hash-test".to_string(),
         job_id: Uuid::new_v4(),
         hash: hash.to_string(),
+        width: 0,
+        height: 0,
         path: "/tmp/test.bin".to_string(),
         size_bytes: 1024,
         created_at: Utc::now(),
@@ -103,5 +109,13 @@ fn test_artifact_hash_format() {
     assert_eq!(
         restored.hash, artifact.hash,
         "SHA-256 hash must survive JSON roundtrip"
+    );
+    assert_eq!(
+        restored.width, artifact.width,
+        "width must survive JSON roundtrip"
+    );
+    assert_eq!(
+        restored.height, artifact.height,
+        "height must survive JSON roundtrip"
     );
 }

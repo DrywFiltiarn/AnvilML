@@ -2545,3 +2545,48 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** `WorkerEvent::Pong{seq: 42}`, in-memory DB with a Running job, VRAM reserved (4096 MiB on device 0).
 **Expected output:** Job remains `running`, reservation=4096 MiB, no WsEvent broadcast.
 **Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- event_loop_tests::test_event_loop_ignores_unknown_event` exits 0.
+
+## test_save_and_get_roundtrip (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/artifact_store_tests.rs`
+**Context:** `ArtifactStore` is created with a fresh in-memory SQLite pool and a temporary directory. Tests the full save-and-get lifecycle: persist image bytes to disk, record metadata in the database, then retrieve the file path and verify content.
+**Tests:** Creates a 64-byte PNG-like image, calls `save(job_id, bytes)`, calls `get(hash)`, verifies the returned path exists on disk, and reads the file to confirm the content matches the input bytes exactly.
+**Inputs:** 64-byte byte slice (`0x89..=0xBE`), random `Uuid::v4()` for job_id.
+**Expected output:** `get(hash)` returns `Some(PathBuf)`; file at path contains exact input bytes.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware -- test_save_and_get_roundtrip` exits 0.
+
+## test_hash_is_deterministic (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/artifact_store_tests.rs`
+**Context:** `ArtifactStore` is created with a fresh in-memory pool and temp directory. Verifies that SHA-256 content-addressing produces the same hash for identical input bytes, regardless of job_id.
+**Tests:** Calls `save` twice with identical bytes but different job_ids, and asserts both `ArtifactMeta` results have the same `hash` field.
+**Inputs:** 256-byte byte slice (`0x00..=0xFF`), two distinct `Uuid::v4()` values.
+**Expected output:** `meta1.hash == meta2.hash` — SHA-256 is deterministic.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware -- test_hash_is_deterministic` exits 0.
+
+## test_list_returns_saved_artifact (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/artifact_store_tests.rs`
+**Context:** `ArtifactStore` is created with a fresh in-memory pool and temp directory. Verifies the `list` method correctly returns saved artifacts with accurate metadata.
+**Tests:** Saves an artifact with a known job_id and known byte length, then calls `list(None)` and asserts the returned vec has exactly one entry with the correct job_id and size_bytes.
+**Inputs:** 96-byte byte slice (`0xAA..=0xFF`), a `Uuid::v4()` for job_id.
+**Expected output:** `list(None)` returns `Vec<ArtifactMeta>` of length 1 with matching job_id and size_bytes.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware -- test_list_returns_saved_artifact` exits 0.
+
+## test_save_is_idempotent (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/artifact_store_tests.rs`
+**Context:** `ArtifactStore` is created with a fresh in-memory pool and temp directory. Verifies that `INSERT OR IGNORE` prevents duplicate database rows when the same image is saved twice.
+**Tests:** Calls `save` twice with identical bytes and the same job_id, asserts both return the same hash, then calls `list(None)` and verifies exactly one row exists.
+**Inputs:** 80-byte byte slice (`0x10..=0x5F`), one `Uuid::v4()` used for both saves.
+**Expected output:** Both saves return the same hash; `list(None)` returns exactly 1 artifact (no duplicates).
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware -- test_save_is_idempotent` exits 0.
+
+## test_get_returns_none_for_unknown_hash (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/artifact_store_tests.rs`
+**Context:** `ArtifactStore` is created with a fresh in-memory pool and temp directory. No artifacts have been saved. Verifies that `get` returns `None` for unknown hashes without erroring.
+**Tests:** Calls `get("nonexistent_hash")` with a hash that was never saved and asserts the result is `None`.
+**Inputs:** String `"nonexistent_hash_abcdef1234567890"`.
+**Expected output:** `get()` returns `None` — no error, no panic.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware -- test_get_returns_none_for_unknown_hash` exits 0.

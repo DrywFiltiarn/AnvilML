@@ -8,6 +8,7 @@
 //! **Hard constraints:** No business logic. All handlers delegate to
 //! the scheduler, worker pool, and model registry.
 
+pub mod artifact;
 pub mod handlers;
 pub mod state;
 pub mod ws;
