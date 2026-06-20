@@ -2635,3 +2635,48 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** `AnvilError::ArtifactNotFound("abc123".to_string())`.
 **Expected output:** `status_code() == StatusCode::NOT_FOUND`.
 **Acceptance command:** `cargo test -p anvilml-core --features mock-hardware -- test_artifact_not_found_status_code` exits 0.
+
+## test_save_and_get (anvilml-artifacts)
+
+**File:** `crates/anvilml-artifacts/tests/store_tests.rs`
+**Context:** `ArtifactStore::save()` persists an image file by SHA-256 hash and records metadata in the `artifacts` SQLite table. `get()` retrieves the file path by hash. Each test uses its own in-memory pool with `max_connections(1)` and a unique temp directory for artifact storage.
+**Tests:** Creates a 128-byte PNG-like artifact, saves it via `store.save()`, then retrieves it via `store.get()` and asserts the path exists on disk and matches the expected `{dir}/{hash}.png` pattern. Verifies the hash is a 64-character lowercase hex string.
+**Inputs:** 128-byte byte vector, new UUID job ID, in-memory SQLite pool, temp directory.
+**Expected output:** `get()` returns `Some(PathBuf)` pointing to `{temp_dir}/{hash}.png`, hash is 64 lowercase hex chars.
+**Acceptance command:** `cargo test -p anvilml-artifacts --test store_tests -- test_save_and_get --exact` exits 0.
+
+## test_save_idempotency (anvilml-artifacts)
+
+**File:** `crates/anvilml-artifacts/tests/store_tests.rs`
+**Context:** `save()` is idempotent: saving identical bytes twice writes the file only once and produces a single database row (due to `INSERT OR IGNORE` on the `hash` UNIQUE constraint). Each test uses its own in-memory pool and temp directory.
+**Tests:** Saves the same 256-byte image twice under two different job IDs, asserts both produce the same hash, then calls `list(None)` and verifies exactly one artifact is returned.
+**Inputs:** Same 256-byte vector, two different UUID job IDs.
+**Expected output:** Both saves produce identical hash; `list(None)` returns a vec of length 1.
+**Acceptance command:** `cargo test -p anvilml-artifacts --test store_tests -- test_save_idempotency --exact` exits 0.
+
+## test_list_all (anvilml-artifacts)
+
+**File:** `crates/anvilml-artifacts/tests/store_tests.rs`
+**Context:** `list(None)` returns all artifacts without filtering. Uses `SELECT * FROM artifacts` when no job filter is specified. Each test uses its own in-memory pool and temp directory.
+**Tests:** Saves three artifacts for three different jobs, calls `list(None)`, and asserts the returned vec has exactly 3 elements.
+**Inputs:** Three artifact byte vectors, three distinct UUID job IDs.
+**Expected output:** `list(None)` returns a vec of length 3.
+**Acceptance command:** `cargo test -p anvilml-artifacts --test store_tests -- test_list_all --exact` exits 0.
+
+## test_list_filtered (anvilml-artifacts)
+
+**File:** `crates/anvilml-artifacts/tests/store_tests.rs`
+**Context:** `list(Some(job_id))` appends `WHERE job_id = ?` to the SELECT query, filtering results to only artifacts belonging to the specified job. Each test uses its own in-memory pool and temp directory.
+**Tests:** Saves three artifacts (two for job A, one for job B), calls `list(Some(job_a))` and asserts exactly 2 are returned with correct job IDs, then calls `list(Some(job_b))` and asserts exactly 1 is returned.
+**Inputs:** Three artifact byte vectors, two distinct UUID job IDs.
+**Expected output:** `list(Some(job_a))` returns 2 artifacts; `list(Some(job_b))` returns 1 artifact; all returned artifacts have the correct `job_id`.
+**Acceptance command:** `cargo test -p anvilml-artifacts --test store_tests -- test_list_filtered --exact` exits 0.
+
+## test_get_missing_hash (anvilml-artifacts)
+
+**File:** `crates/anvilml-artifacts/tests/store_tests.rs`
+**Context:** `get()` must return `None` (not an error) for a hash that was never saved. This distinguishes "not found" from "database error". Each test uses its own in-memory pool and temp directory.
+**Tests:** Creates a fresh store with no artifacts, calls `get()` with an all-zeros 64-char hex hash, and asserts the result is `None`.
+**Inputs:** All-zeros 64-character hex hash string.
+**Expected output:** `get()` returns `None`.
+**Acceptance command:** `cargo test -p anvilml-artifacts --test store_tests -- test_get_missing_hash --exact` exits 0.

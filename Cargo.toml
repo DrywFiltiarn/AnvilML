@@ -9,6 +9,7 @@ members = [
     "crates/anvilml-scheduler",
     "crates/anvilml-server",
     "crates/anvilml-openapi",
+    "crates/anvilml-artifacts",
 ]
 resolver = "2"
 
