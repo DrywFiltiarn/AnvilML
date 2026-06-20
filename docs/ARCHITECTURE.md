@@ -95,13 +95,24 @@ AnvilML/
 │   │       ├── store_tests.rs
 │   │       └── seed_loader_tests.rs
 │   │
+│   ├── anvilml-artifacts/             # Content-addressed PNG artifact storage; shared by scheduler+server
+│   │   ├── src/
+│   │   │   ├── lib.rs
+│   │   │   └── store.rs              # ArtifactStore: save/get/list; SHA-256 content addressing
+│   │   └── tests/
+│   │       └── store_tests.rs
+│   │
 │   ├── anvilml-ipc/                  # ZeroMQ ROUTER transport + message types
 │   │   ├── src/
 │   │   │   ├── lib.rs
 │   │   │   ├── messages.rs           # WorkerMessage and WorkerEvent enums
-│   │   │   └── transport.rs          # RouterTransport: ROUTER socket wrapper
+│   │   │   ├── transport.rs          # RouterTransport: ROUTER socket wrapper
+│   │   │   └── ws/                   # EventBroadcaster: WsEvent + WorkerEvent broadcast channels
+│   │   │       ├── mod.rs
+│   │   │       └── broadcaster.rs
 │   │   └── tests/
 │   │       └── roundtrip_tests.rs    # msgpack roundtrip for all message variants
+│   │
 │   │
 │   ├── anvilml-worker/               # Worker pool: spawn, supervise, respawn
 │   │   ├── src/
@@ -149,14 +160,11 @@ AnvilML/
 │   │   │   │   ├── workers.rs        # GET/POST /v1/workers
 │   │   │   │   ├── artifacts.rs      # GET /v1/artifacts
 │   │   │   │   └── nodes.rs          # GET /v1/nodes
-│   │   │   ├── ws/
-│   │   │   │   ├── mod.rs
-│   │   │   │   ├── broadcaster.rs    # EventBroadcaster: broadcast channel wrapper
-│   │   │   │   ├── handler.rs        # GET /v1/events WebSocket upgrade
-│   │   │   │   └── stats_tick.rs     # Background task: SystemStats every 5s
-│   │   │   └── artifact/
+│   │   │   └── ws/
 │   │   │       ├── mod.rs
-│   │   │       └── store.rs          # ArtifactStore: content-addressed PNG storage
+│   │   │       ├── broadcaster.rs    # EventBroadcaster: broadcast channel wrapper
+│   │   │       ├── handler.rs        # GET /v1/events WebSocket upgrade
+│   │   │       └── stats_tick.rs     # Background task: SystemStats every 5s
 │   │   └── tests/
 │   │       └── (integration tests via backend/tests/)
 │   │
@@ -232,9 +240,10 @@ AnvilML/
 anvilml-core  (no deps — pure data, zero I/O, zero async)
   ├── anvilml-hardware      (← core)
   ├── anvilml-registry      (← core)
+  ├── anvilml-artifacts     (← core)
   └── anvilml-ipc           (← core)
         └── anvilml-worker  (← ipc, hardware, core)
-              └── anvilml-scheduler  (← worker, registry, core)
+              └── anvilml-scheduler  (← worker, registry, artifacts, core)
                     └── anvilml-server  (← all above)
                           └── backend/src/main.rs
 
@@ -253,10 +262,11 @@ Any new dependency must maintain this order. Violations are a compilation error.
 | `anvilml-core` | All domain types; config schema; `AnvilError` enum | I/O, async, network, subprocess |
 | `anvilml-hardware` | GPU/CPU enumeration via Vulkan (primary) + platform fallbacks; VRAM refresh | Panic on missing driver; return `Err` — always return at least one CPU device |
 | `anvilml-registry` | Scan model dirs; persist `ModelMeta` to SQLite; SHA256-gated SQL seed runner | Cache model file contents in memory |
-| `anvilml-ipc` | ZeroMQ ROUTER socket wrapper; `WorkerMessage` / `WorkerEvent` enums; msgpack serialisation | Process management; business logic |
+| `anvilml-artifacts` | Content-addressed PNG artifact storage; persist `ArtifactMeta` to SQLite; shared by scheduler and server | Know about HTTP request/response types; know about IPC message framing |
+| `anvilml-ipc` | ZeroMQ ROUTER socket wrapper; `WorkerMessage` / `WorkerEvent` enums; msgpack serialisation; `EventBroadcaster` (placed here to avoid an `anvilml-worker`/`anvilml-server` cycle) | Process management; persistence; business logic beyond event relaying |
 | `anvilml-worker` | Spawn/supervise/respawn Python worker subprocesses; IPC bridge; keepalive heartbeat | Contain logic beyond process management and message routing |
 | `anvilml-scheduler` | Job queue; VRAM ledger; DAG validation using dynamic registry; dispatch loop | Know about HTTP request/response types |
-| `anvilml-server` | axum router; all HTTP handlers; WebSocket broadcaster; artifact store | Contain business logic — handlers call into scheduler/worker/registry only |
+| `anvilml-server` | axum router; all HTTP handlers | Contain business logic — handlers call into scheduler/worker/registry/artifacts only |
 
 ---
 

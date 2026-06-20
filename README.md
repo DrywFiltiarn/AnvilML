@@ -182,6 +182,7 @@ AnvilML/
 │   ├── anvilml-core        Domain types, config, errors
 │   ├── anvilml-hardware    GPU detection
 │   ├── anvilml-registry    Model scanner + SQLite
+│   ├── anvilml-artifacts   Artifact storage + SQLite
 │   ├── anvilml-ipc         ZeroMQ transport
 │   ├── anvilml-worker      Worker pool
 │   ├── anvilml-scheduler   Job scheduling

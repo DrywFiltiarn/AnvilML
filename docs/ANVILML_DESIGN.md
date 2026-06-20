@@ -153,9 +153,10 @@ AnvilML/
 anvilml-core  (no deps — pure data)
   ├── anvilml-hardware      (← core)
   ├── anvilml-registry      (← core)
+  ├── anvilml-artifacts     (← core)
   └── anvilml-ipc           (← core)
         └── anvilml-worker  (← ipc, hardware, core)
-              └── anvilml-scheduler  (← worker, registry, core)
+              └── anvilml-scheduler  (← worker, registry, artifacts, core)
                     └── anvilml-server  (← all above)
                           └── backend/src/main.rs
 
@@ -171,10 +172,11 @@ anvilml-openapi  (← core, server — build-time only)
 | `anvilml-core` | Pure data: all domain types, config schema, error enum. | Zero I/O. Zero async. No `tokio`, no `sqlx`, no network. |
 | `anvilml-hardware` | GPU/CPU detection; refreshable VRAM snapshot. SDK-free via Vulkan primary. | Never panics on missing driver or Vulkan loader. Always returns at least one CPU device. |
 | `anvilml-registry` | Scan model directories; persist `ModelMeta` to SQLite; `SeedLoader` (SHA256-gated SQL seed runner). | Scanner is non-recursive by default; configurable depth. |
+| `anvilml-artifacts` | Content-addressed PNG artifact storage; persist `ArtifactMeta` to SQLite via `ArtifactStore`. | Shared by `anvilml-scheduler` and `anvilml-server`; neither may own the other's copy. |
 | `anvilml-ipc` | ZeroMQ ROUTER transport wrapper (Rust side); `WorkerMessage` and `WorkerEvent` enums; msgpack serialisation. | No business logic. No process management. |
 | `anvilml-worker` | Spawn Python worker subprocesses; manage lifecycle; route messages via IPC; respawn on crash; keepalive heartbeat. | One `ManagedWorker` owns exactly one subprocess. Pool manages a `Vec<ManagedWorker>`. |
 | `anvilml-scheduler` | Accept submitted job graphs; validate DAG; maintain job queue; track VRAM; dispatch to idle workers. | Node type registry is **dynamic** — populated from worker capability report at `Ready`, not hardcoded at compile time. |
-| `anvilml-server` | axum router; all HTTP handlers; WebSocket broadcaster; artifact store; OpenAPI annotations. | No business logic in handler functions — handlers call into scheduler/worker/registry only. |
+| `anvilml-server` | axum router; all HTTP handlers; WebSocket broadcaster; OpenAPI annotations. | No business logic in handler functions — handlers call into scheduler/worker/registry/artifacts only. |
 
 ---
 
@@ -1206,12 +1208,6 @@ anvilml-server/src/ws/
 ├── broadcaster.rs  # EventBroadcaster: tokio::sync::broadcast wrapper
 ├── handler.rs      # GET /v1/events WebSocket upgrade handler
 └── stats_tick.rs   # Background task: emits SystemStats every 5 seconds
-```
-
-```
-anvilml-server/src/artifact/
-├── mod.rs          # declares artifact submodule
-└── store.rs        # ArtifactStore: content-addressed PNG storage
 ```
 
 ### 12.2 `AppState`
