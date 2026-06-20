@@ -2680,3 +2680,12 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** All-zeros 64-character hex hash string.
 **Expected output:** `get()` returns `None`.
 **Acceptance command:** `cargo test -p anvilml-artifacts --test store_tests -- test_get_missing_hash --exact` exits 0.
+
+## test_progress_events_emitted_in_mock_mode (worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** `run_graph()` checks `EMITS_PROGRESS` on each node class after calling `execute()` and emits Progress events via `ctx.emit`. In mock mode (`ANVILML_WORKER_MOCK=1`), it emits exactly 3 Progress events (step=1,2,3, total_steps=3, preview_b64=None). The `conftest.py` autouse fixture sets `ANVILML_WORKER_MOCK=1` and the `registry_clean` autouse fixture clears `NODE_REGISTRY` before each test.
+**Tests:** A graph with a single node whose class has `EMITS_PROGRESS = True` is executed. The executor emits exactly 3 Progress events in order before the node's execution completes. Each event has `_type="Progress"`, `job_id="test-job-1"`, correct `step` (1, 2, 3), `total_steps=3`, and `preview_b64=None`.
+**Inputs:** Graph with single `StepNode` (a dynamically-created test node with `EMITS_PROGRESS=True`).
+**Expected output:** 3 Progress events captured by the emit capture, each with correct fields and in sequential order.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_executor.py -v` exits 0.

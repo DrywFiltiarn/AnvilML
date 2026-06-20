@@ -187,6 +187,7 @@ class BaseNode(ABC):
     DESCRIPTION: str = ""
     INPUT_SLOTS: list[SlotSpec] = []
     OUTPUT_SLOTS: list[SlotSpec] = []
+    EMITS_PROGRESS: bool = False
 
     def __init__(self, ctx: NodeContext) -> None:
         """Store the runtime context for this node instance.

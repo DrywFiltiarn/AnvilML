@@ -17,6 +17,7 @@ another node's output by ``(node_id, output_name)``.
 from __future__ import annotations
 
 import logging
+import os
 from collections import deque
 from typing import Any
 
@@ -206,6 +207,37 @@ def run_graph(
         # Any exception from execute() propagates up to the caller
         # (worker_main), which catches it and sends a Failed event.
         result = node.execute(**resolved_inputs)
+
+        # If the node declares it emits progress, emit Progress events
+        # via the context's emit callable before storing outputs.
+        # This ensures the frontend/supervisor receives progress updates
+        # before the node's own events (e.g. ImageReady).
+        if getattr(node_cls, "EMITS_PROGRESS", False):
+            is_mock = os.environ.get("ANVILML_WORKER_MOCK") == "1"
+            if is_mock:
+                # In mock mode, emit exactly 3 progress steps for
+                # predictable observable sequences in tests.
+                total_steps = 3
+                for step in range(1, total_steps + 1):
+                    ctx.emit({
+                        "_type": "Progress",
+                        "job_id": ctx.job_id,
+                        "step": step,
+                        "total_steps": total_steps,
+                        "preview_b64": None,
+                    })
+            else:
+                # In non-mock mode, emit a single progress event.
+                # Step numbering can be refined when concrete step-based
+                # nodes (e.g. Sampler) are implemented.
+                ctx.emit({
+                    "_type": "Progress",
+                    "job_id": ctx.job_id,
+                    "step": 1,
+                    "total_steps": 1,
+                    "preview_b64": None,
+                })
+
         outputs[node_id] = result
 
     logger.debug(

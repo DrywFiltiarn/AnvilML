@@ -443,3 +443,75 @@ def test_run_graph_empty_graph() -> None:
     )
 
     run_graph({"nodes": []}, {}, ctx)
+
+
+def test_progress_events_emitted_in_mock_mode() -> None:
+    """Verify a node with ``EMITS_PROGRESS=True`` emits 3 Progress events in mock mode.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture.
+        ``NODE_REGISTRY`` is cleared by the ``registry_clean`` autouse fixture.
+
+    Tests:
+        A graph with a single node whose class has ``EMITS_PROGRESS = True``
+        is executed. The executor should emit exactly 3 Progress events
+        (step=1, step=2, step=3, total_steps=3, preview_b64=None) before
+        the node's own execution completes.
+
+    Expected output:
+        Exactly 3 Progress events captured by the emit capture, each with
+        correct ``_type``, ``job_id``, ``step``, ``total_steps``, and
+        ``preview_b64`` fields, emitted in sequential order.
+    """
+    # Create a test node class with EMITS_PROGRESS set to True.
+    # This simulates a step-based node (e.g. Sampler) that reports
+    # progress during execution.
+    def step_node_execute(**inputs: Any) -> dict[str, Any]:
+        """Step-based node: returns a result dict."""
+        return {"result": "done"}
+
+    step_node_cls = _make_node_class(
+        "StepNode",
+        step_node_execute,
+        [],
+        [],
+    )
+    # Set EMITS_PROGRESS on the dynamically-created class.
+    step_node_cls.EMITS_PROGRESS = True
+
+    graph = {
+        "nodes": [
+            {
+                "id": "step1",
+                "type": "StepNode",
+                "inputs": {},
+            },
+        ],
+    }
+
+    # Use the mock_context fixture's emit capture.
+    emitted_events: list[dict[str, Any]] = []
+
+    def capture_emit(data: dict[str, Any]) -> None:
+        """Capture emitted events."""
+        emitted_events.append(data)
+
+    ctx = NodeContext(
+        job_id="test-job-1",
+        device="cpu",
+        cancel_flag=[False],
+        emit=capture_emit,
+        pipeline_cache={},
+    )
+
+    run_graph(graph, {}, ctx)
+
+    # Verify exactly 3 Progress events were emitted in order.
+    assert len(emitted_events) == 3
+
+    for i, event in enumerate(emitted_events, start=1):
+        assert event["_type"] == "Progress"
+        assert event["job_id"] == "test-job-1"
+        assert event["step"] == i
+        assert event["total_steps"] == 3
+        assert event["preview_b64"] is None
