@@ -16,7 +16,7 @@ use std::time::Duration;
 use anvilml_core::{
     types::WsEvent, AnvilError, Job, JobSettings, JobStatus, SubmitJobRequest, SubmitJobResponse,
 };
-use anvilml_ipc::{EventBroadcaster, WorkerMessage};
+use anvilml_ipc::{ArtifactStore, EventBroadcaster, WorkerMessage};
 use anvilml_worker::pool::WorkerPool;
 use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
@@ -76,6 +76,13 @@ pub struct JobScheduler {
     /// so clients can update their UI with the new job and its queue position.
     broadcaster: Arc<EventBroadcaster>,
 
+    /// Content-addressed artifact storage for generated images.
+    ///
+    /// The event loop uses this to persist images when `WorkerEvent::ImageReady`
+    /// arrives. Stored as `Arc` so it can be shared with the event loop task
+    /// at spawn time.
+    artifact_store: Arc<ArtifactStore>,
+
     /// Wake signal for the dispatch loop background task.
     ///
     /// The dispatch loop waits on this `Notify` between periodic polls.
@@ -99,13 +106,16 @@ impl JobScheduler {
     /// * `node_registry` — The registry of known node types from workers.
     /// * `db` — The SQLite connection pool for job persistence.
     /// * `broadcaster` — The WebSocket event broadcaster for client notifications.
-    #[tracing::instrument(skip(queue, ledger, node_registry, db, broadcaster))]
+    /// * `artifact_store` — The artifact storage backend for persisting
+    ///   generated images when `WorkerEvent::ImageReady` arrives.
+    #[tracing::instrument(skip(queue, ledger, node_registry, db, broadcaster, artifact_store))]
     pub fn new(
         queue: Arc<tokio::sync::Mutex<JobQueue>>,
         ledger: Arc<tokio::sync::Mutex<VramLedger>>,
         node_registry: Arc<NodeTypeRegistry>,
         db: SqlitePool,
         broadcaster: Arc<EventBroadcaster>,
+        artifact_store: Arc<ArtifactStore>,
     ) -> Self {
         Self {
             queue,
@@ -113,6 +123,7 @@ impl JobScheduler {
             node_registry,
             db,
             broadcaster,
+            artifact_store,
             notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
@@ -450,6 +461,16 @@ impl JobScheduler {
     #[doc(hidden)]
     pub fn broadcaster(&self) -> &Arc<EventBroadcaster> {
         &self.broadcaster
+    }
+
+    /// Return a reference to the internal artifact store.
+    ///
+    /// The event loop uses this to persist images when `WorkerEvent::ImageReady`
+    /// arrives. Exposed as a test accessor so tests can verify artifact
+    /// persistence.
+    #[doc(hidden)]
+    pub fn artifact_store(&self) -> &Arc<ArtifactStore> {
+        &self.artifact_store
     }
 
     /// Return a clone of the internal SQLite database pool.

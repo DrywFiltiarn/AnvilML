@@ -134,13 +134,17 @@ dependencies = [
 
 [[package]]
 name = "anvilml-ipc"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anvilml-core",
+ "base64",
  "bytes",
+ "chrono",
  "rmp-serde",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -176,13 +180,14 @@ dependencies = [
 
 [[package]]
 name = "anvilml-scheduler"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
  "anvilml-ipc",
  "anvilml-registry",
  "anvilml-worker",
+ "base64",
  "chrono",
  "indexmap",
  "serde_json",

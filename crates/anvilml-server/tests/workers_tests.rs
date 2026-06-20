@@ -4,8 +4,8 @@
 //! worker info returned when a pool with a mock worker is present.
 
 use anvilml_core::{GpuDevice, NodeTypeRegistry, ServerConfig, WorkerStatus};
-use anvilml_ipc::{EventBroadcaster, RouterTransport};
-use anvilml_scheduler::{ledger::VramLedger, queue::JobQueue, scheduler::JobScheduler};
+use anvilml_ipc::ArtifactStore;
+use anvilml_scheduler::scheduler::JobScheduler;
 use anvilml_server::{build_router, AppState};
 use anvilml_worker::{ManagedWorker, WorkerPool};
 use axum::body::to_bytes;
@@ -42,23 +42,18 @@ fn stub_device() -> GpuDevice {
 }
 
 /// Create a minimal WorkerPool with one mock worker for tests.
-///
-/// The mock worker is created with `WorkerStatus::Idle` so that
-/// `GET /v1/workers` returns a valid WorkerInfo entry.
-/// The transport is bound to port 0 (OS-assigned) to avoid conflicts.
 fn mock_pool_with_one_worker() -> WorkerPool {
     let transport = Arc::new(futures::executor::block_on(async {
-        RouterTransport::bind().await.expect("bind mock transport")
+        anvilml_ipc::RouterTransport::bind()
+            .await
+            .expect("bind mock transport")
     }));
 
-    let broadcaster = Arc::new(EventBroadcaster::new());
+    let broadcaster = Arc::new(anvilml_ipc::EventBroadcaster::new());
 
     let (msg_tx, _msg_rx) = mpsc::channel(16);
     let (event_tx, _event_rx) = broadcast::channel(16);
 
-    // timeout_tx is intentionally dropped immediately — this test never
-    // calls worker.run(), so timeout_rx is never polled and the drop is
-    // harmless.
     let (timeout_tx, timeout_rx) = tokio::sync::oneshot::channel::<()>();
     drop(timeout_tx);
 
@@ -68,10 +63,10 @@ fn mock_pool_with_one_worker() -> WorkerPool {
         WorkerStatus::Idle,
         msg_tx,
         event_tx,
-        None, // child — no subprocess for mock
-        None, // bridge_handle
-        None, // keepalive_handle
-        None, // heartbeat_handle
+        None,
+        None,
+        None,
+        None,
         stub_cfg(),
         stub_device(),
         transport.clone(),
@@ -79,11 +74,11 @@ fn mock_pool_with_one_worker() -> WorkerPool {
         restart_rx,
         "worker-0".to_string(),
         "mock-device".to_string(),
-        0,    // device_index
-        None, // routes — no real demux task in this test
-        None, // route_key
-        None, // ready_tx — no real keepalive task in this test
-        None, // node_registry — not exercising registry path in this test
+        0,
+        None,
+        None,
+        None,
+        None,
     );
 
     WorkerPool::new(
@@ -97,6 +92,26 @@ fn mock_pool_with_one_worker() -> WorkerPool {
     )
 }
 
+/// Build a JobScheduler and ArtifactStore for tests.
+async fn test_state(registry: Arc<NodeTypeRegistry>) -> (Arc<JobScheduler>, Arc<ArtifactStore>) {
+    let pool = anvilml_registry::open_in_memory().await.unwrap();
+    let artifact_dir = std::env::temp_dir().join("anvilml-test-artifacts");
+    let artifact_store = Arc::new(ArtifactStore::new(artifact_dir, pool.clone()).await);
+    let scheduler = Arc::new(JobScheduler::new(
+        Arc::new(tokio::sync::Mutex::new(
+            anvilml_scheduler::queue::JobQueue::default(),
+        )),
+        Arc::new(tokio::sync::Mutex::new(
+            anvilml_scheduler::ledger::VramLedger::new(),
+        )),
+        registry.clone(),
+        pool,
+        Arc::new(anvilml_ipc::EventBroadcaster::new()),
+        Arc::clone(&artifact_store),
+    ));
+    (scheduler, artifact_store)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -106,14 +121,8 @@ fn mock_pool_with_one_worker() -> WorkerPool {
 #[tokio::test]
 async fn test_list_workers_returns_empty_when_no_pool() {
     let registry = Arc::new(NodeTypeRegistry::new().await);
-    let scheduler = Arc::new(JobScheduler::new(
-        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
-        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
-        registry.clone(),
-        anvilml_registry::open_in_memory().await.unwrap(),
-        Arc::new(EventBroadcaster::new()),
-    ));
-    let state = AppState::new("test-version", registry, scheduler).await;
+    let (scheduler, artifact_store) = test_state(registry.clone()).await;
+    let state = AppState::new("test-version", registry, scheduler, artifact_store).await;
 
     let router = build_router(state);
 
@@ -148,13 +157,8 @@ async fn test_list_workers_returns_pool_data() {
         anvilml_core::types::HardwareInfo::default(),
     ));
     let registry = Arc::new(NodeTypeRegistry::new().await);
-    let scheduler = Arc::new(JobScheduler::new(
-        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
-        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
-        registry.clone(),
-        anvilml_registry::open_in_memory().await.unwrap(),
-        Arc::new(EventBroadcaster::new()),
-    ));
+    let (scheduler, artifact_store) = test_state(registry.clone()).await;
+
     let state = AppState::new_with_hardware(
         "test-version",
         hardware,
@@ -167,6 +171,7 @@ async fn test_list_workers_returns_pool_data() {
         Arc::new(pool),
         registry,
         scheduler,
+        artifact_store,
     );
 
     let router = build_router(state);

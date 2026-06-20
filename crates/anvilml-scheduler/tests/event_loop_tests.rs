@@ -16,7 +16,7 @@ use std::time::Duration;
 use anvilml_core::{
     JobSettings, NodeTypeDescriptor, NodeTypeRegistry, SlotDescriptor, SlotType, SubmitJobRequest,
 };
-use anvilml_ipc::{EventBroadcaster, WorkerEvent};
+use anvilml_ipc::{ArtifactStore, EventBroadcaster, WorkerEvent};
 use anvilml_registry::open_in_memory;
 use anvilml_scheduler::ledger::VramLedger;
 use anvilml_scheduler::queue::JobQueue;
@@ -64,14 +64,23 @@ fn make_valid_graph() -> serde_json::Value {
 /// Create a scheduler with an in-memory database and test registry.
 ///
 /// The broadcaster is shared between the test (which sends events through it)
-/// and the event loop (which receives events from it).
-fn make_scheduler(db: SqlitePool, registry: Arc<NodeTypeRegistry>) -> JobScheduler {
+/// and the event loop (which receives events from it). The artifact store
+/// is created with a temporary directory so tests can verify artifact
+/// persistence on disk.
+async fn make_scheduler(db: SqlitePool, registry: Arc<NodeTypeRegistry>) -> JobScheduler {
+    // Create a temporary directory for the artifact store.
+    // We use a tempdir to ensure each test gets its own isolated artifact
+    // storage directory, preventing cross-test contamination.
+    let artifact_dir = std::env::temp_dir().join("anvilml-test-artifacts");
+    let artifact_store = ArtifactStore::new(artifact_dir.clone(), db.clone()).await;
+
     JobScheduler::new(
         Arc::new(tokio::sync::Mutex::new(JobQueue::new())),
         Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
         registry,
         db,
         Arc::new(EventBroadcaster::new()),
+        Arc::new(artifact_store),
     )
 }
 
@@ -144,7 +153,7 @@ async fn set_job_running(db: &SqlitePool, job_id: Uuid) {
 async fn test_completed_event_updates_job_status() {
     let db = open_in_memory().await.expect("open in-memory DB");
     let registry = make_registry().await;
-    let scheduler = make_scheduler(db.clone(), registry);
+    let scheduler = make_scheduler(db.clone(), registry).await;
 
     register_device(&scheduler).await;
 
@@ -242,7 +251,7 @@ async fn test_completed_event_updates_job_status() {
 async fn test_failed_event_updates_job_status() {
     let db = open_in_memory().await.expect("open in-memory DB");
     let registry = make_registry().await;
-    let scheduler = make_scheduler(db.clone(), registry);
+    let scheduler = make_scheduler(db.clone(), registry).await;
 
     register_device(&scheduler).await;
 
@@ -326,7 +335,7 @@ async fn test_failed_event_updates_job_status() {
 async fn test_event_loop_ignores_unknown_event() {
     let db = open_in_memory().await.expect("open in-memory DB");
     let registry = make_registry().await;
-    let scheduler = make_scheduler(db.clone(), registry);
+    let scheduler = make_scheduler(db.clone(), registry).await;
 
     register_device(&scheduler).await;
 

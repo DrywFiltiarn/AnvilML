@@ -17,7 +17,7 @@ use anvilml_core::{
     JobSettings, NodeTypeDescriptor, NodeTypeRegistry, SlotDescriptor, SlotType, SubmitJobRequest,
     WorkerStatus,
 };
-use anvilml_ipc::EventBroadcaster;
+use anvilml_ipc::{ArtifactStore, EventBroadcaster};
 use anvilml_registry::open_in_memory;
 use anvilml_scheduler::ledger::VramLedger;
 use anvilml_scheduler::queue::JobQueue;
@@ -64,13 +64,17 @@ fn make_valid_graph() -> serde_json::Value {
 }
 
 /// Create a scheduler with an in-memory database and test registry.
-fn make_scheduler(db: SqlitePool, registry: Arc<NodeTypeRegistry>) -> JobScheduler {
+async fn make_scheduler(db: SqlitePool, registry: Arc<NodeTypeRegistry>) -> JobScheduler {
+    let artifact_dir = std::env::temp_dir().join("anvilml-test-artifacts");
+    let artifact_store = ArtifactStore::new(artifact_dir.clone(), db.clone()).await;
+
     JobScheduler::new(
         Arc::new(tokio::sync::Mutex::new(JobQueue::new())),
         Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
         registry,
         db,
         Arc::new(EventBroadcaster::new()),
+        Arc::new(artifact_store),
     )
 }
 
@@ -110,7 +114,7 @@ async fn make_one_idle_pool() -> (WorkerPool, SqlitePool, Arc<NodeTypeRegistry>)
 #[tokio::test]
 async fn test_dispatch_to_idle_worker() {
     let (pool, db, registry) = make_one_idle_pool().await;
-    let scheduler = make_scheduler(db.clone(), registry);
+    let scheduler = make_scheduler(db.clone(), registry).await;
 
     // Register the device in the scheduler's ledger.
     {
@@ -176,7 +180,7 @@ async fn test_dispatch_to_idle_worker() {
 #[tokio::test]
 async fn test_vram_reserved_on_dispatch() {
     let (pool, db, registry) = make_one_idle_pool().await;
-    let scheduler = make_scheduler(db, registry);
+    let scheduler = make_scheduler(db, registry).await;
 
     // Register the device with 8192 MiB total VRAM.
     {
@@ -246,7 +250,7 @@ async fn test_no_dispatch_when_no_idle_workers() {
         Arc::new(EventBroadcaster::new()),
     );
 
-    let scheduler = make_scheduler(db, registry);
+    let scheduler = make_scheduler(db, registry).await;
 
     // Register the device.
     {
@@ -293,7 +297,7 @@ async fn test_no_dispatch_when_no_idle_workers() {
 #[tokio::test]
 async fn test_dispatch_wakes_on_notify() {
     let (pool, db, registry) = make_one_idle_pool().await;
-    let scheduler = make_scheduler(db.clone(), registry);
+    let scheduler = make_scheduler(db.clone(), registry).await;
 
     {
         let mut ledger_guard = scheduler.__ledger().await;
@@ -367,7 +371,7 @@ async fn test_device_preference_respected() {
         Arc::new(EventBroadcaster::new()),
     );
 
-    let scheduler = make_scheduler(db.clone(), registry);
+    let scheduler = make_scheduler(db.clone(), registry).await;
 
     // Register both devices.
     {

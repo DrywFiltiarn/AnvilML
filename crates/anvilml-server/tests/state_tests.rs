@@ -1,22 +1,38 @@
 use anvilml_core::NodeTypeRegistry;
-use anvilml_ipc::EventBroadcaster;
-use anvilml_scheduler::{ledger::VramLedger, queue::JobQueue, scheduler::JobScheduler};
+use std::sync::Arc;
+
+use anvilml_ipc::ArtifactStore;
+use anvilml_scheduler::scheduler::JobScheduler;
 use anvilml_server::AppState;
+
+/// Build a JobScheduler and ArtifactStore for tests.
+async fn test_state(registry: Arc<NodeTypeRegistry>) -> (Arc<JobScheduler>, Arc<ArtifactStore>) {
+    let pool = anvilml_registry::open_in_memory().await.unwrap();
+    let artifact_dir = std::env::temp_dir().join("anvilml-test-artifacts");
+    let artifact_store = Arc::new(ArtifactStore::new(artifact_dir, pool.clone()).await);
+    let scheduler = Arc::new(JobScheduler::new(
+        Arc::new(tokio::sync::Mutex::new(
+            anvilml_scheduler::queue::JobQueue::default(),
+        )),
+        Arc::new(tokio::sync::Mutex::new(
+            anvilml_scheduler::ledger::VramLedger::new(),
+        )),
+        registry.clone(),
+        pool,
+        Arc::new(anvilml_ipc::EventBroadcaster::new()),
+        Arc::clone(&artifact_store),
+    ));
+    (scheduler, artifact_store)
+}
 
 /// Verify that AppState::new() sets start_time to a recent instant and
 /// stores the version string correctly.
 #[tokio::test]
 async fn test_app_state_new() {
     let before = std::time::Instant::now();
-    let registry = std::sync::Arc::new(NodeTypeRegistry::new().await);
-    let scheduler = std::sync::Arc::new(JobScheduler::new(
-        std::sync::Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
-        std::sync::Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
-        registry.clone(),
-        anvilml_registry::open_in_memory().await.unwrap(),
-        std::sync::Arc::new(EventBroadcaster::new()),
-    ));
-    let state = AppState::new("0.1.0", registry, scheduler).await;
+    let registry = Arc::new(NodeTypeRegistry::new().await);
+    let (scheduler, artifact_store) = test_state(registry.clone()).await;
+    let state = AppState::new("0.1.0", registry, scheduler, artifact_store).await;
     let after = std::time::Instant::now();
 
     // Verify the version was stored correctly.
@@ -40,15 +56,9 @@ async fn test_app_state_new() {
 /// String field.
 #[tokio::test]
 async fn test_app_state_clone() {
-    let registry = std::sync::Arc::new(NodeTypeRegistry::new().await);
-    let scheduler = std::sync::Arc::new(JobScheduler::new(
-        std::sync::Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
-        std::sync::Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
-        registry.clone(),
-        anvilml_registry::open_in_memory().await.unwrap(),
-        std::sync::Arc::new(EventBroadcaster::new()),
-    ));
-    let state = AppState::new("0.1.0", registry, scheduler).await;
+    let registry = Arc::new(NodeTypeRegistry::new().await);
+    let (scheduler, artifact_store) = test_state(registry.clone()).await;
+    let state = AppState::new("0.1.0", registry, scheduler, artifact_store).await;
     let cloned = state.clone();
 
     assert_eq!(cloned.version, state.version);
@@ -61,15 +71,9 @@ async fn test_app_state_clone() {
 #[tokio::test]
 async fn test_app_state_version_from_env() {
     let crate_version = env!("CARGO_PKG_VERSION");
-    let registry = std::sync::Arc::new(NodeTypeRegistry::new().await);
-    let scheduler = std::sync::Arc::new(JobScheduler::new(
-        std::sync::Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
-        std::sync::Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
-        registry.clone(),
-        anvilml_registry::open_in_memory().await.unwrap(),
-        std::sync::Arc::new(EventBroadcaster::new()),
-    ));
-    let state = AppState::new(crate_version, registry, scheduler).await;
+    let registry = Arc::new(NodeTypeRegistry::new().await);
+    let (scheduler, artifact_store) = test_state(registry.clone()).await;
+    let state = AppState::new(crate_version, registry, scheduler, artifact_store).await;
 
     assert_eq!(state.version, crate_version);
 }

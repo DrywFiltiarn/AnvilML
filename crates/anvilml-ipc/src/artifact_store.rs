@@ -6,6 +6,14 @@
 //! is recorded in the `artifacts` SQLite table for later retrieval and
 //! listing.
 //!
+//! # Why in `anvilml-ipc`?
+//!
+//! The scheduler needs access to `ArtifactStore` to persist images when
+//! `WorkerEvent::ImageReady` arrives. However, the dependency graph is
+//! `anvilml-server → anvilml-scheduler`, so the scheduler cannot import
+//! from the server. Relocating `ArtifactStore` to `anvilml-ipc` (which
+//! both the server and scheduler depend on) breaks this cycle.
+//!
 //! # Idempotency
 //!
 //! Both the filesystem write and the database insert are idempotent:
@@ -20,8 +28,8 @@
 //! (not `Arc<PathBuf>`). Callers should share the store via `Arc` if
 //! multiple threads need concurrent access.
 
-use anvilml_core::types::ArtifactMeta;
 use anvilml_core::AnvilError;
+use anvilml_core::ArtifactMeta;
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 use sqlx::Row;

@@ -1,13 +1,37 @@
+//! Integration tests for the system HTTP handlers.
+//!
+//! Tests cover: system env stub and system hardware info.
+
 use anvilml_core::NodeTypeRegistry;
-use anvilml_ipc::EventBroadcaster;
+use anvilml_ipc::ArtifactStore;
 use anvilml_registry::{open_in_memory, ModelStore};
-use anvilml_scheduler::{ledger::VramLedger, queue::JobQueue, scheduler::JobScheduler};
+use anvilml_scheduler::scheduler::JobScheduler;
 use anvilml_server::{build_router, AppState};
 use axum::body::to_bytes;
 use axum::http::{Method, Request};
 use serde_json::Value;
 use std::sync::Arc;
 use tower::util::ServiceExt;
+
+/// Build a JobScheduler and ArtifactStore for tests.
+async fn test_state(registry: Arc<NodeTypeRegistry>) -> (Arc<JobScheduler>, Arc<ArtifactStore>) {
+    let pool = open_in_memory().await.unwrap();
+    let artifact_dir = std::env::temp_dir().join("anvilml-test-artifacts");
+    let artifact_store = Arc::new(ArtifactStore::new(artifact_dir, pool.clone()).await);
+    let scheduler = Arc::new(JobScheduler::new(
+        Arc::new(tokio::sync::Mutex::new(
+            anvilml_scheduler::queue::JobQueue::default(),
+        )),
+        Arc::new(tokio::sync::Mutex::new(
+            anvilml_scheduler::ledger::VramLedger::new(),
+        )),
+        registry.clone(),
+        pool,
+        Arc::new(anvilml_ipc::EventBroadcaster::new()),
+        Arc::clone(&artifact_store),
+    ));
+    (scheduler, artifact_store)
+}
 
 /// Verify that the system env handler returns HTTP 200 with a JSON body
 /// containing the default `EnvReport` values: `preflight_ok` is `false`
@@ -20,14 +44,8 @@ use tower::util::ServiceExt;
 #[tokio::test]
 async fn test_system_env_returns_200_with_default_report() {
     let registry = Arc::new(NodeTypeRegistry::new().await);
-    let scheduler = Arc::new(JobScheduler::new(
-        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
-        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
-        registry.clone(),
-        open_in_memory().await.unwrap(),
-        Arc::new(EventBroadcaster::new()),
-    ));
-    let state = AppState::new("test-version", registry, scheduler).await;
+    let (scheduler, artifact_store) = test_state(registry.clone()).await;
+    let state = AppState::new("test-version", registry, scheduler, artifact_store).await;
 
     // Build the router via the production `build_router` function.
     let router = build_router(state);
@@ -109,25 +127,17 @@ async fn test_system_returns_200_with_hardware_info() {
 
     // Wrap the HardwareInfo in Arc<RwLock<>> to match the
     // AppState::new_with_hardware constructor signature.
-    let hardware = std::sync::Arc::new(tokio::sync::RwLock::new(hardware_info));
+    let hardware = Arc::new(tokio::sync::RwLock::new(hardware_info));
 
-    // Open an in-memory database pool for the test — this matches the
-    // production startup path where `open()` is called with the config
-    // db_path. Using `open_in_memory()` ensures test isolation.
+    // Open an in-memory database pool for the test.
     let pool = open_in_memory().await.unwrap();
 
-    // Construct the ModelStore from the pool — needed because
-    // new_with_hardware now requires a registry parameter.
+    // Construct the ModelStore from the pool.
     let registry = Arc::new(ModelStore::new(pool.clone()).await);
 
     let node_registry = Arc::new(NodeTypeRegistry::new().await);
-    let scheduler = Arc::new(JobScheduler::new(
-        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
-        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
-        node_registry.clone(),
-        pool.clone(),
-        Arc::new(EventBroadcaster::new()),
-    ));
+    let (scheduler, artifact_store) = test_state(node_registry.clone()).await;
+
     let state = AppState::new_with_hardware_no_workers(
         "test-version",
         hardware,
@@ -136,6 +146,7 @@ async fn test_system_returns_200_with_hardware_info() {
         Vec::new(),
         node_registry,
         scheduler,
+        artifact_store,
     );
 
     // Build the router via the production `build_router` function.

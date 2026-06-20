@@ -18,7 +18,7 @@ mod config {
 
 use anvilml_core::NodeTypeRegistry;
 use anvilml_hardware::detect_all_devices;
-use anvilml_ipc::{EventBroadcaster, RouterTransport};
+use anvilml_ipc::{ArtifactStore, EventBroadcaster, RouterTransport};
 use anvilml_registry::{open, ModelStore};
 use anvilml_scheduler::{ledger::VramLedger, queue::JobQueue, scheduler::JobScheduler};
 use anvilml_server::{build_router, AppState};
@@ -156,6 +156,11 @@ async fn main() {
     // queryable set.
     let node_registry = Arc::new(NodeTypeRegistry::new().await);
 
+    // Create the artifact store before the scheduler — the scheduler needs
+    // it to persist images when WorkerEvent::ImageReady arrives.
+    // The artifact directory is created automatically on construction.
+    let artifact_store = Arc::new(ArtifactStore::new(cfg.artifact_dir.clone(), pool.clone()).await);
+
     // Build the job scheduler with the node registry, database pool,
     // and event broadcaster. The queue and ledger are freshly initialised
     // — the queue starts empty and the ledger has no registered devices
@@ -166,6 +171,7 @@ async fn main() {
         Arc::clone(&node_registry),
         pool.clone(),
         Arc::new(EventBroadcaster::new()),
+        Arc::clone(&artifact_store),
     ));
 
     // Spawn managed workers for all detected GPU devices.
@@ -188,6 +194,7 @@ async fn main() {
         cfg.model_dirs.clone(),
         Arc::clone(&node_registry),
         scheduler.clone(),
+        Arc::clone(&artifact_store),
     );
 
     let workers = WorkerPool::spawn_all(
@@ -218,6 +225,7 @@ async fn main() {
         Arc::new(workers),
         Arc::clone(&node_registry),
         scheduler,
+        artifact_store,
     );
 
     // Run the initial model directory scan at startup. This populates the

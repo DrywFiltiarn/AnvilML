@@ -11,12 +11,28 @@
 
 use anvilml_core::types::WsEvent;
 use anvilml_core::NodeTypeRegistry;
-use anvilml_ipc::EventBroadcaster;
+use anvilml_ipc::{ArtifactStore, EventBroadcaster};
 use anvilml_scheduler::{ledger::VramLedger, queue::JobQueue, scheduler::JobScheduler};
 use anvilml_server::{build_router, AppState};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+
+/// Build a JobScheduler and ArtifactStore for tests.
+async fn test_state(registry: Arc<NodeTypeRegistry>) -> (Arc<JobScheduler>, Arc<ArtifactStore>) {
+    let pool = anvilml_registry::open_in_memory().await.unwrap();
+    let artifact_dir = std::env::temp_dir().join("anvilml-test-artifacts");
+    let artifact_store = Arc::new(ArtifactStore::new(artifact_dir, pool.clone()).await);
+    let scheduler = Arc::new(JobScheduler::new(
+        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
+        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
+        registry.clone(),
+        pool,
+        Arc::new(EventBroadcaster::new()),
+        Arc::clone(&artifact_store),
+    ));
+    (scheduler, artifact_store)
+}
 
 /// Verify that the `/v1/events` route exists and returns HTTP 101
 /// on a WebSocket upgrade request.
@@ -30,14 +46,8 @@ use tokio::net::TcpListener;
 #[tokio::test]
 async fn test_events_route_returns_101() {
     let registry = Arc::new(NodeTypeRegistry::new().await);
-    let scheduler = Arc::new(JobScheduler::new(
-        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
-        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
-        registry.clone(),
-        anvilml_registry::open_in_memory().await.unwrap(),
-        Arc::new(EventBroadcaster::new()),
-    ));
-    let state = AppState::new("test-version", registry, scheduler).await;
+    let (scheduler, artifact_store) = test_state(registry.clone()).await;
+    let state = AppState::new("test-version", registry, scheduler, artifact_store).await;
     let router = build_router(state);
 
     // Convert the Router into a make-service with ConnectInfo support.
@@ -107,14 +117,8 @@ async fn test_events_route_returns_101() {
 #[tokio::test]
 async fn test_events_delivers_broadcast_event() {
     let registry = Arc::new(NodeTypeRegistry::new().await);
-    let scheduler = Arc::new(JobScheduler::new(
-        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
-        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
-        registry.clone(),
-        anvilml_registry::open_in_memory().await.unwrap(),
-        Arc::new(EventBroadcaster::new()),
-    ));
-    let state = AppState::new("test-version", registry, scheduler).await;
+    let (scheduler, artifact_store) = test_state(registry.clone()).await;
+    let state = AppState::new("test-version", registry, scheduler, artifact_store).await;
     let router = build_router(state.clone());
 
     // Convert the Router into a make-service with ConnectInfo support.

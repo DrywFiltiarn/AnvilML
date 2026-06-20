@@ -4,14 +4,34 @@
 //! an empty array after a mock worker reaches Ready.
 
 use anvilml_core::NodeTypeRegistry;
-use anvilml_ipc::EventBroadcaster;
-use anvilml_scheduler::{ledger::VramLedger, queue::JobQueue, scheduler::JobScheduler};
+use anvilml_ipc::ArtifactStore;
+use anvilml_scheduler::scheduler::JobScheduler;
 use anvilml_server::{build_router, AppState};
 use axum::body::to_bytes;
 use axum::http::{Method, Request};
 use serde_json::Value;
 use std::sync::Arc;
 use tower::util::ServiceExt;
+
+/// Build a JobScheduler and ArtifactStore for tests.
+async fn test_state(registry: Arc<NodeTypeRegistry>) -> (Arc<JobScheduler>, Arc<ArtifactStore>) {
+    let pool = anvilml_registry::open_in_memory().await.unwrap();
+    let artifact_dir = std::env::temp_dir().join("anvilml-test-artifacts");
+    let artifact_store = Arc::new(ArtifactStore::new(artifact_dir, pool.clone()).await);
+    let scheduler = Arc::new(JobScheduler::new(
+        Arc::new(tokio::sync::Mutex::new(
+            anvilml_scheduler::queue::JobQueue::default(),
+        )),
+        Arc::new(tokio::sync::Mutex::new(
+            anvilml_scheduler::ledger::VramLedger::new(),
+        )),
+        registry.clone(),
+        pool,
+        Arc::new(anvilml_ipc::EventBroadcaster::new()),
+        Arc::clone(&artifact_store),
+    ));
+    (scheduler, artifact_store)
+}
 
 /// Verify that GET /v1/nodes returns HTTP 503 when no worker has reached
 /// Ready (fresh registry that has never had `update_from_worker` called).
@@ -27,14 +47,8 @@ async fn test_nodes_returns_503_when_registry_not_updated() {
     // The registry's `updated` flag is false, so the handler should
     // return 503.
     let registry = Arc::new(NodeTypeRegistry::new().await);
-    let scheduler = Arc::new(JobScheduler::new(
-        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
-        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
-        registry.clone(),
-        anvilml_registry::open_in_memory().await.unwrap(),
-        Arc::new(EventBroadcaster::new()),
-    ));
-    let state = AppState::new("test-version", registry, scheduler).await;
+    let (scheduler, artifact_store) = test_state(registry.clone()).await;
+    let state = AppState::new("test-version", registry, scheduler, artifact_store).await;
 
     // Build the router via the production `build_router` function.
     let router = build_router(state);
@@ -89,14 +103,8 @@ async fn test_nodes_returns_200_after_worker_ready() {
 
     // Build AppState with the updated registry and a scheduler.
     let arc_registry = Arc::new(registry);
-    let scheduler = Arc::new(JobScheduler::new(
-        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
-        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
-        arc_registry.clone(),
-        anvilml_registry::open_in_memory().await.unwrap(),
-        Arc::new(EventBroadcaster::new()),
-    ));
-    let state = AppState::new("test-version", arc_registry, scheduler).await;
+    let (scheduler, artifact_store) = test_state(arc_registry.clone()).await;
+    let state = AppState::new("test-version", arc_registry, scheduler, artifact_store).await;
 
     // Build the router via the production `build_router` function.
     let router = build_router(state);

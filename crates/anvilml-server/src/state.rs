@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use anvilml_ipc::ArtifactStore;
+
 /// AppState holds shared server state accessible to all HTTP handlers.
 ///
 /// Constructed once at server boot and cloned into each handler via axum's
@@ -75,6 +77,13 @@ pub struct AppState {
     /// Used by the job handlers to submit, query, and list jobs. Shared
     /// via `Arc` so all handlers access the same scheduler instance.
     pub scheduler: Arc<anvilml_scheduler::JobScheduler>,
+
+    /// Content-addressed artifact storage for generated images.
+    ///
+    /// Persisted by the scheduler's event loop when `WorkerEvent::ImageReady`
+    /// arrives. Shared via `Arc` so all handlers that need artifact access
+    /// can reach it through `AppState`.
+    pub artifact_store: Arc<ArtifactStore>,
 }
 
 impl AppState {
@@ -100,10 +109,13 @@ impl AppState {
     /// * `scheduler` — A pre-built `Arc<JobScheduler>` for job management.
     ///   In tests, construct with a scheduler backed by the same in-memory
     ///   pool that `open_in_memory()` creates.
+    /// * `artifact_store` — The artifact storage backend for persisting
+    ///   generated images.
     pub async fn new(
         version: impl Into<String>,
         node_registry: Arc<anvilml_core::NodeTypeRegistry>,
         scheduler: Arc<anvilml_scheduler::JobScheduler>,
+        artifact_store: Arc<ArtifactStore>,
     ) -> Self {
         // Use open_in_memory() to create an in-memory pool with migrations
         // already applied. This is critical — the ModelStore queries tables
@@ -137,6 +149,7 @@ impl AppState {
             workers: None,
             node_registry,
             scheduler,
+            artifact_store,
         }
     }
 
@@ -168,6 +181,8 @@ impl AppState {
     ///   the worker pool so node types reported by workers accumulate into
     ///   one queryable set.
     /// * `scheduler` — A pre-built `Arc<JobScheduler>` for job management.
+    /// * `artifact_store` — The artifact storage backend for persisting
+    ///   generated images.
     #[expect(clippy::too_many_arguments, reason = "constructor parameter list")]
     pub fn new_with_hardware(
         version: impl Into<String>,
@@ -178,6 +193,7 @@ impl AppState {
         workers: Arc<anvilml_worker::WorkerPool>,
         node_registry: Arc<anvilml_core::NodeTypeRegistry>,
         scheduler: Arc<anvilml_scheduler::JobScheduler>,
+        artifact_store: Arc<ArtifactStore>,
     ) -> Self {
         // Borrow the broadcaster that the pool was already constructed with,
         // so AppState.broadcaster and pool.broadcaster() are the same Arc.
@@ -194,6 +210,7 @@ impl AppState {
             workers: Some(workers),
             node_registry,
             scheduler,
+            artifact_store,
         }
     }
 
@@ -217,6 +234,9 @@ impl AppState {
     ///   the worker pool so node types reported by workers accumulate into
     ///   one queryable set.
     /// * `scheduler` — A pre-built `Arc<JobScheduler>` for job management.
+    /// * `artifact_store` — The artifact storage backend for persisting
+    ///   generated images.
+    #[expect(clippy::too_many_arguments, reason = "constructor parameter list")]
     pub fn new_with_hardware_no_workers(
         version: impl Into<String>,
         hardware: Arc<tokio::sync::RwLock<anvilml_core::types::HardwareInfo>>,
@@ -225,6 +245,7 @@ impl AppState {
         model_dirs: Vec<anvilml_core::ModelDirConfig>,
         node_registry: Arc<anvilml_core::NodeTypeRegistry>,
         scheduler: Arc<anvilml_scheduler::JobScheduler>,
+        artifact_store: Arc<ArtifactStore>,
     ) -> Self {
         Self {
             start_time: std::time::Instant::now(),
@@ -240,6 +261,7 @@ impl AppState {
             workers: None,
             node_registry,
             scheduler,
+            artifact_store,
         }
     }
 }

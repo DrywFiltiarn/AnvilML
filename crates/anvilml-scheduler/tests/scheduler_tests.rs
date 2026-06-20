@@ -16,6 +16,7 @@ use anvilml_core::{
     AnvilError, JobSettings, JobStatus, NodeTypeDescriptor, NodeTypeRegistry, SlotDescriptor,
     SlotType, SubmitJobRequest,
 };
+use anvilml_ipc::ArtifactStore;
 use anvilml_registry::open_in_memory;
 use anvilml_scheduler::ledger::VramLedger;
 use anvilml_scheduler::queue::JobQueue;
@@ -90,7 +91,7 @@ fn make_invalid_graph() -> serde_json::Value {
 async fn test_submit_valid_graph() {
     let db = open_in_memory().await.expect("open in-memory DB");
     let registry = make_registry().await;
-    let scheduler = make_scheduler(db, registry);
+    let scheduler = make_scheduler(db, registry).await;
 
     let req = SubmitJobRequest {
         graph: make_valid_graph(),
@@ -131,7 +132,7 @@ async fn test_submit_valid_graph() {
 async fn test_submit_invalid_graph() {
     let db = open_in_memory().await.expect("open in-memory DB");
     let registry = make_registry().await;
-    let scheduler = make_scheduler(db, registry);
+    let scheduler = make_scheduler(db, registry).await;
 
     let req = SubmitJobRequest {
         graph: make_invalid_graph(),
@@ -174,7 +175,7 @@ async fn test_submit_invalid_graph() {
 async fn test_get_job_returns_job() {
     let db = open_in_memory().await.expect("open in-memory DB");
     let registry = make_registry().await;
-    let scheduler = make_scheduler(db, registry);
+    let scheduler = make_scheduler(db, registry).await;
 
     // Submit a job.
     let req = SubmitJobRequest {
@@ -207,7 +208,7 @@ async fn test_get_job_returns_job() {
 async fn test_get_job_missing_returns_none() {
     let db = open_in_memory().await.expect("open in-memory DB");
     let registry = make_registry().await;
-    let scheduler = make_scheduler(db, registry);
+    let scheduler = make_scheduler(db, registry).await;
 
     // Query for a UUID that was never submitted.
     let missing_id = Uuid::new_v4();
@@ -232,7 +233,7 @@ async fn test_get_job_missing_returns_none() {
 async fn test_list_jobs_returns_all() {
     let db = open_in_memory().await.expect("open in-memory DB");
     let registry = make_registry().await;
-    let scheduler = make_scheduler(db, registry);
+    let scheduler = make_scheduler(db, registry).await;
 
     // Submit three jobs.
     for i in 0..3 {
@@ -281,7 +282,7 @@ async fn test_list_jobs_filter_by_status() {
     let registry = make_registry().await;
     // Clone the pool before passing to make_scheduler — we need the original
     // pool to run direct SQL updates (simulating dispatch loop state changes).
-    let scheduler = make_scheduler(db.clone(), registry);
+    let scheduler = make_scheduler(db.clone(), registry).await;
 
     // Submit two jobs.
     for i in 0..2 {
@@ -344,7 +345,7 @@ async fn test_list_jobs_filter_by_status() {
 async fn test_list_jobs_with_limit() {
     let db = open_in_memory().await.expect("open in-memory DB");
     let registry = make_registry().await;
-    let scheduler = make_scheduler(db, registry);
+    let scheduler = make_scheduler(db, registry).await;
 
     // Submit five jobs.
     for i in 0..5 {
@@ -384,7 +385,7 @@ async fn test_list_jobs_with_limit() {
 async fn test_list_jobs_with_before_filter() {
     let db = open_in_memory().await.expect("open in-memory DB");
     let registry = make_registry().await;
-    let scheduler = make_scheduler(db, registry);
+    let scheduler = make_scheduler(db, registry).await;
 
     // Submit first job.
     scheduler
@@ -430,16 +431,18 @@ async fn test_list_jobs_with_before_filter() {
 /// Helper to create a `JobScheduler` with an in-memory database and test registry.
 ///
 /// Constructs all required dependencies (queue, ledger, registry, database pool,
-/// broadcaster) and wraps them in a `JobScheduler`. Each test calls this to get
-/// a fresh scheduler instance with its own isolated database.
-fn make_scheduler(db: SqlitePool, registry: Arc<NodeTypeRegistry>) -> JobScheduler {
-    use anvilml_ipc::EventBroadcaster;
+/// broadcaster, artifact store) and wraps them in a `JobScheduler`. Each test
+/// calls this to get a fresh scheduler instance with its own isolated database.
+async fn make_scheduler(db: SqlitePool, registry: Arc<NodeTypeRegistry>) -> JobScheduler {
+    let artifact_dir = std::env::temp_dir().join("anvilml-test-artifacts");
+    let artifact_store = ArtifactStore::new(artifact_dir.clone(), db.clone()).await;
 
     JobScheduler::new(
         Arc::new(tokio::sync::Mutex::new(JobQueue::new())),
         Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
         registry,
         db,
-        Arc::new(EventBroadcaster::new()),
+        Arc::new(anvilml_ipc::EventBroadcaster::new()),
+        Arc::new(artifact_store),
     )
 }

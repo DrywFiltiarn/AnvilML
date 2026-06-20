@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-scheduler"
-version = "0.1.9"
+version = "0.1.10"
 edition.workspace = true
 
 [dependencies]
@@ -9,6 +9,7 @@ anvilml-hardware = { path = "../anvilml-hardware" }
 anvilml-ipc = { path = "../anvilml-ipc" }
 anvilml-registry = { path = "../anvilml-registry" }
 anvilml-worker = { path = "../anvilml-worker" }
+base64 = "0.22"
 chrono = { workspace = true }
 indexmap = "2.7"
 serde_json = { workspace = true }

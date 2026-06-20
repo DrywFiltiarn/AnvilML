@@ -1,4 +1,4 @@
-//! Event loop for processing worker events (Completed, Failed).
+//! Event loop for processing worker events (Completed, Failed, ImageReady).
 //!
 //! This module implements the event subscription loop that receives
 //! `WorkerEvent` messages from the `EventBroadcaster` and updates
@@ -11,13 +11,17 @@
 //!    releases VRAM reservation, broadcasts `WsEvent::JobCompleted`.
 //! 4. On `Failed`: updates DB (status=failed, error), releases VRAM,
 //!    broadcasts `WsEvent::JobFailed`.
-//! 5. On unknown events: logs at DEBUG and continues.
-//! 6. On channel closure: logs at WARN and exits.
+//! 5. On `ImageReady`: decodes base64 image, persists via `ArtifactStore`,
+//!    broadcasts `WsEvent::JobImageReady`.
+//! 6. On unknown events: logs at DEBUG and continues.
+//! 7. On channel closure: logs at WARN and exits.
 
 use std::sync::Arc;
 
 use anvilml_core::types::WsEvent;
-use anvilml_ipc::{EventBroadcaster, WorkerEvent};
+use anvilml_ipc::{ArtifactStore, EventBroadcaster, WorkerEvent};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use chrono::Utc;
 use sqlx::SqlitePool;
 use tokio::sync::broadcast;
@@ -59,6 +63,7 @@ pub fn start_event_loop(scheduler: &JobScheduler) -> tokio::task::JoinHandle<()>
     let db = scheduler.db();
     let ledger = Arc::clone(scheduler.ledger());
     let broadcaster = Arc::clone(scheduler.broadcaster());
+    let artifact_store = Arc::clone(scheduler.artifact_store());
 
     tokio::spawn(async move {
         // Subscribe to the worker event channel.
@@ -73,7 +78,9 @@ pub fn start_event_loop(scheduler: &JobScheduler) -> tokio::task::JoinHandle<()>
             // If the sender is dropped (broadcaster dropped), recv()
             // returns Err(RecvError::Closed) and we exit the loop.
             match rx.recv().await {
-                Ok(event) => handle_event(&db, &ledger, &broadcaster, event).await,
+                Ok(event) => {
+                    handle_event(&db, &ledger, &broadcaster, &artifact_store, event).await;
+                }
                 Err(broadcast::error::RecvError::Closed) => {
                     // The broadcaster was dropped — this should not happen
                     // in normal operation since the broadcaster lives for
@@ -103,6 +110,7 @@ pub fn start_event_loop(scheduler: &JobScheduler) -> tokio::task::JoinHandle<()>
 /// Dispatches to the appropriate handler based on the event variant:
 /// - `Completed` → update DB, release VRAM, broadcast WsEvent
 /// - `Failed` → update DB with error, release VRAM, broadcast WsEvent
+/// - `ImageReady` → decode base64, persist artifact, broadcast WsEvent
 /// - Other variants → log at DEBUG and continue (future phases handle these)
 ///
 /// # Arguments
@@ -110,11 +118,13 @@ pub fn start_event_loop(scheduler: &JobScheduler) -> tokio::task::JoinHandle<()>
 /// * `db` — The SQLite database pool for status updates.
 /// * `ledger` — The VRAM ledger for releasing reservations.
 /// * `broadcaster` — The event broadcaster for WsEvent notifications.
+/// * `artifact_store` — The artifact storage backend for persisting images.
 /// * `event` — The worker event to process.
 async fn handle_event(
     db: &SqlitePool,
     ledger: &Arc<tokio::sync::Mutex<VramLedger>>,
     broadcaster: &Arc<EventBroadcaster>,
+    artifact_store: &Arc<ArtifactStore>,
     event: WorkerEvent,
 ) {
     // Log every event at DEBUG for observability.
@@ -132,9 +142,30 @@ async fn handle_event(
         } => {
             handle_failed(db, ledger, broadcaster, job_id, error).await;
         }
+        WorkerEvent::ImageReady {
+            job_id,
+            image_b64,
+            width,
+            height,
+            format: _,
+            seed,
+            steps,
+        } => {
+            handle_image_ready(
+                broadcaster,
+                artifact_store,
+                job_id,
+                &image_b64,
+                width,
+                height,
+                seed,
+                steps,
+            )
+            .await;
+        }
         // Unknown event variant — log at DEBUG and continue.
-        // Future phases (P15+) will handle ImageReady, Progress,
-        // Cancelled, Ready, Pong, Dying, MemoryReport events.
+        // Progress, Cancelled, Ready, Pong, Dying, and MemoryReport events
+        // are handled by future phases.
         _ => {
             tracing::debug!(event_type = ?event, "ignoring non-terminal worker event");
         }
@@ -299,4 +330,93 @@ async fn handle_failed(
     // Mandatory INFO log point per ENVIRONMENT.md §9 — "Scheduler:
     // Job failed" with job_id and error fields.
     info!(job_id = %job_id, error = %error, "job failed");
+}
+
+/// Handle a `WorkerEvent::ImageReady` event.
+///
+/// 1. Decodes the base64-encoded image payload.
+/// 2. Persists the image via `ArtifactStore::save()`.
+/// 3. Broadcasts `WsEvent::JobImageReady` with the artifact hash and
+///    image dimensions.
+/// 4. Emits mandatory INFO log: `job_id`, `artifact_hash`, `size_bytes`.
+///
+/// On decode failure, logs at WARN and returns early without updating
+/// the job state — the job may still complete via the Completed event.
+///
+/// # Arguments
+///
+/// * `broadcaster` — The event broadcaster for WsEvent notifications.
+/// * `artifact_store` — The artifact storage backend for persisting images.
+/// * `job_id` — The UUID of the job that produced the image.
+/// * `image_b64` — The base64-encoded image payload from the worker.
+/// * `width` — Image width in pixels.
+/// * `height` — Image height in pixels.
+/// * `seed` — Random seed used for generation.
+/// * `steps` — Number of steps executed to produce the image.
+#[expect(clippy::too_many_arguments, reason = "event handler parameters")]
+async fn handle_image_ready(
+    broadcaster: &Arc<EventBroadcaster>,
+    artifact_store: &Arc<ArtifactStore>,
+    job_id: Uuid,
+    image_b64: &str,
+    width: u32,
+    height: u32,
+    seed: i64,
+    steps: u32,
+) {
+    // Decode the base64-encoded image payload. The worker sends the image
+    // as a base64 string, but ArtifactStore::save() expects raw bytes.
+    // If decoding fails, log at WARN and return early — the job may still
+    // complete via the Completed event, and the image is simply not saved.
+    let image_bytes: Vec<u8> = match STANDARD.decode(image_b64) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::warn!(
+                job_id = %job_id,
+                error = %e,
+                "failed to decode ImageReady base64 payload, skipping artifact save"
+            );
+            return;
+        }
+    };
+
+    // Persist the decoded image bytes to disk and record metadata in
+    // the database. The save method computes a SHA-256 hash and uses
+    // content-addressed storage for deduplication.
+    let meta = match artifact_store.save(job_id, &image_bytes).await {
+        Ok(meta) => meta,
+        Err(e) => {
+            tracing::warn!(
+                job_id = %job_id,
+                error = %e,
+                "failed to save artifact, skipping broadcast"
+            );
+            return;
+        }
+    };
+
+    // Broadcast the JobImageReady event so connected WebSocket clients
+    // can display the generated image preview and access the artifact.
+    // Clone the hash before the broadcast — we need it for the INFO log
+    // below, and the broadcast consumes it via the WsEvent struct.
+    let artifact_hash = meta.hash.clone();
+    broadcaster.send(WsEvent::JobImageReady {
+        job_id,
+        artifact_hash,
+        width,
+        height,
+        seed,
+        steps,
+    });
+
+    // Mandatory INFO log point per ENVIRONMENT.md §9 — "Scheduler:
+    // Job completed" maps to artifact save completion for image jobs.
+    // We log the artifact hash and size so operators can track artifact
+    // production rates and file sizes.
+    info!(
+        job_id = %job_id,
+        artifact_hash = %meta.hash,
+        size_bytes = meta.size_bytes,
+        "artifact saved"
+    );
 }

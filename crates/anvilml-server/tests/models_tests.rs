@@ -6,9 +6,11 @@
 //! ensure test isolation.
 
 use anvilml_core::{ModelDirConfig, ModelKind, ModelMeta, NodeTypeRegistry};
-use anvilml_ipc::EventBroadcaster;
+use anvilml_ipc::ArtifactStore;
 use anvilml_registry::{open_in_memory, ModelStore};
-use anvilml_scheduler::{ledger::VramLedger, queue::JobQueue, scheduler::JobScheduler};
+use anvilml_scheduler::ledger::VramLedger;
+use anvilml_scheduler::queue::JobQueue;
+use anvilml_scheduler::scheduler::JobScheduler;
 use anvilml_server::{build_router, AppState};
 use axum::body::to_bytes;
 use axum::http::{Method, Request};
@@ -17,6 +19,22 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tower::util::ServiceExt;
+
+/// Build a JobScheduler and ArtifactStore for tests.
+async fn test_state(registry: Arc<NodeTypeRegistry>) -> (Arc<JobScheduler>, Arc<ArtifactStore>) {
+    let pool = open_in_memory().await.unwrap();
+    let artifact_dir = std::env::temp_dir().join("anvilml-test-artifacts");
+    let artifact_store = Arc::new(ArtifactStore::new(artifact_dir, pool.clone()).await);
+    let scheduler = Arc::new(JobScheduler::new(
+        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
+        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
+        registry.clone(),
+        pool,
+        Arc::new(anvilml_ipc::EventBroadcaster::new()),
+        Arc::clone(&artifact_store),
+    ));
+    (scheduler, artifact_store)
+}
 
 /// Verify that GET /v1/models returns HTTP 200 with an empty JSON array
 /// when the model registry contains zero models.
@@ -29,14 +47,8 @@ async fn test_list_models_empty() {
     // Build AppState with an empty in-memory database — the ModelStore
     // has no models, so the list endpoint should return [].
     let registry = Arc::new(NodeTypeRegistry::new().await);
-    let scheduler = Arc::new(JobScheduler::new(
-        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
-        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
-        registry.clone(),
-        open_in_memory().await.unwrap(),
-        Arc::new(EventBroadcaster::new()),
-    ));
-    let state = AppState::new("test-version", registry, scheduler).await;
+    let (scheduler, artifact_store) = test_state(registry.clone()).await;
+    let state = AppState::new("test-version", registry, scheduler, artifact_store).await;
 
     // Build the router via the production `build_router` function.
     let router = build_router(state);
@@ -104,13 +116,7 @@ async fn test_list_models_with_kind_filter() {
         anvilml_core::types::HardwareInfo::default(),
     ));
     let node_registry = Arc::new(NodeTypeRegistry::new().await);
-    let scheduler = Arc::new(JobScheduler::new(
-        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
-        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
-        node_registry.clone(),
-        pool.clone(),
-        Arc::new(EventBroadcaster::new()),
-    ));
+    let (scheduler, artifact_store) = test_state(node_registry.clone()).await;
     let state = AppState::new_with_hardware_no_workers(
         "test-version",
         hardware,
@@ -119,6 +125,7 @@ async fn test_list_models_with_kind_filter() {
         Vec::new(),
         node_registry,
         scheduler,
+        artifact_store.clone(),
     );
 
     let router = build_router(state);
@@ -182,14 +189,8 @@ async fn test_list_models_with_kind_filter() {
 #[tokio::test]
 async fn test_get_model_not_found() {
     let registry = Arc::new(NodeTypeRegistry::new().await);
-    let scheduler = Arc::new(JobScheduler::new(
-        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
-        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
-        registry.clone(),
-        open_in_memory().await.unwrap(),
-        Arc::new(EventBroadcaster::new()),
-    ));
-    let state = AppState::new("test-version", registry, scheduler).await;
+    let (scheduler, artifact_store) = test_state(registry.clone()).await;
+    let state = AppState::new("test-version", registry, scheduler, artifact_store).await;
 
     let router = build_router(state);
 
@@ -223,14 +224,8 @@ async fn test_get_model_not_found() {
 async fn test_rescan_returns_202() {
     // Build AppState with empty model_dirs (the default from AppState::new).
     let registry = Arc::new(NodeTypeRegistry::new().await);
-    let scheduler = Arc::new(JobScheduler::new(
-        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
-        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
-        registry.clone(),
-        open_in_memory().await.unwrap(),
-        Arc::new(EventBroadcaster::new()),
-    ));
-    let state = AppState::new("test-version", registry, scheduler).await;
+    let (scheduler, artifact_store) = test_state(registry.clone()).await;
+    let state = AppState::new("test-version", registry, scheduler, artifact_store).await;
 
     let router = build_router(state);
 
@@ -284,13 +279,7 @@ async fn test_rescan_populates_registry() {
         max_depth: None,
     }];
     let node_registry = Arc::new(NodeTypeRegistry::new().await);
-    let scheduler = Arc::new(JobScheduler::new(
-        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
-        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
-        node_registry.clone(),
-        pool.clone(),
-        Arc::new(EventBroadcaster::new()),
-    ));
+    let (scheduler, artifact_store) = test_state(node_registry.clone()).await;
     let state = AppState::new_with_hardware_no_workers(
         "test-version",
         hardware,
@@ -299,6 +288,7 @@ async fn test_rescan_populates_registry() {
         model_dirs,
         node_registry,
         scheduler,
+        artifact_store.clone(),
     );
 
     let router = build_router(state);
@@ -390,13 +380,7 @@ async fn test_rescan_infer_kind_and_dtype() {
         },
     ];
     let node_registry = Arc::new(NodeTypeRegistry::new().await);
-    let scheduler = Arc::new(JobScheduler::new(
-        Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
-        Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
-        node_registry.clone(),
-        pool.clone(),
-        Arc::new(EventBroadcaster::new()),
-    ));
+    let (scheduler, artifact_store) = test_state(node_registry.clone()).await;
     let state = AppState::new_with_hardware_no_workers(
         "test-version",
         hardware,
@@ -405,6 +389,7 @@ async fn test_rescan_infer_kind_and_dtype() {
         model_dirs,
         node_registry,
         scheduler,
+        artifact_store.clone(),
     );
 
     let router = build_router(state);
