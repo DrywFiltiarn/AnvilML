@@ -1,0 +1,57 @@
+[
+  {
+    "id": "P902-A1",
+    "description": "anvilml-artifacts: new crate hosting ArtifactStore",
+    "phase": "902",
+    "project": "anvilml",
+    "prereqs": [
+      "P15-A3"
+    ],
+    "context": "Create crates/anvilml-artifacts (add to workspace members). Move crates/anvilml-ipc/src/artifact_store.rs to crates/anvilml-artifacts/src/store.rs verbatim incl. tests. lib.rs: pub mod store; pub use store::ArtifactStore;. Cargo.toml deps copied unchanged from anvilml-ipc's current Cargo.toml: anvilml-core,chrono,sha2=\"0.10\",sqlx,tokio,tracing,uuid. Rewrite store.rs module doc per TASKS_PHASE902.md (the cycle rationale it states is false). cargo test -p anvilml-artifacts exits 0.",
+    "tags": ["refactor"]
+  },
+  {
+    "id": "P902-A2",
+    "description": "anvilml-ipc: remove ArtifactStore and dead dependencies",
+    "phase": "902",
+    "project": "anvilml",
+    "prereqs": [
+      "P902-A1"
+    ],
+    "context": "Delete crates/anvilml-ipc/src/artifact_store.rs. In lib.rs remove 'pub mod artifact_store;' and its re-export. Do not touch ws/ or EventBroadcaster (separate, valid cycle rationale: anvilml-worker/anvilml-server; out of scope). In Cargo.toml remove chrono, sha2, sqlx, base64 -- confirmed unused elsewhere in this crate via grep. Verify lib.rs's doc claim 'does not contain process management or business logic' is true again. cargo check -p anvilml-ipc exits 0; cargo tree -p anvilml-ipc shows none of chrono/sha2/sqlx/base64.",
+    "tags": ["refactor"]
+  },
+  {
+    "id": "P902-A3",
+    "description": "anvilml-scheduler: repoint ArtifactStore import to anvilml-artifacts",
+    "phase": "902",
+    "project": "anvilml",
+    "prereqs": [
+      "P902-A2"
+    ],
+    "context": "Add anvilml-artifacts path dep to crates/anvilml-scheduler/Cargo.toml; keep anvilml-ipc dep (still needed for EventBroadcaster/WorkerEvent/WorkerMessage). In src/event_loop.rs and src/scheduler.rs, and tests/{scheduler_tests.rs,dispatch_tests.rs,image_ready_tests.rs,event_loop_tests.rs}, split 'use anvilml_ipc::{ArtifactStore,...}' into 'use anvilml_artifacts::ArtifactStore;' plus the remaining anvilml_ipc import. cargo test -p anvilml-scheduler --features mock-hardware exits 0, same test count as before.",
+    "tags": []
+  },
+  {
+    "id": "P902-A4",
+    "description": "anvilml-server + backend: repoint ArtifactStore import to anvilml-artifacts",
+    "phase": "902",
+    "project": "anvilml",
+    "prereqs": [
+      "P902-A2"
+    ],
+    "context": "Add anvilml-artifacts path dep to crates/anvilml-server/Cargo.toml and backend/Cargo.toml; keep anvilml-ipc dep in both (still needed for EventBroadcaster). In src/state.rs, backend/src/main.rs, and tests/{artifact_store_tests.rs,artifacts_tests.rs,system_tests.rs,jobs_tests.rs,nodes_tests.rs,state_tests.rs,workers_tests.rs,handler_tests.rs,models_tests.rs,health_tests.rs}, split 'use anvilml_ipc::{ArtifactStore,...}' into separate anvilml_artifacts::ArtifactStore + remaining anvilml_ipc imports. cargo test --workspace --features mock-hardware exits 0, same test count as before this phase.",
+    "tags": []
+  },
+  {
+    "id": "P902-A5",
+    "description": "code: remove false 'owns artifact store' claim from anvilml-server lib.rs",
+    "phase": "902",
+    "project": "anvilml",
+    "prereqs": [
+      "P902-A4"
+    ],
+    "context": "crates/anvilml-server/src/lib.rs crate-level doc comment currently states this crate owns 'the artifact store' (line 4-5: 'the WebSocket broadcaster, and the artifact store'). False after this phase -- anvilml-artifacts owns it. Remove that clause; keep the router/handlers/broadcaster ownership claims and the 'no business logic' hard constraint intact. docs/ARCHITECTURE.md and docs/ANVILML_DESIGN.md's equivalent tables were already corrected manually; do not re-edit them. cargo doc -p anvilml-server builds; grep -n 'artifact store' crates/anvilml-server/src/lib.rs returns no hits.",
+    "tags": []
+  }
+]
