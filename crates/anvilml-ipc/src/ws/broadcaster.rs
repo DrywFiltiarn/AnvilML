@@ -14,28 +14,46 @@
 use anvilml_core::types::WsEvent;
 use tokio::sync::broadcast;
 
-/// A broadcast channel wrapper for `WsEvent` messages.
+/// A broadcast channel wrapper for `WsEvent` and `WorkerEvent` messages.
 ///
-/// Holds a single `broadcast::Sender` backed by a ring buffer of capacity 1024.
-/// Multiple subscribers can call `subscribe()` to obtain independent receivers.
-/// When the buffer fills up, `send()` returns `Err(SendError)` and the event
-/// is dropped — no retry or queueing is performed.
+/// Holds two independent broadcast channels: one for `WsEvent` messages
+/// (sent to WebSocket clients) and one for `WorkerEvent` messages
+/// (internal IPC events from workers, consumed by the scheduler's
+/// event loop). This separation keeps external WebSocket traffic
+/// isolated from internal IPC event routing.
 #[derive(Debug)]
 pub struct EventBroadcaster {
-    /// The broadcast sender; cloned internally by `subscribe()`.
+    /// The WsEvent broadcast sender; cloned internally by `subscribe()`.
     tx: broadcast::Sender<WsEvent>,
+
+    /// The WorkerEvent broadcast sender for internal IPC events.
+    ///
+    /// The scheduler subscribes to this channel to receive Completed/Failed
+    /// events from workers, enabling it to update job status and release
+    /// VRAM reservations.
+    worker_event_tx: broadcast::Sender<crate::WorkerEvent>,
 }
 
 impl EventBroadcaster {
-    /// Create a new `EventBroadcaster` with a channel capacity of 1024.
+    /// Create a new `EventBroadcaster` with channel capacity of 1024.
     ///
-    /// The channel is created with `broadcast::channel(1024)`, which means
-    /// up to 1024 events can be buffered before `send()` starts returning
-    /// `Err(SendError)`. This capacity is sufficient for the periodic
+    /// Creates two independent broadcast channels:
+    /// 1. `WsEvent` channel for WebSocket client notifications (capacity 1024).
+    /// 2. `WorkerEvent` channel for internal IPC events from workers
+    ///    (capacity 1024). The scheduler subscribes to this channel.
+    ///
+    /// The channel capacity of 1024 is sufficient for the periodic
     /// system stats tick (one event every ~5 seconds) plus burst job events.
     pub fn new() -> Self {
         let (tx, _rx) = broadcast::channel(1024);
-        Self { tx }
+        // Worker event channel uses the same capacity — worker events
+        // (Completed/Failed) are infrequent and the event loop consumes
+        // them immediately in the same task, so backpressure is minimal.
+        let (worker_event_tx, _worker_event_rx) = broadcast::channel(1024);
+        Self {
+            tx,
+            worker_event_tx,
+        }
     }
 
     /// Send a `WsEvent` to all current subscribers.
@@ -79,6 +97,43 @@ impl EventBroadcaster {
     /// consume all available events.
     pub fn subscribe(&self) -> broadcast::Receiver<WsEvent> {
         self.tx.subscribe()
+    }
+
+    /// Subscribe to the worker event channel, returning a new `Receiver`.
+    ///
+    /// The scheduler uses this to receive `WorkerEvent` messages (Completed,
+    /// Failed, etc.) from workers. Events sent before this subscription point
+    /// are not delivered — the event loop subscribes immediately after the
+    /// scheduler is constructed, and no Completed/Failed events can occur
+    /// before the scheduler is ready.
+    ///
+    /// # Returns
+    ///
+    /// A `broadcast::Receiver<WorkerEvent>` for consuming worker events.
+    pub fn subscribe_worker_events(&self) -> broadcast::Receiver<crate::WorkerEvent> {
+        self.worker_event_tx.subscribe()
+    }
+
+    /// Send a `WorkerEvent` to all subscribers (scheduler event loop).
+    ///
+    /// This is called by the worker pool when a worker emits a Completed,
+    /// Failed, or other lifecycle event. The event is forwarded to the
+    /// scheduler's event loop for status updates and VRAM release.
+    ///
+    /// If the broadcast buffer is full (no subscribers or all lagging),
+    /// the event is dropped silently — the event loop will catch up on
+    /// the next iteration.
+    ///
+    /// # Arguments
+    ///
+    /// * `event` — The worker event to broadcast.
+    pub fn broadcast_worker_event(&self, event: crate::WorkerEvent) {
+        // If no one is subscribed (event loop not started yet), silently
+        // drop the event. This is acceptable because no Completed/Failed
+        // events can occur before the event loop is started.
+        if self.worker_event_tx.send(event).is_err() {
+            tracing::debug!("worker event broadcast: no subscribers");
+        }
     }
 }
 

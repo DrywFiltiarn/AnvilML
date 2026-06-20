@@ -2518,3 +2518,30 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Empty graph.
 **Expected output:** Function returns without error or exception.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_executor.py::test_run_graph_empty_graph -v` exits 0.
+
+## test_completed_event_updates_job_status (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** The event loop receives `WorkerEvent::Completed` from the broadcaster's worker event channel and processes it: updating the job status to `completed`, setting `completed_at`, releasing VRAM reservation, and broadcasting `WsEvent::JobCompleted`. The test verifies all four outcomes.
+**Tests:** Submits a job, manually sets it to `Running` in the database (simulating dispatch), starts the event loop, sends a `WorkerEvent::Completed{job_id, elapsed_ms: 1234}` through the broadcaster, then verifies: (1) DB status is `completed`, (2) `completed_at` is set, (3) VRAM reservation is released (0 MiB), (4) `WsEvent::JobCompleted` is broadcast on the WsEvent channel.
+**Inputs:** `WorkerEvent::Completed{job_id, elapsed_ms: 1234}`, in-memory DB with a Running job, VRAM reserved (4096 MiB on device 0).
+**Expected output:** DB status=`completed`, `completed_at` is set, reservation=0 MiB, `WsEvent::JobCompleted{job_id, elapsed_ms: 1234}` received.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- event_loop_tests::test_completed_event_updates_job_status` exits 0.
+
+## test_failed_event_updates_job_status (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** The event loop receives `WorkerEvent::Failed` from the broadcaster's worker event channel and processes it: updating the job status to `failed`, storing the error message, releasing VRAM reservation, and broadcasting `WsEvent::JobFailed`. The test verifies all four outcomes.
+**Tests:** Submits a job, manually sets it to `Running` in the database, starts the event loop, sends a `WorkerEvent::Failed{job_id, error: "test failure", traceback: Some(...)}` through the broadcaster, then verifies: (1) DB status is `failed`, (2) `error` column is `"test failure"`, (3) VRAM reservation is released, (4) `WsEvent::JobFailed` is broadcast.
+**Inputs:** `WorkerEvent::Failed{job_id, error: "test failure", traceback: Some("Traceback...")}`, in-memory DB with a Running job, VRAM reserved (4096 MiB on device 0).
+**Expected output:** DB status=`failed`, error=`"test failure"`, reservation=0 MiB, `WsEvent::JobFailed{job_id, error: "test failure"}` received.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- event_loop_tests::test_failed_event_updates_job_status` exits 0.
+
+## test_event_loop_ignores_unknown_event (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** The event loop gracefully ignores `WorkerEvent` variants it doesn't yet handle (Pong, Ready, Progress, etc.). It logs at DEBUG and continues processing future events without crashing.
+**Tests:** Submits a job, manually sets it to `Running` in the database, starts the event loop, sends a `WorkerEvent::Pong{seq: 42}` through the broadcaster, then verifies: (1) job status is still `running`, (2) VRAM reservation is unchanged (4096 MiB), (3) no `WsEvent` was broadcast.
+**Inputs:** `WorkerEvent::Pong{seq: 42}`, in-memory DB with a Running job, VRAM reserved (4096 MiB on device 0).
+**Expected output:** Job remains `running`, reservation=4096 MiB, no WsEvent broadcast.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- event_loop_tests::test_event_loop_ignores_unknown_event` exits 0.

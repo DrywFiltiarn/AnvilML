@@ -397,6 +397,24 @@ impl JobScheduler {
         })
     }
 
+    /// Start the event subscription loop background task.
+    ///
+    /// This method spawns a tokio task that receives `WorkerEvent` messages
+    /// from the event broadcaster and processes Completed/Failed events:
+    /// updating job status in the database, releasing VRAM reservations,
+    /// and broadcasting WebSocket events to clients.
+    ///
+    /// The caller must store the returned `JoinHandle` and await it on
+    /// shutdown to prevent the loop from running indefinitely.
+    ///
+    /// # Returns
+    ///
+    /// A `JoinHandle<()>` for the background event loop task. The caller
+    /// should store this and await it during shutdown.
+    pub fn start_event_loop(&self) -> tokio::task::JoinHandle<()> {
+        crate::event_loop::start_event_loop(self)
+    }
+
     /// Return a `MutexGuard` over the internal VRAM ledger.
     ///
     /// This is a test accessor — it exposes the internal ledger for
@@ -413,6 +431,33 @@ impl JobScheduler {
     #[doc(hidden)]
     pub async fn __queue(&self) -> tokio::sync::MutexGuard<'_, JobQueue> {
         self.queue.lock().await
+    }
+
+    /// Return a reference to the internal VRAM ledger.
+    ///
+    /// The event loop uses this to access the ledger for VRAM release
+    /// when processing Completed/Failed events. The reference is cloned
+    /// into the event loop task at spawn time.
+    #[doc(hidden)]
+    pub fn ledger(&self) -> &Arc<tokio::sync::Mutex<VramLedger>> {
+        &self.ledger
+    }
+
+    /// Return a reference to the internal event broadcaster.
+    ///
+    /// The event loop uses this to subscribe to worker events and
+    /// broadcast WsEvent notifications to WebSocket clients.
+    #[doc(hidden)]
+    pub fn broadcaster(&self) -> &Arc<EventBroadcaster> {
+        &self.broadcaster
+    }
+
+    /// Return a clone of the internal SQLite database pool.
+    ///
+    /// The event loop uses this to query and update job status.
+    #[doc(hidden)]
+    pub fn db(&self) -> SqlitePool {
+        self.db.clone()
     }
 
     /// Attempt to dispatch one or more jobs from the queue to idle workers.
@@ -520,11 +565,23 @@ impl JobScheduler {
                 .await;
 
             // Record the worker assignment for lifecycle tracking.
-            // Use the dispatched worker_id (not the job's old None value).
+            // This UPDATE sets started_at and worker_id unconditionally.
+            // The device_index column (added in migration 002) is set
+            // in a separate UPDATE below so that the worker_id update
+            // succeeds even on databases that haven't run the migration.
             let worker_id_for_db = selected_worker_id.clone();
             let _ = sqlx::query("UPDATE jobs SET started_at = ?, worker_id = ? WHERE id = ?")
                 .bind(dispatched_job.created_at.to_rfc3339())
-                .bind(worker_id_for_db)
+                .bind(worker_id_for_db.clone())
+                .bind(dispatched_job.id.to_string())
+                .execute(db)
+                .await;
+
+            // Set device_index if the column exists (migration 002+).
+            // On older databases this silently fails — the event loop
+            // falls back to parsing worker_id ("worker-N" → N).
+            let _ = sqlx::query("UPDATE jobs SET device_index = ? WHERE id = ?")
+                .bind(device_index as i64)
                 .bind(dispatched_job.id.to_string())
                 .execute(db)
                 .await;
@@ -550,7 +607,7 @@ impl JobScheduler {
             };
             // If send fails, log and continue — the job remains in the
             // queue (it was popped but the dispatch is incomplete).
-            // TODO: P14-A3 will add job failure handling and re-enqueue.
+            // TODO: P14-A4 will add job re-enqueue on send failure.
             if let Err(e) = workers.send_execute(&worker_id, &msg).await {
                 tracing::warn!(
                     job_id = %job.id,
@@ -674,7 +731,9 @@ impl JobScheduler {
         };
 
         // INSERT the job into the jobs table using positional parameters.
-        // The column order matches the migration schema exactly.
+        // The column order matches the migration schema. device_index is
+        // NULL at submission time — it is set by the dispatch loop when
+        // a worker is assigned to the job.
         sqlx::query(
             "INSERT INTO jobs \
              (id, status, graph, settings, created_at, started_at, \
