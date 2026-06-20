@@ -74,16 +74,17 @@
     "P13-A1",
     "P13-A2",
     "P13-A3",
-    "P13-B1"
+    "P13-B1",
+    "P14-A1"
   ],
-  "in_progress": "P14-A1",
+  "in_progress": "P14-A2",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-20T09:32:46+0200",
+  "last_updated": "2026-06-20T11:06:57+0200",
   "plan_approved": true,
-  "current_plan": "",
-  "plan_approval_message_id": "1517793963002564664",
+  "current_plan": "1. **Create `worker/executor.py`** with the `run_graph` function:\n   - Implement a topological sort using Kahn's algorithm on the graph JSON. The graph is expected as a dict with a `\"nodes\"` key containing a list of node objects. Each node object has `\"id\"`, `\"type\"`, and `\"inputs\"` keys. Input values that are lists (e.g. `[\"1\", \"latent\"]`) reference another node's output by (node_id, output_name). Build a dependency graph: for each node, collect all node IDs it depends on from its input references. Perform Kahn's algorithm to produce a sorted execution order. If a cycle is detected, raise `ValueError(\"graph contains a cycle\")`.\n   - For each node in topo order: instantiate the node class from `NODE_REGISTRY[node_type]` with a `NodeContext`; resolve input values by looking up the referenced node outputs; call `node.execute(**inputs)`; store outputs keyed by node id.\n   - The function signature: `def run_graph(graph: dict, settings: dict, ctx: NodeContext) -> None`.\n   - Add a Google-style docstring to the module and function.\n\n2. **Create `worker/nodes/image.py`** with the `SaveImage` node:\n   - Define `class SaveImage(BaseNode)` with metadata: `NODE_TYPE = \"SaveImage\"`, `CATEGORY = \"Output\"`, appropriate `DISPLAY_NAME` and `DESCRIPTION`.\n   - Input slots: one required `IMAGE` slot named `\"image\"`. No output slots (output is via IPC event, not slot).\n   - `execute(**inputs)` implementation (mock mode only):\n     - Read `image = inputs[\"image\"]` (will be `None` in mock mode since no upstream nodes exist yet).\n     - Generate a minimal 64\u00d764 black PNG using only stdlib: construct the PNG binary using `struct.pack` for the PNG signature, IHDR chunk (64\u00d764, 8-bit RGB), and IDAT chunk (zlib-compressed scanlines of zero bytes). Use `base64.b64encode` to encode the result.\n     - Emit `ImageReady` event via `ctx.emit({\"_type\": \"ImageReady\", \"job_id\": self.ctx.job_id, \"image_b64\": b64, \"width\": 64, \"height\": 64})`.\n     - Return empty dict (no output slots).\n   - Decorate with `@register` so auto-import in `__init__.py` picks it up.\n   - Add Google-style docstrings to the class and method.\n\n3. **Modify `worker/worker_main.py`** to handle `Execute` message:\n   - In the dispatch loop's `elif msg_type == \"Execute\":` branch:\n     - Extract `job_id`, `graph`, `settings`, `device_index` from the message dict.\n     - Record `start = time.monotonic()`.\n     - Build a `NodeContext` with `job_id`, `device` (e.g. `\"cpu\"` or `\"cuda:0\"` based on `device_index`), a simple cancel flag (e.g. a list `[False]`), `send_event` as the emit callable, and an empty dict for `pipeline_cache`.\n     - Call `run_graph(graph, settings, ctx)`.\n     - On success: compute `elapsed_ms = int((time.monotonic() - start) * 1000)`; send `Completed { job_id, elapsed_ms }` via `send_event`.\n     - On exception: compute `elapsed_ms`; send `Failed { job_id, error: str(e) }` via `send_event`; log the error to stderr.\n   - Add `import time` at the top of the file (currently absent).\n\n4. **Create `worker/tests/test_executor.py`** with \u2265 4 tests:\n   - **test_run_graph_topo_order**: Define a mock node class with inputs/outputs, build a graph with two nodes where node 2 depends on node 1, call `run_graph`, assert outputs are stored in correct order.\n   - **test_saveimage_emits_image_ready**: Import SaveImage, build a graph with a single SaveImage node, call `run_graph` with a mock context that captures emit calls, assert an `ImageReady` event was emitted with correct fields (job_id, image_b64 as 64\u00d764 PNG, width=64, height=64).\n   - **test_completed_sent_after_run_graph**: Integration-style test: build a mock graph, call `run_graph`, assert the function returns without error (simulating Completed path).\n   - **test_failed_sent_on_node_error**: Define a node that raises in `execute()`, build a graph with that node, call `run_graph`, assert a `ValueError` is raised (simulating Failed path).",
+  "plan_approval_message_id": "1517807315921801328",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1517793961530491020",
+  "plan_report_message_id": "1517807313434574949",
   "impl_report_message_id": null
 }

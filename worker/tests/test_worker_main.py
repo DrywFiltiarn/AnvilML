@@ -97,7 +97,11 @@ def test_mock_startup_sends_ready():
             assert ready["bf16"] is True
             assert ready["fp8"] is True
             assert ready["flash_attention"] is True
-            assert ready["node_types"] == []
+            # SaveImage node is now registered, so node_types is non-empty.
+            # Verify it contains exactly one entry (SaveImage).
+            assert isinstance(ready["node_types"], list)
+            assert len(ready["node_types"]) == 1
+            assert ready["node_types"][0]["type_name"] == "SaveImage"
         finally:
             proc.terminate()
             proc.wait(timeout=5)

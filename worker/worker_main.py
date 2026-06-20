@@ -32,9 +32,12 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 from worker.ipc import connect, recv_message, send_event
 from worker.nodes import NODE_REGISTRY
+from worker.nodes.base import NodeContext
+from worker.executor import run_graph
 
 
 def _import_nodes() -> None:
@@ -189,6 +192,68 @@ def main() -> None:
             # This heartbeat mechanism lets the supervisor verify
             # the worker process is alive and responsive.
             send_event({"_type": "Pong", "seq": msg["seq"]})
+        elif msg_type == "Execute":
+            # Execute a job graph. Extract job parameters from the
+            # message, build a NodeContext, call run_graph(), and
+            # report Completed or Failed back to the supervisor.
+            job_id = msg["job_id"]
+            graph = msg["graph"]
+            settings = msg.get("settings", {})
+            device_index = msg.get("device_index", 0)
+
+            # Build the device string from the device index.
+            # Format as "cuda:N" for GPU devices, "cpu" otherwise.
+            # This matches the device string convention used by
+            # the Rust supervisor's WorkerEnv.
+            if device_type == "cpu":
+                device = "cpu"
+            else:
+                device = f"{device_type}:{device_index}"
+
+            # Record start time for elapsed_ms calculation.
+            start = time.monotonic()
+
+            # Build a NodeContext for this job execution.
+            # The cancel_flag is a list (mutable container) so nodes
+            # can check and set it during long-running operations.
+            # The pipeline_cache is an empty dict — nodes can store
+            # cross-node data here within the same job.
+            cancel_flag: list[bool] = [False]
+            ctx = NodeContext(
+                job_id=job_id,
+                device=device,
+                cancel_flag=cancel_flag,
+                emit=send_event,
+                pipeline_cache={},
+            )
+
+            try:
+                # Execute the graph. run_graph performs topological sort,
+                # instantiates nodes, resolves inputs, and calls execute().
+                # Any exception from a node propagates here.
+                run_graph(graph, settings, ctx)
+
+                # Compute elapsed time and report success.
+                elapsed_ms = int((time.monotonic() - start) * 1000)
+                send_event({
+                    "_type": "Completed",
+                    "job_id": job_id,
+                    "elapsed_ms": elapsed_ms,
+                })
+            except Exception as e:
+                # Node execution failed — report the error and log it.
+                # The error message is passed to the supervisor so it
+                # can store it in the job's error field.
+                elapsed_ms = int((time.monotonic() - start) * 1000)
+                send_event({
+                    "_type": "Failed",
+                    "job_id": job_id,
+                    "error": str(e),
+                })
+                print(
+                    f"worker_main: job {job_id} failed: {e}",
+                    file=sys.stderr,
+                )
         elif msg_type == "Shutdown":
             # Graceful exit requested by the supervisor.
             sys.exit(0)

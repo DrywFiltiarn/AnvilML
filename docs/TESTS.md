@@ -2446,3 +2446,75 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** GET `/v1/jobs/{random_uuid}`, `AppState::new("test-version", empty_registry, scheduler)`.
 **Expected output:** HTTP 404 with JSON body `{"error":"job_not_found",...}`.
 **Acceptance command:** `cargo test -p anvilml-server --test jobs_tests -- test_get_job_returns_404_for_unknown_id` exits 0.
+
+## test_run_graph_topo_order (worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** `run_graph` executes nodes in topological order, resolving inputs from prior node outputs. Uses a `registry_clean` fixture to clear NODE_REGISTRY and two test node classes (NodeA, NodeB) where B depends on A's output.
+**Tests:** A graph with two nodes where node 2 depends on node 1's output is executed. The execution order and input resolution are verified.
+**Inputs:** Graph with NodeA → NodeB dependency, NodeB's inputs reference `["A", "value"]`.
+**Expected output:** Execution order is `["A", "B"]`, node B receives node A's computed output.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_executor.py::test_run_graph_topo_order -v` exits 0.
+
+## test_saveimage_emits_image_ready (worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** SaveImage node generates a 64×64 black PNG using only stdlib and emits an ImageReady event. The test verifies the PNG binary structure (signature, IHDR dimensions) and event fields.
+**Tests:** A graph with a single SaveImage node is executed. The emitted event is captured and inspected for correct fields and valid PNG structure.
+**Inputs:** Graph with single SaveImage node, `image` input set to `None`.
+**Expected output:** ImageReady event with `job_id="test-job-1"`, `width=64`, `height=64`, `image_b64` decodes to a valid 64×64 PNG.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_executor.py::test_saveimage_emits_image_ready -v` exits 0.
+
+## test_completed_sent_after_run_graph (worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** `run_graph` returns normally on successful execution, simulating the Completed path in worker_main. Uses a no-op test node with no inputs or outputs.
+**Tests:** A graph with a single no-op node is executed. The function should return without raising.
+**Inputs:** Graph with single NoOp node, empty inputs and outputs.
+**Expected output:** No exception raised; function returns None.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_executor.py::test_completed_sent_after_run_graph -v` exits 0.
+
+## test_failed_sent_on_node_error (worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** `run_graph` raises when a node's `execute()` fails, simulating the Failed path in worker_main. Uses a test node that always raises ValueError.
+**Tests:** A graph with one failing node is executed. The exception should propagate from run_graph.
+**Inputs:** Graph with single Failing node that raises `ValueError("simulated node failure")`.
+**Expected output:** ValueError raised with message "simulated node failure".
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_executor.py::test_failed_sent_on_node_error -v` exits 0.
+
+## test_topo_sort_cycle_detection (worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** `_topo_sort` detects cycles using Kahn's algorithm. A cyclic graph (A→B→A) cannot be topologically sorted.
+**Tests:** A graph with a cycle is passed to `_topo_sort`.
+**Inputs:** Two nodes with circular input references: `A.inputs.x = ["B", "y"]`, `B.inputs.y = ["A", "x"]`.
+**Expected output:** ValueError with message "graph contains a cycle".
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_executor.py::test_topo_sort_cycle_detection -v` exits 0.
+
+## test_topo_sort_linear_chain (worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** `_topo_sort` produces correct order for a linear dependency chain (A→B→C) even when nodes are listed in reverse order in the graph.
+**Tests:** A graph with three nodes in reverse order (C, A, B) with linear dependencies is sorted.
+**Inputs:** Nodes listed as [C, A, B] with C→B, B→A dependencies.
+**Expected output:** Sorted order is `["A", "B", "C"]`.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_executor.py::test_topo_sort_linear_chain -v` exits 0.
+
+## test_topo_sort_diamond (worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** `_topo_sort` handles diamond dependencies correctly: A→B, B→{C,D}. A must come first, B second, C and D after B.
+**Tests:** A diamond graph with nodes listed in arbitrary order is topologically sorted.
+**Inputs:** Nodes [D, C, A, B] with dependencies D→B, C→B, B→A.
+**Expected output:** A at index 0, B at index 1, {C, D} at indices 2-3.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_executor.py::test_topo_sort_diamond -v` exits 0.
+
+## test_run_graph_empty_graph (worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** `run_graph` handles an empty node list gracefully — no nodes to execute means immediate return.
+**Tests:** A graph with `"nodes": []` is executed.
+**Inputs:** Empty graph.
+**Expected output:** Function returns without error or exception.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_executor.py::test_run_graph_empty_graph -v` exits 0.
