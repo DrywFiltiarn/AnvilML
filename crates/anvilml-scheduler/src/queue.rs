@@ -158,6 +158,17 @@ impl JobQueue {
         self.items.iter().collect()
     }
 
+    /// Peek at the job at the front of the FIFO queue without removing it.
+    ///
+    /// Returns `None` if the queue is empty.
+    ///
+    /// This is used by the dispatch loop to check the next job before
+    /// deciding whether to dispatch it — the loop needs to verify worker
+    /// availability and VRAM capacity before committing to a pop.
+    pub fn peek_front(&self) -> Option<&Job> {
+        self.items.front()
+    }
+
     /// Return the number of jobs currently in the queue.
     ///
     /// This is O(1) — it reads the length of the underlying `VecDeque`.

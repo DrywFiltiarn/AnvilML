@@ -169,6 +169,24 @@ impl VramLedger {
 
         self.reservations.insert(index, current - mib);
     }
+
+    /// Return a reference to the per-device reservation totals.
+    ///
+    /// The returned map allows the dispatch loop to compute free VRAM
+    /// (total - reserved) for worker ranking without exposing the
+    /// internal `HashMap` as mutable.
+    pub fn reservations(&self) -> &HashMap<u32, u32> {
+        &self.reservations
+    }
+
+    /// Return the total VRAM for a registered device, or `None` if
+    /// the device is not registered.
+    ///
+    /// The dispatch loop uses this to compute free VRAM for ranking
+    /// idle workers: `free = total_vram - reservations`.
+    pub fn total_vram(&self, index: u32) -> Option<u32> {
+        self.totals.get(&index).copied()
+    }
 }
 
 impl Default for VramLedger {

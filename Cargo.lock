@@ -176,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-scheduler"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
@@ -221,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-worker"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",

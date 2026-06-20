@@ -29,7 +29,7 @@ use std::time::Duration;
 use anvilml_core::{
     AnvilError, GpuDevice, NodeTypeRegistry, ServerConfig, WorkerInfo, WorkerStatus,
 };
-use anvilml_ipc::{EventBroadcaster, RouterTransport};
+use anvilml_ipc::{EventBroadcaster, RouterTransport, WorkerMessage};
 use tracing;
 
 use crate::demux::{self, RouteTable};
@@ -388,6 +388,74 @@ impl WorkerPool {
         }
 
         infos
+    }
+
+    /// Return a list of idle workers as `(worker_id, device_index)` tuples.
+    ///
+    /// Iterates the worker handles, reads each worker's status, and collects
+    /// only those with status `Idle`. The `device_index` is the position in
+    /// the workers vec, matching the logic in `get_worker_infos()`.
+    ///
+    /// This is a snapshot — the pool's monitor task may change statuses
+    /// between the read and the dispatch action, so the caller must not
+    /// assume the returned list remains valid beyond the immediate dispatch.
+    ///
+    /// # Returns
+    ///
+    /// A vector of `(worker_id, device_index)` pairs for workers currently
+    /// in the `Idle` state. The vector may be empty if all workers are busy,
+    /// dead, or initializing.
+    pub async fn get_idle_workers(&self) -> Vec<(String, u32)> {
+        let workers = self.workers.lock().await;
+        let mut idle = Vec::with_capacity(workers.len());
+        for (i, handle) in workers.iter().enumerate() {
+            // Read the current status — only Idle workers are available
+            // for new job dispatch. Other states (Busy, Dead, etc.) are
+            // excluded because they cannot accept new work.
+            if *handle.status.read().await == WorkerStatus::Idle {
+                idle.push((handle.worker_id.clone(), i as u32));
+            }
+        }
+        idle
+    }
+
+    /// Send an execute message to a specific worker.
+    ///
+    /// Encodes the `WorkerMessage::Execute` payload via msgpack and routes
+    /// it through the shared `RouterTransport` to the worker identified
+    /// by `worker_id`. This is the dispatch loop's sole mechanism for
+    /// delivering jobs to workers — the transport is encapsulated within
+    /// the worker crate and never exposed publicly.
+    ///
+    /// # Arguments
+    ///
+    /// * `worker_id` — The stable worker identity (e.g. `"worker-0"`).
+    /// * `msg` — The `WorkerMessage::Execute` variant to send.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AnvilError::Transport` if the message could not be sent
+    /// through the transport (e.g., the worker is disconnected).
+    pub async fn send_execute(
+        &self,
+        worker_id: &str,
+        msg: &WorkerMessage,
+    ) -> Result<(), AnvilError> {
+        // Delegate to the internal transport. The transport is wrapped in
+        // Arc<RouterTransport> which is shared across the pool; send() is
+        // already protected by its own internal mutex (send_half).
+        self.transport
+            .send(worker_id.as_bytes(), msg)
+            .await
+            .map_err(|e| AnvilError::Ipc(e.to_string()))?;
+
+        tracing::debug!(
+            worker_id = %worker_id,
+            msg_type = %format!("{:?}", msg),
+            "message sent to worker"
+        );
+
+        Ok(())
     }
 
     /// Return a reference to the shared event broadcaster, so callers like

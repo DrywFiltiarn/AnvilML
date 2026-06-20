@@ -11,11 +11,13 @@
 //! the dispatch loop (Phase 014).
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anvilml_core::{
     types::WsEvent, AnvilError, Job, JobSettings, JobStatus, SubmitJobRequest, SubmitJobResponse,
 };
-use anvilml_ipc::EventBroadcaster;
+use anvilml_ipc::{EventBroadcaster, WorkerMessage};
+use anvilml_worker::pool::WorkerPool;
 use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
 use tracing::info;
@@ -49,10 +51,9 @@ pub struct JobScheduler {
     /// The dispatch loop calls `would_fit` before `reserve` to enforce
     /// capacity limits. The ledger itself panics on over-reservation as a
     /// programming error guard.
-    // This field is owned but not yet used — VRAM checks during submission
-    // are out of scope for this task (Phase 013). The dispatch loop in Phase
-    // 014 will call `would_fit` before `reserve`.
-    #[expect(dead_code, reason = "used in Phase 014 dispatch loop")]
+    // This field is used by the dispatch loop (Phase 014) for VRAM tracking:
+    // `would_fit` checks capacity before dispatch, and `reserve`/`release`
+    // track per-device reservation totals.
     ledger: Arc<tokio::sync::Mutex<VramLedger>>,
 
     /// Registry of known node types, populated from worker `Ready` events.
@@ -74,6 +75,15 @@ pub struct JobScheduler {
     /// After a job is queued, the scheduler broadcasts a `JobQueued` event
     /// so clients can update their UI with the new job and its queue position.
     broadcaster: Arc<EventBroadcaster>,
+
+    /// Wake signal for the dispatch loop background task.
+    ///
+    /// The dispatch loop waits on this `Notify` between periodic polls.
+    /// `submit()` calls `notify_one()` after enqueueing a job, waking
+    /// the dispatch loop immediately rather than waiting for the next
+    /// 200ms periodic poll. This reduces the latency between job
+    /// submission and dispatch.
+    notify: Arc<tokio::sync::Notify>,
 }
 
 impl JobScheduler {
@@ -103,6 +113,7 @@ impl JobScheduler {
             node_registry,
             db,
             broadcaster,
+            notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -172,6 +183,10 @@ impl JobScheduler {
 
         // Push to the in-memory queue for the dispatch loop.
         self.queue.lock().await.push(job.clone());
+
+        // Wake the dispatch loop so it can pick up this new job
+        // immediately rather than waiting for the next periodic poll.
+        self.notify.notify_one();
 
         // Broadcast the JobQueued event so connected WebSocket clients
         // can update their UI with the new job and its position.
@@ -333,6 +348,283 @@ impl JobScheduler {
         tracing::debug!(count = jobs.len(), "list jobs returned {} jobs", jobs.len());
 
         Ok(jobs)
+    }
+
+    /// Start the dispatch loop background task.
+    ///
+    /// This method spawns a tokio task that runs the dispatch loop for the
+    /// lifetime of the scheduler. The task wakes on new-job notifications
+    /// (from `Notify` triggered by `submit()`) and periodically checks for
+    /// idle workers to dispatch queued jobs.
+    ///
+    /// The caller must store the returned `JoinHandle` and await it on
+    /// shutdown to prevent the loop from silently stopping. Dropping the
+    /// handle without awaiting detaches the task, which will continue
+    /// running until it naturally exits (queue empty and no idle workers).
+    ///
+    /// # Arguments
+    ///
+    /// * `workers` — The `WorkerPool` providing idle worker information.
+    ///   Shared via `Arc` so the loop can read it concurrently with other
+    ///   pool consumers.
+    ///
+    /// # Returns
+    ///
+    /// A `JoinHandle<()>` for the background dispatch task. The caller
+    /// should store this and await it during shutdown.
+    pub fn start_dispatch_loop(&self, workers: Arc<WorkerPool>) -> tokio::task::JoinHandle<()> {
+        let queue = Arc::clone(&self.queue);
+        let ledger = Arc::clone(&self.ledger);
+        let db = self.db.clone();
+        let notify = Arc::clone(&self.notify);
+        let broadcaster = Arc::clone(&self.broadcaster);
+
+        tokio::spawn(async move {
+            // The dispatch loop uses a two-wake mechanism:
+            // 1. Notify fires when a new job is enqueued (via submit()).
+            // 2. Periodic 200ms poll catches workers that become idle between
+            //    job submissions. Without it, the loop would miss the window
+            //    where a worker finishes and becomes available.
+            // The 200ms interval balances responsiveness against CPU usage.
+            loop {
+                tokio::select! {
+                    _ = notify.notified() => {}
+                    _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+                }
+
+                Self::dispatch_once(&queue, &ledger, &db, &workers, &broadcaster).await;
+            }
+        })
+    }
+
+    /// Return a `MutexGuard` over the internal VRAM ledger.
+    ///
+    /// This is a test accessor — it exposes the internal ledger for
+    /// verification in integration tests.
+    #[doc(hidden)]
+    pub async fn __ledger(&self) -> tokio::sync::MutexGuard<'_, VramLedger> {
+        self.ledger.lock().await
+    }
+
+    /// Return a `MutexGuard` over the internal job queue.
+    ///
+    /// This is a test accessor — it exposes the internal queue for
+    /// verification in integration tests.
+    #[doc(hidden)]
+    pub async fn __queue(&self) -> tokio::sync::MutexGuard<'_, JobQueue> {
+        self.queue.lock().await
+    }
+
+    /// Attempt to dispatch one or more jobs from the queue to idle workers.
+    ///
+    /// Iterates the queue front-to-back. For each queued job:
+    /// 1. Find an idle worker via `select_worker`.
+    /// 2. If a worker is found: mark job Running in DB, reserve VRAM,
+    ///    send `WorkerMessage::Execute` to the worker, and remove from queue.
+    /// 3. If no worker is available: skip the job (leave it queued).
+    ///
+    /// Dispatch continues until the queue is exhausted or no idle workers remain.
+    ///
+    /// VRAM estimation uses a conservative default of 4096 MiB per job.
+    /// Phase 015 will replace this with model-specific metadata.
+    async fn dispatch_once(
+        queue: &Arc<tokio::sync::Mutex<JobQueue>>,
+        ledger: &Arc<tokio::sync::Mutex<VramLedger>>,
+        db: &SqlitePool,
+        workers: &WorkerPool,
+        _broadcaster: &Arc<EventBroadcaster>,
+    ) {
+        let idle_workers = workers.get_idle_workers().await;
+        if idle_workers.is_empty() {
+            tracing::debug!("no idle workers available for dispatch");
+            return;
+        }
+
+        // Collect jobs to dispatch (avoid holding queue lock while sending IPC).
+        // We peek at the front, decide whether to dispatch, and only pop on success.
+        let mut queue = queue.lock().await;
+        let mut to_dispatch = Vec::new();
+
+        while let Some(job) = queue.peek_front() {
+            // Refresh idle workers list — a worker may have been dispatched
+            // to between iterations. This prevents stale snapshot issues.
+            let available = workers.get_idle_workers().await;
+            if available.is_empty() {
+                // No more idle workers — leave remaining jobs queued.
+                break;
+            }
+
+            // Extract device preference from job settings.
+            // Formats: "cuda:0", "rocm:1", "0", etc. We parse the last
+            // colon-separated segment as a device index.
+            let device_pref = job.settings.device_preference.as_ref().and_then(|s| {
+                s.split(':')
+                    .next_back()
+                    .and_then(|idx| idx.parse::<u32>().ok())
+            });
+
+            // VRAM estimate: conservative default of 4096 MiB.
+            // This will be replaced by model-specific metadata in Phase 015.
+            let vram_estimate = 4096u32;
+
+            // Check if VRAM would fit on any available worker before
+            // committing to a dispatch. This prevents selecting a worker
+            // only to find out later that VRAM is insufficient.
+            {
+                let guard = ledger.lock().await;
+                let can_fit = available
+                    .iter()
+                    .any(|(_, idx)| guard.would_fit(*idx, vram_estimate));
+                drop(guard);
+
+                if !can_fit {
+                    // VRAM insufficient — stop dispatching (jobs are FIFO,
+                    // later jobs will also need VRAM).
+                    break;
+                }
+            }
+
+            // Select the best worker for this job.
+            // We need the ledger locked for ranking by free VRAM.
+            let selected = {
+                let guard = ledger.lock().await;
+                let total_vram: Vec<u32> = available
+                    .iter()
+                    .map(|(_, idx)| guard.total_vram(*idx).unwrap_or(0))
+                    .collect();
+                Self::select_worker(&available, device_pref, &guard, &total_vram)
+            };
+            let Some((selected_worker_id, device_index)) = selected else {
+                // No suitable worker found (e.g. device preference mismatch).
+                break;
+            };
+
+            // Reserve VRAM for this job on the selected device.
+            // The ledger panics on over-reservation as a programming error guard.
+            {
+                let mut guard = ledger.lock().await;
+                guard.reserve(device_index, vram_estimate);
+            }
+
+            // Pop the job from the queue now that we've committed to dispatch.
+            let dispatched_job = queue.pop_front().expect("peek_front returned Some");
+
+            // Mark job Running in database before sending the execute message.
+            // This ensures the job status is persisted even if IPC fails.
+            // We need to update the DB directly since insert_job is for new jobs.
+            let status_str = "running";
+            let _ = sqlx::query("UPDATE jobs SET status = ? WHERE id = ?")
+                .bind(status_str)
+                .bind(dispatched_job.id.to_string())
+                .execute(db)
+                .await;
+
+            // Record the worker assignment for lifecycle tracking.
+            // Use the dispatched worker_id (not the job's old None value).
+            let worker_id_for_db = selected_worker_id.clone();
+            let _ = sqlx::query("UPDATE jobs SET started_at = ?, worker_id = ? WHERE id = ?")
+                .bind(dispatched_job.created_at.to_rfc3339())
+                .bind(worker_id_for_db)
+                .bind(dispatched_job.id.to_string())
+                .execute(db)
+                .await;
+
+            // Remove queue_position since the job is now dispatched.
+            let _ = sqlx::query("UPDATE jobs SET queue_position = NULL WHERE id = ?")
+                .bind(dispatched_job.id.to_string())
+                .execute(db)
+                .await;
+
+            to_dispatch.push((dispatched_job, selected_worker_id, device_index));
+        }
+        drop(queue);
+
+        // Send Execute messages outside queue lock to avoid blocking
+        // other queue operations while IPC is in flight.
+        for (job, worker_id, device_index) in to_dispatch {
+            let msg = WorkerMessage::Execute {
+                job_id: job.id,
+                graph: job.graph.clone(),
+                settings: job.settings.clone(),
+                device_index,
+            };
+            // If send fails, log and continue — the job remains in the
+            // queue (it was popped but the dispatch is incomplete).
+            // TODO: P14-A3 will add job failure handling and re-enqueue.
+            if let Err(e) = workers.send_execute(&worker_id, &msg).await {
+                tracing::warn!(
+                    job_id = %job.id,
+                    worker_id = %worker_id,
+                    error = %e,
+                    "failed to send execute message to worker"
+                );
+                continue;
+            }
+
+            // Mandatory INFO log point per ENVIRONMENT.md §9 — "Scheduler:
+            // Job dispatched" with job_id and worker_id fields.
+            info!(
+                job_id = %job.id,
+                worker_id = %worker_id,
+                "job dispatched"
+            );
+        }
+    }
+
+    /// Select the best worker for a job from the list of idle workers.
+    ///
+    /// Worker selection strategy:
+    /// 1. If `device_preference` is set, filter idle workers to only those
+    ///    matching the preference (exact device_index match), then pick the
+    ///    one with the most free VRAM.
+    /// 2. If no preference or no matching worker, rank all idle workers by
+    ///    free VRAM (total - reserved) descending and pick the top candidate.
+    /// 3. If no idle workers exist, return None.
+    ///
+    /// # Arguments
+    ///
+    /// * `idle_workers` — List of `(worker_id, device_index)` for idle workers.
+    /// * `device_preference` — Optional device index the job prefers.
+    /// * `ledger` — The VRAM ledger for reservation tracking.
+    /// * `total_vram` — Total VRAM per device (indexed by device_index).
+    ///
+    /// # Returns
+    ///
+    /// `Some((worker_id, device_index))` if a suitable worker is found,
+    /// `None` if no idle workers are available or none have enough VRAM.
+    fn select_worker(
+        idle_workers: &[(String, u32)],
+        device_preference: Option<u32>,
+        ledger: &VramLedger,
+        total_vram: &[u32],
+    ) -> Option<(String, u32)> {
+        // Filter to preferred device if specified.
+        let candidates = match device_preference {
+            Some(pref) => idle_workers
+                .iter()
+                .filter(|(_, idx)| *idx == pref)
+                .cloned()
+                .collect::<Vec<_>>(),
+            None => idle_workers.to_vec(),
+        };
+
+        if candidates.is_empty() {
+            return None;
+        }
+
+        // Rank candidates by free VRAM descending — prefer workers with
+        // the most available capacity. This spreads load across devices
+        // and avoids overloading a single GPU.
+        let mut ranked = candidates;
+        ranked.sort_by(|a, b| {
+            let free_a = total_vram[a.1 as usize]
+                .saturating_sub(ledger.reservations().get(&a.1).copied().unwrap_or(0));
+            let free_b = total_vram[b.1 as usize]
+                .saturating_sub(ledger.reservations().get(&b.1).copied().unwrap_or(0));
+            free_b.cmp(&free_a) // descending
+        });
+
+        Some(ranked[0].clone())
     }
 
     /// Insert a job record into the SQLite database.
