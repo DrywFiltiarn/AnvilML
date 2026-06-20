@@ -1,0 +1,66 @@
+{
+  "settings": {},
+  "graph": {
+    "nodes": [
+      {
+        "id": "model",
+        "type": "LoadModel",
+        "inputs": { "model_id": "<sha256-of-diffusion-model-safetensors>" }
+      },
+      {
+        "id": "vae",
+        "type": "LoadVae",
+        "inputs": { "model_id": "<sha256-of-vae-safetensors>" }
+      },
+      {
+        "id": "encoder",
+        "type": "LoadClip",
+        "inputs": {
+          "model_id": "<sha256-of-text-encoder-safetensors>",
+          "clip_type": "qwen3"
+        }
+      },
+      {
+        "id": "latent",
+        "type": "EmptyLatent",
+        "inputs": { "width": 1024, "height": 1024 }
+      },
+      {
+        "id": "cond",
+        "type": "ClipTextEncode",
+        "inputs": {
+          "clip": { "node_id": "encoder", "output_slot": "clip" },
+          "text": "a photograph of a red fox in a snowy forest"
+        }
+      },
+      {
+        "id": "sampled",
+        "type": "Sampler",
+        "inputs": {
+          "model": { "node_id": "model", "output_slot": "model" },
+          "conditioning": { "node_id": "cond", "output_slot": "conditioning" },
+          "latent": { "node_id": "latent", "output_slot": "latent" },
+          "steps": 20,
+          "cfg": 3.5,
+          "seed": -1
+        }
+      },
+      {
+        "id": "decoded",
+        "type": "VaeDecode",
+        "inputs": {
+          "vae": { "node_id": "vae", "output_slot": "vae" },
+          "latent": { "node_id": "sampled", "output_slot": "latent" }
+        }
+      },
+      {
+        "id": "saved",
+        "type": "SaveImage",
+        "inputs": {
+          "image": { "node_id": "decoded", "output_slot": "image" },
+          "seed": { "node_id": "sampled", "output_slot": "seed" }
+        }
+      }
+    ]
+  }
+}
