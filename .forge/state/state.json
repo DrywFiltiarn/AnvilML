@@ -81,16 +81,17 @@
     "P15-A1",
     "P15-A2",
     "P15-A3",
-    "P902-A1"
+    "P902-A1",
+    "P902-A2"
   ],
-  "in_progress": "P902-A2",
+  "in_progress": "P902-A3",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-20T18:18:59+0200",
+  "last_updated": "2026-06-20T19:02:38+0200",
   "plan_approved": true,
-  "current_plan": "1. **Delete `crates/anvilml-ipc/src/artifact_store.rs`.** This file (296 lines) is the sole consumer of `chrono`, `sha2`, and `sqlx` within this crate. The `anvilml-artifacts` crate created in P902-A1 now holds the relocated `ArtifactStore` implementation.\n\n2. **Edit `crates/anvilml-ipc/src/lib.rs`.** Remove two lines:\n   - `pub mod artifact_store;` (line 10) \u2014 removes the module declaration.\n   - `pub use artifact_store::ArtifactStore;` (line 16) \u2014 removes the re-export.\n   The remaining five pub items (`error`, `messages`, `transport`, `ws`, and their re-exports) are unchanged. The lib.rs doc comment on line 5 (\"does not contain process management or business logic\") is verified accurate: `error.rs` defines error types, `messages.rs` defines enums and serialization functions, `transport.rs` wraps a ZeroMQ socket, and `ws/broadcaster.rs` wraps a broadcast channel \u2014 none perform I/O or business logic.\n\n3. **Edit `crates/anvilml-ipc/Cargo.toml`.** Remove four dependency lines:\n   - `base64 = \"0.22\"` (line 8)\n   - `chrono = { workspace = true }` (line 10)\n   - `sha2 = \"0.10\"` (line 14)\n   - `sqlx = { workspace = true }` (line 15)\n   Then bump the version: change `version = \"0.1.8\"` to `version = \"0.1.9\"` (per FORGE_AGENT_RULES \u00a714 / ENVIRONMENT.md \u00a712).\n\n4. **Verify the crate compiles.** Run `cargo check -p anvilml-ipc --features mock-hardware` to confirm no residual references to removed items.\n\n5. **Verify the dependency tree is clean.** Run `cargo tree -p anvilml-ipc --features mock-hardware` and confirm `chrono`, `sha2`, `sqlx`, and `base64` do not appear as direct or transitive dependencies of `anvilml-ipc`.",
-  "plan_approval_message_id": "1517926124787859567",
+  "current_plan": "**Assessment:** Inspection confirms the task's required changes are already present in the codebase. All 6 files already have the correct import split, and `anvilml-scheduler/Cargo.toml` already declares the `anvilml-artifacts` dependency.\n\nThe following steps verify the current state is correct and produce the acceptance evidence:\n\n1. **Verify Cargo.toml** \u2014 confirm `anvilml-artifacts` path dependency is present (already confirmed at line 7). No change needed.\n2. **Verify source imports** \u2014 confirm `event_loop.rs` and `scheduler.rs` import `ArtifactStore` from `anvilml_artifacts` (already confirmed at lines 21 and 16 respectively). No change needed.\n3. **Verify test imports** \u2014 confirm all 4 test files import `ArtifactStore` from `anvilml_artifacts` (already confirmed at line 15/16 in each file). No change needed.\n4. **Verify no stale references** \u2014 grep confirms zero `anvilml_ipc::ArtifactStore` references in the scheduler crate. No cleanup needed.\n5. **Run tests** \u2014 execute `cargo test -p anvilml-scheduler --features mock-hardware` to confirm the full test suite passes with the current import structure. This is the acceptance gate.\n\nNo source code changes, no new dependencies, no API modifications. The task is a verification and test-run of already-correct code.",
+  "plan_approval_message_id": "1517936794715553814",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1517926122346512438",
+  "plan_report_message_id": "1517936793100615782",
   "impl_report_message_id": null
 }
