@@ -2829,3 +2829,27 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Tests:** Asserts each of the six required metadata attributes has the correct value and type: `NODE_TYPE`, `CATEGORY`, `DISPLAY_NAME`, `DESCRIPTION`, `INPUT_SLOTS`, `OUTPUT_SLOTS`.
 **Inputs:** None.
 **Expected output:** `NODE_TYPE="LoadModel"`, `CATEGORY="Loaders"`, `DISPLAY_NAME="Load Model"`, `DESCRIPTION` is a non-empty string, `INPUT_SLOTS` has one `SlotSpec("model_id", "STRING")`, `OUTPUT_SLOTS` has one `SlotSpec("model", "MODEL")`.
+
+## test_loadvae_registered_in_registry (worker.nodes.loader)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `@register` decorator on `LoadVae` populates `NODE_REGISTRY` at module load time. Tests use `importlib.reload()` to re-execute the module body after `registry_clean` clears the registry.
+**Tests:** Re-imports `worker.nodes.loader` via `importlib.reload()`, then asserts `"LoadVae"` is a key in `NODE_REGISTRY` and that `NODE_REGISTRY["LoadVae"]` is the `LoadVae` class itself.
+**Inputs:** None (module import triggers `@register`).
+**Expected output:** `"LoadVae" in NODE_REGISTRY` and `NODE_REGISTRY["LoadVae"] is LoadVae`.
+
+## test_loadvae_execute_returns_mock_vae (worker.nodes.loader)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** `ANVILML_WORKER_MOCK=1` is set by the `conftest.py` autouse fixture, ensuring the mock code path is taken. `NODE_REGISTRY` is cleared by the `registry_clean` autouse fixture.
+**Tests:** Instantiates `LoadVae` with a `mock_context`, calls `execute(model_id="test-vae")`, and asserts the returned dict contains a `MockVae` instance.
+**Inputs:** `model_id="test-vae"`.
+**Expected output:** `result["vae"]` is a `MockVae` instance.
+
+## test_loadvae_metadata_attributes (worker.nodes.loader)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** `LoadVae` class is accessible via direct import from `worker.nodes.loader` after re-import.
+**Tests:** Asserts each of the six required metadata attributes has the correct value and type: `NODE_TYPE`, `CATEGORY`, `DISPLAY_NAME`, `DESCRIPTION`, `INPUT_SLOTS`, `OUTPUT_SLOTS`.
+**Inputs:** None.
+**Expected output:** `NODE_TYPE="LoadVae"`, `CATEGORY="Loaders"`, `DISPLAY_NAME="Load VAE"`, `DESCRIPTION` is a non-empty string, `INPUT_SLOTS` has one `SlotSpec("model_id", "STRING")`, `OUTPUT_SLOTS` has one `SlotSpec("vae", "VAE")`.

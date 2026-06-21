@@ -198,3 +198,107 @@ def test_loadmodel_metadata_attributes() -> None:
     assert output_spec.name == "model"
     assert output_spec.slot_type == "MODEL"
     assert output_spec.optional is False
+
+
+def test_loadvae_registered_in_registry() -> None:
+    """Verify ``LoadVae`` is registered in ``NODE_REGISTRY`` after importing.
+
+    Preconditions:
+        NODE_REGISTRY is cleared by the ``registry_clean`` fixture.
+        ``worker.nodes.loader`` is imported (and reloaded) so that
+        the ``@register`` decorator runs.
+
+    Tests:
+        After re-importing the ``loader`` module, assert that
+        ``"LoadVae"`` is a key in ``NODE_REGISTRY`` and that the
+        registered class has the correct ``NODE_TYPE``.
+
+    Expected output:
+        ``"LoadVae"`` present in ``NODE_REGISTRY``, keyed by
+        ``NODE_TYPE == "LoadVae"``.
+    """
+    # Re-import the loader module so @register runs against the
+    # now-empty NODE_REGISTRY. Python caches modules in sys.modules,
+    # so we must use importlib.reload() to re-execute the module body.
+    import worker.nodes.loader
+
+    importlib.reload(worker.nodes.loader)
+    from worker.nodes.loader import LoadVae
+
+    assert "LoadVae" in NODE_REGISTRY
+    assert NODE_REGISTRY["LoadVae"] is LoadVae
+    assert LoadVae.NODE_TYPE == "LoadVae"
+
+
+def test_loadvae_execute_returns_mock_vae() -> None:
+    """Verify ``execute()`` returns a ``MockVae`` in mock mode.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse
+        fixture, ensuring the mock code path is taken.
+        NODE_REGISTRY is cleared by the ``registry_clean`` fixture.
+
+    Tests:
+        Instantiate ``LoadVae`` with a ``mock_context``, call
+        ``execute(model_id="test-vae")``, and assert the returned
+        dict contains a ``MockVae`` instance.
+
+    Expected output:
+        ``result["vae"]`` is a ``MockVae`` instance.
+    """
+    import worker.nodes.loader
+
+    importlib.reload(worker.nodes.loader)
+    from worker.nodes.loader import LoadVae, MockVae
+
+    node = LoadVae(mock_context)
+    result = node.execute(model_id="test-vae")
+
+    assert "vae" in result
+    assert isinstance(result["vae"], MockVae)
+
+
+def test_loadvae_metadata_attributes() -> None:
+    """Verify all six required metadata attributes on ``LoadVae``.
+
+    Preconditions:
+        ``LoadVae`` class is accessible via direct import from
+        ``worker.nodes.loader``.
+
+    Tests:
+        Assert each of the six required metadata attributes has the
+        correct value and type.
+
+    Expected output:
+        ``NODE_TYPE == "LoadVae"``, ``CATEGORY == "Loaders"``,
+        ``DISPLAY_NAME == "Load VAE"``, ``DESCRIPTION`` is a
+        non-empty string, ``INPUT_SLOTS`` has one
+        ``SlotSpec("model_id", "STRING")``, and ``OUTPUT_SLOTS``
+        has one ``SlotSpec("vae", "VAE")``.
+    """
+    import worker.nodes.loader
+
+    importlib.reload(worker.nodes.loader)
+    from worker.nodes.loader import LoadVae
+
+    assert LoadVae.NODE_TYPE == "LoadVae"
+    assert LoadVae.CATEGORY == "Loaders"
+    assert LoadVae.DISPLAY_NAME == "Load VAE"
+    assert isinstance(LoadVae.DESCRIPTION, str)
+    assert len(LoadVae.DESCRIPTION) > 0
+
+    # Verify INPUT_SLOTS.
+    assert len(LoadVae.INPUT_SLOTS) == 1
+    input_spec = LoadVae.INPUT_SLOTS[0]
+    assert isinstance(input_spec, SlotSpec)
+    assert input_spec.name == "model_id"
+    assert input_spec.slot_type == "STRING"
+    assert input_spec.optional is False
+
+    # Verify OUTPUT_SLOTS.
+    assert len(LoadVae.OUTPUT_SLOTS) == 1
+    output_spec = LoadVae.OUTPUT_SLOTS[0]
+    assert isinstance(output_spec, SlotSpec)
+    assert output_spec.name == "vae"
+    assert output_spec.slot_type == "VAE"
+    assert output_spec.optional is False

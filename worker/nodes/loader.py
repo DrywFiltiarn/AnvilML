@@ -22,7 +22,7 @@ from typing import Any
 
 from worker.nodes.base import BaseNode, NodeContext, SlotSpec, register
 
-__all__ = ["LoadModel", "MockModel"]
+__all__ = ["LoadModel", "LoadVae", "MockModel", "MockVae"]
 
 
 class MockModel:
@@ -43,6 +43,17 @@ class MockModel:
             arch: The model architecture identifier.
         """
         self.arch = arch
+
+
+class MockVae:
+    """Sentinel VAE object for mock mode.
+
+    A lightweight placeholder that stands in for a real VAE pipeline
+    component during testing. Real VAE objects produced by the
+    safetensors loading path will have their own structure defined
+    when ``pipeline_cache.py`` is implemented (P18-D1).
+    """
+    pass
 
 
 @register
@@ -114,5 +125,76 @@ class LoadModel(BaseNode):
         # TODO(P18-A1): Implement real safetensors loading path.
         raise NotImplementedError(
             "Real LoadModel path not yet implemented — "
+            "use ANVILML_WORKER_MOCK=1 for testing"
+        )
+
+
+@register
+class LoadVae(BaseNode):
+    """Load a VAE from a standalone safetensors file.
+
+    Accepts a ``model_id`` string input and returns a ``VAE``
+    slot containing either a real loaded VAE pipeline component
+    (in non-mock mode) or a ``MockVae`` sentinel (in mock mode).
+
+    Attributes:
+        NODE_TYPE: The type string used by the scheduler to route
+            jobs to this node.
+        CATEGORY: The UI category for this node type.
+        DISPLAY_NAME: Human-readable name shown in UI.
+        DESCRIPTION: Brief description of node behaviour.
+        INPUT_SLOTS: One required ``STRING`` slot named ``"model_id"``.
+        OUTPUT_SLOTS: One ``VAE`` slot named ``"vae"``.
+    """
+
+    NODE_TYPE = "LoadVae"
+    CATEGORY = "Loaders"
+    DISPLAY_NAME = "Load VAE"
+    DESCRIPTION = "Load a VAE from a standalone safetensors file"
+    INPUT_SLOTS = [SlotSpec("model_id", "STRING")]
+    OUTPUT_SLOTS = [SlotSpec("vae", "VAE")]
+
+    def execute(self, **inputs: Any) -> dict[str, Any]:
+        """Execute the LoadVae node.
+
+        Reads the ``model_id`` input, checks mock mode, and either
+        returns a ``MockVae`` sentinel or loads a real VAE via
+        safetensors + pipeline_cache.
+
+        Args:
+            **inputs: Must contain ``"model_id"`` — the identifier
+                of the VAE to load.
+
+        Returns:
+            Dict with key ``"vae"`` containing either a ``MockVae``
+            (mock mode) or a loaded VAE pipeline component (real mode).
+
+        Raises:
+            NotImplementedError: If called in non-mock mode. The real
+                safetensors loading path is stubbed until P18-D1.
+        """
+        # Read the model_id input. In mock mode this is a
+        # placeholder string; in real mode it references a
+        # VAE file path registered in the model store.
+        model_id = inputs.get("model_id", "")
+
+        # Check mock mode by inspecting the environment variable.
+        # This must be a runtime check (not a module-level import)
+        # so that CI tests running with ANVILML_WORKER_MOCK=1
+        # never touch torch/diffusers/safetensors at import time.
+        if os.environ.get("ANVILML_WORKER_MOCK") == "1":
+            # In mock mode, return a lightweight sentinel object
+            # instead of loading a real VAE pipeline. This keeps
+            # tests fast and avoids requiring GPU hardware or torch.
+            return {"vae": MockVae()}
+
+        # Real mode: load actual safetensors weights for the VAE.
+        # This path is stubbed — the real implementation will use
+        # safetensors.safe_open() to read the VAE weight tensors
+        # and load via pipeline_cache.get_or_load(). The
+        # pipeline_cache module is implemented in task P18-D1.
+        # TODO(P18-A2): Implement real safetensors loading path.
+        raise NotImplementedError(
+            "Real LoadVae path not yet implemented — "
             "use ANVILML_WORKER_MOCK=1 for testing"
         )
