@@ -340,7 +340,32 @@ cargo test --workspace --features mock-hardware
 Zero failures required. If a test passes on retry, diagnose — see §11.3 for isolation
 requirements. Do not accept flakiness without diagnosis.
 
-### Step 7 — Python tests
+### Step 7 — Python syntax/compile check (mandatory, run before Step 8)
+
+```bash
+# Linux / macOS:
+worker/.venv/bin/python -m py_compile $(git ls-files 'worker/*.py')
+# Windows:
+# worker\.venv\Scripts\python -m py_compile (git ls-files 'worker/*.py')
+```
+
+Must exit 0 before Step 8 (pytest) is invoked. This step exists because a `SyntaxError`
+in any module that a test reaches via subprocess (e.g. `worker_main.py`, invoked as
+`python -m worker.worker_main`) does not surface as a normal test failure: the subprocess
+dies on import, before it connects IPC or sends its first message. A test that then blocks
+on a synchronous `socket.recv()` waiting for that message hangs indefinitely rather than
+failing — this is exactly what happened with `test_mock_startup_sends_ready` when a
+malformed `elif` was introduced after an `except` block in `worker_main.py`. `py_compile`
+catches the same defect in milliseconds, before any subprocess is spawned, and names the
+exact file and line in its error output.
+
+This step is **mandatory for every task that creates or modifies any `.py` file** under
+`worker/`, not only tasks that touch `worker_main.py` directly — any module reachable by
+import from a subprocessed entry point shares this failure mode. If this step fails, fix
+the syntax error and re-run it before proceeding to Step 8. Do not attempt to diagnose a
+hung or failing pytest run before confirming this step passes.
+
+### Step 8 — Python tests
 
 ```bash
 # Linux / macOS:
@@ -350,13 +375,20 @@ ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v
 ```
 
 Zero failures required. Run from the repo root. Invoke the venv interpreter directly —
-do not use bare `python`.
+do not use bare `python`. **Never run this step before Step 7 has exited 0.** Running
+pytest against a syntactically broken module is the proximate cause of the indefinite
+hang Step 7 exists to prevent.
 
-### Step 8 — Project gates
+If a Python test that spawns a worker subprocess (any test using `subprocess.Popen`
+with `worker.worker_main` or another worker entry point) appears to hang for more than
+~10 seconds, do not wait it out — abort it, re-run Step 7, and treat a Step 7 failure as
+the most likely cause before investigating IPC timing or socket logic.
+
+### Step 9 — Project gates
 
 Run all applicable gates from §8. Record verbatim output.
 
-### Step 9 — Format (pass 2, check-only gate)
+### Step 10 — Format (pass 2, check-only gate)
 
 ```bash
 cargo fmt --all -- --check
@@ -368,7 +400,7 @@ Must exit 0 before staging. If non-zero (drift introduced by lint or test fixes)
    Status=BLOCKED and STOP. Do not stage code that does not compile after formatting.
 3. Run `cargo fmt --all -- --check` again to confirm.
 
-### Step 10 — Stage
+### Step 11 — Stage
 
 ```bash
 git add -A
@@ -376,7 +408,7 @@ git add -A
 
 Do **NOT** `git commit` or `git push`. The Forge owns all git operations.
 
-### Step 11 — Report, state update, STOP
+### Step 12 — Report, state update, STOP
 
 Write the implementation report and update `.forge/state/CURRENT_TASK.md`.
 
@@ -390,10 +422,15 @@ validates and can write tasks that account for all four runners.
 |:----|:-------|:--------|
 | `rust-linux` | Ubuntu latest | `bash scripts/install_worker_deps.sh && cargo fmt --all -- --check && cargo clippy --workspace --features mock-hardware -- -D warnings && cargo test --workspace --features mock-hardware` |
 | `rust-windows` | Windows latest | `scripts\install_worker_deps.ps1 && cargo clippy --workspace --features mock-hardware -- -D warnings && cargo test --workspace --features mock-hardware` |
-| `worker-linux` | Ubuntu latest | `bash scripts/install_worker_deps.sh && ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v` |
-| `worker-windows` | Windows latest | `scripts\install_worker_deps.ps1 && ANVILML_WORKER_MOCK=1 worker\.venv\Scripts\python -m pytest worker/tests/ -v` |
+| `worker-linux` | Ubuntu latest | `bash scripts/install_worker_deps.sh && worker/.venv/bin/python -m py_compile $(git ls-files 'worker/*.py') && ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v` |
+| `worker-windows` | Windows latest | `scripts\install_worker_deps.ps1 && worker\.venv\Scripts\python -m py_compile (git ls-files 'worker/*.py') && ANVILML_WORKER_MOCK=1 worker\.venv\Scripts\python -m pytest worker/tests/ -v` |
 | `openapi-drift` | Ubuntu latest | `cargo run -p anvilml-openapi && git diff --exit-code api/openapi.json` |
 | `config-drift` | Ubuntu latest | `cargo test -p anvilml --features mock-hardware -- config_reference` |
+
+The `py_compile` step in `worker-linux`/`worker-windows` runs before pytest and fails the
+job in milliseconds on any `SyntaxError`, rather than letting a subprocess-dependent test
+hang until the CI job's own timeout kills it. This is a CI-level mirror of local Step 7 —
+both must exist; CI is the backstop for a task where Step 7 was skipped locally.
 
 `worker-windows` is required because the Python worker runs on Windows in production
 (ROCm on Windows is a mandatory MVP backend). Pytest failures on Windows that do not
@@ -754,6 +791,53 @@ Additionally, every test **must be catalogued in `docs/TESTS.md`** using the for
 defined in `ANVILML_DESIGN.md §16.1`. This catalogue is updated as part of the same
 task that adds or modifies the test. A task that adds tests but does not update
 `docs/TESTS.md` is incomplete.
+
+### 11.5 Bounded waits in subprocess/IPC tests (mandatory)
+
+Any Python test that spawns a worker subprocess and then blocks on a socket call to
+observe its output (`router.recv()`, `proc.wait()`, `proc.communicate()`, or equivalent)
+**must bound that wait**. An unbounded blocking call on a subprocess's IPC output has no
+graceful failure mode if the subprocess dies before producing that output — it hangs
+forever instead of failing the test. This is not hypothetical: it is the exact mechanism
+behind the `test_mock_startup_sends_ready` incident, where a `SyntaxError` in
+`worker_main.py` caused the worker subprocess to exit immediately, and the test's
+unguarded `router.recv()` blocked indefinitely waiting for a `Ready` event that could
+never arrive.
+
+**Required pattern for ZeroMQ ROUTER/DEALER tests:**
+
+```python
+# Set a receive timeout before any blocking recv() call.
+router.setsockopt(zmq.RCVTIMEO, 5000)  # milliseconds; 5s is the project default
+try:
+    identity = router.recv()
+    raw = router.recv()
+except zmq.Again:
+    # No message arrived within the timeout. Surface the subprocess's stderr —
+    # this is almost always a worker startup failure, not a slow worker.
+    proc.terminate()
+    stdout, stderr = proc.communicate(timeout=5)
+    pytest.fail(
+        f"worker did not send expected message within timeout. "
+        f"stderr={stderr.decode(errors='replace')}"
+    )
+```
+
+**Required pattern for `subprocess.Popen.wait()` calls:** always pass an explicit
+`timeout=` argument (the existing `test_shutdown_exits_cleanly` test already does this
+correctly — `proc.wait(timeout=10)` — and is the reference pattern). Never call
+`.wait()` or `.communicate()` without a `timeout=`.
+
+**Why surface stderr on timeout, not just fail:** a bare `pytest.fail("timed out")`
+forces the next person to re-run the test under a debugger to find a defect that the
+subprocess already reported on its own stderr at the moment it died. Capturing and
+including `stderr` in the failure message turns a multi-minute manual investigation
+into an immediate, self-explanatory diagnosis from the first failed CI run.
+
+This rule applies retroactively: any task that touches a test file already containing
+an unguarded blocking call on subprocess IPC must add a timeout as part of that task,
+even if the timeout is unrelated to the task's stated goal. Record this under
+`## Deviations from Plan` per the usual convention for incidental fixes.
 
 ---
 

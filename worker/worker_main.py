@@ -262,7 +262,7 @@ def main() -> None:
                     f"worker_main: job {job_id} failed: {e}",
                     file=sys.stderr,
                 )
-            elif msg_type == "CancelJob":
+        elif msg_type == "CancelJob":
             # Cancel the current job execution.
             # Set the cancel flag so the executor stops at its next checkpoint.
             # The executor checks this flag between nodes/steps.

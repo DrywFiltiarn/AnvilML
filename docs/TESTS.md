@@ -1299,7 +1299,7 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 ## test_mock_startup_sends_ready (worker)
 
 **File:** `worker/tests/test_worker_main.py`
-**Context:** The worker_main.py module spawns a subprocess that connects to a ROUTER socket, emits a Ready event with mock hardware values, and enters a dispatch loop. Each test creates its own ROUTER socket on a random port and spawns the worker as a subprocess with explicit env vars (os.environ is not inherited through subprocess unless env is passed).
+**Context:** The worker_main.py module spawns a subprocess that connects to a ROUTER socket, emits a Ready event with mock hardware values, and enters a dispatch loop. Each test creates its own ROUTER socket on a random port and spawns the worker as a subprocess with explicit env vars (os.environ is not inherited through subprocess unless env is passed). The Ready event is received via `_recv_with_timeout()`, which sets `zmq.RCVTIMEO` and surfaces the worker subprocess's stderr if no message arrives within 5s — this prevents an indefinite hang if the worker dies on startup (e.g. a `SyntaxError`) before sending Ready. See `docs/ENVIRONMENT.md §11.5`.
 **Tests:** Spawns `worker_main.py` as a subprocess with `ANVILML_WORKER_MOCK=1`, reads the Ready event from the ROUTER socket, and asserts all 12 required fields are present with correct values (worker_id="worker-0", device_index=0, device_name="Mock", device_type="cpu", vram values=8192, torch_version="mock", fp16/bf16/fp8/flash_attention=True, node_types=[]).
 **Inputs:** Subprocess with env vars `ANVILML_IPC_PORT=<random port>`, `ANVILML_WORKER_ID=worker-0`, `ANVILML_DEVICE_INDEX=0`, `ANVILML_DEVICE_TYPE=cpu`.
 **Expected output:** Ready event received with `_type="Ready"` and all fields matching the mock mode spec.
@@ -1308,7 +1308,7 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 ## test_ping_returns_pong (worker)
 
 **File:** `worker/tests/test_worker_main.py`
-**Context:** The worker dispatch loop responds to Ping messages with Pong containing the same sequence number. This verifies the heartbeat mechanism works end-to-end through the ROUTER/DEALER transport.
+**Context:** The worker dispatch loop responds to Ping messages with Pong containing the same sequence number. This verifies the heartbeat mechanism works end-to-end through the ROUTER/DEALER transport. Both the Ready-drain receive and the Pong receive go through `_recv_with_timeout()` (see `docs/ENVIRONMENT.md §11.5`) rather than a raw, unguarded `router.recv()`.
 **Tests:** Starts the worker in mock mode, sends a `Ping{seq: 42}` message via the ROUTER, receives the Pong response, and asserts `_type == "Pong"` and `seq == 42`.
 **Inputs:** `Ping{seq: 42}` sent via ROUTER to the worker subprocess.
 **Expected output:** `Pong{seq: 42}` received, `_type == "Pong"`, `seq == 42`.
@@ -1317,7 +1317,7 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 ## test_shutdown_exits_cleanly (worker)
 
 **File:** `worker/tests/test_worker_main.py`
-**Context:** The worker exits with code 0 when it receives a Shutdown message. This verifies the graceful shutdown contract with the Rust supervisor.
+**Context:** The worker exits with code 0 when it receives a Shutdown message. This verifies the graceful shutdown contract with the Rust supervisor. This test has no ROUTER `recv()` calls; its only blocking wait is `proc.wait(timeout=10)`, which was already correctly bounded and is the reference pattern cited in `docs/ENVIRONMENT.md §11.5`.
 **Tests:** Starts the worker, sends a Shutdown message via ROUTER, asserts the subprocess exits with code 0 within a 10-second timeout.
 **Inputs:** `Shutdown` sent via ROUTER to the worker subprocess.
 **Expected output:** Subprocess exit code == 0 within timeout.
@@ -1326,7 +1326,7 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 ## test_env_vars_read_from_environment (worker)
 
 **File:** `worker/tests/test_worker_main.py`
-**Context:** The worker reads identity and connection parameters from environment variables and includes them in the Ready event. Verifies the env var passthrough path works correctly with custom values.
+**Context:** The worker reads identity and connection parameters from environment variables and includes them in the Ready event. Verifies the env var passthrough path works correctly with custom values. The Ready event is received via `_recv_with_timeout()` (see `docs/ENVIRONMENT.md §11.5`) rather than a raw, unguarded `router.recv()`.
 **Tests:** Sets `ANVILML_WORKER_ID`, `ANVILML_DEVICE_INDEX`, `ANVILML_DEVICE_TYPE` to custom values before launching the worker, then verifies the Ready event contains those values in the corresponding fields.
 **Inputs:** `ANVILML_WORKER_ID=custom-worker`, `ANVILML_DEVICE_INDEX=3`, `ANVILML_DEVICE_TYPE=cuda`.
 **Expected output:** Ready event `worker_id == "custom-worker"`, `device_index == 3`, `device_type == "cuda"`.

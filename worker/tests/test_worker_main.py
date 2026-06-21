@@ -3,6 +3,13 @@
 Each test spawns the worker as a subprocess with its own ROUTER socket
 on a random port, ensuring complete isolation between tests. The worker
 process is cleaned up unconditionally in a ``finally`` block.
+
+All ROUTER receives in this file go through ``_recv_with_timeout``, which
+sets an explicit ``zmq.RCVTIMEO`` and surfaces the worker subprocess's
+captured stderr if the timeout fires. This exists because an unguarded
+``router.recv()`` blocks indefinitely if the worker subprocess dies before
+sending the expected message (e.g. on a ``SyntaxError`` at import time) —
+see ``docs/ENVIRONMENT.md §11.5`` for the rationale and required pattern.
 """
 
 from __future__ import annotations
@@ -12,9 +19,18 @@ import subprocess
 import sys
 import time
 
+import msgpack
+import pytest
 import zmq
 
 from worker import ipc
+
+# Default receive timeout (milliseconds) for all bounded ROUTER recv() calls
+# in this file. 5 seconds comfortably exceeds the worker's normal startup
+# and response latency in mock mode while still failing fast on a dead
+# subprocess instead of hanging for the pytest session's outer timeout (or
+# indefinitely, with no timeout at all).
+_RECV_TIMEOUT_MS = 5000
 
 
 def _reset_ipc_state() -> None:
@@ -50,6 +66,57 @@ def _make_worker_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
+def _recv_with_timeout(router: zmq.Socket, proc: subprocess.Popen) -> dict:
+    """Receive one [identity, payload] message from *router*, bounded.
+
+    Sets ``zmq.RCVTIMEO`` on *router* before each recv() call so a worker
+    subprocess that dies before sending the expected message (e.g. on a
+    ``SyntaxError`` at import time, before it ever connects IPC) fails the
+    test immediately with a diagnostic message, instead of hanging forever
+    on a blocking recv() that can never be satisfied.
+
+    Args:
+        router: The bound ROUTER socket to receive from.
+        proc: The worker subprocess, used to capture and report stderr if
+            the receive times out — this is almost always a worker startup
+            failure, not a slow worker, so surfacing stderr turns a silent
+            hang into an immediate, self-explanatory diagnosis.
+
+    Returns:
+        The msgpack-decoded payload dict (the identity frame is consumed
+        and discarded).
+
+    Raises:
+        pytest.fail.Exception: If no message arrives within
+            ``_RECV_TIMEOUT_MS``. The failure message includes the worker
+            subprocess's captured stderr and its exit code if it has
+            already terminated.
+    """
+    router.setsockopt(zmq.RCVTIMEO, _RECV_TIMEOUT_MS)
+    try:
+        router.recv()  # identity frame
+        raw = router.recv()
+    except zmq.Again:
+        # No message arrived within the timeout. The worker almost
+        # certainly died on startup (e.g. a SyntaxError before it could
+        # connect IPC and send Ready) rather than being merely slow —
+        # surface its stderr and exit status so the failure is
+        # immediately diagnosable from the first failed run.
+        if proc.poll() is None:
+            proc.terminate()
+        try:
+            _, stderr = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            _, stderr = proc.communicate(timeout=5)
+        pytest.fail(
+            f"worker did not send expected message within "
+            f"{_RECV_TIMEOUT_MS}ms. worker exit code: {proc.returncode}. "
+            f"worker stderr:\n{stderr.decode(errors='replace')}"
+        )
+    return msgpack.unpackb(raw, raw=False)
+
+
 def test_mock_startup_sends_ready():
     """Verify the worker emits a valid Ready event on mock startup.
 
@@ -77,12 +144,9 @@ def test_mock_startup_sends_ready():
             # The worker needs time to start, connect, and emit Ready.
             time.sleep(0.3)
 
-            # ROUTER receives multipart: [identity, data]
-            router.recv()  # identity frame
-            raw = router.recv()
-            import msgpack
-
-            ready = msgpack.unpackb(raw, raw=False)
+            # Bounded receive — see module docstring and _recv_with_timeout
+            # for why this must never be a raw, unguarded router.recv().
+            ready = _recv_with_timeout(router, proc)
 
             # Verify all required fields from the mock Ready event spec.
             assert ready["_type"] == "Ready"
@@ -134,23 +198,18 @@ def test_ping_returns_pong():
             # Wait for the worker to start and emit Ready.
             time.sleep(0.3)
 
-            import msgpack
-
             # Consume the Ready event that the worker sends on startup.
             # This is required because the ROUTER has the Ready event
             # queued before we send our Ping — we must drain it first.
-            router.recv()  # identity frame
-            raw = router.recv()
-            msgpack.unpackb(raw, raw=False)  # Ready event — discard
+            # Bounded receive — see module docstring and _recv_with_timeout.
+            _recv_with_timeout(router, proc)  # Ready event — discard
 
             # Send a Ping message to the worker via ROUTER.
             ping_msg = msgpack.packb({"_type": "Ping", "seq": 42}, use_bin_type=True)
             router.send_multipart([b"worker-0", ping_msg])
 
-            # Receive the Pong response.
-            router.recv()  # identity frame
-            raw = router.recv()
-            pong = msgpack.unpackb(raw, raw=False)
+            # Receive the Pong response. Bounded — see _recv_with_timeout.
+            pong = _recv_with_timeout(router, proc)
 
             assert pong["_type"] == "Pong"
             assert pong["seq"] == 42
@@ -187,13 +246,12 @@ def test_shutdown_exits_cleanly():
             # Wait for the worker to start and emit Ready.
             time.sleep(0.3)
 
-            import msgpack
-
             # Send a Shutdown message to the worker.
             shutdown_msg = msgpack.packb({"_type": "Shutdown"}, use_bin_type=True)
             router.send_multipart([b"worker-0", shutdown_msg])
 
-            # Wait for the worker to exit (within timeout).
+            # Wait for the worker to exit. Already bounded — this is the
+            # reference pattern cited in docs/ENVIRONMENT.md §11.5.
             proc.wait(timeout=10)
             assert proc.returncode == 0, f"Expected exit code 0, got {proc.returncode}"
         finally:
@@ -238,12 +296,8 @@ def test_env_vars_read_from_environment():
             # Wait for the worker to start and emit Ready.
             time.sleep(0.3)
 
-            import msgpack
-
-            # ROUTER receives multipart: [identity, data]
-            router.recv()  # identity frame
-            raw = router.recv()
-            ready = msgpack.unpackb(raw, raw=False)
+            # Bounded receive — see module docstring and _recv_with_timeout.
+            ready = _recv_with_timeout(router, proc)
 
             assert ready["_type"] == "Ready"
             assert ready["worker_id"] == "custom-worker"
