@@ -208,10 +208,15 @@ async fn main() {
     // dispatch loop, the event loop, AppState, and the later shutdown call.
     let workers = Arc::new(workers);
 
+    // Create the model store before the scheduler — the scheduler needs it
+    // at construction time for dispatch-time model ID resolution.
+    let model_store = Arc::new(ModelStore::new(pool.clone()).await);
+
     // Build the job scheduler with the node registry, database pool,
-    // event broadcaster, and worker pool reference. The queue and ledger
-    // are freshly initialised — the queue starts empty and the ledger has
-    // no registered devices (VRAM checks are added in Phase 014).
+    // event broadcaster, artifact store, model store, and worker pool
+    // reference. The queue and ledger are freshly initialised — the queue
+    // starts empty and the ledger has no registered devices (VRAM checks
+    // are added in Phase 014).
     let scheduler = Arc::new(JobScheduler::new(
         Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
         Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
@@ -219,6 +224,7 @@ async fn main() {
         pool.clone(),
         Arc::clone(&broadcaster),
         Arc::clone(&artifact_store),
+        Arc::clone(&model_store),
         Some(Arc::clone(&workers)),
     ));
 
@@ -273,12 +279,12 @@ async fn main() {
     // Create the real shared application state with the worker pool included.
     // env!("CARGO_PKG_VERSION") is a compile-time literal that implements
     // Into<String>, matching the constructor's type.
-    let registry = Arc::new(ModelStore::new(pool.clone()).await);
+    // Reuse the already-created model_store (shared with the scheduler).
     let state = AppState::new_with_hardware(
         env!("CARGO_PKG_VERSION"),
         Arc::new(tokio::sync::RwLock::new(hardware_info)),
         pool,
-        registry,
+        Arc::clone(&model_store),
         cfg.model_dirs.clone(),
         Arc::clone(&workers),
         Arc::clone(&node_registry),

@@ -3141,3 +3141,30 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Fresh import of ``worker.nodes.arch.zit`` with ``torch`` absent from ``sys.modules``.
 **Expected output:** Module imports successfully and ``"torch"`` is absent from ``sys.modules``, confirming mock-mode import isolation.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_sample_mock_no_torch_import -v` exits 0.
+
+## test_resolves_known_model_id (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/model_resolve_tests.rs`
+**Context:** In-memory SQLite database, seeded `ModelStore` with one known model, fresh `JobScheduler` with registered device, `WorkerPool` with one idle worker. Tests use `#[serial]` because `open_in_memory()` creates a single-connection SQLite pool.
+**Tests:** Submit a job with a `LoadModel` node whose `inputs.model_id` matches the seeded model's SHA256 hash. Start the dispatch loop, wait for the queue to empty, then verify the DB graph column contains the resolved filesystem path instead of the hash, and the job status is `running`.
+**Inputs:** Job graph with `{"nodes": [{"id": "model", "type": "LoadModel", "inputs": {"model_id": "abc123def45678901234567890123456789012345678901234567890abcd1234"}}]}`.
+**Expected output:** DB `graph` column contains resolved path `/models/test-model.safetensors` in `node[0].inputs.model_id`; job status is `running`; queue is empty.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_resolves_known_model_id` exits 0.
+
+## test_unknown_model_id_fails_job_without_dispatch (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/model_resolve_tests.rs`
+**Context:** In-memory SQLite database, seeded `ModelStore` with one model (different hash), fresh `JobScheduler` with registered device, `WorkerPool` with one idle worker. Tests use `#[serial]` because `open_in_memory()` creates a single-connection SQLite pool.
+**Tests:** Submit a job with a `LoadModel` node whose `inputs.model_id` does NOT match the seeded model. Start the dispatch loop, wait for the queue to empty, then verify the job status is `Failed` with an error message containing "not found in registry". VRAM is reserved before resolution (existing code flow).
+**Inputs:** Job graph with `{"nodes": [{"id": "model", "type": "LoadModel", "inputs": {"model_id": "nonexistent_hash_0000000000000000000000000000000000000000000000000000000000000000"}}]}`.
+**Expected output:** DB `status` is `failed`, `error` contains "not found in registry"; queue is empty (job was popped but not re-enqueued); VRAM reservation is 4096 MiB (reserved before resolution check).
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_unknown_model_id_fails_job_without_dispatch` exits 0.
+
+## test_non_loader_node_inputs_untouched (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/model_resolve_tests.rs`
+**Context:** In-memory SQLite database, seeded `ModelStore` with one model, fresh `JobScheduler` with registered device, `WorkerPool` with one idle worker. Tests use `#[serial]` because `open_in_memory()` creates a single-connection SQLite pool.
+**Tests:** Submit a job with a `Sampler` node (not a loader type) carrying `inputs.seed = 42` and `inputs.steps = 20`. Start the dispatch loop, wait for the queue to empty, then verify the DB graph column has the node's inputs unchanged.
+**Inputs:** Job graph with `{"nodes": [{"id": "sampler", "type": "Sampler", "inputs": {"seed": 42, "steps": 20}}]}`.
+**Expected output:** DB `graph` column contains `node[0].inputs.seed == 42` and `node[0].inputs.steps == 20` (unchanged); job status is `running`; queue is empty.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_non_loader_node_inputs_untouched` exits 0.

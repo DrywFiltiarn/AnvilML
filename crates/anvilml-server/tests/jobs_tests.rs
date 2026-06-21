@@ -9,6 +9,7 @@ use anvilml_artifacts::ArtifactStore;
 use anvilml_core::types::{NodeTypeDescriptor, SlotDescriptor, SlotType};
 use anvilml_core::NodeTypeRegistry;
 use anvilml_ipc::EventBroadcaster;
+use anvilml_registry::ModelStore;
 use anvilml_scheduler::{ledger::VramLedger, queue::JobQueue, scheduler::JobScheduler};
 use anvilml_server::{build_router, AppState};
 use axum::body::to_bytes;
@@ -32,6 +33,7 @@ async fn test_scheduler(
     let artifact_dir = std::env::temp_dir().join("anvilml-test-artifacts");
     let artifact_store = ArtifactStore::new(artifact_dir.clone(), pool.clone()).await;
     let artifact_store = Arc::new(artifact_store);
+    let model_store = Arc::new(ModelStore::new(pool.clone()).await);
     let scheduler = Arc::new(JobScheduler::new(
         Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
         Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
@@ -39,6 +41,7 @@ async fn test_scheduler(
         pool,
         Arc::new(EventBroadcaster::new()),
         Arc::clone(&artifact_store),
+        model_store,
         None, // cancellation requires a real worker pool
     ));
     (scheduler, artifact_store)

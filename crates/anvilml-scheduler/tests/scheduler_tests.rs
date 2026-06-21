@@ -431,11 +431,13 @@ async fn test_list_jobs_with_before_filter() {
 /// Helper to create a `JobScheduler` with an in-memory database and test registry.
 ///
 /// Constructs all required dependencies (queue, ledger, registry, database pool,
-/// broadcaster, artifact store) and wraps them in a `JobScheduler`. Each test
-/// calls this to get a fresh scheduler instance with its own isolated database.
+/// broadcaster, artifact store, model store) and wraps them in a `JobScheduler`.
+/// Each test calls this to get a fresh scheduler instance with its own
+/// isolated database.
 async fn make_scheduler(db: SqlitePool, registry: Arc<NodeTypeRegistry>) -> JobScheduler {
     let artifact_dir = std::env::temp_dir().join("anvilml-test-artifacts");
     let artifact_store = ArtifactStore::new(artifact_dir.clone(), db.clone()).await;
+    let model_store = anvilml_registry::ModelStore::new(db.clone()).await;
 
     JobScheduler::new(
         Arc::new(tokio::sync::Mutex::new(JobQueue::new())),
@@ -444,6 +446,7 @@ async fn make_scheduler(db: SqlitePool, registry: Arc<NodeTypeRegistry>) -> JobS
         db,
         Arc::new(anvilml_ipc::EventBroadcaster::new()),
         Arc::new(artifact_store),
+        Arc::new(model_store),
         None, // cancellation requires a real worker pool
     )
 }

@@ -74,6 +74,7 @@ async fn make_scheduler(db: SqlitePool, registry: Arc<NodeTypeRegistry>) -> JobS
     // storage directory, preventing cross-test contamination.
     let artifact_dir = std::env::temp_dir().join("anvilml-test-artifacts");
     let artifact_store = ArtifactStore::new(artifact_dir.clone(), db.clone()).await;
+    let model_store = anvilml_registry::ModelStore::new(db.clone()).await;
 
     JobScheduler::new(
         Arc::new(tokio::sync::Mutex::new(JobQueue::new())),
@@ -82,6 +83,7 @@ async fn make_scheduler(db: SqlitePool, registry: Arc<NodeTypeRegistry>) -> JobS
         db,
         Arc::new(EventBroadcaster::new()),
         Arc::new(artifact_store),
+        Arc::new(model_store),
         None, // cancellation requires a real worker pool
     )
 }

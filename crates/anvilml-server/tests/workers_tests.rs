@@ -5,6 +5,7 @@
 
 use anvilml_artifacts::ArtifactStore;
 use anvilml_core::{GpuDevice, NodeTypeRegistry, ServerConfig, WorkerStatus};
+use anvilml_registry::ModelStore;
 use anvilml_scheduler::scheduler::JobScheduler;
 use anvilml_server::{build_router, AppState};
 use anvilml_worker::{ManagedWorker, WorkerPool};
@@ -97,6 +98,7 @@ async fn test_state(registry: Arc<NodeTypeRegistry>) -> (Arc<JobScheduler>, Arc<
     let pool = anvilml_registry::open_in_memory().await.unwrap();
     let artifact_dir = std::env::temp_dir().join("anvilml-test-artifacts");
     let artifact_store = Arc::new(ArtifactStore::new(artifact_dir, pool.clone()).await);
+    let model_store = Arc::new(ModelStore::new(pool.clone()).await);
     let scheduler = Arc::new(JobScheduler::new(
         Arc::new(tokio::sync::Mutex::new(
             anvilml_scheduler::queue::JobQueue::default(),
@@ -108,6 +110,7 @@ async fn test_state(registry: Arc<NodeTypeRegistry>) -> (Arc<JobScheduler>, Arc<
         pool,
         Arc::new(anvilml_ipc::EventBroadcaster::new()),
         Arc::clone(&artifact_store),
+        model_store,
         None, // cancellation requires a real worker pool
     ));
     (scheduler, artifact_store)

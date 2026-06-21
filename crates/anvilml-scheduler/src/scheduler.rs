@@ -18,6 +18,7 @@ use anvilml_core::{
     types::WsEvent, AnvilError, Job, JobSettings, JobStatus, SubmitJobRequest, SubmitJobResponse,
 };
 use anvilml_ipc::{EventBroadcaster, WorkerMessage};
+use anvilml_registry::ModelStore;
 use anvilml_worker::pool::WorkerPool;
 use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
@@ -84,6 +85,17 @@ pub struct JobScheduler {
     /// at spawn time.
     artifact_store: Arc<ArtifactStore>,
 
+    /// Persistent model registry for resolving model IDs (SHA256 hashes) to
+    /// filesystem paths at dispatch time.
+    ///
+    /// When a job graph contains `LoadModel`, `LoadVae`, or `LoadClip` nodes
+    /// with `inputs.model_id` set to a SHA256 hash, the dispatch loop uses
+    /// this store to look up the corresponding `ModelMeta` and rewrite the
+    /// node's `model_id` field with the resolved absolute filesystem path.
+    /// If a hash cannot be resolved, the job is marked `Failed` before any
+    /// VRAM reservation or IPC send.
+    model_store: Arc<ModelStore>,
+
     /// Wake signal for the dispatch loop background task.
     ///
     /// The dispatch loop waits on this `Notify` between periodic polls.
@@ -118,9 +130,16 @@ impl JobScheduler {
     /// * `broadcaster` — The WebSocket event broadcaster for client notifications.
     /// * `artifact_store` — The artifact storage backend for persisting
     ///   generated images when `WorkerEvent::ImageReady` arrives.
+    /// * `model_store` — The persistent model registry for resolving model
+    ///   ID hashes to filesystem paths at dispatch time.
     /// * `workers` — The worker pool for sending IPC messages (e.g. job
     ///   cancellation). `None` disables cancellation support — callers
     ///   that need it must pass an `Arc<WorkerPool>`.
+    // The constructor takes many dependencies because the scheduler owns
+    // the job queue, VRAM ledger, node registry, database pool, event
+    // broadcaster, artifact store, model store, and worker pool reference.
+    // This is an intentional design — the scheduler is a central hub.
+    #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(skip(
         queue,
         ledger,
@@ -128,6 +147,7 @@ impl JobScheduler {
         db,
         broadcaster,
         artifact_store,
+        model_store,
         workers
     ))]
     pub fn new(
@@ -137,6 +157,7 @@ impl JobScheduler {
         db: SqlitePool,
         broadcaster: Arc<EventBroadcaster>,
         artifact_store: Arc<ArtifactStore>,
+        model_store: Arc<ModelStore>,
         workers: Option<Arc<WorkerPool>>,
     ) -> Self {
         Self {
@@ -146,6 +167,7 @@ impl JobScheduler {
             db,
             broadcaster,
             artifact_store,
+            model_store,
             notify: Arc::new(tokio::sync::Notify::new()),
             workers,
         }
@@ -710,6 +732,8 @@ impl JobScheduler {
         let db = self.db.clone();
         let notify = Arc::clone(&self.notify);
         let broadcaster = Arc::clone(&self.broadcaster);
+        let model_store = Arc::clone(&self.model_store);
+        let workers = Arc::clone(&workers);
 
         tokio::spawn(async move {
             // The dispatch loop uses a two-wake mechanism:
@@ -724,7 +748,8 @@ impl JobScheduler {
                     _ = tokio::time::sleep(Duration::from_millis(200)) => {}
                 }
 
-                Self::dispatch_once(&queue, &ledger, &db, &workers, &broadcaster).await;
+                Self::dispatch_once(&queue, &ledger, &db, &workers, &broadcaster, &model_store)
+                    .await;
             }
         })
     }
@@ -802,24 +827,141 @@ impl JobScheduler {
         self.db.clone()
     }
 
+    /// Resolve model ID hashes to filesystem paths in a computation graph.
+    ///
+    /// Walks the `nodes` array of the graph and, for each node whose type
+    /// is `LoadModel`, `LoadVae`, or `LoadClip`, looks up the `inputs.model_id`
+    /// (a SHA256 hex digest) in the model store. On success the node's
+    /// `model_id` is replaced with the resolved absolute filesystem path.
+    ///
+    /// This is called at dispatch time (not at submission time) so that
+    /// models scanned after submission are still discoverable.
+    ///
+    /// Returns `Err` immediately if any loader node's model ID cannot be
+    /// resolved — no partial resolution is performed, so the caller can
+    /// mark the entire job as failed rather than dispatching a broken graph.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph` — The mutable computation graph JSON value. The function
+    ///   modifies `inputs.model_id` fields in-place on loader nodes.
+    /// * `model_store` — The persistent model registry for lookups.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` after all loader nodes resolved successfully.
+    /// `Err(String)` if a model ID was not found in the registry.
+    async fn resolve_model_ids(
+        graph: &mut serde_json::Value,
+        model_store: &Arc<ModelStore>,
+    ) -> Result<(), String> {
+        // Check that the graph has a `nodes` field that is an array.
+        // If the graph is malformed or uses a different structure,
+        // silently skip — this is forward compatible with future graph
+        // formats that may not use a `nodes` array.
+        let Some(nodes_arr) = graph.get_mut("nodes") else {
+            return Ok(());
+        };
+        let Some(nodes) = nodes_arr.as_array_mut() else {
+            // `nodes` exists but is not an array — malformed graph,
+            // silently skip to avoid panicking on unexpected structures.
+            return Ok(());
+        };
+
+        // Iterate each node and resolve model_id for loader types.
+        for node in nodes {
+            // Read the node type as a string. Non-object nodes or nodes
+            // without a type field are silently skipped.
+            let Some(node_type) = node.get("type").and_then(|t| t.as_str()) else {
+                continue;
+            };
+
+            // Only loader nodes (LoadModel, LoadVae, LoadClip) carry a
+            // model_id that needs resolution. Other node types (Sampler,
+            // KSampler, etc.) pass through untouched.
+            if !matches!(node_type, "LoadModel" | "LoadVae" | "LoadClip") {
+                continue;
+            }
+
+            // Read inputs.model_id as a string (the SHA256 hash).
+            // If inputs is absent or model_id is not a string, log at WARN
+            // and skip this node — future node types may not use model_id.
+            let Some(model_id) = node
+                .get("inputs")
+                .and_then(|i| i.get("model_id"))
+                .and_then(|m| m.as_str())
+            else {
+                tracing::warn!(
+                    node_type = node_type,
+                    "loader node missing inputs.model_id — skipping"
+                );
+                continue;
+            };
+
+            // Look up the model in the persistent store. This is the
+            // core resolution step: the SHA256 hash maps to a ModelMeta
+            // containing the absolute filesystem path.
+            let meta = match model_store.get(model_id).await {
+                Ok(Some(meta)) => meta,
+                Ok(None) => {
+                    // Model ID not found in registry — this is a hard error.
+                    // The user must run POST /v1/models/rescan to populate
+                    // the store with the missing model.
+                    return Err(format!(
+                        "model_id \"{}\" not found in registry -- run POST /v1/models/rescan",
+                        model_id
+                    ));
+                }
+                Err(e) => {
+                    // Database error — propagate as failure so the job is
+                    // marked Failed rather than silently skipping.
+                    return Err(format!("model_id \"{}\" lookup failed: {}", model_id, e));
+                }
+            };
+
+            // Replace the SHA256 hash with the resolved absolute filesystem
+            // path. The Python worker expects a path string, not a hash,
+            // in the model_id field of loader nodes.
+            if let Some(inputs) = node.get_mut("inputs") {
+                inputs["model_id"] = serde_json::Value::String(meta.path);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Attempt to dispatch one or more jobs from the queue to idle workers.
     ///
     /// Iterates the queue front-to-back. For each queued job:
-    /// 1. Find an idle worker via `select_worker`.
-    /// 2. If a worker is found: mark job Running in DB, reserve VRAM,
+    /// 1. Resolve model ID hashes to filesystem paths in the graph.
+    ///    If resolution fails, mark the job Failed and skip it.
+    /// 2. Find an idle worker via `select_worker`.
+    /// 3. If a worker is found: mark job Running in DB, reserve VRAM,
     ///    send `WorkerMessage::Execute` to the worker, and remove from queue.
-    /// 3. If no worker is available: skip the job (leave it queued).
+    /// 4. If no worker is available: skip the job (leave it queued).
     ///
     /// Dispatch continues until the queue is exhausted or no idle workers remain.
     ///
     /// VRAM estimation uses a conservative default of 4096 MiB per job.
     /// Phase 015 will replace this with model-specific metadata.
+    ///
+    /// # Arguments
+    ///
+    /// * `queue` — The FIFO job queue.
+    /// * `ledger` — The VRAM reservation ledger.
+    /// * `db` — The SQLite connection pool for status updates.
+    /// * `workers` — The worker pool for sending IPC messages.
+    /// * `broadcaster` — The WebSocket event broadcaster.
+    /// * `model_store` — The model registry for resolving model ID hashes.
+    /// * `workers_opt` — Optional worker pool reference for the
+    ///   "not configured" early-exit check.
     async fn dispatch_once(
         queue: &Arc<tokio::sync::Mutex<JobQueue>>,
         ledger: &Arc<tokio::sync::Mutex<VramLedger>>,
         db: &SqlitePool,
         workers: &WorkerPool,
         broadcaster: &Arc<EventBroadcaster>,
+        model_store: &Arc<ModelStore>,
     ) {
         let idle_workers = workers.get_idle_workers().await;
         if idle_workers.is_empty() {
@@ -896,6 +1038,45 @@ impl JobScheduler {
             // Pop the job from the queue now that we've committed to dispatch.
             let dispatched_job = queue.pop_front().expect("peek_front returned Some");
 
+            // Resolve model ID hashes to filesystem paths before persisting
+            // the job as Running. This ensures the Python worker receives
+            // real paths, not opaque SHA256 hashes.
+            let mut graph = dispatched_job.graph.clone();
+            if let Err(msg) = Self::resolve_model_ids(&mut graph, model_store).await {
+                // Resolution failed — mark the job as Failed in the database
+                // and broadcast the error. Do NOT reserve VRAM (already done)
+                // or send Execute. The job is consumed from the queue but
+                // will not execute.
+                let job_id = dispatched_job.id;
+                let error_msg = msg.clone();
+
+                let _ = sqlx::query("UPDATE jobs SET status = 'failed', error = ? WHERE id = ?")
+                    .bind(error_msg)
+                    .bind(job_id.to_string())
+                    .execute(db)
+                    .await;
+
+                broadcaster.send(WsEvent::JobFailed { job_id, error: msg });
+
+                tracing::warn!(
+                    job_id = %job_id,
+                    "model ID resolution failed, job marked as failed"
+                );
+                continue;
+            }
+
+            // Persist the resolved graph to the database so the DB reflects
+            // the actual graph sent to the worker (paths instead of hashes).
+            // This is important for post-hoc inspection: querying the DB
+            // for a dispatched job should show the resolved paths.
+            let resolved_graph_json =
+                serde_json::to_string(&graph).expect("resolved graph should serialise");
+            let _ = sqlx::query("UPDATE jobs SET graph = ? WHERE id = ?")
+                .bind(resolved_graph_json)
+                .bind(dispatched_job.id.to_string())
+                .execute(db)
+                .await;
+
             // Mark job Running in database before sending the execute message.
             // This ensures the job status is persisted even if IPC fails.
             // We need to update the DB directly since insert_job is for new jobs.
@@ -934,7 +1115,16 @@ impl JobScheduler {
                 .execute(db)
                 .await;
 
-            to_dispatch.push((dispatched_job, selected_worker_id, device_index));
+            // Use the resolved graph (with paths instead of hashes) for
+            // the Execute message.
+            to_dispatch.push((
+                Job {
+                    graph,
+                    ..dispatched_job
+                },
+                selected_worker_id,
+                device_index,
+            ));
         }
         drop(queue);
 
