@@ -2853,3 +2853,39 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Tests:** Asserts each of the six required metadata attributes has the correct value and type: `NODE_TYPE`, `CATEGORY`, `DISPLAY_NAME`, `DESCRIPTION`, `INPUT_SLOTS`, `OUTPUT_SLOTS`.
 **Inputs:** None.
 **Expected output:** `NODE_TYPE="LoadVae"`, `CATEGORY="Loaders"`, `DISPLAY_NAME="Load VAE"`, `DESCRIPTION` is a non-empty string, `INPUT_SLOTS` has one `SlotSpec("model_id", "STRING")`, `OUTPUT_SLOTS` has one `SlotSpec("vae", "VAE")`.
+
+## test_loadclip_registered_in_registry (worker.nodes.loader)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** `NODE_REGISTRY` is cleared by the `registry_clean` fixture. `worker.nodes.loader` is imported (and reloaded) so that the `@register` decorator runs.
+**Tests:** After re-importing the `loader` module via `importlib.reload()`, asserts that `"LoadClip"` is a key in `NODE_REGISTRY`, that `NODE_REGISTRY["LoadClip"]` is the `LoadClip` class itself, and that `LoadClip.NODE_TYPE == "LoadClip"`.
+**Inputs:** None (module import triggers `@register`).
+**Expected output:** `"LoadClip" in NODE_REGISTRY`, `NODE_REGISTRY["LoadClip"] is LoadClip`, `LoadClip.NODE_TYPE == "LoadClip"`.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_loadclip_registered_in_registry -v` exits 0.
+
+## test_loadclip_execute_returns_mock_clip_default_type (worker.nodes.loader)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** `ANVILML_WORKER_MOCK=1` is set by the `conftest.py` autouse fixture, ensuring the mock code path is taken. `NODE_REGISTRY` is cleared by the `registry_clean` autouse fixture.
+**Tests:** Instantiates `LoadClip` with a `mock_context`, calls `execute(model_id="test-model")` without providing `clip_type`, and asserts the returned dict contains a `MockClip` with `clip_type == "qwen3"` (the default).
+**Inputs:** `model_id="test-model"` (no `clip_type` provided).
+**Expected output:** `result["clip"]` is a `MockClip` instance with `result["clip"].clip_type == "qwen3"`.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_loadclip_execute_returns_mock_clip_default_type -v` exits 0.
+
+## test_loadclip_execute_returns_mock_clip_explicit_type (worker.nodes.loader)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** `ANVILML_WORKER_MOCK=1` is set by the `conftest.py` autouse fixture, ensuring the mock code path is taken. `NODE_REGISTRY` is cleared by the `registry_clean` autouse fixture.
+**Tests:** Instantiates `LoadClip` with a `mock_context`, calls `execute(model_id="test-model", clip_type="clip_l")`, and asserts the returned dict contains a `MockClip` with `clip_type == "clip_l"`.
+**Inputs:** `model_id="test-model"`, `clip_type="clip_l"`.
+**Expected output:** `result["clip"]` is a `MockClip` instance with `result["clip"].clip_type == "clip_l"`.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_loadclip_execute_returns_mock_clip_explicit_type -v` exits 0.
+
+## test_loadclip_metadata_attributes (worker.nodes.loader)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** `LoadClip` class is accessible via direct import from `worker.nodes.loader` after re-import.
+**Tests:** Asserts each of the six required metadata attributes has the correct value and type: `NODE_TYPE`, `CATEGORY`, `DISPLAY_NAME`, `DESCRIPTION`, `INPUT_SLOTS`, `OUTPUT_SLOTS`. Verifies `INPUT_SLOTS` has two specs (model_id STRING required, clip_type STRING optional) and `OUTPUT_SLOTS` has one spec (clip CLIP required).
+**Inputs:** None.
+**Expected output:** `NODE_TYPE="LoadClip"`, `CATEGORY="Loaders"`, `DISPLAY_NAME="Load CLIP"`, `DESCRIPTION` is a non-empty string, `INPUT_SLOTS` has two `SlotSpec` entries, `OUTPUT_SLOTS` has one `SlotSpec("clip", "CLIP")`.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_loadclip_metadata_attributes -v` exits 0.

@@ -302,3 +302,147 @@ def test_loadvae_metadata_attributes() -> None:
     assert output_spec.name == "vae"
     assert output_spec.slot_type == "VAE"
     assert output_spec.optional is False
+
+
+def test_loadclip_registered_in_registry() -> None:
+    """Verify ``LoadClip`` is registered in ``NODE_REGISTRY`` after importing.
+
+    Preconditions:
+        NODE_REGISTRY is cleared by the ``registry_clean`` fixture.
+        ``worker.nodes.loader`` is imported (and reloaded) so that
+        the ``@register`` decorator runs.
+
+    Tests:
+        After re-importing the ``loader`` module, assert that
+        ``"LoadClip"`` is a key in ``NODE_REGISTRY`` and that the
+        registered class has the correct ``NODE_TYPE``.
+
+    Expected output:
+        ``"LoadClip"`` present in ``NODE_REGISTRY``, keyed by
+        ``NODE_TYPE == "LoadClip"``.
+    """
+    # Re-import the loader module so @register runs against the
+    # now-empty NODE_REGISTRY. Python caches modules in sys.modules,
+    # so we must use importlib.reload() to re-execute the module body.
+    import worker.nodes.loader
+
+    importlib.reload(worker.nodes.loader)
+    from worker.nodes.loader import LoadClip
+
+    assert "LoadClip" in NODE_REGISTRY
+    assert NODE_REGISTRY["LoadClip"] is LoadClip
+    assert LoadClip.NODE_TYPE == "LoadClip"
+
+
+def test_loadclip_execute_returns_mock_clip_default_type() -> None:
+    """Verify ``execute()`` returns a ``MockClip`` with ``clip_type="qwen3"`` in mock mode.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse
+        fixture, ensuring the mock code path is taken.
+        NODE_REGISTRY is cleared by the ``registry_clean`` fixture.
+
+    Tests:
+        Instantiate ``LoadClip`` with a ``mock_context``, call
+        ``execute(model_id="test-model")`` without providing ``clip_type``,
+        and assert the returned dict contains a ``MockClip`` with
+        ``clip_type == "qwen3"`` (the default).
+
+    Expected output:
+        ``result["clip"]`` is a ``MockClip`` instance with
+        ``result["clip"].clip_type == "qwen3"``.
+    """
+    import worker.nodes.loader
+
+    importlib.reload(worker.nodes.loader)
+    from worker.nodes.loader import LoadClip, MockClip
+
+    node = LoadClip(mock_context)
+    result = node.execute(model_id="test-model")
+
+    assert "clip" in result
+    assert isinstance(result["clip"], MockClip)
+    assert result["clip"].clip_type == "qwen3"
+
+
+def test_loadclip_execute_returns_mock_clip_explicit_type() -> None:
+    """Verify ``execute()`` returns a ``MockClip`` with the explicit ``clip_type`` in mock mode.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse
+        fixture, ensuring the mock code path is taken.
+        NODE_REGISTRY is cleared by the ``registry_clean`` fixture.
+
+    Tests:
+        Instantiate ``LoadClip`` with a ``mock_context``, call
+        ``execute(model_id="test-model", clip_type="clip_l")``, and
+        assert the returned dict contains a ``MockClip`` with
+        ``clip_type == "clip_l"``.
+
+    Expected output:
+        ``result["clip"]`` is a ``MockClip`` instance with
+        ``result["clip"].clip_type == "clip_l"``.
+    """
+    import worker.nodes.loader
+
+    importlib.reload(worker.nodes.loader)
+    from worker.nodes.loader import LoadClip, MockClip
+
+    node = LoadClip(mock_context)
+    result = node.execute(model_id="test-model", clip_type="clip_l")
+
+    assert "clip" in result
+    assert isinstance(result["clip"], MockClip)
+    assert result["clip"].clip_type == "clip_l"
+
+
+def test_loadclip_metadata_attributes() -> None:
+    """Verify all six required metadata attributes on ``LoadClip``.
+
+    Preconditions:
+        ``LoadClip`` class is accessible via direct import from
+        ``worker.nodes.loader``.
+
+    Tests:
+        Assert each of the six required metadata attributes has the
+        correct value and type.
+
+    Expected output:
+        ``NODE_TYPE == "LoadClip"``, ``CATEGORY == "Loaders"``,
+        ``DISPLAY_NAME == "Load CLIP"``, ``DESCRIPTION`` is a
+        non-empty string, ``INPUT_SLOTS`` has two specs
+        (``model_id`` STRING required, ``clip_type`` STRING optional),
+        and ``OUTPUT_SLOTS`` has one ``SlotSpec("clip", "CLIP")``.
+    """
+    import worker.nodes.loader
+
+    importlib.reload(worker.nodes.loader)
+    from worker.nodes.loader import LoadClip
+
+    assert LoadClip.NODE_TYPE == "LoadClip"
+    assert LoadClip.CATEGORY == "Loaders"
+    assert LoadClip.DISPLAY_NAME == "Load CLIP"
+    assert isinstance(LoadClip.DESCRIPTION, str)
+    assert len(LoadClip.DESCRIPTION) > 0
+
+    # Verify INPUT_SLOTS — two specs: model_id (required), clip_type (optional).
+    assert len(LoadClip.INPUT_SLOTS) == 2
+    model_id_spec = LoadClip.INPUT_SLOTS[0]
+    assert isinstance(model_id_spec, SlotSpec)
+    assert model_id_spec.name == "model_id"
+    assert model_id_spec.slot_type == "STRING"
+    assert model_id_spec.optional is False
+
+    clip_type_spec = LoadClip.INPUT_SLOTS[1]
+    assert isinstance(clip_type_spec, SlotSpec)
+    assert clip_type_spec.name == "clip_type"
+    assert clip_type_spec.slot_type == "STRING"
+    assert clip_type_spec.optional is True
+
+    # Verify OUTPUT_SLOTS.
+    assert len(LoadClip.OUTPUT_SLOTS) == 1
+    output_spec = LoadClip.OUTPUT_SLOTS[0]
+    assert isinstance(output_spec, SlotSpec)
+    assert output_spec.name == "clip"
+    assert output_spec.slot_type == "CLIP"
+    assert output_spec.optional is False

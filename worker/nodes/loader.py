@@ -22,7 +22,7 @@ from typing import Any
 
 from worker.nodes.base import BaseNode, NodeContext, SlotSpec, register
 
-__all__ = ["LoadModel", "LoadVae", "MockModel", "MockVae"]
+__all__ = ["LoadModel", "LoadVae", "MockModel", "MockVae", "MockClip"]
 
 
 class MockModel:
@@ -54,6 +54,27 @@ class MockVae:
     when ``pipeline_cache.py`` is implemented (P18-D1).
     """
     pass
+
+
+class MockClip:
+    """Sentinel CLIP object for mock mode.
+
+    A lightweight placeholder carrying the ``clip_type`` attribute
+    so that downstream nodes can inspect the tokeniser type
+    without needing a real text-encoder pipeline object.
+
+    Args:
+        clip_type: The tokeniser type identifier (e.g. ``"qwen3"``,
+            ``"clip_l"``, ``"t5"``). Defaults to ``"qwen3"``.
+    """
+
+    def __init__(self, clip_type: str = "qwen3") -> None:
+        """Initialise a mock CLIP sentinel.
+
+        Args:
+            clip_type: The tokeniser type identifier.
+        """
+        self.clip_type = clip_type
 
 
 @register
@@ -196,5 +217,88 @@ class LoadVae(BaseNode):
         # TODO(P18-A2): Implement real safetensors loading path.
         raise NotImplementedError(
             "Real LoadVae path not yet implemented — "
+            "use ANVILML_WORKER_MOCK=1 for testing"
+        )
+
+
+@register
+class LoadClip(BaseNode):
+    """Load a text encoder (CLIP/T5/Qwen3) from a safetensors file.
+
+    Accepts a ``model_id`` string input and an optional ``clip_type``
+    hint, then returns a ``CLIP`` slot containing either a real loaded
+    text-encoder pipeline component (in non-mock mode) or a
+    ``MockClip`` sentinel carrying the resolved tokeniser type
+    (in mock mode).
+
+    Attributes:
+        NODE_TYPE: The type string used by the scheduler to route
+            jobs to this node.
+        CATEGORY: The UI category for this node type.
+        DISPLAY_NAME: Human-readable name shown in UI.
+        DESCRIPTION: Brief description of node behaviour.
+        INPUT_SLOTS: One required ``STRING`` slot named ``"model_id"``,
+            and one optional ``STRING`` slot named ``"clip_type"``.
+        OUTPUT_SLOTS: One ``CLIP`` slot named ``"clip"``.
+    """
+
+    NODE_TYPE = "LoadClip"
+    CATEGORY = "Loaders"
+    DISPLAY_NAME = "Load CLIP"
+    DESCRIPTION = "Load a text encoder (CLIP/T5/Qwen3) from a safetensors file"
+    INPUT_SLOTS = [SlotSpec("model_id", "STRING"),
+                   SlotSpec("clip_type", "STRING", optional=True)]
+    OUTPUT_SLOTS = [SlotSpec("clip", "CLIP")]
+
+    def execute(self, **inputs: Any) -> dict[str, Any]:
+        """Execute the LoadClip node.
+
+        Reads the ``model_id`` and optional ``clip_type`` inputs,
+        checks mock mode, and either returns a ``MockClip`` sentinel
+        or loads a real text encoder via safetensors + pipeline_cache.
+
+        Args:
+            **inputs: Must contain ``"model_id"`` — the identifier
+                of the text encoder to load.  May contain an optional
+                ``"clip_type"`` to specify the tokeniser type
+                (e.g. ``"qwen3"``, ``"clip_l"``, ``"t5"``).
+
+        Returns:
+            Dict with key ``"clip"`` containing either a ``MockClip``
+            (mock mode) or a loaded text-encoder object (real mode).
+
+        Raises:
+            NotImplementedError: If called in non-mock mode. The real
+                safetensors loading path is stubbed until P18-D1.
+        """
+        # Read the model_id input. In mock mode this is a
+        # placeholder string; in real mode it references a
+        # text-encoder file path registered in the model store.
+        model_id = inputs.get("model_id", "")
+
+        # Read the optional clip_type hint.  Defaults to "qwen3"
+        # when not provided — this is the tokeniser type used by
+        # the Phase 018 baseline Z-Image Turbo FP8 model.
+        clip_type = inputs.get("clip_type", "qwen3")
+
+        # Check mock mode by inspecting the environment variable.
+        # This must be a runtime check (not a module-level import)
+        # so that CI tests running with ANVILML_WORKER_MOCK=1
+        # never touch torch/diffusers/safetensors at import time.
+        if os.environ.get("ANVILML_WORKER_MOCK") == "1":
+            # In mock mode, return a lightweight sentinel object
+            # carrying the resolved clip_type instead of loading a
+            # real text-encoder pipeline. This keeps tests fast
+            # and avoids requiring GPU hardware or torch.
+            return {"clip": MockClip(clip_type=clip_type)}
+
+        # Real mode: load actual safetensors weights for the text
+        # encoder. This path is stubbed — the real implementation
+        # will use safetensors.safe_open() to read the weight
+        # tensors and load via pipeline_cache.get_or_load(). The
+        # pipeline_cache module is implemented in task P18-D1.
+        # TODO(P18-A3): Implement real safetensors loading path.
+        raise NotImplementedError(
+            "Real LoadClip path not yet implemented — "
             "use ANVILML_WORKER_MOCK=1 for testing"
         )
