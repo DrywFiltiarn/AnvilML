@@ -94,16 +94,17 @@
     "P18-A2",
     "P18-A3",
     "P18-B1",
-    "P18-B2"
+    "P18-B2",
+    "P18-B3"
   ],
-  "in_progress": "P18-B3",
+  "in_progress": null,
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-21T14:54:15+0200",
-  "plan_approved": true,
-  "current_plan": "1. **Create `worker/nodes/decode.py`** with the following structure:\n\n   a. Module docstring explaining the VaeDecode node's purpose, the mock-mode sentinel, and the real-mode stub. Include the standard import guard note about not importing torch/diffusers/safetensors at module level.\n\n   b. Define `MockImage` class \u2014 a lightweight sentinel with no fields (matching the pattern of `MockVae` in `loader.py`). Add Google-style docstring.\n\n   c. Define `VaeDecode` class decorated with `@register`:\n      - `NODE_TYPE = \"VaeDecode\"`\n      - `CATEGORY = \"Decoding\"`\n      - `DISPLAY_NAME = \"VAE Decode\"`\n      - `DESCRIPTION = \"Decode a latent tensor to an image using a VAE\"`\n      - `INPUT_SLOTS = [SlotSpec(\"vae\", \"VAE\"), SlotSpec(\"latent\", \"LATENT\")]`\n      - `OUTPUT_SLOTS = [SlotSpec(\"image\", \"IMAGE\")]`\n      - `execute(**inputs)` method that:\n        - Reads `vae` and `latent` inputs (both required, but mock mode ignores them)\n        - Checks `os.environ.get(\"ANVILML_WORKER_MOCK\") == \"1\"`\n        - In mock mode: returns `{\"image\": MockImage()}`\n        - In real mode: stub with `NotImplementedError(\"Real VaeDecode path not yet implemented \u2014 use ANVILML_WORKER_MOCK=1 for testing\")`\n      - Add Google-style docstrings on the class and method\n\n   d. `__all__ = [\"VaeDecode\", \"MockImage\"]`\n\n2. **Update `worker/nodes/image.py`** `SaveImage.execute()`:\n\n   a. Read `seed` and `steps` from inputs: `seed = inputs.get(\"seed\")` and `steps = inputs.get(\"steps\")`. These are optional \u2014 the node's `INPUT_SLOTS` only declares `\"image\"` as required, so `seed` and `steps` arrive only when wired from upstream nodes (per the Appendix B workflow, `SaveImage` receives `seed` from `Sampler` and `steps` is an optional input).\n\n   b. Include `seed` and `steps` in the `ImageReady` event dict. The existing event includes `job_id`, `image_b64`, `width`, `height`. Add `seed` (from `inputs.get(\"seed\")`, defaulting to `None`) and `steps` (from `inputs.get(\"steps\")`, defaulting to `None`). This matches the `WorkerEvent.ImageReady` schema in `ANVILML_DESIGN.md \u00a78.5` which declares `seed: i64, steps: u32` as fields.\n\n   c. The `INPUT_SLOTS` on `SaveImage` stays as `[SlotSpec(\"image\", \"IMAGE\")]` \u2014 `seed` and `steps` are accepted via `**inputs` but not declared as formal slot specs. This is consistent with how optional node inputs work in the existing codebase (e.g., `ClipTextEncode` has `negative_text` as an optional slot, but `SaveImage`'s `seed`/`steps` are accepted through the graph wiring mechanism).\n\n3. **Create `worker/tests/test_nodes_decode.py`** with the following tests:\n\n   a. `test_vaedeode_registered_in_registry()` \u2014 Clear `NODE_REGISTRY`, re-import and reload `worker.nodes.decode`, assert `\"VaeDecode\"` is in `NODE_REGISTRY` and `NODE_REGISTRY[\"VaeDecode\"] is VaeDecode`.\n\n   b. `test_vaedeode_execute_returns_mock_image()` \u2014 Instantiate `VaeDecode(mock_context)`, call `execute(vae=MockVae(), latent=MockLatent())`, assert `\"image\"` in result and `isinstance(result[\"image\"], MockImage)`. Uses `MockVae` imported from `worker.nodes.loader` (the established mock VAE sentinel).\n\n   c. `test_vaedeode_metadata_attributes()` \u2014 Assert all six metadata attributes: `NODE_TYPE == \"VaeDecode\"`, `CATEGORY == \"Decoding\"`, `DISPLAY_NAME == \"VAE Decode\"`, `DESCRIPTION` is non-empty string, `INPUT_SLOTS` has two specs (`vae:VAE` required, `latent:LATENT` required), `OUTPUT_SLOTS` has one spec (`image:IMAGE` required).\n\n   d. `test_vaedeode_execute_missing_inputs_returns_mock()` \u2014 Call `execute()` without any inputs (matching how `LoadModel` handles missing `model_id`). Mock mode ignores inputs entirely, so result should still be `{\"image\": MockImage()}`.\n\n   This gives 4 tests, exceeding the \u22653 requirement.\n\n4. **No Rust changes needed** \u2014 this task only touches Python worker code. The `WorkerEvent.ImageReady` schema in Rust already includes `seed` and `steps` fields, so the SaveImage update is purely adding fields to the dict (backward compatible with the Rust side which already handles `Option` fields).",
-  "plan_approval_message_id": "1518237078846967878",
-  "push_approval_message_id": null,
-  "plan_report_message_id": "1518237077257453659",
-  "impl_report_message_id": null
+  "last_updated": "2026-06-21T16:10:42+0200",
+  "plan_approved": false,
+  "current_plan": null,
+  "plan_approval_message_id": "1518247248448979014",
+  "push_approval_message_id": "1518252663349838017",
+  "plan_report_message_id": "1518247245382684847",
+  "impl_report_message_id": "1518252661038649355"
 }

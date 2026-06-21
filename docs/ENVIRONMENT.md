@@ -81,7 +81,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install_worker_deps.ps1
 ```
 
 These scripts detect the available hardware backend (CUDA / ROCm / CPU) and install
-the matching torch build. See `ANVILML_DESIGN.md §19.1` for the full provisioning flow.
+the matching torch build. See `ANVILML_DESIGN.md §18.1` for the full provisioning flow.
 
 ### sqlx-cli (for migrations)
 

@@ -7,7 +7,7 @@
     "prereqs": [
       "P18-E1"
     ],
-    "context": "Create worker/nodes/arch/flux.py: def can_handle(model_obj)->bool (model_obj.arch==\"flux\"; returns False for non-Flux). def sample(model,conditioning,latent,steps,cfg,seed,device,cancel_flag,emit_progress)->(latent,int). Mock: return (MockLatent(),seed). Real: diffusers FluxPipeline components FP8; per-step cancel check; emit_progress. Inline comment on single-encoder conditioning handling. tests/test_arch_flux.py >=3 tests; can_handle returns False for ZiT model. ANVILML_WORKER_MOCK=1 pytest exits 0.",
+    "context": "Create worker/nodes/arch/flux.py: can_handle(model_obj)->bool, True iff arch==\"flux\". sample(model,conditioning,latent,steps,cfg,seed,device,cancel_flag,emit_progress)->(latent,int); per-step cancel_flag.is_set() + emit_progress. Mock: (MockLatent(),seed). Real: model=transformer cached by LoadModel via pipeline_cache. First sample() call per model_id assembles diffusers.Flux2KleinPipeline(transformer=model, vae=..., text_encoder=...) from cached components; cache assembled pipeline via pipeline_cache.get_or_load(f'{model_id}:pipeline',...), separate key from transformer. CRITICAL: use Flux2KleinPipeline, NOT FluxPipeline -- latter is diffusers' FLUX.1 class, incompatible with Flux 2 Klein weights; imports fine but silently loads wrong model. Inline comments: transformer float8, no upcast, when InferenceCaps.fp8=True, text_encoder/vae bf16; conditioning arrives pre-encoded (Qwen3). tests/test_arch_flux.py >=3 tests; can_handle False for ZiT model. ANVILML_WORKER_MOCK=1 pytest exits 0.",
     "tags": []
   },
   {

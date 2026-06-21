@@ -67,24 +67,24 @@
   },
   {
     "id": "P18-C1",
-    "description": "worker/nodes/arch/zit.py: ZiT FP8 architecture dispatch module",
+    "description": "worker/pipeline_cache.py: LRU model cache",
     "phase": "18",
     "project": "anvilml",
     "prereqs": [
       "P18-B3"
     ],
-    "context": "Create worker/nodes/arch/__init__.py: arch_registry list; def register_arch(module); def dispatch_sample(model,...). Create worker/nodes/arch/zit.py: def can_handle(model_obj)->bool (model_obj.arch==\"zit\"). def sample(model,conditioning,latent,steps,cfg,seed,device,cancel_flag,emit_progress)->(latent,int). Mock: return (MockLatent(),seed). Real: diffusers ZitPipeline FP8; per-step cancel_flag check; emit_progress callback. Every FP8 choice has inline comment. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py exits 0 >=3 tests.",
+    "context": "Create worker/pipeline_cache.py: PipelineCache(max_entries:int=2). get_or_load(model_id:str,dtype:str,loader_fn:Callable)->Any: return cached or call loader_fn()+cache; evict LRU when full; log eviction at INFO. OOM handler: on torch.cuda.OutOfMemoryError evict all then retry once. No dependency on arch/ modules. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_pipeline_cache.py exits 0 >=4 tests (hit/miss/eviction/OOM-skip-in-mock).",
     "tags": []
   },
   {
     "id": "P18-D1",
-    "description": "worker/pipeline_cache.py: LRU model cache",
+    "description": "worker/nodes/arch/zit.py: ZiT FP8 architecture dispatch module",
     "phase": "18",
     "project": "anvilml",
     "prereqs": [
       "P18-C1"
     ],
-    "context": "Create worker/pipeline_cache.py: PipelineCache(max_entries:int=2). get_or_load(model_id:str,dtype:str,loader_fn:Callable)->Any: return cached or call loader_fn()+cache; evict LRU when full; tracing::info on eviction. OOM handler: on torch.cuda.OutOfMemoryError evict all then retry once. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_pipeline_cache.py exits 0 >=4 tests (hit/miss/eviction/OOM-skip-in-mock).",
+    "context": "Create worker/nodes/arch/__init__.py: arch_registry + dispatch helpers. Create worker/nodes/arch/zit.py: can_handle(model_obj)->bool (arch==\"zit\"). sample(model,conditioning,latent,steps,cfg,seed,device,cancel_flag,emit_progress)->(latent,int); per-step cancel_flag.is_set() + emit_progress. Mock: (MockLatent(),seed). Real: model=transformer already cached by LoadModel via pipeline_cache.get_or_load(model_id). On first sample() call per model_id, assemble diffusers.ZImagePipeline(transformer=model, vae=..., text_encoder=...) from cached components; cache the assembled pipeline via pipeline_cache.get_or_load(f'{model_id}:pipeline',...), separate key from the transformer entry. Never from_pretrained(model_id) inside sample() -- re-loads full weights every call. Inline comment: transformer stays float8 (no upcast) when InferenceCaps.fp8=True; text_encoder/vae stay bf16. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py exits 0 >=3 tests.",
     "tags": []
   },
   {

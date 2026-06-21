@@ -37,7 +37,13 @@ Phase 018 complete: all 9 baseline nodes implemented, parity test passing, `arch
 - `can_handle(model_obj) -> bool` — returns True when `model_obj.arch == "flux"`
 - `sample(model, conditioning, latent, steps, cfg, seed, device, cancel_flag, emit_progress) -> tuple[latent_tensor, int]`
 
-Real path: use `diffusers.FluxPipeline` components (transformer, scheduler) in FP8 precision. Qwen3 conditioning is already encoded in `conditioning` before `sample()` is called — the arch module receives the conditioning tensor, not raw text. Per-step callback checks `cancel_flag.is_set()`. Every FP8 precision choice and Flux-specific behaviour has an inline comment.
+**Real class:** `diffusers.Flux2KleinPipeline`.
+
+**⚠️ CRITICAL — do not use `diffusers.FluxPipeline`.** Unlike `ZitPipeline` (Phase 018), which simply doesn't exist, `FluxPipeline` **does exist** in `diffusers` — but it is the pipeline class for FLUX.1, an earlier and architecturally different model family. `FluxPipeline.from_pretrained()` against Flux 2 Klein weights will not raise an `ImportError`; it will either fail at a later, more confusing point or silently construct an incorrect pipeline. The correct class for Flux 2 Klein is `Flux2KleinPipeline`. `diffusers` also exposes `Flux2Pipeline` for the non-Klein Flux 2 Dev variant — do not confuse the two.
+
+**Component/pipeline caching split:** Identical pattern to `arch/zit.py` (P18-D1). `model` is the transformer component, already loaded and cached by `LoadModel` via `pipeline_cache.get_or_load(model_id, ...)`. `arch/flux.py` does not call `Flux2KleinPipeline.from_pretrained(model_id)` inside `sample()`. On the first `sample()` call for a given `model_id`, assemble a `Flux2KleinPipeline` from the already-loaded `transformer`, `vae`, and `text_encoder` components and cache the assembled pipeline object under `f"{model_id}:pipeline"` via `pipeline_cache.get_or_load()`.
+
+Qwen3 conditioning is already encoded in `conditioning` before `sample()` is called — the arch module receives the conditioning tensor, not raw text. Per-step callback checks `cancel_flag.is_set()` and calls `emit_progress(step, total_steps)`. Inline comment at the FP8 decision point: transformer stays at `float8` dtype (no upcast) when `InferenceCaps.fp8` is `True`; text encoder and VAE stay at `bf16`. Inline comment documenting the single-encoder conditioning handling.
 
 **Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_flux.py -v` exits 0 ≥ 3 tests; `can_handle` returns False for ZiT model object.
 
@@ -62,3 +68,6 @@ cargo test --workspace --features mock-hardware
 
 - The Flux conditioning tensor is a concatenation of CLIP-L and T5/Qwen3 embeddings in the original Flux architecture. If `LoadClip` with `clip_type="qwen3"` is used alone (as in our baseline workflow), the conditioning object must handle the single-encoder case. Document the design choice in an inline comment in `flux.py`.
 - `can_handle()` must check `model_obj.arch == "flux"` not `isinstance()` to keep arch modules decoupled from specific class hierarchies.
+- `diffusers.FluxPipeline` is a real class but is the FLUX.1 pipeline, not Flux 2 Klein. Using it against Flux 2 Klein weights does not raise an import error — it silently targets the wrong model. Use `diffusers.Flux2KleinPipeline`.
+- `diffusers>=0.36.0` is required (`worker/requirements/base.txt`) — this release introduced `Flux2Pipeline`/`Flux2KleinPipeline` alongside `ZImagePipeline` (Phase 018).
+- `arch/flux.py` must not call `Flux2KleinPipeline.from_pretrained(model_id)` inside `sample()`. Reuse the transformer already cached by `LoadModel`; assemble and cache the full pipeline once per `model_id`, same pattern as `arch/zit.py`.

@@ -1098,6 +1098,8 @@ Both baseline models (Z-Image Turbo FP8 and Flux 2 Klein FP8) are loaded from `.
 
 The `InferenceCaps.fp8` field must be `True` for any GPU that will execute these models. If `fp8` is `False` for the selected device, the scheduler emits a `422` at dispatch time with error `device_does_not_support_fp8`.
 
+**Component vs. pipeline caching.** `LoadModel`, `LoadVae`, and `LoadClip` each cache their own raw component (the diffusion transformer, VAE, and text encoder respectively) via `pipeline_cache.get_or_load(model_id, ...)`. Arch modules (`arch/zit.py`, `arch/flux.py`) do not call a pipeline class's `from_pretrained()` inside `sample()` — doing so would reload the full model from disk on every sampling call. Instead, on the first `sample()` call for a given `model_id`, the arch module assembles the full runnable pipeline object from the already-cached components and caches that assembled pipeline itself under a separate key (`f"{model_id}:pipeline"`) via `pipeline_cache.get_or_load()`. Subsequent `sample()` calls for the same `model_id` reuse the cached pipeline. This keeps `LoadModel`/`LoadVae`/`LoadClip` decoupled from any specific diffusers pipeline class while giving arch modules — the only place that knows which pipeline class a given architecture requires — sole responsibility for pipeline assembly.
+
 ---
 
 ## 11. Job Scheduler (`anvilml-scheduler`)
