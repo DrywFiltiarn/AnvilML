@@ -2797,3 +2797,35 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Three valid job UUIDs from submit(), two set to "completed", one to "cancelled", DELETE `/v1/jobs?status=completed`.
 **Expected output:** HTTP 200 with `{"removed":2}`; completed jobs return 404; cancelled job returns 200.
 **Acceptance command:** `cargo test -p anvilml-server --features mock-hardware --test jobs_tests test_bulk_clear_returns_removed_count` exits 0.
+
+## test_loadmodel_registered_in_registry (worker.nodes.loader)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `@register` decorator on `LoadModel` populates `NODE_REGISTRY` at module load time. Tests use `importlib.reload()` to re-execute the module body after `registry_clean` clears the registry.
+**Tests:** Re-imports `worker.nodes.loader` via `importlib.reload()`, then asserts `"LoadModel"` is a key in `NODE_REGISTRY` and that `NODE_REGISTRY["LoadModel"]` is the `LoadModel` class itself.
+**Inputs:** None (module import triggers `@register`).
+**Expected output:** `"LoadModel" in NODE_REGISTRY` and `NODE_REGISTRY["LoadModel"] is LoadModel`.
+
+## test_loadmodel_execute_returns_mock_model (worker.nodes.loader)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** `ANVILML_WORKER_MOCK=1` is set by the `conftest.py` autouse fixture, ensuring the mock code path is taken. `NODE_REGISTRY` is cleared by the `registry_clean` autouse fixture.
+**Tests:** Instantiates `LoadModel` with a `mock_context`, calls `execute(model_id="test-model")`, and asserts the returned dict contains a `MockModel` with `arch == "zit"`.
+**Inputs:** `model_id="test-model"`.
+**Expected output:** `result["model"]` is a `MockModel` instance with `result["model"].arch == "zit"`.
+
+## test_loadmodel_execute_missing_model_id_defaults_empty (worker.nodes.loader)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** `ANVILML_WORKER_MOCK=1` is set by the `conftest.py` autouse fixture. `NODE_REGISTRY` is cleared by the `registry_clean` autouse fixture.
+**Tests:** Calls `execute()` without providing a `model_id` key in the inputs dict. The mock code path ignores the model_id value entirely.
+**Inputs:** `{}` (no `model_id` key).
+**Expected output:** `result["model"]` is a `MockModel(arch="zit")` — mock mode does not require or validate the model_id input.
+
+## test_loadmodel_metadata_attributes (worker.nodes.loader)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** `LoadModel` class is accessible via direct import from `worker.nodes.loader` after re-import.
+**Tests:** Asserts each of the six required metadata attributes has the correct value and type: `NODE_TYPE`, `CATEGORY`, `DISPLAY_NAME`, `DESCRIPTION`, `INPUT_SLOTS`, `OUTPUT_SLOTS`.
+**Inputs:** None.
+**Expected output:** `NODE_TYPE="LoadModel"`, `CATEGORY="Loaders"`, `DISPLAY_NAME="Load Model"`, `DESCRIPTION` is a non-empty string, `INPUT_SLOTS` has one `SlotSpec("model_id", "STRING")`, `OUTPUT_SLOTS` has one `SlotSpec("model", "MODEL")`.
