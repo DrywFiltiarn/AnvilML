@@ -3006,3 +3006,39 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** None.
 **Expected output:** `NODE_TYPE="EmptyLatent"`, `CATEGORY="Latents"`, `DISPLAY_NAME="Empty Latent"`, `DESCRIPTION` is a non-empty string, `INPUT_SLOTS` has three `SlotSpec` entries, `OUTPUT_SLOTS` has one `SlotSpec("latent", "LATENT")`.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py::test_emptylatent_metadata_attributes -v` exits 0.
+
+## test_vaedeode_registered_in_registry (worker.nodes.decode)
+
+**File:** `worker/tests/test_nodes_decode.py`
+**Context:** `VaeDecode` class is registered in `NODE_REGISTRY` after importing `worker.nodes.decode`. The `@register` decorator runs at import time, populating the registry.
+**Tests:** Clears `NODE_REGISTRY` via the `registry_clean` fixture, re-imports and reloads the `decode` module, asserts `"VaeDecode"` is a key in `NODE_REGISTRY` and that `NODE_REGISTRY["VaeDecode"] is VaeDecode`.
+**Inputs:** None (uses `registry_clean` fixture for isolation, `importlib.reload()` for re-import).
+**Expected output:** `"VaeDecode"` present in `NODE_REGISTRY`, keyed by `NODE_TYPE == "VaeDecode"`.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vaedeode_registered_in_registry -v` exits 0.
+
+## test_vaedeode_execute_returns_mock_image (worker.nodes.decode)
+
+**File:** `worker/tests/test_nodes_decode.py`
+**Context:** `VaeDecode.execute()` in mock mode returns a `MockImage` sentinel. The node receives `vae` and `latent` inputs from upstream nodes.
+**Tests:** Instantiates `VaeDecode(mock_context)`, calls `execute(vae=MockVae(), latent=MockLatent())`, asserts the returned dict contains `"image"` key and `isinstance(result["image"], MockImage)`.
+**Inputs:** `vae=MockVae()`, `latent=MockLatent(width=8, height=8, batch_size=1)`.
+**Expected output:** `result["image"]` is a `MockImage` instance.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vaedeode_execute_returns_mock_image -v` exits 0.
+
+## test_vaedeode_metadata_attributes (worker.nodes.decode)
+
+**File:** `worker/tests/test_nodes_decode.py`
+**Context:** `VaeDecode` class is accessible via direct import from `worker.nodes.decode` after re-import. All six required metadata attributes have correct values.
+**Tests:** Asserts each of the six required metadata attributes has the correct value and type: `NODE_TYPE`, `CATEGORY`, `DISPLAY_NAME`, `DESCRIPTION`, `INPUT_SLOTS`, `OUTPUT_SLOTS`. Also verifies `INPUT_SLOTS` has two specs (`vae:VAE` required, `latent:LATENT` required) and `OUTPUT_SLOTS` has one spec (`image:IMAGE` required).
+**Inputs:** None.
+**Expected output:** `NODE_TYPE="VaeDecode"`, `CATEGORY="Decoding"`, `DISPLAY_NAME="VAE Decode"`, `DESCRIPTION` is a non-empty string, `INPUT_SLOTS` has two `SlotSpec` entries, `OUTPUT_SLOTS` has one `SlotSpec("image", "IMAGE")`.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vaedeode_metadata_attributes -v` exits 0.
+
+## test_vaedeode_execute_missing_inputs_returns_mock (worker.nodes.decode)
+
+**File:** `worker/tests/test_nodes_decode.py`
+**Context:** `VaeDecode.execute()` in mock mode ignores missing inputs entirely, matching how `LoadModel` handles missing `model_id`.
+**Tests:** Calls `execute()` without providing any inputs. Mock mode does not require or validate the vae/latent inputs.
+**Inputs:** None (empty dict passed via `execute()`).
+**Expected output:** `result["image"]` is a `MockImage` — mock mode does not require or validate the vae/latent inputs.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vaedeode_execute_missing_inputs_returns_mock -v` exits 0.

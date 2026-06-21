@@ -162,11 +162,12 @@ def test_mock_startup_sends_ready():
             assert ready["fp8"] is True
             assert ready["flash_attention"] is True
             # SaveImage, LoadModel, LoadVae, LoadClip, ClipTextEncode,
-            # EmptyLatent, and Sampler nodes are now registered, so
-            # node_types is non-empty. Verify it contains exactly seven
-            # entries (the full set of Python-side node types).
+            # EmptyLatent, Sampler, and VaeDecode nodes are now
+            # registered, so node_types is non-empty. Verify it
+            # contains exactly eight entries (the full set of
+            # Python-side node types).
             assert isinstance(ready["node_types"], list)
-            assert len(ready["node_types"]) == 7
+            assert len(ready["node_types"]) == 8
             type_names = {nt["type_name"] for nt in ready["node_types"]}
             assert type_names == {
                 "SaveImage",
@@ -176,6 +177,7 @@ def test_mock_startup_sends_ready():
                 "ClipTextEncode",
                 "EmptyLatent",
                 "Sampler",
+                "VaeDecode",
             }
         finally:
             proc.terminate()

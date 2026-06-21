@@ -109,11 +109,14 @@ class SaveImage(BaseNode):
         Reads the ``"image"`` input (which will be ``None`` in mock
         mode since no upstream nodes exist yet), generates a minimal
         64×64 black PNG, encodes it as base64, and emits an
-        ``ImageReady`` event.
+        ``ImageReady`` event with optional ``seed`` and ``steps``
+        fields for reproducibility tracking.
 
         Args:
             **inputs: Keyword arguments keyed by input slot name.
-                Must contain ``"image"``.
+                Must contain ``"image"``. May optionally contain
+                ``"seed"`` (the resolved seed from the Sampler node)
+                and ``"steps"`` (the number of denoising steps).
 
         Returns:
             Empty dict — this node has no output slots.
@@ -131,15 +134,25 @@ class SaveImage(BaseNode):
         png_data = _generate_black_png(64, 64)
         b64 = base64.b64encode(png_data).decode("ascii")
 
+        # Read optional seed and steps from inputs. These arrive only
+        # when wired from upstream nodes (e.g. Sampler passes its
+        # resolved seed value). They are not declared as formal slot
+        # specs — accepted via **inputs but not in INPUT_SLOTS.
+        seed = inputs.get("seed")
+        steps = inputs.get("steps")
+
         # Emit the ImageReady event via the IPC channel.
-        # The event carries the job_id, base64-encoded PNG, and
-        # dimensions so the supervisor can forward it to the UI.
+        # The event carries the job_id, base64-encoded PNG,
+        # dimensions, and optional seed/steps so the supervisor
+        # can forward them to the UI for reproducibility tracking.
         self.ctx.emit({
             "_type": "ImageReady",
             "job_id": self.ctx.job_id,
             "image_b64": b64,
             "width": 64,
             "height": 64,
+            "seed": seed,
+            "steps": steps,
         })
 
         # No output slots — the image is transmitted via IPC event.
