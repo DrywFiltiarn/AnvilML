@@ -39,6 +39,7 @@ async fn test_scheduler(
         pool,
         Arc::new(EventBroadcaster::new()),
         Arc::clone(&artifact_store),
+        None, // cancellation requires a real worker pool
     ));
     (scheduler, artifact_store)
 }

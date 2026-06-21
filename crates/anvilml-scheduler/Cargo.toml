@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-scheduler"
-version = "0.1.12"
+version = "0.1.13"
 edition.workspace = true
 
 [dependencies]
@@ -24,6 +24,7 @@ uuid = { workspace = true }
 mock-hardware = ["anvilml-hardware/mock-hardware"]
 
 [dev-dependencies]
+axum = { workspace = true }
 chrono = { workspace = true }
 serial_test = "3.1"
-sqlx = { workspace = true }
+sqlx = { workspace = true, features = ["chrono"] }

@@ -76,6 +76,7 @@ async fn make_scheduler(db: SqlitePool, registry: Arc<NodeTypeRegistry>) -> JobS
         db,
         Arc::new(EventBroadcaster::new()),
         Arc::new(artifact_store),
+        None, // cancellation requires a real worker pool
     )
 }
 

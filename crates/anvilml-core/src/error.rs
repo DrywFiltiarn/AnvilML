@@ -26,6 +26,7 @@ use uuid::Uuid;
 /// - `InvalidGraph` — graph semantic validation failure (422)
 /// - `CycleDetected` — graph structural failure (400)
 /// - `WorkersUnavailable` — all workers busy or dead
+/// - `InvalidOperation` — cancelling a terminal-state job (409)
 /// - `Internal` — unexpected internal failures
 /// - `Toml`, `EnvVar` — configuration loading errors (pre-existing)
 #[derive(Debug, thiserror::Error)]
@@ -123,6 +124,16 @@ pub enum AnvilError {
     #[error("artifact not found: {0}")]
     ArtifactNotFound(String),
 
+    /// Invalid operation — the job is in a terminal state and cannot be
+    /// cancelled.
+    ///
+    /// Produced when a client attempts to cancel a job that has already
+    /// completed, failed, or was previously cancelled. Maps to `409
+    /// Conflict` because the request conflicts with the current state of
+    /// the resource.
+    #[error("invalid operation: {0}")]
+    InvalidOperation(String),
+
     /// Workers unavailable.
     ///
     /// Produced when all registered workers are busy, dead, or failing
@@ -203,6 +214,10 @@ impl AnvilError {
 
             // Temporarily unable to process — all workers are busy/dead.
             AnvilError::WorkersUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+
+            // Operation rejected — the job is in a terminal state and cannot
+            // be cancelled. Per RFC 7231 this maps to 409 Conflict.
+            AnvilError::InvalidOperation(_) => StatusCode::CONFLICT,
         }
     }
 }
@@ -261,6 +276,7 @@ impl AnvilError {
             AnvilError::ModelNotFound(_) => "model_not_found",
             AnvilError::ArtifactNotFound(_) => "artifact_not_found",
             AnvilError::WorkersUnavailable(_) => "workers_unavailable",
+            AnvilError::InvalidOperation(_) => "invalid_operation",
             AnvilError::Internal(_) => "internal",
             AnvilError::Toml(_) => "toml",
             AnvilError::EnvVar { .. } => "env_var",

@@ -86,16 +86,17 @@
     "P902-A3",
     "P902-A4",
     "P902-A5",
-    "P16-A1"
+    "P16-A1",
+    "P16-A2"
   ],
-  "in_progress": "P16-A2",
+  "in_progress": "P17-A1",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-20T21:13:18+0200",
+  "last_updated": "2026-06-21T08:15:25+0200",
   "plan_approved": true,
-  "current_plan": "1. **Add `JobStarted` broadcast to `dispatch_once` in `scheduler.rs`.**\n   After the `workers.send_execute(&worker_id, &msg).await` call succeeds (inside the for loop iterating over `to_dispatch`), add:\n   ```rust\n   // Broadcast JobStarted so WebSocket clients know execution has begun\n   // on a specific worker. This is the second event in the lifecycle\n   // sequence: JobQueued \u2192 JobStarted \u2192 ...\n   broadcaster.send(WsEvent::JobStarted {\n       job_id: job.id,\n       worker_id: worker_id.clone(),\n   });\n   ```\n   Rationale: The acceptance criterion requires `JobStarted` in the 7-event sequence. It is not currently broadcast anywhere. Adding it here (immediately after the Execute message succeeds) ensures the event appears before any Progress events from the worker.\n\n2. **Add `WorkerEvent::Progress` arm to `handle_event` in `event_loop.rs`.**\n   Insert a new match arm between the existing `ImageReady` arm and the catch-all `_` arm:\n   ```rust\n   WorkerEvent::Progress {\n       job_id,\n       step,\n       total_steps,\n       preview_b64,\n   } => {\n       // Relay Progress to WebSocket clients without DB write.\n       // Progress events are transient UI updates \u2014 only terminal\n       // statuses (Completed, Failed, Cancelled) are persisted.\n       tracing::debug!(\n           job_id = %job_id,\n           step = step,\n           total_steps = total_steps,\n           \"progress event relayed\"\n       );\n       broadcaster.send(WsEvent::JobProgress {\n           job_id,\n           step,\n           total_steps,\n           preview_b64,\n       });\n   }\n   ```\n   Rationale: Follows the exact same pattern as `ImageReady` (broadcast + log) but without DB or artifact operations. No VRAM release needed for Progress events.\n\n3. **Write integration test file `crates/anvilml-scheduler/tests/progress_tests.rs`.**\n   Create a new test file following the established patterns from `event_loop_tests.rs` and `image_ready_tests.rs`. The test:\n   - Creates in-memory DB, scheduler, registry (with `LoadModel` node).\n   - Subscribes to the WsEvent channel.\n   - Starts the event loop.\n   - Submits a job and manually sets it Running in DB.\n   - Sends events through the broadcaster in exact sequence: `JobStarted` (simulating dispatch), `Progress(step=1)`, `Progress(step=2)`, `Progress(step=3)`, `ImageReady`, `Completed`.\n   - Collects all events via `ws_rx.recv()` with timeouts.\n   - Asserts the sequence order and field values.",
-  "plan_approval_message_id": "1517970171946467499",
-  "push_approval_message_id": null,
-  "plan_report_message_id": "1517970170285391903",
-  "impl_report_message_id": null
+  "current_plan": "",
+  "plan_approval_message_id": "1518030342274027693",
+  "push_approval_message_id": "1518007495359201521",
+  "plan_report_message_id": "1518030340529197149",
+  "impl_report_message_id": "1518007493295345795"
 }

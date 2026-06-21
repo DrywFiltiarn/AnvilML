@@ -40,6 +40,13 @@ from worker.nodes.base import NodeContext
 from worker.executor import run_graph
 
 
+# Module-level cancel flag for job cancellation.
+# This is set by the CancelJob message handler and checked by the
+# Execute handler. A list is used (mutable container) so it can be
+# modified from the CancelJob handler without needing global state.
+_cancel_flag: list[bool] = [False]
+
+
 def _import_nodes() -> None:
     """Import the ``worker.nodes`` package to trigger auto-import.
 
@@ -216,13 +223,14 @@ def main() -> None:
             # Build a NodeContext for this job execution.
             # The cancel_flag is a list (mutable container) so nodes
             # can check and set it during long-running operations.
+            # We reset the cancel flag for each new job execution.
             # The pipeline_cache is an empty dict — nodes can store
             # cross-node data here within the same job.
-            cancel_flag: list[bool] = [False]
+            _cancel_flag[0] = False
             ctx = NodeContext(
                 job_id=job_id,
                 device=device,
-                cancel_flag=cancel_flag,
+                cancel_flag=_cancel_flag,
                 emit=send_event,
                 pipeline_cache={},
             )
@@ -254,6 +262,17 @@ def main() -> None:
                     f"worker_main: job {job_id} failed: {e}",
                     file=sys.stderr,
                 )
+            elif msg_type == "CancelJob":
+            # Cancel the current job execution.
+            # Set the cancel flag so the executor stops at its next checkpoint.
+            # The executor checks this flag between nodes/steps.
+            # After setting the flag, send a Cancelled event back to the
+            # supervisor so the scheduler can update the job status.
+            _cancel_flag[0] = True
+            send_event({
+                "_type": "Cancelled",
+                "job_id": msg.get("job_id"),
+            })
         elif msg_type == "Shutdown":
             # Graceful exit requested by the supervisor.
             sys.exit(0)

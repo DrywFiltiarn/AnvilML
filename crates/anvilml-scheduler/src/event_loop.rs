@@ -1,4 +1,5 @@
-//! Event loop for processing worker events (Completed, Failed, ImageReady, Progress).
+//! Event loop for processing worker events (Completed, Failed, Cancelled,
+//! ImageReady, Progress).
 //!
 //! This module implements the event subscription loop that receives
 //! `WorkerEvent` messages from the `EventBroadcaster` and updates
@@ -11,12 +12,14 @@
 //!    releases VRAM reservation, broadcasts `WsEvent::JobCompleted`.
 //! 4. On `Failed`: updates DB (status=failed, error), releases VRAM,
 //!    broadcasts `WsEvent::JobFailed`.
-//! 5. On `ImageReady`: decodes base64 image, persists via `ArtifactStore`,
+//! 5. On `Cancelled`: updates DB (status=cancelled), releases VRAM,
+//!    broadcasts `WsEvent::JobCancelled`.
+//! 6. On `ImageReady`: decodes base64 image, persists via `ArtifactStore`,
 //!    broadcasts `WsEvent::JobImageReady`.
-//! 6. On `Progress`: relays to WebSocket clients via `WsEvent::JobProgress`
+//! 7. On `Progress`: relays to WebSocket clients via `WsEvent::JobProgress`
 //!    (no DB write — progress is transient UI state).
-//! 7. On unknown events: logs at DEBUG and continues.
-//! 8. On channel closure: logs at WARN and exits.
+//! 8. On unknown events: logs at DEBUG and continues.
+//! 9. On channel closure: logs at WARN and exits.
 
 use std::sync::Arc;
 
@@ -189,9 +192,12 @@ async fn handle_event(
                 preview_b64,
             });
         }
+        WorkerEvent::Cancelled { job_id } => {
+            handle_cancelled(db, ledger, broadcaster, job_id).await;
+        }
         // Unknown event variant — log at DEBUG and continue.
-        // Cancelled, Ready, Pong, Dying, and MemoryReport events
-        // are handled by future phases.
+        // Ready, Pong, Dying, and MemoryReport events are handled
+        // by future phases.
         _ => {
             tracing::debug!(event_type = ?event, "ignoring non-terminal worker event");
         }
@@ -356,6 +362,85 @@ async fn handle_failed(
     // Mandatory INFO log point per ENVIRONMENT.md §9 — "Scheduler:
     // Job failed" with job_id and error fields.
     info!(job_id = %job_id, error = %error, "job failed");
+}
+
+/// Handle a `WorkerEvent::Cancelled` event.
+///
+/// 1. Updates the job's status to `cancelled` in the database.
+/// 2. Queries the job's `device_index` and releases VRAM reservation.
+/// 3. Broadcasts `WsEvent::JobCancelled` to WebSocket clients.
+/// 4. Emits mandatory INFO log: `job_id`.
+///
+/// # Arguments
+///
+/// * `db` — The SQLite database pool.
+/// * `ledger` — The VRAM ledger for releasing reservations.
+/// * `broadcaster` — The event broadcaster.
+/// * `job_id` — The UUID of the cancelled job.
+async fn handle_cancelled(
+    db: &SqlitePool,
+    ledger: &Arc<tokio::sync::Mutex<VramLedger>>,
+    broadcaster: &Arc<EventBroadcaster>,
+    job_id: Uuid,
+) {
+    // Update the job status to cancelled.
+    // No completed_at timestamp is needed — the cancellation time
+    // is implicit from the event receipt.
+    let _ = sqlx::query("UPDATE jobs SET status = 'cancelled' WHERE id = ?")
+        .bind(job_id.to_string())
+        .execute(db)
+        .await;
+
+    // Derive the device index for VRAM release.
+    // The dispatch loop stores worker_id (e.g. "worker-0") and optionally
+    // device_index. We try device_index first, then fall back to parsing
+    // worker_id. If neither is available, skip VRAM release.
+    let device_index: Option<i64> =
+        sqlx::query_scalar("SELECT device_index FROM jobs WHERE id = ?")
+            .bind(job_id.to_string())
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None);
+
+    let idx = match device_index {
+        Some(idx) => Some(idx as u32),
+        None => {
+            // device_index is NULL — either the column doesn't exist yet
+            // or the job hasn't been dispatched. Fall back to parsing
+            // worker_id ("worker-N" → N). This keeps the event loop
+            // compatible with databases that haven't run migration 002.
+            let worker_id: Option<String> =
+                sqlx::query_scalar("SELECT worker_id FROM jobs WHERE id = ?")
+                    .bind(job_id.to_string())
+                    .fetch_optional(db)
+                    .await
+                    .unwrap_or(None);
+
+            worker_id.as_ref().and_then(|wid| {
+                // Parse "worker-N" → N. If parsing fails, return None
+                // and skip VRAM release.
+                wid.strip_prefix("worker-")
+                    .and_then(|n| n.parse::<u32>().ok())
+            })
+        }
+    };
+
+    if let Some(idx) = idx {
+        // Release the VRAM reservation for this job on the assigned device.
+        // The amount (VRAM_RELEASE_MIB) matches the dispatch loop's default
+        // reservation amount. Phase 015 will replace this with model-specific
+        // metadata. The ledger panics on underflow, catching any mismatch.
+        let mut guard = ledger.lock().await;
+        guard.release(idx, VRAM_RELEASE_MIB);
+    }
+
+    // Broadcast the JobCancelled event to WebSocket clients so they
+    // can update their UI to show the job was cancelled.
+    broadcaster.send(WsEvent::JobCancelled { job_id });
+
+    // Mandatory INFO log point per ENVIRONMENT.md §9 — "Scheduler:
+    // job cancelled" with job_id field.
+    info!(job_id = %job_id, "job cancelled");
 }
 
 /// Handle a `WorkerEvent::ImageReady` event.

@@ -92,6 +92,15 @@ pub struct JobScheduler {
     /// 200ms periodic poll. This reduces the latency between job
     /// submission and dispatch.
     notify: Arc<tokio::sync::Notify>,
+
+    /// Reference to the worker pool for sending IPC messages to workers.
+    ///
+    /// Used by `cancel_job` when cancelling a running job — the scheduler
+    /// sends a `WorkerMessage::CancelJob` to the owning worker. The dispatch
+    /// loop already uses workers (via a parameter), but storing the reference
+    /// here allows `cancel_job` to be a direct method on `&self` without
+    /// requiring a workers parameter.
+    workers: Option<Arc<WorkerPool>>,
 }
 
 impl JobScheduler {
@@ -109,7 +118,18 @@ impl JobScheduler {
     /// * `broadcaster` — The WebSocket event broadcaster for client notifications.
     /// * `artifact_store` — The artifact storage backend for persisting
     ///   generated images when `WorkerEvent::ImageReady` arrives.
-    #[tracing::instrument(skip(queue, ledger, node_registry, db, broadcaster, artifact_store))]
+    /// * `workers` — The worker pool for sending IPC messages (e.g. job
+    ///   cancellation). `None` disables cancellation support — callers
+    ///   that need it must pass an `Arc<WorkerPool>`.
+    #[tracing::instrument(skip(
+        queue,
+        ledger,
+        node_registry,
+        db,
+        broadcaster,
+        artifact_store,
+        workers
+    ))]
     pub fn new(
         queue: Arc<tokio::sync::Mutex<JobQueue>>,
         ledger: Arc<tokio::sync::Mutex<VramLedger>>,
@@ -117,6 +137,7 @@ impl JobScheduler {
         db: SqlitePool,
         broadcaster: Arc<EventBroadcaster>,
         artifact_store: Arc<ArtifactStore>,
+        workers: Option<Arc<WorkerPool>>,
     ) -> Self {
         Self {
             queue,
@@ -126,6 +147,7 @@ impl JobScheduler {
             broadcaster,
             artifact_store,
             notify: Arc::new(tokio::sync::Notify::new()),
+            workers,
         }
     }
 
@@ -409,6 +431,155 @@ impl JobScheduler {
         tracing::info!(count, "rehydrated queue from database");
 
         Ok(count)
+    }
+
+    /// Cancel a job by its UUID.
+    ///
+    /// Handles cancellation differently based on the job's current status:
+    /// - **Queued**: Immediately removes the job from the in-memory queue,
+    ///   updates the database to `Cancelled`, and broadcasts
+    ///   `WsEvent::JobCancelled`.
+    /// - **Running**: Sends a `WorkerMessage::CancelJob` IPC message to the
+    ///   owning worker via the worker pool. Returns `Ok(())` immediately —
+    ///   the actual cancellation is confirmed asynchronously when
+    ///   `WorkerEvent::Cancelled` arrives and is processed by the event loop.
+    /// - **Terminal** (Completed, Failed, Cancelled): Returns
+    ///   `AnvilError::InvalidOperation` (409) — a terminal job cannot be
+    ///   cancelled again.
+    ///
+    /// If the job is not found in the database, returns
+    /// `AnvilError::JobNotFound` (404).
+    ///
+    /// # Arguments
+    ///
+    /// * `id` — The UUID of the job to cancel.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` on success. `Err(AnvilError::InvalidOperation(_))` if the job
+    /// is in a terminal state. `Err(AnvilError::JobNotFound(_))` if no job
+    /// with the given ID exists. `Err(AnvilError::Ipc(_))` if the IPC send
+    /// fails when cancelling a running job.
+    #[tracing::instrument(skip(self), fields(job_id = %id))]
+    pub async fn cancel_job(&self, id: Uuid) -> Result<(), AnvilError> {
+        // Look up the job from the database to determine its current status.
+        // This is the authoritative source — the in-memory queue may not
+        // contain jobs that were dispatched (they're no longer queued).
+        let job = self
+            .get_job(id)
+            .await?
+            .ok_or_else(|| AnvilError::JobNotFound(id.to_string()))?;
+
+        match job.status {
+            JobStatus::Queued => {
+                // Cancel from the in-memory queue — this is O(1) via swap-remove.
+                // The queue's cancel() returns true if found, false otherwise.
+                // If the job is not in the queue (race with dispatch), fall through.
+                let mut queue = self.queue.lock().await;
+                if !queue.cancel(id) {
+                    // Job was already dispatched (race condition: dispatch
+                    // popped it between our get_job() and queue.cancel()).
+                    // Fall through to check if it's now Running.
+                    drop(queue);
+                    // Re-fetch to check if it's now Running.
+                    let job = self
+                        .get_job(id)
+                        .await?
+                        .ok_or_else(|| AnvilError::JobNotFound(id.to_string()))?;
+
+                    match job.status {
+                        JobStatus::Running => {
+                            // Send cancel IPC to the owning worker.
+                            self.cancel_running_job(&job).await?;
+                        }
+                        _ => {
+                            // Terminal state — should not happen since we checked above,
+                            // but handle it defensively.
+                            return Err(AnvilError::InvalidOperation(format!(
+                                "job {} is in terminal state {:?}",
+                                id, job.status
+                            )));
+                        }
+                    }
+                } else {
+                    drop(queue);
+                    // Update DB status to cancelled.
+                    let _ = sqlx::query(
+                        "UPDATE jobs SET status = 'cancelled', completed_at = ? WHERE id = ?",
+                    )
+                    .bind(Utc::now().to_rfc3339())
+                    .bind(id.to_string())
+                    .execute(&self.db)
+                    .await;
+
+                    // Broadcast JobCancelled event.
+                    self.broadcaster.send(WsEvent::JobCancelled { job_id: id });
+
+                    // Mandatory INFO log point per ENVIRONMENT.md §9 — "Scheduler:
+                    // job cancelled" with job_id field.
+                    info!(job_id = %id, "job cancelled");
+                }
+            }
+            JobStatus::Running => {
+                self.cancel_running_job(&job).await?;
+            }
+            JobStatus::Completed | JobStatus::Failed | JobStatus::Cancelled => {
+                // Terminal state — cannot cancel a job that has already finished.
+                // Return 409 Conflict per the task specification.
+                return Err(AnvilError::InvalidOperation(format!(
+                    "job {} is in terminal state {:?}",
+                    id, job.status
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Cancel a running job by sending an IPC message to the owning worker.
+    ///
+    /// The actual cancellation is confirmed asynchronously via the event loop
+    /// when `WorkerEvent::Cancelled` arrives. This method returns Ok(())
+    /// immediately after sending the message.
+    ///
+    /// # Arguments
+    ///
+    /// * `job` — The running job, which provides worker_id and device_index.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AnvilError::Internal` if the worker_id cannot be parsed to
+    /// derive a device index, or `AnvilError::Ipc` if the worker pool is
+    /// unavailable or the IPC send fails.
+    async fn cancel_running_job(&self, job: &Job) -> Result<(), AnvilError> {
+        // Derive the device index from the worker_id ("worker-N" → N).
+        // The job's worker_id was set by the dispatch loop. We parse it
+        // to get the device_index for send_cancel().
+        let device_index: u32 = job
+            .worker_id
+            .as_ref()
+            .and_then(|wid| wid.strip_prefix("worker-"))
+            .and_then(|n| n.parse().ok())
+            .ok_or_else(|| {
+                AnvilError::Internal(format!(
+                    "cannot derive device_index from worker_id: {:?}",
+                    job.worker_id
+                ))
+            })?;
+
+        // Send the CancelJob message to the owning worker.
+        // The worker will set its cancel flag and stop execution.
+        // If the send fails (worker disconnected), return an error so the
+        // caller can report the failure to the client.
+        let workers = self.workers.as_ref().ok_or_else(|| {
+            AnvilError::Internal(
+                "worker pool not configured; cannot cancel running job".to_string(),
+            )
+        })?;
+
+        workers.send_cancel(device_index, job.id).await?;
+
+        Ok(())
     }
 
     /// Register a GPU device's total VRAM capacity with the dispatch

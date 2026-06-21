@@ -114,7 +114,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-core"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "axum",
  "chrono",
@@ -192,7 +192,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-scheduler"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "anvilml-artifacts",
  "anvilml-core",
@@ -200,6 +200,7 @@ dependencies = [
  "anvilml-ipc",
  "anvilml-registry",
  "anvilml-worker",
+ "axum",
  "base64",
  "chrono",
  "indexmap",

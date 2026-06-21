@@ -31,6 +31,7 @@ use anvilml_core::{
 };
 use anvilml_ipc::{EventBroadcaster, RouterTransport, WorkerMessage};
 use tracing;
+use uuid::Uuid;
 
 use crate::demux::{self, RouteTable};
 use crate::managed::ManagedWorker;
@@ -478,6 +479,49 @@ impl WorkerPool {
             wire_identity = %wire_identity,
             msg_type = %format!("{:?}", msg),
             "message sent to worker"
+        );
+
+        Ok(())
+    }
+
+    /// Send a cancel message to a specific worker.
+    ///
+    /// Encodes `WorkerMessage::CancelJob { job_id }` via msgpack and routes
+    /// it through the shared `RouterTransport` to the worker identified
+    /// by `device_index`. This is the scheduler's mechanism for requesting
+    /// that a running job be cancelled on a specific worker.
+    ///
+    /// # Arguments
+    ///
+    /// * `device_index` — The target worker's GPU device index, matching
+    ///   the index used to derive its ZMQ wire identity at spawn time.
+    /// * `job_id` — The UUID of the job to cancel.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AnvilError::Ipc` if the message could not be sent through
+    /// the transport (e.g., the worker is disconnected).
+    pub async fn send_cancel(&self, device_index: u32, job_id: Uuid) -> Result<(), AnvilError> {
+        // The wire identity is the device index rendered as a decimal
+        // string — must match ManagedWorker::spawn's ipc_identity_bytes
+        // and worker/ipc.py's zmq.IDENTITY exactly, byte for byte.
+        let wire_identity = device_index.to_string();
+
+        let msg = WorkerMessage::CancelJob { job_id };
+
+        // Delegate to the internal transport. The transport is wrapped in
+        // Arc<RouterTransport> which is shared across the pool; send() is
+        // already protected by its own internal mutex (send_half).
+        self.transport
+            .send(wire_identity.as_bytes(), &msg)
+            .await
+            .map_err(|e| AnvilError::Ipc(e.to_string()))?;
+
+        tracing::debug!(
+            device_index,
+            wire_identity = %wire_identity,
+            job_id = %job_id,
+            "cancel message sent to worker"
         );
 
         Ok(())

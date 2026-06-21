@@ -32,6 +32,7 @@ async fn test_state(registry: Arc<NodeTypeRegistry>) -> (Arc<JobScheduler>, Arc<
         pool,
         Arc::new(anvilml_ipc::EventBroadcaster::new()),
         Arc::clone(&artifact_store),
+        None, // cancellation requires a real worker pool
     ));
     (scheduler, artifact_store)
 }

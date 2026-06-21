@@ -8,6 +8,7 @@ anvilml-core = { path = "../anvilml-core" }
 anvilml-hardware = { path = "../anvilml-hardware" }
 anvilml-ipc = { path = "../anvilml-ipc" }
 libc = "0.2"
+uuid = { version = "1", features = ["v4"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
 

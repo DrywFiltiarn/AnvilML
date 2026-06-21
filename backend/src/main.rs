@@ -162,14 +162,9 @@ async fn main() {
     // The artifact directory is created automatically on construction.
     let artifact_store = Arc::new(ArtifactStore::new(cfg.artifact_dir.clone(), pool.clone()).await);
 
-    // Build the job scheduler with the node registry, database pool,
-    // and event broadcaster. The queue and ledger are freshly initialised
-    // — the queue starts empty and the ledger has no registered devices
-    // (VRAM checks are added in Phase 014).
-    //
     // The broadcaster is constructed once, here, and shared by both the
     // scheduler (which the event loop subscribes to via
-    // `scheduler.broadcaster()`) and the worker pool below (which calls
+    // `scheduler.broadcaster()`) and the worker pool (which calls
     // `broadcast_worker_event` on it from `ManagedWorker::run()`). These
     // two consumers MUST share the exact same `Arc<EventBroadcaster>`
     // instance — a `tokio::sync::broadcast` channel only delivers to
@@ -187,6 +182,36 @@ async fn main() {
     // VRAM, IPC addressing) was correct.
     let broadcaster = Arc::new(EventBroadcaster::new());
 
+    // Spawn managed workers for all detected GPU devices.
+    // Each worker is a Python subprocess that executes inference nodes.
+    // The worker pool spawns a background monitoring task per worker that
+    // broadcasts status changes to connected WebSocket clients.
+    //
+    // We must spawn workers before constructing the scheduler because the
+    // scheduler needs a reference to the worker pool for job cancellation
+    // (the `cancel_job` method sends IPC messages via the pool).
+    //
+    // Passes the same `broadcaster` constructed above — see that
+    // variable's doc comment for why this must not be a second,
+    // independently-constructed `EventBroadcaster`.
+    let workers = WorkerPool::spawn_all(
+        &cfg,
+        &hardware_info.gpus,
+        Arc::new(transport),
+        Arc::clone(&broadcaster),
+        Arc::clone(&node_registry),
+    )
+    .await
+    .expect("failed to spawn worker pool");
+
+    // Wrap the worker pool in an Arc now so it can be shared between the
+    // dispatch loop, the event loop, AppState, and the later shutdown call.
+    let workers = Arc::new(workers);
+
+    // Build the job scheduler with the node registry, database pool,
+    // event broadcaster, and worker pool reference. The queue and ledger
+    // are freshly initialised — the queue starts empty and the ledger has
+    // no registered devices (VRAM checks are added in Phase 014).
     let scheduler = Arc::new(JobScheduler::new(
         Arc::new(tokio::sync::Mutex::new(JobQueue::default())),
         Arc::new(tokio::sync::Mutex::new(VramLedger::new())),
@@ -194,6 +219,7 @@ async fn main() {
         pool.clone(),
         Arc::clone(&broadcaster),
         Arc::clone(&artifact_store),
+        Some(Arc::clone(&workers)),
     ));
 
     // Restore any jobs left in `Queued` status by a prior process (e.g. an
@@ -226,28 +252,6 @@ async fn main() {
             "registered device with VRAM ledger"
         );
     }
-
-    // Spawn managed workers for all detected GPU devices.
-    // Each worker is a Python subprocess that executes inference nodes.
-    // The worker pool spawns a background monitoring task per worker that
-    // broadcasts status changes to connected WebSocket clients.
-    //
-    // Passes the same `broadcaster` constructed above — see that
-    // variable's doc comment for why this must not be a second,
-    // independently-constructed `EventBroadcaster`.
-    let workers = WorkerPool::spawn_all(
-        &cfg,
-        &hardware_info.gpus,
-        Arc::new(transport),
-        Arc::clone(&broadcaster),
-        Arc::clone(&node_registry),
-    )
-    .await
-    .expect("failed to spawn worker pool");
-
-    // Wrap the worker pool in an Arc now so it can be shared between the
-    // dispatch loop, the event loop, AppState, and the later shutdown call.
-    let workers = Arc::new(workers);
 
     // Start the scheduler's two background tasks. Without these, jobs are
     // accepted via POST /v1/jobs and persisted as Queued, but nothing ever

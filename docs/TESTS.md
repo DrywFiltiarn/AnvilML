@@ -2707,3 +2707,48 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Progress event with step=5, total_steps=50, preview_b64=None.
 **Expected output:** WsEvent::JobProgress{job_id, step=5, total_steps=50, preview_b64=None} broadcast. Job status remains "running". VRAM reservation unchanged at 4096 MiB.
 **Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_progress_no_preview` exits 0.
+
+## test_cancel_queued_job (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_cancel_tests.rs`
+**Context:** Cancelling a Queued job removes it from the in-memory queue, updates the DB to 'cancelled', sets completed_at, and broadcasts WsEvent::JobCancelled. The scheduler is built without a worker pool (workers=None) since cancellation of queued jobs doesn't need IPC.
+**Tests:** Submits a job (Queued in DB). Subscribes to WsEvent channel. Calls `cancel_job()`. Verifies queue is empty, DB status is 'cancelled', completed_at is set, and WsEvent::JobCancelled is broadcast with matching job_id.
+**Inputs:** Valid job UUID from submit().
+**Expected output:** Queue empty, DB status='cancelled', completed_at set, WsEvent::JobCancelled{job_id} broadcast.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- scheduler_cancel_tests::test_cancel_queued_job` exits 0.
+
+## test_cancel_running_job_fails_without_worker (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_cancel_tests.rs`
+**Context:** Cancelling a Running job sends a CancelJob IPC message to the owning worker via the worker pool. When the worker pool's transport has no connected workers, the IPC send fails with an AnvilError::Ipc error. The test verifies the error is propagated and the job remains Running.
+**Tests:** Submits a job, manually sets it Running in DB. Creates a WorkerPool with a Busy worker (no connected workers). Passes the pool to the scheduler. Calls `cancel_job()`. Verifies the result is an Err(AnvilError::Ipc) and the job status remains 'running'.
+**Inputs:** Valid job UUID from submit(), manually set to Running status.
+**Expected output:** Err(AnvilError::Ipc), job status remains 'running' (cancel not confirmed).
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- scheduler_cancel_tests::test_cancel_running_job_fails_without_worker` exits 0.
+
+## test_cancel_terminal_job_returns_error (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_cancel_tests.rs`
+**Context:** Cancelling a job in a terminal state (Completed, Failed, Cancelled) returns AnvilError::InvalidOperation with HTTP 409 Conflict. This prevents clients from cancelling already-finished jobs.
+**Tests:** Submits a job, manually sets it to Completed in DB. Calls `cancel_job()`. Verifies the error has status code 409 and error_kind "invalid_operation". Verifies DB status remains 'completed'.
+**Inputs:** Valid job UUID from submit(), manually set to Completed status.
+**Expected output:** Err(InvalidOperation), status code 409, DB status remains 'completed'.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- scheduler_cancel_tests::test_cancel_terminal_job_returns_error` exits 0.
+
+## test_cancel_unknown_job_returns_404 (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_cancel_tests.rs`
+**Context:** Cancelling a job that doesn't exist in the database returns AnvilError::JobNotFound with HTTP 404 Not Found.
+**Tests:** Generates a random UUID that doesn't exist in the DB. Calls `cancel_job()` with that UUID. Verifies the error has status code 404 and error_kind "job_not_found".
+**Inputs:** Random UUID (non-existent in DB).
+**Expected output:** Err(JobNotFound), status code 404.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- scheduler_cancel_tests::test_cancel_unknown_job_returns_404` exits 0.
+
+## test_cancelled_event_releases_vram (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_cancel_tests.rs`
+**Context:** The event loop's Cancelled event handler updates the job status to 'cancelled', releases VRAM reservation, and broadcasts WsEvent::JobCancelled. This is the async confirmation path for running-job cancellations.
+**Tests:** Creates in-memory DB, scheduler, registry. Registers device with 16384 MiB VRAM and reserves 4096 MiB. Submits a job, sets it Running. Starts event loop. Sends a Cancelled event via broadcaster. Verifies DB status is 'cancelled', VRAM released (reservation = 0), and WsEvent::JobCancelled is broadcast.
+**Inputs:** Valid job UUID from submit(), manually set to Running, VRAM reserved at 4096 MiB.
+**Expected output:** DB status='cancelled', VRAM reservation=0, WsEvent::JobCancelled{job_id} broadcast.
+**Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- scheduler_cancel_tests::test_cancelled_event_releases_vram` exits 0.

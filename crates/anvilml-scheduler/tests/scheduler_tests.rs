@@ -444,5 +444,6 @@ async fn make_scheduler(db: SqlitePool, registry: Arc<NodeTypeRegistry>) -> JobS
         db,
         Arc::new(anvilml_ipc::EventBroadcaster::new()),
         Arc::new(artifact_store),
+        None, // cancellation requires a real worker pool
     )
 }
