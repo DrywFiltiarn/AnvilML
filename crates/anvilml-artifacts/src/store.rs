@@ -292,4 +292,78 @@ impl ArtifactStore {
 
         Ok(artifacts)
     }
+
+    /// Delete an artifact by its content hash.
+    ///
+    /// Removes the artifact file from disk and deletes its metadata row
+    /// from the database. If the file does not exist on disk but the DB
+    /// row does, the DB row is still deleted (orphan cleanup). If neither
+    /// the file nor the DB row exists, returns `ArtifactNotFound`.
+    ///
+    /// The DB row is the source of truth — if the file is already gone on
+    /// disk, we log a warning and continue rather than failing, since the
+    /// caller may be performing cleanup after a partial failure.
+    ///
+    /// # Arguments
+    ///
+    /// * `hash` — The SHA-256 hex digest of the artifact to delete.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` on success. `Err(AnvilError::ArtifactNotFound(_))` if no
+    /// artifact with the given hash exists in the database.
+    #[tracing::instrument(skip(self), fields(hash = %hash))]
+    pub async fn delete(&self, hash: &str) -> Result<()> {
+        // Look up the artifact row to get the file path. We need the path
+        // to attempt file deletion before removing the DB row.
+        let row = sqlx::query("SELECT path FROM artifacts WHERE hash = ?")
+            .bind(hash)
+            .fetch_optional(&self.db)
+            .await?;
+
+        let Some(row) = row else {
+            // No artifact with this hash exists — cannot delete what we
+            // don't know about. The DB is the source of truth.
+            return Err(AnvilError::ArtifactNotFound(hash.to_string()));
+        };
+
+        let path: String = row.get("path");
+        let path_buf = PathBuf::from(&path);
+
+        // Attempt to delete the file from disk. If the file is already
+        // gone (e.g. deleted by another process or a previous cleanup),
+        // we log a warning but do not fail — the DB row is the authoritative
+        // record and we'll delete that regardless.
+        if tokio::fs::metadata(&path_buf).await.is_ok() {
+            // File exists — delete it.
+            if let Err(e) = tokio::fs::remove_file(&path_buf).await {
+                tracing::warn!(
+                    hash = %hash,
+                    path = %path_buf.display(),
+                    error = %e,
+                    "failed to delete artifact file from disk"
+                );
+                // Continue anyway — the DB row deletion is the primary goal.
+            }
+        } else {
+            // File does not exist on disk — this is an orphan cleanup.
+            // The DB row is still removed.
+            tracing::debug!(
+                hash = %hash,
+                path = %path_buf.display(),
+                "artifact file not found on disk, removing DB row only"
+            );
+        }
+
+        // Delete the metadata row from the database. This is the authoritative
+        // deletion — even if the file was already gone, the DB row is cleaned up.
+        sqlx::query("DELETE FROM artifacts WHERE hash = ?")
+            .bind(hash)
+            .execute(&self.db)
+            .await?;
+
+        tracing::info!(hash = %hash, "artifact deleted");
+
+        Ok(())
+    }
 }

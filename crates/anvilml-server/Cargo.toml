@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-server"
-version = "0.1.26"
+version = "0.1.27"
 edition.workspace = true
 
 [dependencies]

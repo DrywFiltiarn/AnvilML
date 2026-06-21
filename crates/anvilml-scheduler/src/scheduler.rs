@@ -536,6 +536,70 @@ impl JobScheduler {
         Ok(())
     }
 
+    /// Delete jobs matching a status filter and return the count deleted.
+    ///
+    /// Only deletes jobs in terminal states (Completed, Failed, Cancelled)
+    /// or all jobs when `status` is `"all"`. Non-terminal status values
+    /// are rejected with an error.
+    ///
+    /// This method is called by the `bulk_clear` handler to remove jobs
+    /// from the database after their artifacts have been deleted from disk.
+    ///
+    /// # Arguments
+    ///
+    /// * `status` — The status filter: `"completed"`, `"failed"`,
+    ///   `"cancelled"`, or `"all"`.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(count)` with the number of affected rows.
+    /// `Err(AnvilError::Internal(_))` if the status value is invalid.
+    #[tracing::instrument(skip(self), fields(status = %status))]
+    pub async fn delete_jobs_by_status(&self, status: &str) -> Result<u32, AnvilError> {
+        // Validate the status parameter. Only terminal statuses and "all"
+        // are permitted — we never allow deletion of active (queued/running)
+        // jobs to prevent accidental data loss.
+        let clause = match status {
+            "completed" => "status = 'completed'",
+            "failed" => "status = 'failed'",
+            "cancelled" => "status = 'cancelled'",
+            "all" => "status IN ('completed', 'failed', 'cancelled')",
+            other => {
+                // Invalid status value — the client sent something that is not
+                // a recognised terminal status or "all". Return 400 so the
+                // client knows to fix the query parameter.
+                return Err(AnvilError::Internal(format!(
+                    "invalid status filter for bulk clear: {other}"
+                )));
+            }
+        };
+
+        // Build the DELETE query with the validated WHERE clause.
+        // We use a dynamic WHERE clause because sqlx::QueryBuilder does not
+        // support parameterised IN lists with a variable number of elements
+        // in a simple way, and our clause is a fixed set of three values.
+        // This is safe because `status` was validated above against a
+        // whitelist of known strings — no user input reaches the query.
+        let query = format!("DELETE FROM jobs WHERE {clause}");
+
+        // Wrap with AssertSqlSafe to bypass sqlx's dynamic SQL check.
+        // This is safe because the WHERE clause is built from a validated
+        // whitelist of known strings (no user input).
+        let result = sqlx::query(sqlx::AssertSqlSafe(query))
+            .execute(&self.db)
+            .await?;
+
+        let count = result.rows_affected();
+
+        tracing::info!(
+            status = %status,
+            deleted = count,
+            "bulk deleted terminal jobs"
+        );
+
+        Ok(count as u32)
+    }
+
     /// Cancel a running job by sending an IPC message to the owning worker.
     ///
     /// The actual cancellation is confirmed asynchronously via the event loop

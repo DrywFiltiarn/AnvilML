@@ -2752,3 +2752,48 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Valid job UUID from submit(), manually set to Running, VRAM reserved at 4096 MiB.
 **Expected output:** DB status='cancelled', VRAM reservation=0, WsEvent::JobCancelled{job_id} broadcast.
 **Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- scheduler_cancel_tests::test_cancelled_event_releases_vram` exits 0.
+
+## test_cancel_queued_job_returns_202 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** The `POST /v1/jobs/{id}/cancel` handler delegates to `JobScheduler::cancel_job()`, which cancels a queued job by removing it from the in-memory queue, updating the database to `Cancelled`, and broadcasting `WsEvent::JobCancelled`. Uses `Router::oneshot` to exercise the full handler pipeline without a live TCP listener.
+**Tests:** Submits a job via POST `/v1/jobs`, calls POST `/v1/jobs/{id}/cancel`, asserts 202. Then GET `/v1/jobs/{id}` returns status "Cancelled".
+**Inputs:** Valid job UUID from submit(), POST `/v1/jobs/{id}/cancel`.
+**Expected output:** HTTP 202 on cancel; GET shows `"status":"Cancelled"`.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware --test jobs_tests test_cancel_queued_job_returns_202` exits 0.
+
+## test_cancel_terminal_job_returns_409 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** Cancelling a terminal job returns 409 Conflict. The scheduler's `cancel_job()` returns `AnvilError::InvalidOperation` for terminal states, which `IntoResponse` maps to 409. The test manually updates the job status to "completed" via direct SQL to simulate a completed job.
+**Tests:** Submits a job, manually updates status to "completed" via DB, calls POST `/v1/jobs/{id}/cancel`, asserts 409 with `"error": "invalid_operation"`.
+**Inputs:** Valid job UUID from submit(), manually set to "completed" via SQL UPDATE, POST `/v1/jobs/{id}/cancel`.
+**Expected output:** HTTP 409 with `"error":"invalid_operation"`.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware --test jobs_tests test_cancel_terminal_job_returns_409` exits 0.
+
+## test_delete_terminal_job_returns_204 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** The `DELETE /v1/jobs/{id}` handler deletes a terminal job and its artifacts. Only Completed, Failed, or Cancelled jobs can be deleted. The handler lists artifacts by job ID, deletes each one (file + DB row), then deletes the job row. Uses direct SQL to set the job to "completed".
+**Tests:** Submits a job, manually updates status to "completed" via DB, calls DELETE `/v1/jobs/{id}`, asserts 204. Then GET `/v1/jobs/{id}` returns 404.
+**Inputs:** Valid job UUID from submit(), manually set to "completed" via SQL UPDATE, DELETE `/v1/jobs/{id}`.
+**Expected output:** HTTP 204; subsequent GET returns 404 with `"error":"job_not_found"`.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware --test jobs_tests test_delete_terminal_job_returns_204` exits 0.
+
+## test_delete_non_terminal_job_returns_409 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** Deleting a non-terminal job (Queued or Running) returns 409 Conflict. The handler checks the job status and rejects deletion for non-terminal states. This prevents accidental deletion of in-progress work.
+**Tests:** Submits a job (status Queued), calls DELETE `/v1/jobs/{id}`, asserts 409 with `"error": "invalid_operation"`.
+**Inputs:** Valid job UUID from submit(), DELETE `/v1/jobs/{id}` on a queued job.
+**Expected output:** HTTP 409 with `"error":"invalid_operation"`.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware --test jobs_tests test_delete_non_terminal_job_returns_409` exits 0.
+
+## test_bulk_clear_returns_removed_count (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** The `DELETE /v1/jobs?status=completed` handler bulk-deletes terminal jobs matching a status filter and their associated artifacts. It fetches matching jobs, deletes their artifacts from disk, then calls the scheduler's `delete_jobs_by_status()` to remove the DB rows. Returns the count of deleted jobs.
+**Tests:** Submits three jobs, manually updates two to "completed" and one to "cancelled", calls DELETE `/v1/jobs?status=completed`, asserts 200 with `{"removed": 2}`. Verifies completed jobs are gone (404) and cancelled job still exists (200).
+**Inputs:** Three valid job UUIDs from submit(), two set to "completed", one to "cancelled", DELETE `/v1/jobs?status=completed`.
+**Expected output:** HTTP 200 with `{"removed":2}`; completed jobs return 404; cancelled job returns 200.
+**Acceptance command:** `cargo test -p anvilml-server --features mock-hardware --test jobs_tests test_bulk_clear_returns_removed_count` exits 0.

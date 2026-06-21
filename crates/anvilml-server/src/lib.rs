@@ -16,13 +16,13 @@ pub use handlers::system::get_env;
 pub use handlers::system::get_system;
 pub use state::AppState;
 
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::Router;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use handlers::artifacts::{list_artifacts, serve_artifact};
-use handlers::jobs::{get_job, list_jobs, submit_job};
+use handlers::jobs::{bulk_clear, cancel_job, delete_job, get_job, list_jobs, submit_job};
 use handlers::models::{get_model, list_models, rescan_models};
 use handlers::nodes::list_nodes;
 use handlers::workers::{list_workers, restart_worker};
@@ -88,6 +88,18 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/jobs", get(list_jobs))
         // Job detail — returns a single job by ID, or 404 if not found.
         .route("/v1/jobs/{id}", get(get_job))
+        // Job cancellation — delegates to the scheduler which handles
+        // cancellation based on the job's current status. Returns 202
+        // for queued/running jobs, 409 for terminal jobs.
+        .route("/v1/jobs/{id}/cancel", post(cancel_job))
+        // Job deletion — deletes a terminal job and its artifacts.
+        // Only allows deletion of Completed, Failed, or Cancelled jobs.
+        // Must be mounted before DELETE /v1/jobs (collection route) so
+        // the more specific pattern matches first.
+        .route("/v1/jobs/{id}", delete(delete_job))
+        // Bulk clear — deletes all terminal jobs matching a status filter
+        // and their associated artifact files. Returns the count deleted.
+        .route("/v1/jobs", delete(bulk_clear))
         // Artifact list — returns all artifact metadata, optionally filtered
         // by job ID. Returns an empty array when no artifacts match.
         .route("/v1/artifacts", get(list_artifacts))
