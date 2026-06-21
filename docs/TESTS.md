@@ -3042,3 +3042,48 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** None (empty dict passed via `execute()`).
 **Expected output:** `result["image"]` is a `MockImage` — mock mode does not require or validate the vae/latent inputs.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vaedeode_execute_missing_inputs_returns_mock -v` exits 0.
+
+## test_cache_hit (worker.pipeline_cache)
+
+**File:** `worker/tests/test_pipeline_cache.py`
+**Context:** `PipelineCache(max_entries=3)` with an empty cache. Tests use a counter in the loader function to verify invocation count. No I/O, no subprocess, no network.
+**Tests:** Call `get_or_load("model-a", "fp16", loader_fn)` twice with the same key. The second call must return the cached value without calling `loader_fn` again.
+**Inputs:** Key `"model-a:fp16"`, loader_fn returns `"value-a"`.
+**Expected output:** `loader_fn` called exactly once; second `get_or_load` returns cached result.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_pipeline_cache.py::test_cache_hit -v` exits 0.
+
+## test_cache_miss (worker.pipeline_cache)
+
+**File:** `worker/tests/test_pipeline_cache.py`
+**Context:** `PipelineCache(max_entries=3)` with an empty cache. Tests use a counter in the loader function to verify invocation count. No I/O, no subprocess, no network.
+**Tests:** Call `get_or_load("model-b", "bf16", loader_fn)` for a new key. Verify `loader_fn` was called, the result was stored, and subsequent calls with the same key return the cached result.
+**Inputs:** Key `"model-b:bf16"`, loader_fn returns `"value-b"`.
+**Expected output:** `loader_fn` called; result stored; second call returns cached value.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_pipeline_cache.py::test_cache_miss -v` exits 0.
+
+## test_lru_eviction (worker.pipeline_cache)
+
+**File:** `worker/tests/test_pipeline_cache.py`
+**Context:** `PipelineCache(max_entries=2)` with an empty cache. Tests verify the LRU ordering by inserting entries in sequence and checking which entry gets evicted. No I/O, no subprocess, no network.
+**Tests:** Insert two entries (A, B). Insert a third key (C) which triggers eviction of A (the LRU entry). Verify A is no longer in the cache. Then access B (making it most recently used), insert D, and verify B is evicted (now the LRU).
+**Inputs:** Keys `"model-a:fp16"`, `"model-b:bf16"`, `"model-c:fp16"`, `"model-d:bf16"` in sequence.
+**Expected output:** After C inserted, A evicted. After accessing B then inserting D, B evicted.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_pipeline_cache.py::test_lru_eviction -v` exits 0.
+
+## test_max_entries_one (worker.pipeline_cache)
+
+**File:** `worker/tests/test_pipeline_cache.py`
+**Context:** `PipelineCache(max_entries=1)` with an empty cache. Tests the edge case of a single-slot cache. No I/O, no subprocess, no network.
+**Tests:** Insert entry A, then entry B. Verify A was evicted and only B remains in the cache.
+**Inputs:** Keys `"model-a:fp16"`, `"model-b:bf16"`.
+**Expected output:** Only B remains; A is evicted.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_pipeline_cache.py::test_max_entries_one -v` exits 0.
+
+## test_oom_evict_all_in_mock (worker.pipeline_cache)
+
+**File:** `worker/tests/test_pipeline_cache.py`
+**Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture. In mock mode, ``torch`` is not available, so ``OutOfMemoryError`` cannot be raised. This test confirms the module is importable and functional without torch.
+**Tests:** Create a ``PipelineCache``, call ``get_or_load`` with a normal loader. The module must be importable without torch, and the cache must function correctly (the OOM path is unreachable in mock mode).
+**Inputs:** ``PipelineCache(max_entries=2)``, normal ``get_or_load`` call.
+**Expected output:** No ImportError; cache operates normally; loader_fn called and result cached.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_pipeline_cache.py::test_oom_evict_all_in_mock -v` exits 0.
