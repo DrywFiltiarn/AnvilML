@@ -2889,3 +2889,39 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** None.
 **Expected output:** `NODE_TYPE="LoadClip"`, `CATEGORY="Loaders"`, `DISPLAY_NAME="Load CLIP"`, `DESCRIPTION` is a non-empty string, `INPUT_SLOTS` has two `SlotSpec` entries, `OUTPUT_SLOTS` has one `SlotSpec("clip", "CLIP")`.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_loadclip_metadata_attributes -v` exits 0.
+
+## test_cliptextencode_registered_in_registry (worker.nodes.encoder)
+
+**File:** `worker/tests/test_nodes_encoder.py`
+**Context:** `ClipTextEncode` class is registered in `NODE_REGISTRY` after importing and reloading `worker.nodes.encoder`. The `registry_clean` fixture clears `NODE_REGISTRY` before each test.
+**Tests:** After re-importing the `encoder` module, asserts that `"ClipTextEncode"` is a key in `NODE_REGISTRY`, that the registered class is `ClipTextEncode`, and that `NODE_TYPE == "ClipTextEncode"`.
+**Inputs:** None.
+**Expected output:** `"ClipTextEncode"` present in `NODE_REGISTRY`, keyed by `NODE_TYPE == "ClipTextEncode"`.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_encoder.py::test_cliptextencode_registered_in_registry -v` exits 0.
+
+## test_cliptextencode_execute_returns_mock_conditioning (worker.nodes.encoder)
+
+**File:** `worker/tests/test_nodes_encoder.py`
+**Context:** `ClipTextEncode.execute()` returns a `MockConditioning` sentinel with the correct text in mock mode. `ANVILML_WORKER_MOCK=1` is set by the `conftest.py` autouse fixture.
+**Tests:** Instantiates `ClipTextEncode` with a `mock_context`, calls `execute(clip=MockClip(), text="a cat sitting on a fence")`, and asserts the returned dict contains a `MockConditioning` with `text == "a cat sitting on a fence"`.
+**Inputs:** `clip=MockClip()`, `text="a cat sitting on a fence"`.
+**Expected output:** `result["conditioning"]` is a `MockConditioning` instance with `result["conditioning"].text == "a cat sitting on a fence"`.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_encoder.py::test_cliptextencode_execute_returns_mock_conditioning -v` exits 0.
+
+## test_cliptextencode_metadata_attributes (worker.nodes.encoder)
+
+**File:** `worker/tests/test_nodes_encoder.py`
+**Context:** `ClipTextEncode` class is accessible via direct import from `worker.nodes.encoder` after re-import. All six required metadata attributes have correct values.
+**Tests:** Asserts each of the six required metadata attributes has the correct value and type: `NODE_TYPE`, `CATEGORY`, `DISPLAY_NAME`, `DESCRIPTION`, `INPUT_SLOTS`, `OUTPUT_SLOTS`. Verifies `INPUT_SLOTS` has three specs (clip CLIP required, text STRING required, negative_text STRING optional) and `OUTPUT_SLOTS` has one spec (conditioning CONDITIONING required).
+**Inputs:** None.
+**Expected output:** `NODE_TYPE="ClipTextEncode"`, `CATEGORY="Conditioning"`, `DISPLAY_NAME="Clip Text Encode"`, `DESCRIPTION` is a non-empty string, `INPUT_SLOTS` has three `SlotSpec` entries, `OUTPUT_SLOTS` has one `SlotSpec("conditioning", "CONDITIONING")`.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_encoder.py::test_cliptextencode_metadata_attributes -v` exits 0.
+
+## test_cliptextencode_negative_text_defaults_to_empty (worker.nodes.encoder)
+
+**File:** `worker/tests/test_nodes_encoder.py`
+**Context:** `ClipTextEncode.execute()` accepts inputs without `negative_text` without error in mock mode. `ANVILML_WORKER_MOCK=1` is set by the `conftest.py` autouse fixture.
+**Tests:** Calls `execute(clip=MockClip(), text="hello")` without providing `negative_text`, and asserts the returned dict contains a `MockConditioning` with the correct text. The mock code path ignores `negative_text` entirely.
+**Inputs:** `clip=MockClip()`, `text="hello"` (no `negative_text`).
+**Expected output:** `result["conditioning"]` is a `MockConditioning` instance with `result["conditioning"].text == "hello"`.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_encoder.py::test_cliptextencode_negative_text_defaults_to_empty -v` exits 0.
