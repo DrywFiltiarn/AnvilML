@@ -24,7 +24,7 @@ Every API endpoint example in the documentation must match the actual implemente
 
 ## Prerequisites
 
-Phase 022 complete: release packaging working. All REST endpoints and WebSocket events are implemented and stable. `ANVILML_DESIGN.md Appendix B` provides the canonical example workflow JSON.
+Phase 022 complete: release packaging working (`P22-A1`). All REST endpoints and WebSocket events are implemented and stable. `ANVILML_DESIGN.md Appendix B` provides the canonical example workflow JSON.
 
 ## Task Descriptions
 
@@ -34,13 +34,15 @@ Phase 022 complete: release packaging working. All REST endpoints and WebSocket 
 
 **Goal:** Initialise the mdBook project and define the full table of contents. All chapter files referenced in `SUMMARY.md` must exist (even if empty stubs) so that `mdbook build` exits 0 after this task. Write the Introduction chapter.
 
+**This task's JSON `defers_to` field is `["P23-A2", "P23-A3"]`** — the stub chapter files it creates (everything except Introduction) are intentionally empty, with their content delivered by those two tasks. Per `FORGE_TASK_AUTHORING_SPEC.md §12a`, this is recorded structurally in `defers_to`, not only in the prose below, and the stub site (`SUMMARY.md`, near the stubbed entries) must carry the matching code comment `<!-- defers_to: P23-A2, P23-A3 -->` per `FORGE_AGENT_RULES.md §9.7`.
+
 **Files to create or modify:**
 - `docs-site/book.toml` — new file; `[book]` with `title = "AnvilML"`, `src = "src"`
 - `docs-site/src/SUMMARY.md` — new file; complete chapter listing: Introduction, Quickstart, Configuration, Models, API, Nodes, Operations, Troubleshooting
 - `docs-site/src/introduction.md` — new file; what AnvilML is, who it is for, high-level architecture diagram in ASCII or Mermaid
 
 **Key implementation notes:**
-- `SUMMARY.md` must list all chapters; stub `.md` files for chapters written in P23-A2 and P23-A3 to prevent broken-link errors
+- `SUMMARY.md` must list all chapters; stub `.md` files for chapters written in P23-A2 and P23-A3 to prevent broken-link errors — each stub is a single `# <Chapter Title>` heading and nothing else, per this task's `defers_to`
 - `book.toml` must not include mdbook as a Cargo dependency — it is installed separately via `cargo install mdbook`
 - Do not add `docs-site/` to the Cargo workspace
 

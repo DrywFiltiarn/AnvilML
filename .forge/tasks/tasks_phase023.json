@@ -5,10 +5,14 @@
     "phase": "23",
     "project": "anvilml",
     "prereqs": [
-      "P22-A2"
+      "P22-A1"
     ],
-    "context": "Create docs-site/book.toml: [book] title=AnvilML, src=src. Create docs-site/src/SUMMARY.md with chapters: Introduction, Quickstart, Configuration, Models, API (REST+WebSocket), Nodes (generic node system, slot types, baseline node table), Operations, Troubleshooting. Create docs-site/src/introduction.md. mdbook build exits 0; no broken links.",
-    "tags": []
+    "context": "Create docs-site/book.toml: [book] title=AnvilML, src=src. Create docs-site/src/SUMMARY.md with chapters: Introduction, Quickstart, Configuration, Models, API (REST+WebSocket), Nodes (generic node system, slot types, baseline node table), Operations, Troubleshooting. Create docs-site/src/introduction.md fully written. Create empty stub .md files for the remaining chapters so mdbook build succeeds; their content is delivered by P23-A2/P23-A3 per this task's defers_to -- do not write placeholder prose into the stubs beyond a single '# <Chapter Title>' heading. Add code comment in SUMMARY.md '<!-- defers_to: P23-A2, P23-A3 -->' near the stubbed entries per FORGE_AGENT_RULES.md S9.7. mdbook build exits 0; no broken links.",
+    "tags": [],
+    "defers_to": [
+      "P23-A2",
+      "P23-A3"
+    ]
   },
   {
     "id": "P23-A2",

@@ -1,13 +1,65 @@
 [
   {
     "id": "P19-A1",
-    "description": "worker/nodes/arch/flux.py: Flux 2 Klein FP8 arch dispatch",
+    "description": "worker/nodes/arch/flux.py: Flux 2 Klein arch module, mock path only",
     "phase": "19",
     "project": "anvilml",
     "prereqs": [
       "P18-E1"
     ],
-    "context": "Create worker/nodes/arch/flux.py: can_handle(model_obj)->bool, True iff arch==\"flux\". sample(model,conditioning,latent,steps,cfg,seed,device,cancel_flag,emit_progress)->(latent,int); per-step cancel_flag.is_set() + emit_progress. Mock: (MockLatent(),seed). Real: model=transformer cached by LoadModel via pipeline_cache. First sample() call per model_id assembles diffusers.Flux2KleinPipeline(transformer=model, vae=..., text_encoder=...) from cached components; cache assembled pipeline via pipeline_cache.get_or_load(f'{model_id}:pipeline',...), separate key from transformer. CRITICAL: use Flux2KleinPipeline, NOT FluxPipeline -- latter is diffusers' FLUX.1 class, incompatible with Flux 2 Klein weights; imports fine but silently loads wrong model. Inline comments: transformer float8, no upcast, when InferenceCaps.fp8=True, text_encoder/vae bf16; conditioning arrives pre-encoded (Qwen3). tests/test_arch_flux.py >=3 tests; can_handle False for ZiT model. ANVILML_WORKER_MOCK=1 pytest exits 0.",
+    "context": "Create worker/nodes/arch/flux.py: can_handle(model_obj)->bool, True iff model_obj.arch=='flux' (False for ZiT/unknown). sample(model,conditioning,latent,steps,cfg,seed,device,cancel_flag,emit_progress)->(latent,int): mock path (ANVILML_WORKER_MOCK=1) returns (MockLatent(),seed) immediately, no torch/diffusers imports at module top level, matching the exact pattern zit.py used in P18-D1. Real path raises NotImplementedError; add code comment '# defers_to: P19-A3, P19-A4, P19-A5 -- real path split across pipeline assembly/callback/invocation' at the stub site per FORGE_AGENT_RULES.md S9.7, matching this task's defers_to field. tests/test_arch_flux.py >=3 tests (can_handle True for flux, False for zit, mock sample returns MockLatent+seed). ANVILML_WORKER_MOCK=1 pytest exits 0.",
+    "tags": [],
+    "defers_to": [
+      "P19-A3",
+      "P19-A4",
+      "P19-A5"
+    ]
+  },
+  {
+    "id": "P19-A2",
+    "description": "worker/nodes/arch/flux.py: compute_latent_shape() for Flux 2 Klein's 2x2 patch packing",
+    "phase": "19",
+    "project": "anvilml",
+    "prereqs": [
+      "P19-A1"
+    ],
+    "context": "Add compute_latent_shape(batch_size,height,width,num_channels_latents)->tuple[int,...] to flux.py, implementing Flux2KleinPipeline.prepare_latents' verified formula (confirmed against installed diffusers source, NOT assumed identical to ZiT): h=2*(height//(VAE_SCALE_FACTOR*2)), w=2*(width//(VAE_SCALE_FACTOR*2)), shape=(batch_size,num_channels_latents*4,h//2,w//2). This is structurally DIFFERENT from arch/zit.py's compute_latent_shape (P18-D3b) -- Flux 2 Klein packs latents into 2x2 patches (channels*4, spatial//2), ZiT does not. This is exactly why P18-D3b made the shape formula architecture-dispatched rather than a single shared constant; confirm VAE_SCALE_FACTOR value for Flux 2 Klein's VAE against its real config at ACT time, do not assume it equals ZiT's value of 8. Add >=2 tests (correct shape for known dims, non-divisible edge case). ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_flux.py -v exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P19-A3",
+    "description": "worker/nodes/arch/flux.py: assemble Flux2KleinPipeline from cached components",
+    "phase": "19",
+    "project": "anvilml",
+    "prereqs": [
+      "P19-A2"
+    ],
+    "context": "Begin flux.py sample()'s real path. Assemble diffusers.Flux2KleinPipeline(scheduler,vae,text_encoder,tokenizer,transformer,is_distilled=...) via pipeline_cache.get_or_load(f'{model_id}:pipeline',dtype,loader_fn). CRITICAL: use Flux2KleinPipeline, NOT FluxPipeline (FLUX.1's class; imports fine, silently targets the wrong model -- confirmed via source). Confirm is_distilled's value for Flux 2 Klein Turbo against the model's real config at ACT time, do not assume False. Confirm exact field names on the model/conditioning objects from P18-D4/P18-D6 (reuses those contracts unchanged). Store the assembled pipeline; do not call it (P19-A5 does, per defers_to). Add comment '# defers_to: P19-A5 -- pipeline assembled, not yet invoked' per FORGE_AGENT_RULES.md S9.7. Add a test asserting get_or_load called with the cache key. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_flux.py -v exits 0, same mock tests pass.",
+    "tags": [],
+    "defers_to": [
+      "P19-A5"
+    ]
+  },
+  {
+    "id": "P19-A4",
+    "description": "worker/nodes/arch/flux.py: callback_on_step_end adapter for progress and cancellation",
+    "phase": "19",
+    "project": "anvilml",
+    "prereqs": [
+      "P19-A3"
+    ],
+    "context": "Add _make_callback(emit_progress,cancel_flag,total_steps)->Callable to flux.py. Confirmed via source: Flux2KleinPipeline's real callback signature is (self,i,t,callback_kwargs)->dict, IDENTICAL in shape to ZImagePipeline's (P18-D9b) -- reuse the same adapter pattern, do not assume divergence where none exists. Calls emit_progress(i,total_steps), checks cancel_flag.is_set(), raises module-private sentinel _SamplingCancelled if cancelled (separate sentinel class from zit.py's -- arch modules must not share private exception types across files). Add >=2 tests: emit_progress called correctly, cancellation raises _SamplingCancelled. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_flux.py -v exits 0, same mock tests pass.",
+    "tags": []
+  },
+  {
+    "id": "P19-A5",
+    "description": "worker/nodes/arch/flux.py: invoke Flux2KleinPipeline with output_type=latent",
+    "phase": "19",
+    "project": "anvilml",
+    "prereqs": [
+      "P19-A4"
+    ],
+    "context": "Complete sample()'s real path: wrap the pipeline call (P19-A3) in try/except _SamplingCancelled (P19-A4). Call pipeline(prompt_embeds=conditioning.positive,negative_prompt_embeds=conditioning.negative,latents=latent,num_inference_steps=steps,guidance_scale=cfg,output_type='latent',callback_on_step_end=_make_callback(emit_progress,cancel_flag,steps),return_dict=False). Confirmed via source: Flux2KleinPipeline.__call__ derives text_ids internally from prompt_embeds via its own encode_prompt/_prepare_text_ids -- callers never construct or pass text_ids; ClipTextEncode's existing .positive/.negative contract (P18-D7) needs no Flux-specific changes. output_type='latent' required so VaeDecode (unchanged from Phase 18) performs the actual decode. Return (result[0],seed). ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_flux.py -v exits 0, same mock tests pass.",
     "tags": []
   },
   {
@@ -16,9 +68,9 @@
     "phase": "19",
     "project": "anvilml",
     "prereqs": [
-      "P19-A1"
+      "P19-A5"
     ],
-    "context": "Create docs/example_workflows/flux_klein_fp8.json: same 8-node structure as zit_fp8.json with LoadModel/LoadVae/LoadClip(clip_type=qwen3)/ClipTextEncode/EmptyLatent/Sampler/VaeDecode/SaveImage; model_id placeholders for Flux 2 Klein 9B FP8, Qwen3 8B FP8-mixed, Flux VAE. Create docs/PROOF_phase019.md: manual real-hardware steps. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_parity.py exits 0 (unchanged 9 nodes).",
+    "context": "Create docs/example_workflows/flux_klein_fp8.json: same 9-node structure as zit_fp8.json (including EmptyLatent's model input added in P18-D8) with LoadModel/LoadVae/LoadClip(clip_type=qwen3)/ClipTextEncode/EmptyLatent(wired to model)/Sampler/VaeDecode/SaveImage; model_id placeholders for Flux 2 Klein 9B FP8, Qwen3 8B FP8-mixed, Flux VAE. Create docs/PROOF_phase019.md: manual real-hardware steps. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_parity.py exits 0 (unchanged 9 nodes).",
     "tags": []
   }
 ]

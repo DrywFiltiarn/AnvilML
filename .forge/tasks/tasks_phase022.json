@@ -5,20 +5,9 @@
     "phase": "22",
     "project": "anvilml",
     "prereqs": [
-      "P21-A2"
+      "P21-A3"
     ],
     "context": "Create .github/workflows/release.yml: triggered on tag push v*.*.*. Jobs: build-linux (cargo build --release, tar worker/ + binary + anvilml.toml + database/seeds/), build-windows (cross-compile or windows runner, zip). Upload artifacts. Create release notes from CHANGELOG. Generate SHA256SUMS file. cargo build --release exits 0; release zip contains anvilml binary + worker/ directory + anvilml.toml.",
-    "tags": []
-  },
-  {
-    "id": "P22-A2",
-    "description": "scripts: install_worker_deps.sh and .ps1 extended with hardware detection and torch installation",
-    "phase": "22",
-    "project": "anvilml",
-    "prereqs": [
-      "P22-A1"
-    ],
-    "context": "Extend scripts/install_worker_deps.sh (created in P8-B3): after base.txt install, detect nvidia-smi->cuda, amdgpu/rocminfo->rocm, else cpu; pip install matching cuda/rocm-linux/cpu.txt. Extend install_worker_deps.ps1: AMD detection via Get-CimInstance or amd-smi; installs rocm-windows.txt for ROCm. Both remain idempotent. bash -n exits 0 for .sh; PSScriptAnalyzer passes for .ps1; bash scripts/install_worker_deps.sh && worker/.venv/bin/python3 -c \"import torch\" exits 0.",
     "tags": []
   }
 ]

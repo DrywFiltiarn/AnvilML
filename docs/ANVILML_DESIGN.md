@@ -1068,7 +1068,7 @@ The MVP targets standalone `.safetensors` files for every model component. There
 | `LoadVae` | Loaders | `model_id: String` | `vae: Vae` | Loads a VAE from a standalone safetensors file. Always required explicitly in any graph that decodes latents. |
 | `LoadClip` | Loaders | `model_id: String, clip_type: String?` | `clip: Clip` | Loads a text encoder from a safetensors file. `clip_type` hint: `"clip_l"`, `"t5"`, `"qwen3"`. Determines the tokeniser and architecture used internally. |
 | `ClipTextEncode` | Conditioning | `clip: Clip, text: String, negative_text: String?` | `conditioning: Conditioning` | Encodes a text prompt using any loaded CLIP-compatible encoder. Architecture-agnostic. |
-| `EmptyLatent` | Latents | `width: Int, height: Int, batch_size: Int?` | `latent: Latent` | Creates a blank noise latent tensor at the requested resolution. |
+| `EmptyLatent` | Latents | `width: Int, height: Int, batch_size: Int?, model: Model?` | `latent: Latent` | Creates a blank noise latent tensor at the requested resolution. The optional `model` input is required in real (non-mock) mode: the node dispatches to the loaded model's architecture module (via `arch.get_module()`) and calls its `compute_latent_shape()` function, since the latent shape formula — not just a scale factor — varies by architecture (e.g. spatial-only downscale vs. patch-packed channels) and cannot be assumed. Mock mode ignores this input. |
 | `Sampler` | Sampling | `model: Model, conditioning: Conditioning, latent: Latent, steps: Int, cfg: Float, seed: Int` | `latent: Latent, seed: Int` | Architecture-agnostic sampler. Dispatches internally to the correct arch module based on the model object. Returns the denoised latent and the actual seed used (`-1` resolves to a random seed). |
 | `VaeDecode` | Decoding | `vae: Vae, latent: Latent` | `image: Image` | Decodes a denoised latent tensor to a PIL image using the explicitly provided VAE. |
 | `ImageResize` | Images | `image: Image, width: Int, height: Int, method: String?` | `image: Image` | Resizes a PIL image. `method` defaults to `"lanczos"`. |
@@ -1088,7 +1088,44 @@ def sample(model, conditioning, latent, steps, cfg, seed, device, cancel_flag, e
     ...
 ```
 
-The generic `Sampler` node iterates the registered architecture modules, calls `can_handle`, and delegates to the first match. If no module matches, it raises `NodeError("unsupported model architecture")`.
+Architecture modules must expose a `compute_latent_shape()` function for
+nodes that need to construct architecture-specific noise tensors before any
+VAE or pipeline object is necessarily available:
+
+```python
+def compute_latent_shape(batch_size: int, height: int, width: int, num_channels_latents: int) -> tuple[int, ...]:
+    """Return the noise tensor shape for this architecture's latent space."""
+    ...
+```
+
+The shape *formula* itself, not just a scale-factor constant, is
+architecture-specific: different model families pack latents differently
+(for example, some apply a simple spatial downscale, while others pack
+multiple spatial positions into additional channels). `EmptyLatent` must
+never hardcode any architecture's formula — it always calls
+`compute_latent_shape()` on the dispatched module. Architecture modules may
+additionally expose plain constants (e.g. a VAE spatial scale factor) for
+other purposes, but `compute_latent_shape()` is the only function generic
+nodes are permitted to call for shape computation.
+
+The `worker/nodes/arch/__init__.py` package provides two dispatch functions
+built on the same underlying iteration:
+
+```python
+def can_handle(model_obj: Any) -> bool:
+    """Return True if any loaded arch module's can_handle() matches."""
+    ...
+
+def get_module(model_obj: Any) -> ModuleType | None:
+    """Return the actual matching arch module, or None if no module matches."""
+    ...
+```
+
+The generic `Sampler` node calls `get_module(model)` to obtain the matching
+architecture module, then calls `.sample(...)` on it directly. `EmptyLatent`
+similarly calls `get_module(model)` to call `.compute_latent_shape(...)` on
+it, when its optional `model` input is provided. If no module matches,
+`Sampler` raises `NodeError("unsupported model architecture")`.
 
 Architecture modules live in `worker/nodes/arch/` and are auto-imported by `arch/__init__.py`. Adding a new architecture is adding one new file in that directory.
 
@@ -1790,6 +1827,18 @@ The MVP targets two model families, both loaded entirely from standalone `.safet
 - VAE: Flux 2-compatible VAE safetensors
 
 The node graph for both models is structurally identical. Only the `model_id` values and the `clip_type` hint differ.
+
+The `model_id` values shown below (`<sha256-of-...>`) are what the job
+**submitter** provides — the same SHA256 hex digest the model scanner
+computes and `GET /v1/models` reports (`§7.2`). The scheduler resolves each
+hash to its registered filesystem path immediately before dispatching
+`WorkerMessage::Execute`, rewriting the graph's `LoadModel`/`LoadVae`/
+`LoadClip` `model_id` inputs in place. The Python worker's `LoadModel`,
+`LoadVae`, and `LoadClip` nodes therefore always receive a real filesystem
+path in `model_id`, never the hash — they perform no hash lookup
+themselves. Submitting a hash unknown to the model registry fails the job
+before dispatch with a clear error, rather than failing deep inside the
+worker process.
 
 ```json
 {

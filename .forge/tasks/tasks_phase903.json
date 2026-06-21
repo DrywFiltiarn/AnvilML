@@ -1,0 +1,24 @@
+[
+  {
+    "id": "P903-A1",
+    "description": "anvilml-scheduler: resolve model_id hash to filesystem path at dispatch time",
+    "phase": "903",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-D1"
+    ],
+    "context": "JobScheduler gains model_store: Arc<anvilml_registry::ModelStore> field (ctor param, same pattern as node_registry). In dispatch loop, immediately before constructing WorkerMessage::Execute: deep-walk job.graph (serde_json::Value) nodes array, for each node whose type is LoadModel|LoadVae|LoadClip, look up inputs.model_id (the sha256 hash) via model_store.get(id).await, replace inputs.model_id with the resolved ModelMeta.path string. If lookup returns None for any such node, do not send Execute; instead mark job Failed in DB with error message format 'model_id \\\"<hash>\\\" not found in registry -- run POST /v1/models/rescan' and continue to next job (existing per-job continue pattern). cargo test -p anvilml-scheduler --features mock-hardware exits 0; add tests/model_resolve_tests.rs >=3 tests (resolves known id, fails unknown id without sending Execute, non-loader nodes untouched).",
+    "tags": []
+  },
+  {
+    "id": "P903-A2",
+    "description": "worker/worker_main.py: wire real PipelineCache into NodeContext",
+    "phase": "903",
+    "project": "anvilml",
+    "prereqs": [
+      "P903-A1"
+    ],
+    "context": "worker/worker_main.py currently constructs NodeContext(..., pipeline_cache={}) per job (empty dict placeholder from P14-A2, predates worker/pipeline_cache.py which P18-C1 later implemented). Import PipelineCache from worker.pipeline_cache. Instantiate exactly once at worker process scope (module-level singleton or created in main() before the dispatch loop, NOT per-job) so cache entries persist across jobs on the same worker. Pass this same instance as pipeline_cache= to every NodeContext built for every Execute message. Do not modify worker/pipeline_cache.py itself -- it is already correct and tested. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py -v exits 0, same test count as before; add one test asserting the same PipelineCache instance (by id()) is reused across two sequential Execute messages in one worker process.",
+    "tags": []
+  }
+]

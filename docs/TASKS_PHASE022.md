@@ -10,21 +10,19 @@
 
 ## Overview
 
-Phase 022 prepares the release distribution: a GitHub Actions workflow that builds and publishes signed release artifacts on tag push, and fully validated provisioning scripts for both platforms.
+Phase 022 prepares the release distribution: a GitHub Actions workflow that builds and publishes signed release artifacts on tag push.
 
-The provisioning scripts (`scripts/install_worker_deps.sh` and `.ps1`) were created in Phase 008 (P8-B3) with base dependency installation only. Phase 022 extends them with hardware detection (CUDA, ROCm, CPU fallback) and torch installation, completing the full provisioning flow described in `ANVILML_DESIGN.md §18.1` and `ENVIRONMENT.md §1`.
-
-At phase end, pushing a `v*.*.*` tag triggers a CI workflow that produces a release zip for Linux and Windows. Each zip contains the binary, the `worker/` source tree, `anvilml.toml`, and database seeds. `SHA256SUMS` is generated for verification.
+**The provisioning-script hardware-detection work originally planned for this phase has moved to Phase 021 (`P21-A2`), found during a later authoring review.** `P21-A3` (Phase 021's auto-provisioning task) calls `scripts/install_worker_deps.sh`/`.ps1` directly; running hardware detection one phase later than the auto-provisioning that depends on it was a genuine sequencing defect, not a `defers_to`-shaped one — nothing was left unimplemented with an expected later fix, the phase order itself put the consumer before the capability. See `TASKS_PHASE021.md`'s Overview for the full explanation. Phase 022 now contains only the release-packaging task.
 
 ## Group Reference
 
 | Group | Subsystem | Tasks | Summary |
 |-------|-----------|-------|---------|
-| A | release | P22-A1 … P22-A2 | GitHub Release workflow; provisioning scripts extended with hardware detection |
+| A | release | P22-A1 | GitHub Release workflow |
 
 ## Prerequisites
 
-Phase 021 complete. `cargo build --release` exits 0. `scripts/install_worker_deps.sh` and `scripts/install_worker_deps.ps1` exist from Phase 008 (P8-B3) and install base dependencies into the worker venv. `worker/requirements/cuda.txt`, `rocm-linux.txt`, `rocm-windows.txt`, and `cpu.txt` exist.
+Phase 021 complete (including `P21-A2`, hardware detection in the provisioning scripts — relocated here from this phase). `cargo build --release` exits 0.
 
 ## Task Descriptions
 
@@ -47,37 +45,13 @@ Phase 021 complete. `cargo build --release` exits 0. `scripts/install_worker_dep
 
 ---
 
-#### P22-A2: Provisioning scripts extended with hardware detection and torch installation
-
-**Goal:** Extend the existing `scripts/install_worker_deps.sh` and `scripts/install_worker_deps.ps1` (created in P8-B3) to detect the available GPU backend and install the matching torch build after the base dependencies. This completes the full provisioning flow referenced in `ANVILML_DESIGN.md §18.1`.
-
-**Files to create or modify:**
-- `scripts/install_worker_deps.sh` — append hardware detection block
-- `scripts/install_worker_deps.ps1` — append hardware detection block
-
-**Key implementation notes:**
-- `.sh` hardware detection: `nvidia-smi` present → `pip install -r worker/requirements/cuda.txt`; `amdgpu` module loaded or `rocminfo` present → `pip install -r worker/requirements/rocm-linux.txt`; else → `pip install -r worker/requirements/cpu.txt`
-- `.ps1` hardware detection: `Get-CimInstance Win32_VideoController` filtered for AMD vendor or `amd-smi` present → `rocm-windows.txt`; `nvidia-smi` → `cuda.txt`; else → `cpu.txt`
-- Both scripts must remain idempotent: if `torch` is already importable, pip installs are no-ops
-- The `.sh` script already uses `set -euo pipefail` from P8-B3; do not remove it
-- The `.ps1` script already uses `$ErrorActionPreference = 'Stop'` from P8-B3; do not remove it
-- **Read the existing files before modifying** — do not recreate them from scratch
-
-**Acceptance criterion:** `bash -n scripts/install_worker_deps.sh` exits 0 (syntax check); PSScriptAnalyzer passes for `.ps1`; `bash scripts/install_worker_deps.sh && worker/.venv/bin/python3 -c "import torch"` exits 0.
-
----
-
 ## Phase Acceptance Criteria
 
 ```bash
 cargo build --release
-bash -n scripts/install_worker_deps.sh
-bash scripts/install_worker_deps.sh
-worker/.venv/bin/python3 -c "import torch"
 ```
 
 ## Known Constraints and Gotchas
 
-- The release zip must contain `worker/` source so auto-provisioning works on first run. Python source is not embedded in the binary.
-- `install_worker_deps.sh` and `.ps1` were created in P8-B3. P22-A2 extends them; it does not recreate them. The agent must read the existing files before modifying them.
+- The release zip must contain `worker/` source so auto-provisioning works on first run. Python source is not embedded in the binary. The bundled `worker/` source includes the hardware-detection logic added to `scripts/install_worker_deps.sh`/`.ps1` in Phase 021 (`P21-A2`) — confirm the release archive picks up the post-`P21-A2` version of these scripts, not a stale copy.
 - PSScriptAnalyzer must be installed on the Windows runner for the `.ps1` lint gate to work. Add an installation step to the release workflow if it is not available by default.
