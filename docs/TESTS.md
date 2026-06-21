@@ -3087,3 +3087,57 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** ``PipelineCache(max_entries=2)``, normal ``get_or_load`` call.
 **Expected output:** No ImportError; cache operates normally; loader_fn called and result cached.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_pipeline_cache.py::test_oom_evict_all_in_mock -v` exits 0.
+
+## test_can_handle_zit (worker.nodes.arch.zit)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture, ensuring mock mode is active. No I/O, no subprocess, no network.
+**Tests:** Construct a model object with ``arch == "zit"``, pass it to ``can_handle()``, and assert the result is ``True``.
+**Inputs:** Model object with ``arch = "zit"``.
+**Expected output:** ``can_handle(model) == True`` — the ZiT arch module claims this model.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_can_handle_zit -v` exits 0.
+
+## test_can_handle_non_zit (worker.nodes.arch.zit)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture, ensuring mock mode is active. No I/O, no subprocess, no network.
+**Tests:** Construct a model with ``arch == "flux"`` and pass it to ``can_handle()``, assert ``False``. Then construct a model without an ``arch`` attribute and assert ``False`` again.
+**Inputs:** Model with ``arch = "flux"``, model with no ``arch`` attribute.
+**Expected output:** ``can_handle(flux_model) == False`` and ``can_handle(no_arch_model) == False`` — the ZiT arch module does not claim these models.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_can_handle_non_zit -v` exits 0.
+
+## test_sample_mock_returns_mock_latent_and_seed (worker.nodes.arch.zit)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture, ensuring the mock code path is taken. No I/O, no subprocess, no network.
+**Tests:** Call ``sample()`` with ``seed=42`` and all other arguments as ``None`` or empty, and assert the returned tuple contains a ``MockLatent`` sentinel and the correct seed value.
+**Inputs:** ``seed=42``, ``steps=4``, ``cfg=7.0``, ``device="cpu"``, ``cancel_flag=[False]``, ``emit_progress`` as no-op lambda.
+**Expected output:** ``result[0]`` is a ``MockLatent`` instance and ``result[1] == 42``.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_sample_mock_returns_mock_latent_and_seed -v` exits 0.
+
+## test_sample_mock_preserves_seed_value (worker.nodes.arch.zit)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture, ensuring the mock code path is taken. No I/O, no subprocess, no network.
+**Tests:** Call ``sample()`` with several different seed values (0, 1, 2**32 - 1) and assert each one is returned unchanged.
+**Inputs:** Seeds 0, 1, 4294967295, 12345.
+**Expected output:** The seed value in the result tuple matches the input exactly for each test case.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_sample_mock_preserves_seed_value -v` exits 0.
+
+## test_sample_real_path_raises_not_implemented (worker.nodes.arch.zit)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** ``ANVILML_WORKER_MOCK`` is temporarily set to ``"0"`` by this test, overriding the autouse fixture. Environment variable isolation is enforced via capture-and-restore in a ``finally`` block. No I/O, no subprocess, no network.
+**Tests:** Call ``sample()`` with ``ANVILML_WORKER_MOCK=0`` and assert a ``NotImplementedError`` is raised with the expected message.
+**Inputs:** ``seed=42``, ``steps=4``, ``cfg=7.0``, ``device="cpu"``, ``cancel_flag=[False]``, ``emit_progress`` as no-op lambda.
+**Expected output:** ``NotImplementedError`` with message containing "Real ZiT sampling path not yet implemented".
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_sample_real_path_raises_not_implemented -v` exits 0.
+
+## test_sample_mock_no_torch_import (worker.nodes.arch.zit)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture. This test temporarily removes ``torch`` from ``sys.modules`` to simulate an environment where torch is not installed. Environment variable and sys.modules isolation is enforced via capture-and-restore in a ``finally`` block.
+**Tests:** Remove ``torch`` from ``sys.modules`` (if present) and re-import the ``worker.nodes.arch.zit`` module. Assert that no ``ImportError`` is raised and that ``torch`` is not in ``sys.modules`` after import — proving no top-level import of torch occurs.
+**Inputs:** Fresh import of ``worker.nodes.arch.zit`` with ``torch`` absent from ``sys.modules``.
+**Expected output:** Module imports successfully and ``"torch"`` is absent from ``sys.modules``, confirming mock-mode import isolation.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_sample_mock_no_torch_import -v` exits 0.
