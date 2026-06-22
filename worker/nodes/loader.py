@@ -77,6 +77,44 @@ class MockClip:
         self.clip_type = clip_type
 
 
+class RealModel:
+    """Lightweight wrapper around a diffusers transformer component.
+
+    The real diffusers transformer object carries config data
+    (e.g. ``in_channels``) that downstream consumers like
+    ``EmptyLatent`` need to read, and it does not expose an
+    ``.arch`` attribute. This wrapper preserves both the
+    ``.arch`` interface that downstream code already expects
+    from ``MockModel`` and the ``.in_channels`` value from the
+    transformer's config.
+
+    Args:
+        transformer: A diffusers model instance (e.g.
+            ``ZImageTransformer2DModel``) loaded from safetensors.
+        arch: The architecture identifier string (e.g. ``"zit"``).
+    """
+
+    def __init__(self, transformer: Any, arch: str) -> None:
+        """Initialise the real model wrapper.
+
+        Args:
+            transformer: The diffusers transformer component.
+            arch: The architecture identifier for dispatch.
+        """
+        self._transformer = transformer
+        self._arch = arch
+
+    @property
+    def arch(self) -> str:
+        """The architecture identifier string."""
+        return self._arch
+
+    @property
+    def in_channels(self) -> int:
+        """Number of latent channels from the transformer's config."""
+        return self._transformer.config.in_channels
+
+
 @register
 class LoadModel(BaseNode):
     """Load a diffusion model from a safetensors file.
@@ -138,16 +176,64 @@ class LoadModel(BaseNode):
             return {"model": MockModel(arch="zit")}
 
         # Real mode: load actual safetensors weights.
-        # This path is stubbed — the real implementation will use
-        # safetensors.safe_open() to read weight tensors, detect
-        # architecture from metadata, and load via
-        # pipeline_cache.get_or_load(). The pipeline_cache module
-        # is implemented in task P18-D1.
-        # TODO(P18-A1): Implement real safetensors loading path.
-        raise NotImplementedError(
-            "Real LoadModel path not yet implemented — "
-            "use ANVILML_WORKER_MOCK=1 for testing"
+        # Lazy imports — these packages are not available in mock mode
+        # (no torch installed), so importing them here keeps the worker
+        # importable when ANVILML_WORKER_MOCK=1.
+        from safetensors.torch import safe_open
+        from diffusers import ZImageTransformer2DModel
+        import torch
+
+        # Open the safetensors file to read metadata before loading.
+        # framework="pt" is used because safetensors supports multiple
+        # backends (pt, np, tf, jax); "pt" selects the PyTorch reader
+        # which is what diffusers expects for model loading.
+        with safe_open(model_id, framework="pt") as st:
+            # Read architecture from safetensors file metadata.
+            # The metadata dict is populated by the safetensors writer;
+            # if absent, fall back to the directory naming convention
+            # because not all model exports embed arch metadata.
+            metadata = st.metadata
+            arch = (metadata.get("arch") if metadata else None) or model_id
+
+        # If the arch string still looks like a path (contains "/" or
+        # "\\"), extract the directory name as the architecture hint.
+        # This handles the common case where model_id is a directory
+        # path like "/models/zit-fp8/unet" — we take the last component.
+        # The "models/" directory naming convention uses the directory
+        # name as the architecture identifier when metadata is absent.
+        if "/" in arch or "\\" in arch:
+            arch = arch.split("/")[-1].split("\\")[-1]
+
+        # Define the loader closure that constructs the transformer.
+        # This is passed to pipeline_cache.get_or_load() so the actual
+        # model loading only happens on cache miss. The closure captures
+        # model_id, arch, and torch_dtype to avoid redundant resolution.
+        def loader_fn() -> RealModel:
+            # ZImageTransformer2DModel is the correct diffusers class
+            # for Z-Image Turbo FP8 models. It provides the transformer
+            # backbone that the diffusion pipeline's denoising loop
+            # calls at every step. from_pretrained loads from the
+            # "unet" subfolder because the safetensors weights for
+            # the transformer are stored there in the standard layout.
+            transformer = ZImageTransformer2DModel.from_pretrained(
+                model_id,
+                subfolder="unet",
+                torch_dtype=torch.float16,  # FP8 models load as FP16; the pipeline keeps the transformer at FP8 via InferenceCaps.
+            )
+            return RealModel(transformer, arch=arch)
+
+        # Get the model from cache or load it via loader_fn.
+        # The cache key uses "fp8" dtype because Z-Image Turbo FP8
+        # models are stored and served in FP8 precision. The dtype
+        # string is part of the cache key so FP8 and FP16 variants
+        # of the same model are cached independently.
+        # Note: ctx.pipeline_cache is typed as dict[str, Any] in
+        # NodeContext but a PipelineCache instance at runtime
+        # (retrofitted by P903-A2), so .get_or_load() is available.
+        result = ctx.pipeline_cache.get_or_load(
+            model_id, "fp8", loader_fn
         )
+        return {"model": result}
 
 
 @register
