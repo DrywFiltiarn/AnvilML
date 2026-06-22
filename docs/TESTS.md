@@ -3177,3 +3177,30 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Two Execute messages with empty graphs (`graph: []`), sent to a mock-mode worker.
 **Expected output:** Both jobs complete successfully; the temp file contains two identical `id()` values.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py -v` exits 0.
+
+## test_get_module_returns_zit_for_zit_model (worker)
+
+**File:** `worker/tests/test_arch_init.py`
+**Context:** `ANVILML_WORKER_MOCK=1` is set by the `conftest.py` autouse fixture. The `worker.nodes.arch` package auto-imports `zit.py` at module load time via `_ensure_imported()`. `get_module()` iterates sibling modules via `pkgutil.iter_modules(__path__)` and calls each module's `can_handle()`.
+**Tests:** Construct a model object with `arch == "zit"`, pass it to `get_module()`, and assert the returned module's `__name__` is `"worker.nodes.arch.zit"`.
+**Inputs:** `_make_model("zit")` — a namespace object with `arch="zit"`.
+**Expected output:** `mod.__name__ == "worker.nodes.arch.zit"` — the zit arch module is returned for a ZiT model.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_init.py::test_get_module_returns_zit_for_zit_model -v` exits 0.
+
+## test_get_module_returns_none_for_unknown_arch (worker)
+
+**File:** `worker/tests/test_arch_init.py`
+**Context:** `ANVILML_WORKER_MOCK=1` is set by the `conftest.py` autouse fixture. Only `zit.py` exists as an arch module; no module handles `"unknown"` architecture.
+**Tests:** Construct a model with `arch == "unknown"`, pass it to `get_module()`, and assert `None` is returned.
+**Inputs:** `_make_model("unknown")` — a namespace object with `arch="unknown"`.
+**Expected output:** `result is None` — no arch module claims an unknown architecture.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_init.py::test_get_module_returns_none_for_unknown_arch -v` exits 0.
+
+## test_can_handle_still_works_after_refactor (worker)
+
+**File:** `worker/tests/test_arch_init.py`
+**Context:** `ANVILML_WORKER_MOCK=1` is set by the `conftest.py` autouse fixture. `can_handle()` was refactored to delegate to `get_module()` internally, so both functions share the same iteration logic.
+**Tests:** Call `can_handle()` with `arch="zit"` (expect `True`) and `arch="unknown"` (expect `False`), verifying the delegation works correctly and produces identical results to the original pre-refactor implementation.
+**Inputs:** `_make_model("zit")` and `_make_model("unknown")`.
+**Expected output:** `can_handle(zit_model) == True` and `can_handle(unknown_model) == False`.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_init.py::test_can_handle_still_works_after_refactor -v` exits 0.

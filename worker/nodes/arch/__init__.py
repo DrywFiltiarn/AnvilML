@@ -17,9 +17,10 @@ from __future__ import annotations
 import importlib
 import logging
 import pkgutil
+from types import ModuleType
 from typing import Any
 
-__all__ = ["can_handle"]
+__all__ = ["can_handle", "get_module"]
 
 # Module-level flag for idempotency — ensures _ensure_imported()
 # runs exactly once even if the module is re-imported.
@@ -82,24 +83,23 @@ def _ensure_imported() -> None:
 _ensure_imported()
 
 
-def can_handle(model_obj: Any) -> bool:
-    """Check whether any loaded architecture module claims this model.
+def get_module(model_obj: Any) -> ModuleType | None:
+    """Return the first loaded arch module whose ``can_handle()`` matches.
 
-    Iterates through all loaded arch modules' ``can_handle()`` functions
-    and returns ``True`` if any one of them returns ``True`` for the
-    given model object. If no arch modules are loaded, returns ``False``.
+    Iterates through all modules in this package's namespace,
+    imports each one, and checks if it exposes a ``can_handle()``
+    function that returns ``True`` for the given model object.
+    Returns the matching module on first match, or ``None`` if
+    no module matches.
 
     Args:
-        model_obj: A model descriptor object carrying attributes like
-            ``arch`` (architecture type string), ``model_id``, etc.
+        model_obj: A model descriptor object carrying attributes
+            like ``arch`` (architecture type string).
 
     Returns:
-        ``True`` if at least one loaded arch module's ``can_handle()``
-        function returns ``True`` for the model; ``False`` otherwise.
+        The matching architecture module, or ``None`` if no
+        loaded arch module claims this model.
     """
-    # Iterate through all modules in this package's namespace.
-    # Each loaded arch module should expose a ``can_handle()`` function
-    # that returns True if it can handle the given model object.
     for mod_info in pkgutil.iter_modules(__path__):
         if mod_info.ispkg:
             continue
@@ -113,18 +113,32 @@ def can_handle(model_obj: Any) -> bool:
             # The warning was already logged by _ensure_imported().
             continue
 
-        # Check if this module has a can_handle function and call it.
-        # getattr returns None if the attribute doesn't exist, so we
-        # safely skip modules that don't export can_handle().
         handler = getattr(mod, "can_handle", None)
         if handler is not None:
             try:
                 if handler(model_obj):
-                    return True
+                    return mod  # Found the matching module
             except Exception:
-                # A can_handle() implementation that raises an exception
-                # is a bug in that module; skip it rather than failing
-                # the entire dispatch check.
+                # A can_handle() that raises is a bug in that
+                # module; skip it rather than failing dispatch.
                 continue
 
-    return False
+    return None
+
+
+def can_handle(model_obj: Any) -> bool:
+    """Check whether any loaded architecture module claims this model.
+
+    Delegates to ``get_module()`` — returns ``True`` if a matching
+    module is found, ``False`` otherwise. This avoids duplicating
+    the module iteration logic that both functions need.
+
+    Args:
+        model_obj: A model descriptor object carrying attributes
+            like ``arch`` (architecture type string), ``model_id``, etc.
+
+    Returns:
+        ``True`` if at least one loaded arch module's ``can_handle()``
+        function returns ``True`` for the model; ``False`` otherwise.
+    """
+    return get_module(model_obj) is not None
