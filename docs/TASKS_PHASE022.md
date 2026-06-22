@@ -49,6 +49,13 @@ Phase 021 complete (including `P21-A2`, hardware detection in the provisioning s
 
 ```bash
 cargo build --release
+# Runnable Proof (manual): a release archive is produced and its checksums verify
+# This phase's deliverable is the build/packaging artifact itself, per
+# FORGE_TASK_AUTHORING_SPEC.md §9's exemption case (c) — no live server or
+# HTTP/WebSocket surface is introduced, so the build-and-verify sequence below
+# is the full proof rather than a disguised re-invocation of cargo test.
+sha256sum --check SHA256SUMS
+# -> release zip(s) produced; SHA256SUMS verification exits 0
 ```
 
 ## Known Constraints and Gotchas

@@ -457,11 +457,14 @@ removed before commit.
 ```bash
 ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v
 cargo test --workspace --features mock-hardware
-# Real hardware proof (manual, requires ZiT FP8 safetensors in models/):
-# cargo run --features real-hardware
-# curl -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' -d @docs/example_workflows/zit_fp8.json
-# poll /v1/jobs/:id until Completed; curl /v1/artifacts/:hash -> image/png
+# Runnable Proof (manual): a real ZiT FP8 workflow produces a PNG artifact on real hardware
+cargo run --features real-hardware
+curl -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' -d @docs/example_workflows/zit_fp8.json
+# poll /v1/jobs/:id until Completed; curl /v1/artifacts/:hash
+# -> Completed, artifact is a real image/png
 ```
+
+Requires ZiT FP8 safetensors in `models/` — not runnable in CI. Full documented command sequence and expected output: `docs/PROOF_phase018.md`.
 
 ## Known Constraints and Gotchas
 

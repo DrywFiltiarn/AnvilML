@@ -296,10 +296,11 @@ kill %1
 Capability: a real ZiT FP8 workflow, submitted to a real-hardware build, produces a PNG artifact. Requires ZiT FP8 safetensors in `models/` — not runnable in CI.
 
 ```bash
-# Real hardware proof (manual, requires ZiT FP8 safetensors in models/):
+# Runnable Proof (manual): a real ZiT FP8 workflow produces a PNG artifact on real hardware
 cargo run --features real-hardware
 curl -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' -d @docs/example_workflows/zit_fp8.json
-# poll /v1/jobs/:id until Completed; curl /v1/artifacts/:hash -> image/png
+# poll /v1/jobs/:id until Completed; curl /v1/artifacts/:hash
+# -> Completed, artifact is a real image/png
 ```
 
 Full documented command sequence and expected output: `docs/PROOF_phase018.md`.
@@ -311,8 +312,11 @@ Full documented command sequence and expected output: `docs/PROOF_phase018.md`.
 Capability: a real Flux 2 Klein FP8 workflow, submitted to a real-hardware build, produces a PNG artifact. Requires Flux 2 Klein FP8 safetensors in `models/` — not runnable in CI.
 
 ```bash
-# Real hardware proof (manual, requires Flux 2 Klein FP8 safetensors in models/):
-# Submit flux_klein_fp8.json; verify Completed + PNG artifact
+# Runnable Proof (manual): a real Flux 2 Klein FP8 workflow produces a PNG artifact on real hardware
+cargo run --features real-hardware
+curl -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' -d @docs/example_workflows/flux_klein_fp8.json
+# poll /v1/jobs/:id until Completed; curl /v1/artifacts/:hash
+# -> Completed, artifact is a real image/png
 ```
 
 Full documented command sequence and expected output: `docs/PROOF_phase019.md`.
@@ -321,9 +325,28 @@ Full documented command sequence and expected output: `docs/PROOF_phase019.md`.
 
 ## Phase 020 — End-to-End Validation
 
-Capability: the OpenAPI spec is regenerated and matches the committed file with zero drift; on real hardware, both model families produce a real PNG.
+Capability: a killed worker is detected, fails its in-flight job, and respawns; the OpenAPI spec is regenerated and matches the committed file with zero drift; on real hardware, both model families still produce a real PNG.
 
 ```bash
+# Runnable Proof (manual): a killed worker is detected, fails its in-flight job, and respawns
+# NOTE: P20-A1's own task context says to obtain the worker's OS PID via
+# GET /v1/workers, but ANVILML_DESIGN.md's WorkerInfo struct (id, device_index,
+# device_name, status, current_job_id, vram_used_mib) has no pid field, and no
+# documented HTTP endpoint exposes one. The PID IS available, but only via the
+# structured INFO log line on worker spawn (`worker_id=%id, device_index=%idx,
+# pid=%pid`, per ANVILML_DESIGN.md's logging table) — not via the API the task
+# context names. The proof below uses the log line; confirm with the task
+# author/P20-A1's implementer whether this is the intended mechanism, or
+# whether WorkerInfo should instead gain a pid field before this phase closes.
+cargo run --features mock-hardware 2>worker.log &
+sleep 3
+PID=$(grep -m1 'Worker spawned' worker.log | grep -oP 'pid=\K[0-9]+')
+curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' -d @docs/example_workflows/zit_fp8.json
+kill -9 "$PID"
+sleep 2
+curl -s http://127.0.0.1:8488/v1/workers | python3 -c "import sys,json; assert json.load(sys.stdin)[0]['status'] == 'Idle'"
+# -> log shows Worker Dead then Worker Respawning then Worker Ready; GET /v1/workers reports status: Idle
+kill %1
 cargo run -p anvilml-openapi && git diff --exit-code api/openapi.json
 # -> regenerated spec is byte-identical to the committed api/openapi.json
 # On target hardware: ZiT and Flux workflows (Phases 018-019) each still produce a real PNG.
@@ -351,7 +374,9 @@ Capability: a release archive is produced and its checksums verify.
 
 ```bash
 cargo build --release
-# -> release zip produced; sha256sum --check SHA256SUMS exits 0
+# Runnable Proof (manual): a release archive is produced and its checksums verify
+sha256sum --check SHA256SUMS
+# -> release zip(s) produced; SHA256SUMS verification exits 0
 ```
 
 ---
@@ -362,8 +387,9 @@ Capability: the mdBook documentation site builds and all internal links resolve.
 
 ```bash
 mdbook build docs-site
+# Runnable Proof (manual): the documentation site builds and all internal links resolve
 mdbook test docs-site
-# -> exits 0; no broken internal links reported
+# -> both commands exit 0; no broken internal links reported
 ```
 
 ---

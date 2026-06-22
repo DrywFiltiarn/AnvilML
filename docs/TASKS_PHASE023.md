@@ -89,7 +89,13 @@ Phase 022 complete: release packaging working (`P22-A1`). All REST endpoints and
 
 ```bash
 mdbook build docs-site
+# Runnable Proof (manual): the documentation site builds and all internal links resolve
+# This phase's deliverable is the documentation site itself, per
+# FORGE_TASK_AUTHORING_SPEC.md §9's exemption case (c) — a docs-only phase
+# with no live server or new HTTP/WebSocket surface, so the build/lint
+# command itself is the full proof.
 mdbook test docs-site
+# -> both commands exit 0; no broken internal links reported
 ```
 
 ## Known Constraints and Gotchas
