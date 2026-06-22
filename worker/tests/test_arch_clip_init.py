@@ -62,7 +62,7 @@ def _install_test_dummy() -> Iterator[None]:
     ``get_module()`` re-discovers the newly installed module.
     """
     # Write the dummy module source into the real package directory.
-    _DUMMY_MOD.write_text(_DUMMY_CONTENT)
+    _DUMMY_MOD.write_text(_DUMMY_CONTENT, encoding="utf-8", newline="\n")
 
     # Clear cached clip modules so get_module() re-discovers them.
     modules_to_clear = [
