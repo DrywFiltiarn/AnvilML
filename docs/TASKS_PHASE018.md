@@ -10,9 +10,13 @@
 
 ## Overview
 
-Phase 018 implements the full set of generic inference nodes using Z-Image Turbo FP8 safetensors as the first real model. All nodes are architecture-agnostic — `LoadModel`, `LoadVae`, `LoadClip`, `ClipTextEncode`, `EmptyLatent`, `Sampler`, `VaeDecode`, `SaveImage` — with ZiT-specific dispatch living in `worker/nodes/arch/zit.py`.
+Phase 018 implements the full set of generic inference nodes using Z-Image Turbo FP8 safetensors as the first real model. All nodes are architecture-agnostic — `LoadModel`, `LoadVae`, `LoadClip`, `ClipTextEncode`, `EmptyLatent`, `Sampler`, `VaeDecode`, `SaveImage` — with ZiT-specific dispatch living in `worker/nodes/arch/diffusion/zit.py`.
 
-Every node has both a mock path (fast sentinel, `ANVILML_WORKER_MOCK=1`) and a real path (loads actual FP8 safetensors). The mock path must never import `torch` or `diffusers`. The real path uses `safetensors` for weight loading, `diffusers` for pipeline components, and `torch` for inference.
+`model_id` for `LoadModel`/`LoadVae`/`LoadClip` is always a single `.safetensors` filesystem path — never an HF-style snapshot directory. `LoadClip` dispatches to `worker/nodes/arch/clip/{qwen3,clip_l,t5}.py` based on the `clip_type` input, mirroring how `Sampler`/`EmptyLatent` dispatch to `worker/nodes/arch/diffusion/{zit,flux}.py` based on the loaded model's architecture.
+
+Each node's mock-vs-real behavior is scoped individually in that node's own task below — there is no project-wide rule that every node must have both a mock sentinel path and a real path; check each task's own `context` and acceptance criterion. The Python test suite runs in mock mode by default (`ANVILML_WORKER_MOCK=1`, set automatically in `worker/tests/conftest.py`) — this controls the *test harness*, not what any individual node's implementation is required to support.
+
+If a task's scope excludes functionality that a different task is expected to deliver, that exclusion is recorded **only** via the task's JSON `defers_to` field (validated by The Forge at startup) — never as prose in `context`, never as a code comment with no JSON counterpart. See `FORGE_TASK_AUTHORING_SPEC.md §12a`.
 
 After Phase 018, a real ZiT FP8 workflow submitted to a server with a GPU and the correct model files produces a PNG artifact.
 
@@ -23,51 +27,14 @@ After Phase 018, a real ZiT FP8 workflow submitted to a server with a GPU and th
 | A | worker loader nodes | P18-A1 … P18-A3 | LoadModel, LoadVae, LoadClip |
 | B | worker inference nodes | P18-B1 … P18-B3 | ClipTextEncode, EmptyLatent, Sampler, VaeDecode |
 | C | worker pipeline | P18-C1 | pipeline_cache.py LRU model cache |
-| D | worker arch + real paths | P18-D1 … P18-D20 | arch/zit.py mock dispatch (D1), real paths for every Group A/B/D node, arch/ restructure + clip dispatch (D7–D14), then real ZiT sampling (D16–D20), gated on Retrofit Phase 903 |
+| D | worker arch + real paths | P18-D1 … P18-D20 | arch dispatch and real loading/sampling paths for every Group A/B node, gated on Retrofit Phase 903 |
 | E | integration | P18-E1 | test_parity.py + real ZiT smoke proof doc |
-
-P18-D2 through P18-D11 (original numbering) were added after P18-D1
-completed, to correct a defect found while auditing P18-D1's deferred
-real-`sample()` path ahead of P18-E1 planning: every "real path" stub
-across Groups A–D (`LoadModel`, `LoadVae`, `LoadClip`, `ClipTextEncode`,
-`EmptyLatent`, `Sampler`, and `arch/zit.py`'s own `sample()`) deferred to
-either itself, a task that never touched the file, or no task at all. See
-`docs/TASKS_PHASE903.md` for the two prerequisite fixes (model path
-resolution, real pipeline cache wiring) these tasks depend on.
-
-**P18-D7 through P18-D14 were inserted between (original) P18-D6 and
-P18-D7 after P18-D4/D5/D6 shipped**, correcting a second, independent
-defect discovered while wiring real model files: D4/D5/D6 each used
-`diffusers`/`transformers` `from_pretrained(model_id, subfolder=...)`,
-which requires an HF-style snapshot **directory** (`config.json` +
-subfolder layout). The actual model storage convention for this project is
-manually-downloaded, standalone `.safetensors` **files** — `from_pretrained`
-on a single file either fails outright or silently treats the file as a
-directory path and fails differently. This also deviated from
-`ANVILML_DESIGN.md §10.5`, which specifies loading weights directly via the
-`safetensors` library, not via HF directory conventions — the deviation
-was an implementation drift introduced during D4/D5/D6's authoring, not a
-specification change.
-
-The fix is single-file loading as the **active and only** path for now.
-The original `from_pretrained(directory)` code is preserved, not deleted,
-inside new `_load_from_hf_directory(...)` functions that are never called
-— kept for a possible future reactivation, per explicit project decision.
-`LoadClip` additionally gained an `arch/clip/` dispatch package (mirroring
-the existing `arch/diffusion/` pattern used by `Sampler`/`EmptyLatent`),
-since its three `clip_type` families (`qwen3`, `clip_l`, `t5`) each need
-genuinely different tokenizer vendoring and weight-loading code, not just
-different class names in one `if/elif` chain. Every renumbered task from
-(original) P18-D7 onward shifted by 9 slots; see the per-task headers below
-for old→new ID mappings. The `worker/nodes/arch/` package itself was also
-split into `arch/diffusion/` and `arch/clip/` siblings (P18-D7) for
-structural symmetry — `zit.py`/`flux.py` moved, with no behavior change.
 
 ## Prerequisites
 
 Phase 017 complete. `worker/nodes/__init__.py` and `base.py` exist. `worker/worker_main.py` handles Execute with `run_graph`. The `SaveImage` node (mock) exists from Phase 014.
 
-P18-D2 through P18-D11 additionally require Retrofit Phase 903 complete:
+P18-D2 through P18-D20 additionally require Retrofit Phase 903 complete:
 `anvilml-scheduler` resolves submitted `model_id` SHA256 hashes to real
 filesystem paths before dispatch (`P903-A1`), and `worker_main.py` wires a
 real `PipelineCache` instance into every `NodeContext` instead of an empty
@@ -77,10 +44,10 @@ dict placeholder (`P903-A2`). See `docs/TASKS_PHASE903.md`.
 
 | Contract document | Relevant tasks | What must match |
 |-------------------|---------------|-----------------|
-| `ANVILML_DESIGN.md §10.3` | All | Node type names, INPUT_SLOTS, OUTPUT_SLOTS per table (note: `EmptyLatent` gained an optional `model:MODEL` input slot in P18-D19 — table updated) |
-| `ANVILML_DESIGN.md §10.4` | P18-D1, P18-D2, P18-D3b, P18-D19, P18-D18a–c, P18-D17 | `can_handle()`/`get_module()`/`sample()`/`compute_latent_shape()` arch module interface (now `arch/diffusion/`); the latent shape formula is architecture-specific and must not be hardcoded in generic nodes |
-| `ANVILML_DESIGN.md §10.4a` (new) | P18-D7, P18-D8, P18-D9, P18-D10, P18-D11, P18-D12 | `arch/clip/` dispatch interface: `can_handle(clip_type:str)`/`get_module(clip_type:str)`/`load(model_id,torch_dtype)`, mirroring §10.4's diffusion contract but dispatching on the `clip_type` string, not a loaded object |
-| `ANVILML_DESIGN.md §10.5` | P18-C1, P18-D1, P18-D4–D6, P18-D7–D14 | FP8 dtype handling: transformer stays float8, no upcast; text_encoder/vae stay bf16. §10.5 also specifies direct `safetensors` weight loading — P18-D7–D14 corrects D4–D6's deviation from this (see narrative note above) |
+| `ANVILML_DESIGN.md §10.3` | All | Node type names, INPUT_SLOTS, OUTPUT_SLOTS per table (note: `EmptyLatent` gained an optional `model:MODEL` input slot in P18-D17 — table updated) |
+| `ANVILML_DESIGN.md §10.4` | P18-D1, P18-D2, P18-D3b, P18-D17, P18-D18a–c, P18-D19 | `can_handle()`/`get_module()`/`sample()`/`compute_latent_shape()` arch module interface (now `arch/diffusion/`); the latent shape formula is architecture-specific and must not be hardcoded in generic nodes |
+| `ANVILML_DESIGN.md §10.4a` | P18-D7, P18-D8, P18-D9, P18-D10, P18-D11, P18-D12 | `arch/clip/` dispatch interface: `can_handle(clip_type:str)`/`get_module(clip_type:str)`/`load(model_id,torch_dtype)`, mirroring §10.4's diffusion contract but dispatching on the `clip_type` string, not a loaded object |
+| `ANVILML_DESIGN.md §10.5` | P18-C1, P18-D1, P18-D4–D6, P18-D7–D14 | FP8 dtype handling: transformer stays float8, no upcast; text_encoder/vae stay bf16. §10.5 also specifies direct `safetensors` weight loading — `LoadModel`/`LoadVae`/`LoadClip` use single-file loading exclusively (`P18-D7`–`P18-D14`) |
 | `ANVILML_DESIGN.md Appendix B` | P18-E1, P18-D4–D6 | Example workflow JSON structure; `model_id` is submitted as a hash and resolved to a path before the worker sees it (Retrofit 903); as of P18-D13/D14/D12, that resolved path is always a single `.safetensors` file, never an HF directory |
 
 ## Task Descriptions
@@ -148,24 +115,6 @@ dict placeholder (`P903-A2`). See `docs/TASKS_PHASE903.md`.
 Per-step callback checks `cancel_flag.is_set()` and calls `emit_progress(step, total_steps)` via the pipeline's `callback_on_step_end` hook. Every FP8 decision point in the real path has an inline comment: the transformer stays at `float8` dtype (no upcast) when `InferenceCaps.fp8` is `True`; the text encoder and VAE remain at `bf16`, since only the diffusion transformer is distributed as FP8 in the Z-Image Turbo release.
 
 **Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py -v` exits 0; mock `can_handle` + `sample` tests pass.
-
-> **Note on P18-D1's outcome:** the goal above describes the intended real
-> `sample()` path. What was actually implemented is the mock path only —
-> the real path was stubbed with `NotImplementedError` and a TODO comment
-> deferring to "a future phase," without a genuine task ever being
-> assigned to complete it. P18-D2 through P18-D11 below correct this,
-> after Retrofit Phase 903 closes two prerequisite gaps discovered during
-> that audit (model path resolution, real pipeline cache wiring — see
-> `docs/TASKS_PHASE903.md`). The same kind of dangling or self-referential
-> deferral was also found in `LoadModel`, `LoadVae`, `LoadClip` (Group A),
-> `EmptyLatent`, `Sampler` (Group B) — each gets its own task below.
->
-> The incident described above predates `FORGE_TASK_AUTHORING_SPEC.md`'s
-> `defers_to` field and §12a authoring procedure, both added specifically
-> in response to it. None of the tasks below repeat the original prose-only
-> deferral pattern; where a task genuinely defers scope (`P18-D9a`), the
-> deferral is recorded in the task's JSON `defers_to` field, validated by
-> The Forge at startup, not merely stated in prose.
 
 #### P18-D2: worker/nodes/arch/__init__.py: get_module() dispatcher
 
@@ -251,21 +200,6 @@ consumer.
 **Acceptance criterion:** Existing mock tests in
 `worker/tests/test_nodes_loader.py` continue to pass unchanged.
 
-> **Note on P18-D4/D5/D6's outcome:** all three real paths shipped using
-> `from_pretrained(model_id, subfolder=...)`, which requires `model_id` to
-> resolve to an HF-style snapshot **directory**. The project's actual model
-> storage convention is manually-downloaded, standalone `.safetensors`
-> **files** — this is a contract violation against `ANVILML_DESIGN.md
-> §10.5`'s own "load weights directly via the `safetensors` library"
-> language, discovered only once real model files were wired up for
-> testing. P18-D7 through P18-D14 below correct this with single-file
-> loading as the active path, preserving the original directory-based code
-> (unreachable, kept for possible future reactivation) rather than deleting
-> it. The same audit also found a `self.ctx` vs bare `ctx` bug in all three
-> loader real paths (a `NameError` that no existing test caught, since
-> every test in this suite runs in mock mode only) — fixed in the same
-> tasks that touch each affected `execute()` method.
-
 #### P18-D7: worker/nodes/arch/: restructure into arch/diffusion/ + arch/clip/ siblings
 
 **Goal:** Move `zit.py` (and Phase 19's `flux.py`) into a new
@@ -293,49 +227,91 @@ removed before commit.
 
 **Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_init.py -v` exits 0.
 
-#### P18-D9 / P18-D10 / P18-D11: worker/nodes/arch/clip/{qwen3,clip_l,t5}.py
+#### P18-D9: worker/nodes/arch/clip/qwen3.py: single-file Qwen3 text encoder loading
 
-**Goal:** One clip-arch module per `clip_type` family, each exposing
-`can_handle(clip_type)` and `load(model_id, torch_dtype) -> RealClip`.
-`model_id` is always a single `.safetensors` file — none of these ever call
-`from_pretrained` on it. Each module's tokenizer loads from a vendored
-local directory under `worker/assets/` (no network at worker runtime; see
-`worker/tools/seed_tokenizers.sh`/`.ps1` for provenance and re-seeding):
+**Goal:** `can_handle(clip_type) -> bool` returns `clip_type == "qwen3"`.
+`load(model_id: str, torch_dtype) -> RealClip`: `model_id` is always a
+single `.safetensors` file — never an HF directory, never passed to
+`from_pretrained`. Import `RealClip` lazily inside `load()` from
+`worker.nodes.loader` (avoids a circular import, since `loader.py` calls
+`arch.clip.get_module()`; mirrors `sampler.py`'s existing
+lazy-import-of-arch pattern).
 
-| Task | Module | clip_type | Tokenizer class | Vendored assets | Weights class |
-|------|--------|-----------|-----------------|------------------|----------------|
-| D9 | `qwen3.py` | `"qwen3"` | `Qwen2Tokenizer` | `worker/assets/qwen25_tokenizer/` | `Qwen3ForCausalLM` |
-| D10 | `clip_l.py` | `"clip_l"` | `CLIPTokenizer` | `worker/assets/clip_l_tokenizer/` | `CLIPTextModelWithProjection` |
-| D11 | `t5.py` | `"t5"` | `T5TokenizerFast` (switched from slow `T5Tokenizer`) | `worker/assets/t5_tokenizer/` | `T5EncoderModel` |
+**Tokenizer:** `Qwen2Tokenizer.from_pretrained("worker/assets/qwen25_tokenizer")`
+— vendored locally, verified against `Qwen/Qwen2.5-VL-7B-Instruct`, no
+network call. Resolve this path via `pathlib` relative to this file, not
+the process working directory.
 
-Each weights class is constructed via `<Class>.from_config(config)` then
-`load_state_dict(safetensors.torch.load_file(model_id))` — `transformers`
-text-encoder classes have no `from_single_file()` equivalent (unlike the
-`diffusers` model classes used by `LoadModel`/`LoadVae`, see P18-D13/D14),
-so config fields must be confirmed against the actual checkpoint tensor
-shapes at ACT time. `RealClip` (existing class in `loader.py`) is imported
-lazily inside each module's `load()` to avoid a circular import with
-`loader.py` (which calls `arch.clip.get_module()`).
+**Weights:** `Qwen3ForCausalLM.from_config(config)` then
+`load_state_dict(safetensors.torch.load_file(model_id))`. Confirm
+`Qwen3Config` field values against the installed `transformers` source
+AND the actual checkpoint's tensor shapes before writing the config —
+do not assume defaults match the checkpoint.
 
-**T5 tokenizer sourcing note:** `T5TokenizerFast.from_pretrained()` reads a
-consolidated `tokenizer.json` directly. `google/t5-v1_1-xxl` does not ship
-one (SentencePiece `spiece.model` only); the repo that does
-(`black-forest-labs/FLUX.1-dev`'s `tokenizer_2/`, matching ComfyUI's own
-vendored copy) is **gated** — requires HF auth and accepting a
-non-commercial license, unsuitable for an anonymous `curl`/
-`Invoke-WebRequest` import. `worker/assets/t5_tokenizer/` is sourced
-instead from `InvokeAI/t5-v1_1-xxl`'s `bfloat16/tokenizer_2/` subfolder —
-Apache-2.0, ungated, an explicitly-licensed re-host of the same
-`FLUX.1-schnell` tokenizer content.
+Return `RealClip(tokenizer, text_encoder)`.
 
-**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_qwen3.py worker/tests/test_arch_clip_l.py worker/tests/test_arch_clip_t5.py -v` exits 0, each with ≥3 tests.
+**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_qwen3.py -v` exits 0, ≥3 tests added.
+
+#### P18-D10: worker/nodes/arch/clip/clip_l.py: single-file CLIP-L text encoder loading
+
+**Goal:** `can_handle(clip_type) -> bool` returns `clip_type == "clip_l"`.
+`load(model_id: str, torch_dtype) -> RealClip`: `model_id` is always a
+single `.safetensors` file — never an HF directory, never passed to
+`from_pretrained`. Import `RealClip` lazily inside `load()` from
+`worker.nodes.loader` (same circular-import avoidance as P18-D9).
+
+**Tokenizer:** `CLIPTokenizer.from_pretrained("worker/assets/clip_l_tokenizer")`
+— vendored locally, verified against `openai/clip-vit-large-patch14`, no
+network call. Resolve this path via `pathlib` relative to this file.
+
+**Weights:** `CLIPTextModelWithProjection.from_config(config)` then
+`load_state_dict(safetensors.torch.load_file(model_id))`. Confirm
+`CLIPTextConfig` field values (`hidden_size`, `num_hidden_layers`,
+`projection_dim`) against the installed `transformers` source AND the
+actual checkpoint's tensor shapes before writing the config.
+
+Return `RealClip(tokenizer, text_encoder)`.
+
+**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_l.py -v` exits 0, ≥3 tests added.
+
+#### P18-D11: worker/nodes/arch/clip/t5.py: single-file T5-XXL text encoder loading
+
+**Goal:** `can_handle(clip_type) -> bool` returns `clip_type == "t5"`.
+`load(model_id: str, torch_dtype) -> RealClip`: `model_id` is always a
+single `.safetensors` file — never an HF directory, never passed to
+`from_pretrained`. Import `RealClip` lazily inside `load()` from
+`worker.nodes.loader` (same circular-import avoidance as P18-D9).
+
+**Tokenizer:** `T5TokenizerFast.from_pretrained("worker/assets/t5_tokenizer")`
+— this task switches `LoadClip`'s `t5` branch from the slow `T5Tokenizer`
+to `T5TokenizerFast`; update `loader.py`'s stale `T5Tokenizer` import
+accordingly. The vendored `tokenizer.json` was verified against
+`InvokeAI/t5-v1_1-xxl`'s `bfloat16/tokenizer_2/` (Apache-2.0, an
+explicitly-licensed re-host of the same `FLUX.1-schnell` `text_encoder_2`
+tokenizer content). `google/t5-v1_1-xxl` is not used as the source — it
+ships only a SentencePiece `spiece.model`, no `tokenizer.json`.
+`black-forest-labs/FLUX.1-dev`'s own `tokenizer_2/` is not used either — it
+is a gated repo requiring HF auth and license acceptance, unsuitable for
+an unauthenticated asset fetch. See `worker/tools/seed_tokenizers.sh`'s
+header comments for the full sourcing rationale.
+
+**Weights:** `T5EncoderModel.from_config(config)` then
+`load_state_dict(safetensors.torch.load_file(model_id))`. Confirm
+`T5Config` field values against the actual checkpoint's tensor shapes
+before writing the config.
+
+Return `RealClip(tokenizer, text_encoder)`.
+
+**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_t5.py -v` exits 0, ≥3 tests added.
 
 #### P18-D12: worker/nodes/loader.py: LoadClip dispatches via arch.clip
 
 **Goal:** Replace `LoadClip`'s inline `if clip_type == "qwen3": ... elif
 ...` dispatch with `arch.clip.get_module(clip_type)`, mirroring
-`Sampler`'s existing `arch.get_module(model)` pattern. Fixes the
-`self.ctx` vs bare `ctx` bug (see note above P18-D7). The original
+`Sampler`'s existing `arch.get_module(model)` pattern. Fixes a pre-existing
+bug where `execute()` reads the bare name `ctx` instead of `self.ctx` when
+accessing `pipeline_cache` (a `NameError` at runtime, uncaught by the
+existing test suite since it runs in mock mode only). The original
 `from_pretrained`-based branch bodies move unchanged into a new
 `_load_from_hf_directory(model_id, clip_type)` function — kept, never
 called, preserved for future reactivation.
@@ -374,16 +350,7 @@ into `_load_from_hf_directory(model_id)`, kept but never called. Fixes the
 **Acceptance criterion:** Existing mock tests in
 `worker/tests/test_nodes_loader.py` continue to pass unchanged.
 
-*(Note: `P18-D15` is intentionally unused — the new-task block grew from
-an initially-scoped 3 tasks to 8 (`P18-D7`–`P18-D14`) during planning, once
-the `LoadClip` `clip_type` dispatch redesign was added; the renumbered tail
-below picks back up at `P18-D16` rather than leaving a different gap
-later. No task was dropped.)*
-
 #### P18-D16: worker/nodes/encoder.py: ClipTextEncode real path
-
-*(originally numbered P18-D7; renumbered when P18-D7–D14 were inserted
-above — see the narrative note earlier in this document.)*
 
 **Goal:** Replace `ClipTextEncode`'s real-path `NotImplementedError` (this
 TODO currently carries no task reference at all — this task is its
@@ -396,8 +363,6 @@ exposing `.positive`/`.negative` — the exact contract P18-D18a–c consume.
 `worker/tests/test_nodes_encoder.py` continue to pass unchanged.
 
 #### P18-D17: worker/nodes/sampler.py: EmptyLatent real path + new model input
-
-*(originally numbered P18-D8.)*
 
 **Goal:** Add an optional `model:MODEL` input slot to `EmptyLatent`
 (`ANVILML_DESIGN.md §10.3` updated accordingly). Real path dispatches via
@@ -415,8 +380,6 @@ formula.
 ignores the new optional input).
 
 #### P18-D18a / P18-D18b / P18-D18c: worker/nodes/arch/diffusion/zit.py: real sample()
-
-*(originally numbered P18-D9a/b/c.)*
 
 Split into three atomic sub-tasks; the original single-task scope (pipeline
 assembly + callback adapter + invocation + cancellation) was too large for
@@ -456,8 +419,6 @@ is `worker/nodes/arch/diffusion/zit.py`, not `worker/nodes/arch/zit.py`.
 
 #### P18-D19: worker/nodes/sampler.py: Sampler real dispatch
 
-*(originally numbered P18-D10.)*
-
 **Goal:** Replace `Sampler.execute()`'s real-path `NotImplementedError`
 (currently mislabeled as deferred to P18-C1, which is `pipeline_cache.py`
 and never touched this file — this task is the correct owner). Dispatch
@@ -468,8 +429,6 @@ architecture")` per `ANVILML_DESIGN.md §10.4` if no module matches.
 `worker/tests/test_nodes_sampler.py` continue to pass unchanged.
 
 #### P18-D20: worker/nodes/decode.py: VaeDecode real path
-
-*(originally numbered P18-D11.)*
 
 **Goal:** Replace `VaeDecode`'s real-path `NotImplementedError` (this TODO
 currently carries no task reference at all — this task is its correct
@@ -516,6 +475,3 @@ cargo test --workspace --features mock-hardware
 - `worker/nodes/arch/` is split into `arch/diffusion/` (diffusion model dispatch — `zit.py`, `flux.py`) and `arch/clip/` (text-encoder dispatch — `qwen3.py`, `clip_l.py`, `t5.py`) as of P18-D7/D8. Both follow the same `can_handle()`/`get_module()` contract shape; `arch/diffusion/` dispatches on a loaded model object's `.arch` attribute, `arch/clip/` dispatches on the `clip_type` string directly (no object exists yet at that point).
 - `transformers` text-encoder classes (`Qwen3ForCausalLM`, `CLIPTextModelWithProjection`, `T5EncoderModel`) have no `from_single_file()` equivalent — unlike `diffusers` model classes (`ZImageTransformer2DModel`, `AutoencoderKL`), which do (confirmed via `diffusers.loaders.single_file_model.SINGLE_FILE_LOADABLE_CLASSES`). `LoadModel`/`LoadVae` (P18-D13/D14) use `from_single_file()`; `arch/clip/*.py` modules (P18-D9/D10/D11) use manual `from_config()` + `load_state_dict()` instead, since no shortcut exists on the `transformers` side.
 - Vendored tokenizer assets live under `worker/assets/{qwen25_tokenizer,clip_l_tokenizer,t5_tokenizer}/`, committed to git (not gitignored — these are small, static, redistributable files, not user model weights). Re-seed via `worker/tools/seed_tokenizers.sh`/`.ps1`; see that script's header comments for exact source-repo provenance and why certain obvious-seeming sources (`google/t5-v1_1-xxl`, `black-forest-labs/FLUX.1-dev`) were deliberately not used.
-- **P18-D7 executed:** restructured  into  (diffusion model dispatch) with  as a thin re-export shim.
-
-- **P18-D7 executed:** restructured `worker/nodes/arch/` into `arch/diffusion/` (diffusion model dispatch) with `arch/__init__.py` as a thin re-export shim.
