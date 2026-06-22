@@ -3231,3 +3231,30 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** ``batch_size=2, height=1025, width=1026, num_channels_latents=4``.
 **Expected output:** ``(2, 4, 128, 128)``.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_compute_latent_shape_non_divisible -v` exits 0.
+
+## test_get_module_returns_dummy_for_dummy_clip_type (worker.nodes.arch.clip)
+
+**File:** `worker/tests/test_arch_clip_init.py`
+**Context:** A ``_test_dummy.py`` module is installed into the real ``clip/`` package directory by an ``autouse`` fixture before each test, then removed after. This allows ``get_module()`` to discover and return the dummy module via ``pkgutil.iter_modules(__path__)``. ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture.
+**Tests:** Call ``get_module("_dummy")`` and assert the returned module's ``__name__`` is ``"worker.nodes.arch.clip._test_dummy"``. This proves ``get_module()`` iterates modules, imports them, calls ``can_handle()``, and returns the correct module.
+**Inputs:** ``clip_type="_dummy"``.
+**Expected output:** ``result.__name__ == "worker.nodes.arch.clip._test_dummy"``.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_init.py::test_get_module_returns_dummy_for_dummy_clip_type -v` exits 0.
+
+## test_get_module_returns_none_for_unknown_clip_type (worker.nodes.arch.clip)
+
+**File:** `worker/tests/test_arch_clip_init.py`
+**Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture. The ``_test_dummy`` module is present in the clip package namespace during test execution (installed by the ``_install_test_dummy`` fixture).
+**Tests:** Call ``get_module("nonexistent")`` and assert ``None`` is returned. This proves the function correctly returns ``None`` when no module's ``can_handle()`` matches.
+**Inputs:** ``clip_type="nonexistent"``.
+**Expected output:** ``get_module("nonexistent") is None``.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_init.py::test_get_module_returns_none_for_unknown_clip_type -v` exits 0.
+
+## test_can_handle_returns_bools_correctly (worker.nodes.arch.clip)
+
+**File:** `worker/tests/test_arch_clip_init.py`
+**Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture. The ``_test_dummy`` module is present in the clip package namespace during test execution (installed by the ``_install_test_dummy`` fixture).
+**Tests:** Call ``can_handle("_dummy")`` (expect ``True``) and ``can_handle("nonexistent")`` (expect ``False``). This proves the delegation to ``get_module()`` works correctly.
+**Inputs:** ``clip_type="_dummy"`` and ``clip_type="nonexistent"``.
+**Expected output:** ``can_handle("_dummy") == True`` and ``can_handle("nonexistent") == False``.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_init.py::test_can_handle_returns_bools_correctly -v` exits 0.
