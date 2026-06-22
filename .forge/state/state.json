@@ -103,16 +103,17 @@
     "P18-D2",
     "P18-D3",
     "P18-D3b",
-    "P18-D4"
+    "P18-D4",
+    "P18-D5"
   ],
-  "in_progress": "P18-D5",
+  "in_progress": "P18-D6",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-22T12:11:02+0200",
+  "last_updated": "2026-06-22T13:06:37+0200",
   "plan_approved": true,
-  "current_plan": "1. **Verify VAE directory layout at ACT time.** Before writing any code, inspect the\n   Z-Image Turbo model files to confirm whether the VAE weights are in a `vae/`\n   subfolder alongside a `config.json` (\u2192 `from_pretrained`) or are a standalone\n   `.safetensors` file (\u2192 `from_single_file`). The plan's approach is contingent on\n   this verification. This is the primary risk of this task \u2014 the ACT agent must confirm\n   before writing.\n\n2. **Replace the stub in `LoadVae.execute()`.** In the real-mode branch (after the\n   mock-mode `return`), replace the `raise NotImplementedError(...)` with:\n   - Lazy imports: `from diffusers import AutoencoderKL`, `import torch`.\n   - A `loader_fn` closure that constructs `AutoencoderKL.from_pretrained(model_id,\n     subfolder=\"vae\", torch_dtype=torch.bfloat16)` (or the confirmed alternative).\n     Inline comment explaining the construction choice.\n   - Call `ctx.pipeline_cache.get_or_load(model_id, \"bf16\", loader_fn)` to cache the\n     result.\n   - Return `{\"vae\": result}`.\n\n3. **Update the docstring's `Raises` section.** Remove the `NotImplementedError` from\n   the `Raises:` paragraph in `LoadVae.execute()`'s docstring, since the stub no longer\n   raises. If the method can now raise other exceptions (e.g., from diffusers loading),\n   note those instead.\n\n4. **Verify mock tests pass.** Run the existing test suite with mock mode. No new tests\n   are needed because the real path is unreachable in mock mode (the environment check\n   returns before reaching it).",
-  "plan_approval_message_id": "1518553043111641219",
+  "current_plan": "1. **Add `RealClip` class to `loader.py`** (after `MockClip`, before `LoadClip`):\n   - A lightweight wrapper with `__init__(self, tokenizer: Any, text_encoder: Any)`.\n   - Exposes `self._tokenizer` and `self._text_encoder` as public `.tokenizer` and `.text_encoder` properties.\n   - Follows the `RealModel` pattern: stores private refs, exposes public attrs.\n   - Includes Google-style docstring with Args section.\n\n2. **Replace the `NotImplementedError` block** in `LoadClip.execute()` (lines 404\u2013413):\n   - Add lazy imports for the transformers classes needed for each `clip_type`.\n   - Implement a `clip_type` dispatch using an `if/elif/else` chain:\n     - `\"qwen3\"` \u2192 import and use `Qwen2Tokenizer` + `Qwen3ForCausalLM` (ACT agent must verify exact class names against installed transformers version).\n     - `\"clip_l\"` \u2192 import and use `CLIPModel` + `CLIPTextModelWithProjection`.\n     - `\"t5\"` \u2192 import and use `T5Tokenizer` + `T5ForConditionalGeneration`.\n     - Any other value \u2192 raise `NodeError(f\"unsupported clip_type: {clip_type}\")`.\n   - Each branch creates the tokenizer and text_encoder via `from_pretrained(model_id, ...)`, wrapping them in `RealClip(tokenizer, text_encoder)`.\n   - Wrap the loading logic in a `loader_fn` closure and call `ctx.pipeline_cache.get_or_load(model_id, \"bf16\", loader_fn)`.\n   - Add an inline comment on the `clip_type` dispatch explaining the mapping rationale.\n\n3. **Ensure `__all__` exports `RealClip`** alongside existing exports.\n\n4. **No test changes needed** \u2014 all existing tests exercise the mock path and will pass unchanged. The task's acceptance criterion is that existing mock tests continue to pass.",
+  "plan_approval_message_id": "1518572467059298355",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1518553041261953077",
+  "plan_report_message_id": "1518572464580464703",
   "impl_report_message_id": null
 }

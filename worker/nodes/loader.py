@@ -22,7 +22,7 @@ from typing import Any
 
 from worker.nodes.base import BaseNode, NodeContext, SlotSpec, register
 
-__all__ = ["LoadModel", "LoadVae", "MockModel", "MockVae", "MockClip"]
+__all__ = ["LoadModel", "LoadVae", "RealClip", "MockModel", "MockVae", "MockClip"]
 
 
 class MockModel:
@@ -75,6 +75,46 @@ class MockClip:
             clip_type: The tokeniser type identifier.
         """
         self.clip_type = clip_type
+
+
+class RealClip:
+    """Lightweight wrapper around a transformers text-encoder pipeline.
+
+    The real transformers text-encoder (tokenizer + text encoder model)
+    carries config data (e.g. ``pad_token_id``, ``max_position_embeddings``)
+    that downstream consumers like ``ClipTextEncode`` need to read, but
+    the raw transformers objects do not expose a unified interface.
+    This wrapper stores private refs and exposes public ``.tokenizer``
+    and ``.text_encoder`` attributes, mirroring the ``RealModel`` pattern
+    used for diffusion transformer components.
+
+    Args:
+        tokenizer: A transformers tokenizer instance (e.g.
+            ``Qwen2Tokenizer``, ``CLIPTokenizer``, ``T5Tokenizer``).
+        text_encoder: A transformers text-encoder model instance (e.g.
+            ``Qwen3ForCausalLM``, ``CLIPTextModelWithProjection``,
+            ``T5ForConditionalGeneration``).
+    """
+
+    def __init__(self, tokenizer: Any, text_encoder: Any) -> None:
+        """Initialise the real clip wrapper.
+
+        Args:
+            tokenizer: The transformers tokenizer component.
+            text_encoder: The transformers text-encoder model.
+        """
+        self._tokenizer = tokenizer
+        self._text_encoder = text_encoder
+
+    @property
+    def tokenizer(self) -> Any:
+        """The transformers tokenizer instance."""
+        return self._tokenizer
+
+    @property
+    def text_encoder(self) -> Any:
+        """The transformers text-encoder model instance."""
+        return self._text_encoder
 
 
 class RealModel:
@@ -401,13 +441,82 @@ class LoadClip(BaseNode):
             # and avoids requiring GPU hardware or torch.
             return {"clip": MockClip(clip_type=clip_type)}
 
-        # Real mode: load actual safetensors weights for the text
-        # encoder. This path is stubbed — the real implementation
-        # will use safetensors.safe_open() to read the weight
-        # tensors and load via pipeline_cache.get_or_load(). The
-        # pipeline_cache module is implemented in task P18-D1.
-        # TODO(P18-A3): Implement real safetensors loading path.
-        raise NotImplementedError(
-            "Real LoadClip path not yet implemented — "
-            "use ANVILML_WORKER_MOCK=1 for testing"
+        # Real mode: load actual transformers text-encoder weights.
+        # Lazy imports — these packages are not available in mock mode
+        # (no torch installed), so importing them here keeps the worker
+        # importable when ANVILML_WORKER_MOCK=1.
+        import torch
+
+        # Dispatch to the correct transformers classes based on clip_type.
+        # The mapping rationale: different model families use different
+        # tokeniser and text-encoder class names in the transformers
+        # library. The clip_type hint (from the model metadata or
+        # user-provided) tells us which family the model belongs to.
+        # We resolve the class references here (cheap) and defer the
+        # actual model loading (expensive) to the loader_fn closure
+        # so that pipeline_cache.get_or_load() can skip it on cache hits.
+        if clip_type == "qwen3":
+            # Qwen3 models use Qwen2Tokenizer (shared tokenizer) and
+            # Qwen3ForCausalLM as the text encoder — the causal LM head
+            # provides the contextual embeddings needed for CLIP-like
+            # text encoding.
+            from transformers import Qwen2Tokenizer, Qwen3ForCausalLM
+
+            tokenizer_cls = Qwen2Tokenizer
+            encoder_cls = Qwen3ForCausalLM
+
+        elif clip_type == "clip_l":
+            # CLIP-L (OpenAI CLIP) uses CLIPTokenizer +
+            # CLIPTextModelWithProjection — the standard CLIP text
+            # encoder with projection head for cross-modal alignment.
+            from transformers import CLIPTextModelWithProjection
+
+            from transformers import CLIPTokenizer
+
+            tokenizer_cls = CLIPTokenizer
+            encoder_cls = CLIPTextModelWithProjection
+
+        elif clip_type == "t5":
+            # T5 (Google) uses T5Tokenizer + T5ForConditionalGeneration —
+            # the T5 text encoder is a general-purpose encoder-decoder
+            # model used in Stable Diffusion XL and related architectures.
+            from transformers import T5ForConditionalGeneration, T5Tokenizer
+
+            tokenizer_cls = T5Tokenizer
+            encoder_cls = T5ForConditionalGeneration
+
+        else:
+            # Unsupported clip_type — raise a clear error so the
+            # operator knows which values are valid.
+            raise ValueError(
+                f"unsupported clip_type: {clip_type!r}. "
+                f"Expected one of: 'qwen3', 'clip_l', 't5'."
+            )
+
+        # Define the loader closure that constructs the RealClip.
+        # This is passed to pipeline_cache.get_or_load() so the actual
+        # from_pretrained calls only happen on cache miss. The closure
+        # captures tokenizer_cls, encoder_cls, model_id, and torch_dtype
+        # to avoid redundant resolution.
+        def loader_fn() -> RealClip:
+            tokenizer = tokenizer_cls.from_pretrained(model_id)
+            text_encoder = encoder_cls.from_pretrained(
+                model_id, torch_dtype=torch.bfloat16
+            )
+            # Wrap the tokenizer and text encoder in a RealClip.
+            # This provides a unified interface that downstream nodes
+            # (like ClipTextEncode) can rely on regardless of the
+            # underlying transformers class.
+            return RealClip(tokenizer, text_encoder)
+
+        # Get the clip from cache or load it via loader_fn.
+        # The cache key uses "bf16" dtype string — bfloat16 is the
+        # native half-precision format for modern GPUs (A100/H100)
+        # and is the standard precision for text encoders in diffusion
+        # pipelines. Note: ctx.pipeline_cache is typed as dict[str, Any]
+        # in NodeContext but a PipelineCache instance at runtime
+        # (retrofitted by P903-A2), so .get_or_load() is available.
+        result = ctx.pipeline_cache.get_or_load(
+            model_id, "bf16", loader_fn
         )
+        return {"clip": result}
