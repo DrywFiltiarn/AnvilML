@@ -3213,3 +3213,21 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** None (reads a module-level constant).
 **Expected output:** `VAE_SCALE_FACTOR == 8` — the Z-Image-Turbo VAE spatial compression factor matches the published config.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_vae_scale_factor_value -v` exits 0.
+
+## test_compute_latent_shape_known_dims (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** `ANVILML_WORKER_MOCK=1` is set by the `conftest.py` autouse fixture, ensuring mock mode is active. This is a pure arithmetic function with no I/O, no subprocess, and no environment variable mutation.
+**Tests:** Call ``compute_latent_shape(1, 1024, 1024, 4)`` and assert the result equals ``(1, 4, 128, 128)``. This is the canonical ZiT case: 1024×1024 image → 128×128 latent (8× spatial compression), batch 1, 4 channels (standard SD-style).
+**Inputs:** ``batch_size=1, height=1024, width=1024, num_channels_latents=4``.
+**Expected output:** ``(1, 4, 128, 128)``.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_compute_latent_shape_known_dims -v` exits 0.
+
+## test_compute_latent_shape_non_divisible (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** `ANVILML_WORKER_MOCK=1` is set by the `conftest.py` autouse fixture, ensuring mock mode is active. This is a pure arithmetic function with no I/O, no subprocess, and no environment variable mutation.
+**Tests:** Call ``compute_latent_shape(2, 1025, 1026, 4)`` and assert the result equals ``(2, 4, 128, 128)``. The floor division ``1025 // 16 == 64`` and ``1026 // 16 == 64``, so ``h == w == 128`` — this verifies that non-divisible dimensions silently floor rather than raise, matching ``ZImagePipeline.prepare_latents``'s integer-division behaviour.
+**Inputs:** ``batch_size=2, height=1025, width=1026, num_channels_latents=4``.
+**Expected output:** ``(2, 4, 128, 128)``.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_compute_latent_shape_non_divisible -v` exits 0.

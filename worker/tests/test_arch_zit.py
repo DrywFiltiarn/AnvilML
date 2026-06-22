@@ -16,7 +16,13 @@ from typing import Any
 
 import pytest
 
-from worker.nodes.arch.zit import MockLatent, VAE_SCALE_FACTOR, can_handle, sample
+from worker.nodes.arch.zit import (
+    MockLatent,
+    VAE_SCALE_FACTOR,
+    can_handle,
+    compute_latent_shape,
+    sample,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -288,3 +294,52 @@ def test_sample_mock_no_torch_import() -> None:
         # Restore cached modules for other tests.
         sys.modules.pop("worker.nodes.arch.zit", None)
         sys.modules.pop("worker.nodes.arch", None)
+
+
+# ---------------------------------------------------------------------------
+# Tests: compute_latent_shape
+# ---------------------------------------------------------------------------
+
+
+def test_compute_latent_shape_known_dims() -> None:
+    """Verify ``compute_latent_shape()`` produces the canonical ZiT latent shape.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse
+        fixture, ensuring mock mode is active (not strictly required for
+        a pure arithmetic function, but consistent with the test file
+        convention).
+
+    Tests:
+        Call ``compute_latent_shape(1, 1024, 1024, 4)`` and assert
+        the result equals ``(1, 4, 128, 128)``. This is the canonical
+        ZiT case: 1024×1024 image → 128×128 latent (8× spatial
+        compression), batch 1, 4 channels (standard SD-style).
+
+    Expected output:
+        ``compute_latent_shape(1, 1024, 1024, 4) == (1, 4, 128, 128)``.
+    """
+    result = compute_latent_shape(1, 1024, 1024, 4)
+    assert result == (1, 4, 128, 128)
+
+
+def test_compute_latent_shape_non_divisible() -> None:
+    """Verify ``compute_latent_shape()`` silently floors non-divisible dimensions.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse
+        fixture, ensuring mock mode is active.
+
+    Tests:
+        Call ``compute_latent_shape(2, 1025, 1026, 4)`` and assert
+        the result equals ``(2, 4, 128, 128)``. The floor division
+        ``1025 // 16 == 64`` and ``1026 // 16 == 64``, so
+        ``h == w == 128`` — this verifies that non-divisible
+        dimensions silently floor rather than raise, matching
+        ``ZImagePipeline.prepare_latents``'s integer-division behaviour.
+
+    Expected output:
+        ``compute_latent_shape(2, 1025, 1026, 4) == (2, 4, 128, 128)``.
+    """
+    result = compute_latent_shape(2, 1025, 1026, 4)
+    assert result == (2, 4, 128, 128)

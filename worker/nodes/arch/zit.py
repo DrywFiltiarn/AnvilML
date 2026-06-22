@@ -24,13 +24,63 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
-__all__ = ["can_handle", "sample", "MockLatent", "VAE_SCALE_FACTOR"]
+__all__ = [
+    "can_handle",
+    "compute_latent_shape",
+    "sample",
+    "MockLatent",
+    "VAE_SCALE_FACTOR",
+]
 
 # Z-Image-Turbo's published VAE config has block_out_channels=[128,256,512,512]
 # (4 entries), giving 2**(4-1)=8 per ZImagePipeline.__init__'s vae_scale_factor
 # formula; independently corroborated as 8x spatial compression
 # (1024x1024 image -> 128x128 latent grid).
 VAE_SCALE_FACTOR: int = 8
+
+
+def compute_latent_shape(
+    batch_size: int,
+    height: int,
+    width: int,
+    num_channels_latents: int,
+) -> tuple[int, ...]:
+    """Compute the latent tensor shape for a ZiT diffusion pipeline.
+
+    Implements the exact formula from ``ZImagePipeline.prepare_latents``:
+    spatial dimensions are compressed by ``VAE_SCALE_FACTOR`` (8x), then
+    the result is doubled to account for the 2× upsampling inherent in
+    the VAE decoder's latent grid layout. Uses integer floor division
+    so that non-divisible input dimensions silently floor rather than
+    raising — matching ``ZImagePipeline.prepare_latents``'s behaviour.
+
+    This function is architecture-specific; Flux 2 Klein (P18-D3) has a
+    structurally different formula that packs latents into 2×2 patches.
+
+    Args:
+        batch_size: Number of independent generations in this batch.
+        height: Input image height in pixels.
+        width: Input image width in pixels.
+        num_channels_latents: Number of latent channels (4 for standard
+            SD-style models).
+
+    Returns:
+        A 4-tuple ``(batch_size, num_channels_latents, h, w)`` that
+        corresponds to the shape validated by
+        ``ZImagePipeline.prepare_latents``. The spatial dimensions
+        ``h`` and ``w`` may be zero for very small inputs (e.g.
+        height < 16) — the caller must validate that the result is
+        a usable latent shape before passing it to the pipeline.
+
+    # defers_to: P18-D8 — consumed by EmptyLatent real path
+    """
+    # Compute spatial dimensions using the VAE's 8× spatial
+    # compression factor. The formula doubles the floor-divided
+    # result to match ZImagePipeline.prepare_latents' latent grid
+    # layout (the VAE decoder upsamples by 2× from latent to pixel).
+    h = 2 * (height // (VAE_SCALE_FACTOR * 2))
+    w = 2 * (width // (VAE_SCALE_FACTOR * 2))
+    return (batch_size, num_channels_latents, h, w)
 
 
 class MockLatent:
