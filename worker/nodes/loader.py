@@ -22,7 +22,16 @@ from typing import Any
 
 from worker.nodes.base import BaseNode, NodeContext, SlotSpec, register
 
-__all__ = ["LoadModel", "LoadVae", "RealClip", "MockModel", "MockVae", "MockClip"]
+__all__ = [
+    "LoadModel",
+    "LoadVae",
+    "RealClip",
+    "MockModel",
+    "MockVae",
+    "MockClip",
+    "MockTokenizer",
+    "MockTextEncoder",
+]
 
 
 class MockModel:
@@ -75,6 +84,28 @@ class MockClip:
             clip_type: The tokeniser type identifier.
         """
         self.clip_type = clip_type
+
+
+class MockTokenizer:
+    """Sentinel tokenizer object for mock mode.
+
+    A lightweight placeholder that stands in for a real transformers
+    tokenizer instance during testing. Real tokenizer objects produced
+    by the safetensors loading path will have their own structure
+    defined when ``qwen3.py`` is implemented (P18-D9).
+    """
+    pass
+
+
+class MockTextEncoder:
+    """Sentinel text-encoder object for mock mode.
+
+    A lightweight placeholder that stands in for a real transformers
+    text-encoder model during testing. Real text-encoder objects
+    produced by the safetensors loading path will have their own
+    structure defined when ``qwen3.py`` is implemented (P18-D9).
+    """
+    pass
 
 
 class RealClip:
