@@ -3088,7 +3088,7 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Expected output:** No ImportError; cache operates normally; loader_fn called and result cached.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_pipeline_cache.py::test_oom_evict_all_in_mock -v` exits 0.
 
-## test_can_handle_zit (worker.nodes.arch.zit)
+## test_can_handle_zit (worker.nodes.arch.diffusion.zit)
 
 **File:** `worker/tests/test_arch_zit.py`
 **Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture, ensuring mock mode is active. No I/O, no subprocess, no network.
@@ -3097,7 +3097,7 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Expected output:** ``can_handle(model) == True`` — the ZiT arch module claims this model.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_can_handle_zit -v` exits 0.
 
-## test_can_handle_non_zit (worker.nodes.arch.zit)
+## test_can_handle_non_zit (worker.nodes.arch.diffusion.zit)
 
 **File:** `worker/tests/test_arch_zit.py`
 **Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture, ensuring mock mode is active. No I/O, no subprocess, no network.
@@ -3106,7 +3106,7 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Expected output:** ``can_handle(flux_model) == False`` and ``can_handle(no_arch_model) == False`` — the ZiT arch module does not claim these models.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_can_handle_non_zit -v` exits 0.
 
-## test_sample_mock_returns_mock_latent_and_seed (worker.nodes.arch.zit)
+## test_sample_mock_returns_mock_latent_and_seed (worker.nodes.arch.diffusion.zit)
 
 **File:** `worker/tests/test_arch_zit.py`
 **Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture, ensuring the mock code path is taken. No I/O, no subprocess, no network.
@@ -3115,7 +3115,7 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Expected output:** ``result[0]`` is a ``MockLatent`` instance and ``result[1] == 42``.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_sample_mock_returns_mock_latent_and_seed -v` exits 0.
 
-## test_sample_mock_preserves_seed_value (worker.nodes.arch.zit)
+## test_sample_mock_preserves_seed_value (worker.nodes.arch.diffusion.zit)
 
 **File:** `worker/tests/test_arch_zit.py`
 **Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture, ensuring the mock code path is taken. No I/O, no subprocess, no network.
@@ -3124,7 +3124,7 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Expected output:** The seed value in the result tuple matches the input exactly for each test case.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_sample_mock_preserves_seed_value -v` exits 0.
 
-## test_sample_real_path_raises_not_implemented (worker.nodes.arch.zit)
+## test_sample_real_path_raises_not_implemented (worker.nodes.arch.diffusion.zit)
 
 **File:** `worker/tests/test_arch_zit.py`
 **Context:** ``ANVILML_WORKER_MOCK`` is temporarily set to ``"0"`` by this test, overriding the autouse fixture. Environment variable isolation is enforced via capture-and-restore in a ``finally`` block. No I/O, no subprocess, no network.
@@ -3133,12 +3133,12 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Expected output:** ``NotImplementedError`` with message containing "Real ZiT sampling path not yet implemented".
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_sample_real_path_raises_not_implemented -v` exits 0.
 
-## test_sample_mock_no_torch_import (worker.nodes.arch.zit)
+## test_sample_mock_no_torch_import (worker.nodes.arch.diffusion.zit)
 
 **File:** `worker/tests/test_arch_zit.py`
 **Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture. This test temporarily removes ``torch`` from ``sys.modules`` to simulate an environment where torch is not installed. Environment variable and sys.modules isolation is enforced via capture-and-restore in a ``finally`` block.
-**Tests:** Remove ``torch`` from ``sys.modules`` (if present) and re-import the ``worker.nodes.arch.zit`` module. Assert that no ``ImportError`` is raised and that ``torch`` is not in ``sys.modules`` after import — proving no top-level import of torch occurs.
-**Inputs:** Fresh import of ``worker.nodes.arch.zit`` with ``torch`` absent from ``sys.modules``.
+**Tests:** Remove ``torch`` from ``sys.modules`` (if present) and re-import the ``worker.nodes.arch.diffusion.zit`` module. Assert that no ``ImportError`` is raised and that ``torch`` is not in ``sys.modules`` after import — proving no top-level import of torch occurs.
+**Inputs:** Fresh import of ``worker.nodes.arch.diffusion.zit`` with ``torch`` absent from ``sys.modules``.
 **Expected output:** Module imports successfully and ``"torch"`` is absent from ``sys.modules``, confirming mock-mode import isolation.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_sample_mock_no_torch_import -v` exits 0.
 
@@ -3182,9 +3182,9 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 
 **File:** `worker/tests/test_arch_init.py`
 **Context:** `ANVILML_WORKER_MOCK=1` is set by the `conftest.py` autouse fixture. The `worker.nodes.arch` package auto-imports `zit.py` at module load time via `_ensure_imported()`. `get_module()` iterates sibling modules via `pkgutil.iter_modules(__path__)` and calls each module's `can_handle()`.
-**Tests:** Construct a model object with `arch == "zit"`, pass it to `get_module()`, and assert the returned module's `__name__` is `"worker.nodes.arch.zit"`.
+**Tests:** Construct a model object with `arch == "zit"`, pass it to `get_module()`, and assert the returned module's `__name__` is `"worker.nodes.arch.diffusion.zit"`.
 **Inputs:** `_make_model("zit")` — a namespace object with `arch="zit"`.
-**Expected output:** `mod.__name__ == "worker.nodes.arch.zit"` — the zit arch module is returned for a ZiT model.
+**Expected output:** `mod.__name__ == "worker.nodes.arch.diffusion.zit"` — the zit arch module is returned for a ZiT model.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_init.py::test_get_module_returns_zit_for_zit_model -v` exits 0.
 
 ## test_get_module_returns_none_for_unknown_arch (worker)
@@ -3205,16 +3205,16 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Expected output:** `can_handle(zit_model) == True` and `can_handle(unknown_model) == False`.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_init.py::test_can_handle_still_works_after_refactor -v` exits 0.
 
-## test_vae_scale_factor_value (worker)
+## test_vae_scale_factor_value (worker.nodes.arch.diffusion.zit)
 
 **File:** `worker/tests/test_arch_zit.py`
 **Context:** `ANVILML_WORKER_MOCK=1` is set by the `conftest.py` autouse fixture, ensuring mock mode is active. Reading a module-level constant does not affect process-global state, so no environment variable mutation is needed.
-**Tests:** Import `VAE_SCALE_FACTOR` from the `worker.nodes.arch.zit` module and assert it equals `8`.
+**Tests:** Import `VAE_SCALE_FACTOR` from the `worker.nodes.arch.diffusion.zit` module and assert it equals `8`.
 **Inputs:** None (reads a module-level constant).
 **Expected output:** `VAE_SCALE_FACTOR == 8` — the Z-Image-Turbo VAE spatial compression factor matches the published config.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_vae_scale_factor_value -v` exits 0.
 
-## test_compute_latent_shape_known_dims (worker)
+## test_compute_latent_shape_known_dims (worker.nodes.arch.diffusion.zit)
 
 **File:** `worker/tests/test_arch_zit.py`
 **Context:** `ANVILML_WORKER_MOCK=1` is set by the `conftest.py` autouse fixture, ensuring mock mode is active. This is a pure arithmetic function with no I/O, no subprocess, and no environment variable mutation.
@@ -3223,7 +3223,7 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Expected output:** ``(1, 4, 128, 128)``.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_compute_latent_shape_known_dims -v` exits 0.
 
-## test_compute_latent_shape_non_divisible (worker)
+## test_compute_latent_shape_non_divisible (worker.nodes.arch.diffusion.zit)
 
 **File:** `worker/tests/test_arch_zit.py`
 **Context:** `ANVILML_WORKER_MOCK=1` is set by the `conftest.py` autouse fixture, ensuring mock mode is active. This is a pure arithmetic function with no I/O, no subprocess, and no environment variable mutation.

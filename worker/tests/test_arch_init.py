@@ -60,14 +60,14 @@ def test_get_module_returns_zit_for_zit_model() -> None:
         arch module (checked via ``mod.__name__``).
 
     Expected output:
-        ``mod.__name__ == "worker.nodes.arch.zit"`` — the zit arch
+        ``mod.__name__ == "worker.nodes.arch.diffusion.zit"`` — the zit arch
         module is returned for a ZiT model.
     """
     model = _make_model("zit")
     mod = get_module(model)
 
     assert mod is not None, "get_module() should return a module for zit model"
-    assert mod.__name__ == "worker.nodes.arch.zit"
+    assert mod.__name__ == "worker.nodes.arch.diffusion.zit"
 
 
 def test_get_module_returns_none_for_unknown_arch() -> None:

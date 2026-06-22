@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from worker.nodes.arch.zit import (
+from worker.nodes.arch.diffusion.zit import (
     MockLatent,
     VAE_SCALE_FACTOR,
     can_handle,
@@ -248,7 +248,7 @@ def test_sample_mock_no_torch_import() -> None:
 
     Tests:
         Remove ``torch`` from ``sys.modules`` (if present) and
-        re-import the ``worker.nodes.arch.zit`` module. Assert that
+        re-import the ``worker.nodes.arch.diffusion.zit`` module. Assert that
         no ``ImportError`` is raised and that ``torch`` is not in
         ``sys.modules`` after import — proving no top-level import
         of torch occurs.
@@ -265,7 +265,7 @@ def test_sample_mock_no_torch_import() -> None:
 
     # Also remove the module from sys.modules cache so we get a
     # fresh import that exercises the full module body.
-    sys.modules.pop("worker.nodes.arch.zit", None)
+    sys.modules.pop("worker.nodes.arch.diffusion.zit", None)
 
     # Also remove the parent arch package from cache.
     sys.modules.pop("worker.nodes.arch", None)
@@ -273,7 +273,7 @@ def test_sample_mock_no_torch_import() -> None:
     try:
         # Import must succeed — if torch were imported at module level,
         # this would raise ImportError since we just removed it.
-        import worker.nodes.arch.zit as zit_mod
+        import worker.nodes.arch.diffusion.zit as zit_mod
 
         importlib.reload(zit_mod)
 
@@ -292,7 +292,7 @@ def test_sample_mock_no_torch_import() -> None:
         if torch_was_present and torch_saved is not None:
             sys.modules["torch"] = torch_saved
         # Restore cached modules for other tests.
-        sys.modules.pop("worker.nodes.arch.zit", None)
+        sys.modules.pop("worker.nodes.arch.diffusion.zit", None)
         sys.modules.pop("worker.nodes.arch", None)
 
 
