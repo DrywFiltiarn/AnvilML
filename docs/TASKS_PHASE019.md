@@ -58,22 +58,25 @@ by analogy to FLUX.1.
 
 ## Prerequisites
 
-Phase 018 complete, including its Group D addendum (`P18-D1` … `P18-D11`):
-all 9 baseline nodes have real (non-mock) paths, `arch/__init__.py`
-exposes `get_module()`, `EmptyLatent` has its optional `model:MODEL` input
+Phase 018 complete, including its Group D addendum (`P18-D1` … `P18-D20`):
+all 9 baseline nodes have real (non-mock) paths and load from single
+`.safetensors` files (not HF directories — see `docs/TASKS_PHASE018.md`'s
+narrative note on the `P18-D7`–`P18-D14` insertion), `arch/__init__.py`
+exposes `get_module()` (now via the `arch/diffusion/` subpackage,
+`P18-D7`), `EmptyLatent` has its optional `model:MODEL` input
 and dispatches latent shape computation to `compute_latent_shape()`
-(`P18-D3b`) rather than any hardcoded formula, and `arch/zit.py` has a
-complete, real `sample()` path proving the dispatch pattern this phase
-reuses. `P18-E1`'s parity test and smoke proof doc exist and pass.
+(`P18-D3b`) rather than any hardcoded formula, and `arch/diffusion/zit.py`
+has a complete, real `sample()` path proving the dispatch pattern this
+phase reuses. `P18-E1`'s parity test and smoke proof doc exist and pass.
 
 ## Interfaces and Contracts
 
 | Contract document | Relevant tasks | What must match |
 |-------------------|---------------|-----------------|
 | `ANVILML_DESIGN.md §10.3` | P19-B1 | Node type names, INPUT_SLOTS, OUTPUT_SLOTS — unchanged in this phase; `test_parity.py` must still report exactly 9 node types |
-| `ANVILML_DESIGN.md §10.4` | P19-A1, P19-A2, P19-A5 | `can_handle()`/`get_module()`/`sample()`/`compute_latent_shape()` arch module interface, established in Phase 018 and reused unmodified |
+| `ANVILML_DESIGN.md §10.4` | P19-A1, P19-A2, P19-A5 | `can_handle()`/`get_module()`/`sample()`/`compute_latent_shape()` arch module interface, established in Phase 018 and reused unmodified (now under `arch/diffusion/`, see `P18-D7`) |
 | `ANVILML_DESIGN.md §10.5` | P19-A3 | FP8 dtype handling: transformer stays float8, no upcast; text_encoder/vae stay bf16 |
-| `ANVILML_DESIGN.md Appendix B` | P19-B1 | Example workflow JSON structure, including `EmptyLatent`'s `model` input wiring established in `P18-D8` |
+| `ANVILML_DESIGN.md Appendix B` | P19-B1 | Example workflow JSON structure, including `EmptyLatent`'s `model` input wiring established in `P18-D17`; `model_id` values are single `.safetensors` filesystem paths, never HF directories (`P18-D12`/`P18-D13`/`P18-D14`) |
 
 ## Task Descriptions
 
@@ -139,12 +142,12 @@ case).
 **Goal:** Begin `sample()`'s real path. Assemble `diffusers.Flux2KleinPipeline(scheduler, vae,
 text_encoder, tokenizer, transformer, is_distilled=...)` via
 `pipeline_cache.get_or_load(f"{model_id}:pipeline", ...)`, identical
-caching pattern to `arch/zit.py` (`P18-D9a`). **This task's JSON
+caching pattern to `arch/diffusion/zit.py` (`P18-D18a`). **This task's JSON
 `defers_to` field is `["P19-A5"]`** — it assembles the pipeline but does
 not invoke it; per `FORGE_TASK_AUTHORING_SPEC.md §12a`, the stub site must
 carry the code comment `# defers_to: P19-A5 — pipeline assembled, not yet
-invoked`, matching the JSON field. This mirrors `P18-D9a`'s identical
-deferral to `P18-D9c` in Phase 018.
+invoked`, matching the JSON field. This mirrors `P18-D18a`'s identical
+deferral to `P18-D18c` in Phase 018.
 
 **⚠️ CRITICAL — do not use `diffusers.FluxPipeline`.** Confirmed via
 source: `FluxPipeline` is a real class in `diffusers`, but it is the
@@ -169,14 +172,14 @@ cache key.
 **Goal:** Add `_make_callback(emit_progress, cancel_flag, total_steps) ->
 Callable`. Confirmed via source: `Flux2KleinPipeline`'s real callback
 signature is `(self, i, t, callback_kwargs) -> dict` — **identical in
-shape** to `ZImagePipeline`'s (`P18-D9b`); this was verified, not assumed,
+shape** to `ZImagePipeline`'s (`P18-D18b`); this was verified, not assumed,
 precisely because P19-A2 found a genuine divergence elsewhere (the latent
 shape formula) and a divergence in one place does not imply a divergence
-in another. Reuse the same adapter pattern as `arch/zit.py`, with a
+in another. Reuse the same adapter pattern as `arch/diffusion/zit.py`, with a
 separate, module-private sentinel exception class (`_SamplingCancelled`)
 — arch modules must not share private exception types across files. This
 task fully implements the adapter itself and carries no `defers_to`; like
-`P18-D9b`, the adapter being unused until `P19-A5` wires it in is ordinary
+`P18-D18b`, the adapter being unused until `P19-A5` wires it in is ordinary
 sequencing, not deferred scope.
 
 **Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m
@@ -202,14 +205,14 @@ pipeline-internal `text_ids` value itself from `prompt_embeds` (via its
 own `encode_prompt`/`_prepare_text_ids`) — callers never construct or pass
 `text_ids` directly. `ClipTextEncode`'s existing `.positive`/`.negative`
 conditioning contract (established architecture-agnostically in
-`P18-D7`) requires **no Flux-specific changes**; this was confirmed before
+`P18-D16`) requires **no Flux-specific changes**; this was confirmed before
 drafting this task rather than assumed, since the pipeline's `encode_prompt`
 return signature differs from `ZImagePipeline`'s in a way that could have
 required a contract change, but does not in practice because the
 divergence is fully internal to `__call__`.
 
-`output_type="latent"` is required, exactly as in `arch/zit.py`
-(`P18-D9c`), so `VaeDecode` (unchanged from Phase 018) remains the sole
+`output_type="latent"` is required, exactly as in `arch/diffusion/zit.py`
+(`P18-D18c`), so `VaeDecode` (unchanged from Phase 018) remains the sole
 node responsible for decoding. Return `(result[0], seed)`.
 
 **Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m
@@ -223,7 +226,9 @@ pytest worker/tests/test_arch_flux.py -v` exits 0, same mock tests pass.
 should still pass with the same 9 nodes. Create
 `docs/example_workflows/flux_klein_fp8.json` (same structure as
 `zit_fp8.json`, including `EmptyLatent`'s `model` input wiring established
-in `P18-D8` — different model IDs and `clip_type: "qwen3"`). Create
+in `P18-D17` — different model IDs and `clip_type: "qwen3"`); `model_id`
+values are single `.safetensors` filesystem paths, never HF directories,
+per `P18-D12`/`P18-D13`/`P18-D14`. Create
 `docs/PROOF_phase019.md` documenting the Flux manual smoke proof.
 
 **Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m

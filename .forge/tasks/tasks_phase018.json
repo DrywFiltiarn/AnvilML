@@ -155,83 +155,173 @@
   },
   {
     "id": "P18-D7",
-    "description": "worker/nodes/encoder.py: ClipTextEncode real text encoding path",
+    "description": "worker/nodes/arch/: restructure into arch/diffusion/ + arch/clip/ siblings",
     "phase": "18",
     "project": "anvilml",
     "prereqs": [
       "P18-D6"
     ],
-    "context": "Replace ClipTextEncode's bare 'TODO: Implement real CLIP encoding path' (no task reference today -- this task is its owner). Call the clip object's encode method (from P18-D6) with text and negative_text (default '') to produce prompt_embeds/negative_prompt_embeds tensors matching ZImagePipeline.__call__'s expected shape (list[torch.FloatTensor] per encode_prompt's return; confirm exact shape against installed diffusers source at ACT time). Return a real conditioning object exposing .positive and .negative -- this is the exact contract P18-D9a (arch.zit.sample) consumes. Inline comment on dual-conditioning construction. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_encoder.py -v exits 0, same mock tests pass.",
+    "context": "Restructure worker/nodes/arch/ for symmetry with new clip dispatch (P18-D8). Move zit.py and flux.py (P19) into new worker/nodes/arch/diffusion/ subpackage; arch/__init__.py becomes a pure re-export shim importing can_handle/get_module from arch/diffusion/__init__.py (move all pkgutil.iter_modules() scanning logic there, scanning arch/diffusion/ instead of arch/ itself). No behavior change: get_module(model) must still return modules whose __name__ is now worker.nodes.arch.diffusion.zit (was worker.nodes.arch.zit) -- update test_arch_init.py assertions and test_arch_zit.py imports (from worker.nodes.arch.diffusion.zit import ...) accordingly. Update ANVILML_DESIGN.md SS10.4 file paths. Do NOT rewrite docs/TASKS_PHASE018.md prose or .forge/reports/*.md (historical record of what existed at the time) -- append a one-line note instead. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_init.py worker/tests/test_arch_zit.py -v exits 0.",
     "tags": []
   },
   {
     "id": "P18-D8",
+    "description": "worker/nodes/arch/clip/__init__.py: clip dispatcher mirroring diffusion's can_handle()/get_module()",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-D7"
+    ],
+    "context": "Create worker/nodes/arch/clip/__init__.py mirroring arch/diffusion/__init__.py's contract exactly: can_handle(clip_type:str)->bool and get_module(clip_type:str)->ModuleType|None, using pkgutil.iter_modules(__path__) to auto-import sibling .py files in this package. Unlike diffusion dispatch (matches model_obj.arch attribute), this dispatches on the clip_type STRING directly -- no loaded object exists yet at LoadClip dispatch time. Each clip arch module exposes can_handle(clip_type:str)->bool (e.g. return clip_type==\"qwen3\"). No clip arch modules exist yet (P18-D9/D10/D11 add them) -- this task only adds the dispatcher with >=2 tests against a temporary dummy module proving get_module()/can_handle() iterate correctly, then remove the dummy before commit. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_init.py -v exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P18-D9",
+    "description": "worker/nodes/arch/clip/qwen3.py: single-file Qwen3 text encoder loading",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-D8"
+    ],
+    "context": "Create worker/nodes/arch/clip/qwen3.py: can_handle(clip_type)->bool returns clip_type==\"qwen3\". load(model_id:str,torch_dtype)->RealClip: model_id is a single .safetensors file (NOT an HF directory -- never from_pretrained on it). Import RealClip lazily inside load() from worker.nodes.loader (avoids circular import -- loader.py will call arch.clip.get_module(), mirroring sampler.py's existing lazy-import-of-arch pattern). Tokenizer: Qwen2Tokenizer.from_pretrained(\"worker/assets/qwen25_tokenizer\") (vendored, verified vs Qwen/Qwen2.5-VL-7B-Instruct, no network). Weights: Qwen3ForCausalLM.from_config(config) then load_state_dict(safetensors.torch.load_file(model_id)) -- confirm Qwen3Config fields against installed transformers source AND checkpoint tensor shapes at ACT time. Return RealClip(tokenizer,text_encoder). Resolve assets path via pathlib relative to this file. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_qwen3.py -v exits 0, add >=3 tests.",
+    "tags": []
+  },
+  {
+    "id": "P18-D10",
+    "description": "worker/nodes/arch/clip/clip_l.py: single-file CLIP-L text encoder loading",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-D8"
+    ],
+    "context": "Create worker/nodes/arch/clip/clip_l.py: can_handle(clip_type)->bool returns clip_type==\"clip_l\". load(model_id:str,torch_dtype)->RealClip: model_id is a single .safetensors file (never from_pretrained on it). Import RealClip lazily inside load() from worker.nodes.loader (avoids circular import, mirrors sampler.py's lazy-import-of-arch pattern). Tokenizer: CLIPTokenizer.from_pretrained(\"worker/assets/clip_l_tokenizer\") (vendored, verified vs openai/clip-vit-large-patch14, no network). Weights: CLIPTextModelWithProjection.from_config(config) then load_state_dict(safetensors.torch.load_file(model_id)) -- confirm CLIPTextConfig fields (hidden_size,num_hidden_layers,projection_dim) against transformers source AND checkpoint tensor shapes at ACT time. Return RealClip(tokenizer,text_encoder). Resolve assets path via pathlib relative to this file. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_l.py -v exits 0, add >=3 tests.",
+    "tags": []
+  },
+  {
+    "id": "P18-D11",
+    "description": "worker/nodes/arch/clip/t5.py: single-file T5-XXL text encoder loading",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-D8"
+    ],
+    "context": "Create worker/nodes/arch/clip/t5.py: can_handle(clip_type)->bool returns clip_type==\"t5\". load(model_id:str,torch_dtype)->RealClip: model_id is a single .safetensors file (never from_pretrained on it). Import RealClip lazily inside load() from worker.nodes.loader (avoids circular import). Tokenizer: T5TokenizerFast.from_pretrained(\"worker/assets/t5_tokenizer\") -- switched from T5Tokenizer (slow); tokenizer.json verified vs InvokeAI/t5-v1_1-xxl bfloat16/tokenizer_2 (Apache-2.0, ungated re-host of FLUX.1-schnell text_encoder_2; google/t5-v1_1-xxl lacks tokenizer.json, FLUX.1-dev is gated -- see seed_tokenizers.sh). Weights: T5EncoderModel.from_config(config) then load_state_dict(safetensors.torch.load_file(model_id)) -- confirm T5Config fields vs checkpoint shapes at ACT time. Update loader.py's stale T5Tokenizer import to T5TokenizerFast. Return RealClip(tokenizer,text_encoder). ANVILML_WORKER_MOCK=1 pytest worker/tests/test_arch_clip_t5.py -v exits 0, add >=3 tests.",
+    "tags": []
+  },
+  {
+    "id": "P18-D12",
+    "description": "worker/nodes/loader.py: LoadClip dispatches via arch.clip.get_module(), fixes ctx bug",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-D9",
+      "P18-D10",
+      "P18-D11"
+    ],
+    "context": "Replace LoadClip's clip_type if/elif/else dispatch (currently inline classes per branch) with arch.clip.get_module(clip_type) -- mirrors Sampler's existing arch.get_module(model) pattern exactly. Fix the ctx bug introduced in P18-D6 (execute() uses bare ctx.pipeline_cache, which is a NameError -- must be self.ctx.pipeline_cache, matching SaveImage's correct self.ctx.emit pattern). loader_fn becomes: module=arch.clip.get_module(clip_type); if module is None: raise ValueError(f\"unsupported clip_type: {clip_type!r}\"); return module.load(model_id, torch_dtype=torch.bfloat16). Move the existing if/elif/else body (now dead) into a new _load_from_hf_directory(model_id,clip_type) function, kept but never called -- preserves the from_pretrained(directory) path for future reactivation per design decision. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py -v exits 0, same mock tests pass.",
+    "tags": []
+  },
+  {
+    "id": "P18-D13",
+    "description": "worker/nodes/loader.py: LoadModel single-file path via from_single_file(), fixes ctx bug",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-D12"
+    ],
+    "context": "Add single-file safetensors loading to LoadModel as the active path; preserve the existing from_pretrained(model_id,subfolder=\"unet\") code unchanged in a new _load_from_hf_directory(model_id,arch) function (kept, never called -- HF support stays for future reactivation). Keep the existing safe_open(model_id) metadata read for arch detection unchanged; replace from_pretrained with ZImageTransformer2DModel.from_single_file(model_id,torch_dtype=torch.float16) -- registered in diffusers.loaders.single_file_model.SINGLE_FILE_LOADABLE_CLASSES, infers config from checkpoint tensor keys, no config.json needed. MUST still wrap result in RealModel(transformer,arch=arch) as today -- Sampler/EmptyLatent depend on .arch/.in_channels via this wrapper. Fix the ctx bug (bare ctx.pipeline_cache -> self.ctx.pipeline_cache, NameError from P18-D4). ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py -v exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P18-D14",
+    "description": "worker/nodes/loader.py: LoadVae single-file path via from_single_file(), fixes ctx bug",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-D13"
+    ],
+    "context": "Add single-file safetensors loading to LoadVae as the active path; preserve the existing from_pretrained(model_id,subfolder=\"vae\") directory-based code by moving it unchanged into a new _load_from_hf_directory(model_id) function (kept but never called -- same design decision as P18-D13: HF directory support stays for future reactivation). New active loader_fn: AutoencoderKL.from_single_file(model_id,torch_dtype=torch.bfloat16) -- confirmed registered in diffusers.loaders.single_file_model.SINGLE_FILE_LOADABLE_CLASSES, infers architecture config from checkpoint tensor keys automatically, no config.json or original_config kwarg needed. Confirm exact from_single_file kwarg names against installed diffusers version at ACT time. Fix the ctx bug (bare ctx.pipeline_cache -> self.ctx.pipeline_cache, pre-existing NameError from P18-D5). ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py -v exits 0.",
+    "tags": []
+  },
+  {
+    "id": "P18-D16",
+    "description": "worker/nodes/encoder.py: ClipTextEncode real text encoding path",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-D14"
+    ],
+    "context": "Replace ClipTextEncode's bare 'TODO: Implement real CLIP encoding path' (no task reference today -- this task is its owner). Call the clip object's encode method (from P18-D6) with text and negative_text (default '') to produce prompt_embeds/negative_prompt_embeds tensors matching ZImagePipeline.__call__'s expected shape (list[torch.FloatTensor] per encode_prompt's return; confirm exact shape against installed diffusers source at ACT time). Return a real conditioning object exposing .positive and .negative -- this is the exact contract P18-D18a (arch.zit.sample) consumes. Inline comment on dual-conditioning construction. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_encoder.py -v exits 0, same mock tests pass.",
+    "tags": []
+  },
+  {
+    "id": "P18-D17",
     "description": "worker/nodes/sampler.py: EmptyLatent gains optional model input and real noise tensor path",
     "phase": "18",
     "project": "anvilml",
     "prereqs": [
-      "P18-D7",
+      "P18-D16",
       "P18-D3b"
     ],
     "context": "Add SlotSpec('model','MODEL',optional=True) to EmptyLatent.INPUT_SLOTS (4th slot, after batch_size); update ANVILML_DESIGN.md section 10.3's EmptyLatent row (small edit, not a rewrite). Real path (mock unchanged): if model provided, dispatch via mod=arch.get_module(model) (P18-D2), read num_channels_latents from model.in_channels (P18-D4), call shape=mod.compute_latent_shape(batch_size,height,width,num_channels_latents) (P18-D3b -- do NOT inline the shape formula here, it is architecture-specific). Return torch.randn(shape,dtype=torch.float32,device=ctx.device). If model absent in real mode, raise NodeError('EmptyLatent real path requires a model input'). Inline comment on why shape computation is delegated to the arch module. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py -v exits 0, same mock tests pass.",
     "tags": []
   },
   {
-    "id": "P18-D9a",
+    "id": "P18-D18a",
     "description": "worker/nodes/arch/zit.py: assemble ZImagePipeline from cached components",
     "phase": "18",
     "project": "anvilml",
     "prereqs": [
-      "P18-D8"
+      "P18-D17"
     ],
-    "context": "Begin replacing zit.py sample()'s NotImplementedError real path. This task only: assemble diffusers.ZImagePipeline(scheduler,vae,text_encoder,tokenizer,transformer) via pipeline_cache.get_or_load(f'{model_id}:pipeline',dtype,loader_fn); loader_fn pulls the loaded transformer/vae/text_encoder/tokenizer from model/conditioning and constructs a FlowMatchEulerDiscreteScheduler for scheduler= (confirm exact field names on the model object from P18-D4/P18-D6 at ACT time). Store the assembled pipeline as a local variable; do not call it (P18-D9c does, per this task's defers_to). Add code comment '# defers_to: P18-D9c -- pipeline assembled, not yet invoked' at the stub site per FORGE_AGENT_RULES.md S9.7. Fix this module's docstring, which wrongly describes emit_progress as the real callback shape. Add a test asserting get_or_load is called with the pipeline cache key. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py -v exits 0, same mock tests pass.",
+    "context": "Begin replacing zit.py sample()'s NotImplementedError real path. This task only: assemble diffusers.ZImagePipeline(scheduler,vae,text_encoder,tokenizer,transformer) via pipeline_cache.get_or_load(f'{model_id}:pipeline',dtype,loader_fn); loader_fn pulls the loaded transformer/vae/text_encoder/tokenizer from model/conditioning and constructs a FlowMatchEulerDiscreteScheduler for scheduler= (confirm exact field names on the model object from P18-D4/P18-D6 at ACT time). Store the assembled pipeline as a local variable; do not call it (P18-D18c does, per this task's defers_to). Add code comment '# defers_to: P18-D18c -- pipeline assembled, not yet invoked' at the stub site per FORGE_AGENT_RULES.md S9.7. Fix this module's docstring, which wrongly describes emit_progress as the real callback shape. Add a test asserting get_or_load is called with the pipeline cache key. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py -v exits 0, same mock tests pass.",
     "tags": [],
     "defers_to": [
-      "P18-D9c"
+      "P18-D18c"
     ]
   },
   {
-    "id": "P18-D9b",
+    "id": "P18-D18b",
     "description": "worker/nodes/arch/zit.py: callback_on_step_end adapter for progress and cancellation",
     "phase": "18",
     "project": "anvilml",
     "prereqs": [
-      "P18-D9a"
+      "P18-D18a"
     ],
     "context": "Add a private helper in zit.py: _make_callback(emit_progress,cancel_flag,total_steps) -> Callable matching diffusers' real callback_on_step_end signature (self,i,t,callback_kwargs)->dict, NOT the 2-arg emit_progress(step,total) shape sample()'s own signature describes (intentional mismatch -- this adapter bridges the two). The closure calls emit_progress(i,total_steps), checks cancel_flag.is_set() (confirm NodeContext.cancel_flag's exact type/API at ACT time), and raises a module-private sentinel _SamplingCancelled if cancelled. Returns callback_kwargs unchanged (or with 'latents' replaced if diffusers requires it -- confirm against source at ACT time) on the non-cancelled path. Add >=2 tests: emit_progress called correctly, cancellation raises _SamplingCancelled. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py -v exits 0, same mock tests pass.",
     "tags": []
   },
   {
-    "id": "P18-D9c",
+    "id": "P18-D18c",
     "description": "worker/nodes/arch/zit.py: invoke pipeline with output_type=latent and return result",
     "phase": "18",
     "project": "anvilml",
     "prereqs": [
-      "P18-D9b"
+      "P18-D18b"
     ],
-    "context": "Complete sample()'s real path: wrap the pipeline call (assembled in P18-D9a) in try/except _SamplingCancelled (defined in P18-D9b) for clean cancellation handling. Call pipeline(prompt_embeds=conditioning.positive,negative_prompt_embeds=conditioning.negative,latents=latent,num_inference_steps=steps,guidance_scale=cfg,output_type='latent',callback_on_step_end=_make_callback(emit_progress,cancel_flag,steps),return_dict=False). output_type='latent' is required so the result is the raw denoised latent tensor, not a decoded image -- VaeDecode (P18-D11) performs the actual decode as its own separate node per the design doc's explicit-VAE-input contract; do not decode here. Return (result[0],seed) on success; on cancellation, re-raise or return per whatever convention run_graph/executor.py expects for cancelled jobs (confirm at ACT time). ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py -v exits 0, same mock tests pass.",
+    "context": "Complete sample()'s real path: wrap the pipeline call (assembled in P18-D18a) in try/except _SamplingCancelled (defined in P18-D18b) for clean cancellation handling. Call pipeline(prompt_embeds=conditioning.positive,negative_prompt_embeds=conditioning.negative,latents=latent,num_inference_steps=steps,guidance_scale=cfg,output_type='latent',callback_on_step_end=_make_callback(emit_progress,cancel_flag,steps),return_dict=False). output_type='latent' is required so the result is the raw denoised latent tensor, not a decoded image -- VaeDecode (P18-D20) performs the actual decode as its own separate node per the design doc's explicit-VAE-input contract; do not decode here. Return (result[0],seed) on success; on cancellation, re-raise or return per whatever convention run_graph/executor.py expects for cancelled jobs (confirm at ACT time). ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py -v exits 0, same mock tests pass.",
     "tags": []
   },
   {
-    "id": "P18-D10",
+    "id": "P18-D19",
     "description": "worker/nodes/sampler.py: Sampler real path dispatches to arch.get_module().sample()",
     "phase": "18",
     "project": "anvilml",
     "prereqs": [
-      "P18-D9c"
+      "P18-D18c"
     ],
     "context": "Replace Sampler.execute()'s NotImplementedError real path (currently mislabeled TODO(P18-C1) -- P18-C1 is pipeline_cache.py and never touched this file; this task is the correct owner). Call mod=arch.get_module(model) (P18-D2); if None, raise NodeError('unsupported model architecture') per ANVILML_DESIGN.md section 10.4's documented Sampler dispatch contract. Build a 2-arg emit_progress(step,total) callable wrapping ctx.emit (confirm exact ctx.emit Progress-event call signature via worker/nodes/base.py and worker_main.py at ACT time). Call mod.sample(model,conditioning,latent,steps,cfg,seed,ctx.device,ctx.cancel_flag,emit_progress); return {'latent':result[0],'seed':result[1]}. Inline comment on dispatch. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py -v exits 0, same mock tests pass.",
     "tags": []
   },
   {
-    "id": "P18-D11",
+    "id": "P18-D20",
     "description": "worker/nodes/decode.py: VaeDecode real decoding path",
     "phase": "18",
     "project": "anvilml",
     "prereqs": [
-      "P18-D10"
+      "P18-D19"
     ],
-    "context": "Replace VaeDecode's bare 'TODO: Implement real VAE decode path' (no task reference today -- this task is its owner). latent is the raw denoised latent from Sampler (output_type='latent' per P18-D9c, not yet decoded). Per ZImagePipeline.__call__'s non-latent branch as reference: latents=latents.to(vae.dtype); latents=(latents/vae.config.scaling_factor)+vae.config.shift_factor; image=vae.decode(latents,return_dict=False)[0]; postprocess via diffusers VaeImageProcessor to a PIL Image (confirm exact VaeImageProcessor construction/usage against diffusers source at ACT time, do not assume). Return real PIL Image (replacing MockImage in real mode) for SaveImage (unchanged) to encode to PNG. Inline comment on the inverse-of-encode scaling math. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py -v exits 0, same mock tests pass.",
+    "context": "Replace VaeDecode's bare 'TODO: Implement real VAE decode path' (no task reference today -- this task is its owner). latent is the raw denoised latent from Sampler (output_type='latent' per P18-D18c, not yet decoded). Per ZImagePipeline.__call__'s non-latent branch as reference: latents=latents.to(vae.dtype); latents=(latents/vae.config.scaling_factor)+vae.config.shift_factor; image=vae.decode(latents,return_dict=False)[0]; postprocess via diffusers VaeImageProcessor to a PIL Image (confirm exact VaeImageProcessor construction/usage against diffusers source at ACT time, do not assume). Return real PIL Image (replacing MockImage in real mode) for SaveImage (unchanged) to encode to PNG. Inline comment on the inverse-of-encode scaling math. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py -v exits 0, same mock tests pass.",
     "tags": []
   },
   {
@@ -240,9 +330,9 @@
     "phase": "18",
     "project": "anvilml",
     "prereqs": [
-      "P18-D11"
+      "P18-D20"
     ],
-    "context": "Create worker/tests/test_parity.py: import NODE_REGISTRY; assert set(NODE_REGISTRY.keys())=={\"LoadModel\",\"LoadVae\",\"LoadClip\",\"ClipTextEncode\",\"EmptyLatent\",\"Sampler\",\"VaeDecode\",\"ImageResize\",\"SaveImage\"}. Create docs/example_workflows/zit_fp8.json (Appendix B workflow JSON). Create docs/PROOF_phase018.md: step-by-step commands to submit zit_fp8.json, poll job status, fetch PNG artifact on real hardware. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_parity.py exits 0.",
+    "context": "Create worker/tests/test_parity.py: import NODE_REGISTRY; assert set(NODE_REGISTRY.keys())=={\"LoadModel\",\"LoadVae\",\"LoadClip\",\"ClipTextEncode\",\"EmptyLatent\",\"Sampler\",\"VaeDecode\",\"ImageResize\",\"SaveImage\"}. Create docs/example_workflows/zit_fp8.json (Appendix B workflow JSON) -- model_id values are single .safetensors filesystem paths (post P18-D7..D20's single-file-only loading), NOT HF directory paths; clip_type=\"qwen3\". Create docs/PROOF_phase018.md: step-by-step commands to submit zit_fp8.json, poll job status, fetch PNG artifact on real hardware. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_parity.py exits 0.",
     "tags": []
   }
 ]

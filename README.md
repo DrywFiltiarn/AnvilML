@@ -177,7 +177,7 @@ GitHub Actions runs on every push to `main` and every pull request. The Rust too
 
 ```
 AnvilML/
-├── backend/            Binary crate (anvilml executable)
+├── backend/                Binary crate (anvilml executable)
 ├── crates/
 │   ├── anvilml-core        Domain types, config, errors
 │   ├── anvilml-hardware    GPU detection
@@ -188,12 +188,16 @@ AnvilML/
 │   ├── anvilml-scheduler   Job scheduling
 │   ├── anvilml-server      HTTP/WS server
 │   └── anvilml-openapi     OpenAPI generator (build-time)
-├── worker/             Python inference workers
+├── worker/                 Python inference workers
 │   ├── nodes/              Generic node implementations
-│   │   └── arch/           Architecture dispatch modules
+│   │   └── arch/
+│   │       ├── diffusion/  Arch implementations for diffusion (ZiT, F2K, etc)
+│   │       └── clip/       Arch implementations for text encoding (Qwen, T5, CLIP_L, etc)
+│   ├── assets/             Text encode tokenizers
+│   ├── tools/              Tools for text encode tokenizers
 │   └── requirements/       Platform-specific torch installs
-├── docs/               Design documents, phase registry, test catalogue
-└── .forge/             Forge orchestrator task files and state
+├── docs/                   Design documents, phase registry, test catalogue
+└── .forge/                 Forge orchestrator task files and state
 ```
 
 ---

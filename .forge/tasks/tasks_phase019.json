@@ -48,7 +48,7 @@
     "prereqs": [
       "P19-A3"
     ],
-    "context": "Add _make_callback(emit_progress,cancel_flag,total_steps)->Callable to flux.py. Confirmed via source: Flux2KleinPipeline's real callback signature is (self,i,t,callback_kwargs)->dict, IDENTICAL in shape to ZImagePipeline's (P18-D9b) -- reuse the same adapter pattern, do not assume divergence where none exists. Calls emit_progress(i,total_steps), checks cancel_flag.is_set(), raises module-private sentinel _SamplingCancelled if cancelled (separate sentinel class from zit.py's -- arch modules must not share private exception types across files). Add >=2 tests: emit_progress called correctly, cancellation raises _SamplingCancelled. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_flux.py -v exits 0, same mock tests pass.",
+    "context": "Add _make_callback(emit_progress,cancel_flag,total_steps)->Callable to flux.py. Confirmed via source: Flux2KleinPipeline's real callback signature is (self,i,t,callback_kwargs)->dict, IDENTICAL in shape to ZImagePipeline's (P18-D18b) -- reuse the same adapter pattern, do not assume divergence where none exists. Calls emit_progress(i,total_steps), checks cancel_flag.is_set(), raises module-private sentinel _SamplingCancelled if cancelled (separate sentinel class from zit.py's -- arch modules must not share private exception types across files). Add >=2 tests: emit_progress called correctly, cancellation raises _SamplingCancelled. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_flux.py -v exits 0, same mock tests pass.",
     "tags": []
   },
   {
@@ -59,7 +59,7 @@
     "prereqs": [
       "P19-A4"
     ],
-    "context": "Complete sample()'s real path: wrap the pipeline call (P19-A3) in try/except _SamplingCancelled (P19-A4). Call pipeline(prompt_embeds=conditioning.positive,negative_prompt_embeds=conditioning.negative,latents=latent,num_inference_steps=steps,guidance_scale=cfg,output_type='latent',callback_on_step_end=_make_callback(emit_progress,cancel_flag,steps),return_dict=False). Confirmed via source: Flux2KleinPipeline.__call__ derives text_ids internally from prompt_embeds via its own encode_prompt/_prepare_text_ids -- callers never construct or pass text_ids; ClipTextEncode's existing .positive/.negative contract (P18-D7) needs no Flux-specific changes. output_type='latent' required so VaeDecode (unchanged from Phase 18) performs the actual decode. Return (result[0],seed). ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_flux.py -v exits 0, same mock tests pass.",
+    "context": "Complete sample()'s real path: wrap the pipeline call (P19-A3) in try/except _SamplingCancelled (P19-A4). Call pipeline(prompt_embeds=conditioning.positive,negative_prompt_embeds=conditioning.negative,latents=latent,num_inference_steps=steps,guidance_scale=cfg,output_type='latent',callback_on_step_end=_make_callback(emit_progress,cancel_flag,steps),return_dict=False). Confirmed via source: Flux2KleinPipeline.__call__ derives text_ids internally from prompt_embeds via its own encode_prompt/_prepare_text_ids -- callers never construct or pass text_ids; ClipTextEncode's existing .positive/.negative contract (P18-D16) needs no Flux-specific changes. output_type='latent' required so VaeDecode (unchanged from Phase 18) performs the actual decode. Return (result[0],seed). ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_flux.py -v exits 0, same mock tests pass.",
     "tags": []
   },
   {
@@ -70,7 +70,7 @@
     "prereqs": [
       "P19-A5"
     ],
-    "context": "Create docs/example_workflows/flux_klein_fp8.json: same 9-node structure as zit_fp8.json (including EmptyLatent's model input added in P18-D8) with LoadModel/LoadVae/LoadClip(clip_type=qwen3)/ClipTextEncode/EmptyLatent(wired to model)/Sampler/VaeDecode/SaveImage; model_id placeholders for Flux 2 Klein 9B FP8, Qwen3 8B FP8-mixed, Flux VAE. Create docs/PROOF_phase019.md: manual real-hardware steps. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_parity.py exits 0 (unchanged 9 nodes).",
+    "context": "Create docs/example_workflows/flux_klein_fp8.json: same 9-node structure as zit_fp8.json (including EmptyLatent's model input added in P18-D19) with LoadModel/LoadVae/LoadClip(clip_type=qwen3)/ClipTextEncode/EmptyLatent(wired to model)/Sampler/VaeDecode/SaveImage; model_id values are single .safetensors filesystem paths (post-P18 single-file-only loading), not HF directories -- placeholders for Flux 2 Klein 9B FP8, Qwen3 8B FP8-mixed, Flux VAE. Create docs/PROOF_phase019.md: manual real-hardware steps. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_parity.py exits 0 (unchanged 9 nodes).",
     "tags": []
   }
 ]

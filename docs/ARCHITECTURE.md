@@ -195,9 +195,23 @@ AnvilML/
 │   │   ├── decode.py                 # VaeDecode
 │   │   ├── image.py                  # SaveImage, ImageResize
 │   │   └── arch/
-│   │       ├── __init__.py           # Architecture registry + dispatch helpers
-│   │       ├── zit.py                # Z-Image Turbo sampling logic
-│   │       └── flux.py               # Flux 2 Klein sampling logic
+│   │       ├── __init__.py           # Re-export shim -> arch/diffusion/
+│   │       ├── diffusion/
+│   │       │   ├── __init__.py       # Diffusion architecture registry
+│   │       │   ├── zit.py            # Z-Image Turbo specific pipeline helpers
+│   │       │   └── flux.py           # Flux specific pipeline helpers
+│   │       └── clip/
+│   │           ├── __init__.py       # CLIP/text-encoder architecture registry
+│   │           ├── qwen3.py          # Qwen3 tokenizer + text-encoder loading
+│   │           ├── clip_l.py         # CLIP-L tokenizer + text-encoder loading
+│   │           └── t5.py             # T5-XXL tokenizer + text-encoder loading
+│   ├── assets/
+│   │   ├── qwen25_tokenizer/         # Vendored Qwen3 tokenizer (vocab/merges/config)
+│   │   ├── clip_l_tokenizer/         # Vendored CLIP-L tokenizer
+│   │   └── t5_tokenizer/             # Vendored T5-XXL fast tokenizer
+│   ├── tools/
+│   │   ├── seed_tokenizers.sh        # Re-seeds worker/assets/ from upstream sources
+│   │   └── seed_tokenizers.ps1       # Windows equivalent
 │   ├── requirements/
 │   │   ├── base.txt                  # Core: diffusers, transformers, safetensors, pillow,
 │   │   │                             #   msgpack, pyzmq, pytest

@@ -127,9 +127,23 @@ AnvilML/
 │   │   ├── decode.py                 # Generic Decode (VAE decode) node
 │   │   ├── image.py                  # SaveImage, PreviewImage, ImageResize nodes
 │   │   └── arch/
-│   │       ├── __init__.py           # Architecture registry
-│   │       ├── zit.py                # Z-Image Turbo specific pipeline helpers
-│   │       └── flux.py               # Flux specific pipeline helpers
+│   │       ├── __init__.py           # Re-export shim -> arch/diffusion/
+│   │       ├── diffusion/
+│   │       │   ├── __init__.py       # Diffusion architecture registry
+│   │       │   ├── zit.py            # Z-Image Turbo specific pipeline helpers
+│   │       │   └── flux.py           # Flux specific pipeline helpers
+│   │       └── clip/
+│   │           ├── __init__.py       # CLIP/text-encoder architecture registry
+│   │           ├── qwen3.py          # Qwen3 tokenizer + text-encoder loading
+│   │           ├── clip_l.py         # CLIP-L tokenizer + text-encoder loading
+│   │           └── t5.py             # T5-XXL tokenizer + text-encoder loading
+│   ├── assets/
+│   │   ├── qwen25_tokenizer/         # Vendored Qwen3 tokenizer (vocab/merges/config)
+│   │   ├── clip_l_tokenizer/         # Vendored CLIP-L tokenizer
+│   │   └── t5_tokenizer/             # Vendored T5-XXL fast tokenizer
+│   ├── tools/
+│   │   ├── seed_tokenizers.sh        # Re-seeds worker/assets/ from upstream sources
+│   │   └── seed_tokenizers.ps1       # Windows equivalent
 │   ├── requirements/
 │   │   ├── base.txt                  # Core deps: diffusers, transformers, pillow, msgpack, pyzmq, pytest
 │   │   ├── cuda.txt                  # torch + CUDA index
@@ -1074,7 +1088,13 @@ The MVP targets standalone `.safetensors` files for every model component. There
 | `ImageResize` | Images | `image: Image, width: Int, height: Int, method: String?` | `image: Image` | Resizes a PIL image. `method` defaults to `"lanczos"`. |
 | `SaveImage` | Output | `image: Image, seed: Int?, steps: Int?` | *(none)* | Encodes the image to PNG, writes to the artifact store, and emits `ImageReady` IPC event. |
 
-### 10.4 Architecture Dispatch (`worker/nodes/arch/`)
+### 10.4 Architecture Dispatch (`worker/nodes/arch/diffusion/`)
+
+*(Originally `worker/nodes/arch/` directly; split into `arch/diffusion/`
+and the sibling `arch/clip/` package described in §10.4a, for structural
+symmetry — diffusion-model dispatch and text-encoder dispatch are
+genuinely separate concerns with separate dispatch keys. No behavior
+change to this section's contract.)*
 
 Each architecture module provides:
 
@@ -1108,8 +1128,8 @@ additionally expose plain constants (e.g. a VAE spatial scale factor) for
 other purposes, but `compute_latent_shape()` is the only function generic
 nodes are permitted to call for shape computation.
 
-The `worker/nodes/arch/__init__.py` package provides two dispatch functions
-built on the same underlying iteration:
+The `worker/nodes/arch/diffusion/__init__.py` package provides two
+dispatch functions built on the same underlying iteration:
 
 ```python
 def can_handle(model_obj: Any) -> bool:
@@ -1127,7 +1147,59 @@ similarly calls `get_module(model)` to call `.compute_latent_shape(...)` on
 it, when its optional `model` input is provided. If no module matches,
 `Sampler` raises `NodeError("unsupported model architecture")`.
 
-Architecture modules live in `worker/nodes/arch/` and are auto-imported by `arch/__init__.py`. Adding a new architecture is adding one new file in that directory.
+Architecture modules live in `worker/nodes/arch/diffusion/` and are
+auto-imported by that package's `__init__.py`. Adding a new diffusion
+architecture is adding one new file in that directory.
+`worker/nodes/arch/__init__.py` itself is a thin re-export shim
+(`from worker.nodes.arch.diffusion import can_handle, get_module`) kept
+for backward-compatible import paths.
+
+### 10.4a CLIP Architecture Dispatch (`worker/nodes/arch/clip/`)
+
+`LoadClip` supports three `clip_type` families (`"qwen3"`, `"clip_l"`,
+`"t5"`), each requiring a genuinely different tokenizer and text-encoder
+weights class — not just a different string passed to one shared loading
+function. Rather than an inline `if/elif/else` chain inside `LoadClip`
+itself (the original, since-corrected design), `worker/nodes/arch/clip/`
+mirrors §10.4's diffusion dispatch contract:
+
+```python
+def can_handle(clip_type: str) -> bool:
+    """Return True if this clip arch module handles the given clip_type."""
+    ...
+
+def load(model_id: str, torch_dtype: Any) -> "RealClip":
+    """Load tokenizer + text encoder from a single .safetensors file."""
+    ...
+```
+
+The key structural difference from §10.4's diffusion dispatch: diffusion
+dispatch matches against a **loaded model object**'s `.arch` attribute
+(the model must already exist to know its architecture). CLIP dispatch
+matches against the **`clip_type` string itself** — `LoadClip` needs to
+know which loader to call *before* anything is loaded, since `clip_type`
+is the only signal available at that point. `worker/nodes/arch/clip/
+__init__.py` provides the same `can_handle(clip_type)` / `get_module(clip_type)`
+pair as §10.4, built on the same `pkgutil.iter_modules()` auto-import
+mechanism, just keyed on a string instead of an object.
+
+Each `clip_type`'s tokenizer is vendored locally under `worker/assets/`
+(`qwen25_tokenizer/`, `clip_l_tokenizer/`, `t5_tokenizer/`) — small,
+static, redistributable files (a few MB each: BPE vocab/merges or a
+consolidated fast-tokenizer JSON, plus config), committed to git rather
+than downloaded from the Hugging Face Hub at worker runtime. This keeps
+the worker fully offline-capable for inference once model weights are
+present locally. See `worker/tools/seed_tokenizers.sh`/`.ps1` for exact
+source repos and the provenance reasoning behind each choice (notably:
+why `google/t5-v1_1-xxl` and `black-forest-labs/FLUX.1-dev` were
+considered and rejected in favor of `InvokeAI/t5-v1_1-xxl`, an ungated,
+Apache-2.0 re-host).
+
+`LoadClip` dispatches via `arch.clip.get_module(clip_type)`, then calls
+`.load(model_id, torch_dtype=torch.bfloat16)` on the matching module — the
+same shape as `Sampler`'s `arch.get_module(model).sample(...)` call in
+§10.4. If no module matches, `LoadClip` raises
+`ValueError(f"unsupported clip_type: {clip_type!r}")`.
 
 ### 10.5 FP8 Safetensors Support
 
@@ -1135,7 +1207,9 @@ Both baseline models (Z-Image Turbo FP8 and Flux 2 Klein FP8) are loaded from `.
 
 The `InferenceCaps.fp8` field must be `True` for any GPU that will execute these models. If `fp8` is `False` for the selected device, the scheduler emits a `422` at dispatch time with error `device_does_not_support_fp8`.
 
-**Component vs. pipeline caching.** `LoadModel`, `LoadVae`, and `LoadClip` each cache their own raw component (the diffusion transformer, VAE, and text encoder respectively) via `pipeline_cache.get_or_load(model_id, ...)`. Arch modules (`arch/zit.py`, `arch/flux.py`) do not call a pipeline class's `from_pretrained()` inside `sample()` — doing so would reload the full model from disk on every sampling call. Instead, on the first `sample()` call for a given `model_id`, the arch module assembles the full runnable pipeline object from the already-cached components and caches that assembled pipeline itself under a separate key (`f"{model_id}:pipeline"`) via `pipeline_cache.get_or_load()`. Subsequent `sample()` calls for the same `model_id` reuse the cached pipeline. This keeps `LoadModel`/`LoadVae`/`LoadClip` decoupled from any specific diffusers pipeline class while giving arch modules — the only place that knows which pipeline class a given architecture requires — sole responsibility for pipeline assembly.
+**Component vs. pipeline caching.** `LoadModel`, `LoadVae`, and `LoadClip` each cache their own raw component (the diffusion transformer, VAE, and text encoder respectively) via `pipeline_cache.get_or_load(model_id, ...)`. `LoadModel` and `LoadVae` load each component from a single `.safetensors` file via the corresponding `diffusers` model class's `from_single_file()` (e.g. `ZImageTransformer2DModel.from_single_file()`, `AutoencoderKL.from_single_file()` — both registered in `diffusers.loaders.single_file_model.SINGLE_FILE_LOADABLE_CLASSES`, which infers the component's config from the checkpoint's own tensor keys, no `config.json` required). `LoadClip` dispatches to `worker/nodes/arch/clip/` (§10.4a) since `transformers` text-encoder classes have no equivalent single-file loader; those modules use `from_config()` + `load_state_dict()` instead. Arch modules (`arch/diffusion/zit.py`, `arch/diffusion/flux.py`) do not call a pipeline class's `from_pretrained()` inside `sample()` — doing so would reload the full model from disk on every sampling call. Instead, on the first `sample()` call for a given `model_id`, the arch module assembles the full runnable pipeline object from the already-cached components and caches that assembled pipeline itself under a separate key (`f"{model_id}:pipeline"`) via `pipeline_cache.get_or_load()`. Subsequent `sample()` calls for the same `model_id` reuse the cached pipeline. This keeps `LoadModel`/`LoadVae`/`LoadClip` decoupled from any specific diffusers pipeline class while giving arch modules — the only place that knows which pipeline class a given architecture requires — sole responsibility for pipeline assembly.
+
+An HF-style directory-based loading path (`from_pretrained(model_id, subfolder=...)`) was implemented first and shipped, then found to be incompatible with this project's actual model storage convention (manually-downloaded standalone `.safetensors` files, never HF snapshot directories) and replaced with the single-file approach described above as the active and only path. The directory-based code was not deleted — it remains in each affected node as an unreachable `_load_from_hf_directory(...)` function, preserved for a possible future reactivation.
 
 ---
 
@@ -1908,7 +1982,7 @@ worker process.
 
 Every model component is explicit in the graph: `LoadModel` for the diffusion model, `LoadVae` for the VAE, `LoadClip` for the text encoder. `LoadModel` outputs only `MODEL`; the VAE has its own independent loader. `VaeDecode` receives `vae` as a required explicit input — there is no implicit state propagation from any other node.
 
-The `Sampler` dispatches internally to `arch/zit.py` or `arch/flux.py` based on the model object's architecture. Seed `-1` resolves to a cryptographically random integer; the resolved seed is returned as the `seed` output slot and wired into `SaveImage` so the stored artifact records the actual seed used.
+The `Sampler` dispatches internally to `arch/diffusion/zit.py` or `arch/diffusion/flux.py` based on the model object's architecture. Seed `-1` resolves to a cryptographically random integer; the resolved seed is returned as the `seed` output slot and wired into `SaveImage` so the stored artifact records the actual seed used.
 
 ---
 

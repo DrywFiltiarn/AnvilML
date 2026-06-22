@@ -72,7 +72,7 @@ def compute_latent_shape(
         height < 16) — the caller must validate that the result is
         a usable latent shape before passing it to the pipeline.
 
-    # defers_to: P18-D8 — consumed by EmptyLatent real path
+    # defers_to: P18-D17 — consumed by EmptyLatent real path
     """
     # Compute spatial dimensions using the VAE's 8× spatial
     # compression factor. The formula doubles the floor-divided

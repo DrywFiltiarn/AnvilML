@@ -23,17 +23,45 @@ After Phase 018, a real ZiT FP8 workflow submitted to a server with a GPU and th
 | A | worker loader nodes | P18-A1 … P18-A3 | LoadModel, LoadVae, LoadClip |
 | B | worker inference nodes | P18-B1 … P18-B3 | ClipTextEncode, EmptyLatent, Sampler, VaeDecode |
 | C | worker pipeline | P18-C1 | pipeline_cache.py LRU model cache |
-| D | worker arch + real paths | P18-D1 … P18-D11 | arch/zit.py mock dispatch (D1), then real paths for every Group A/B/D node plus real ZiT sampling, gated on Retrofit Phase 903 |
+| D | worker arch + real paths | P18-D1 … P18-D20 | arch/zit.py mock dispatch (D1), real paths for every Group A/B/D node, arch/ restructure + clip dispatch (D7–D14), then real ZiT sampling (D16–D20), gated on Retrofit Phase 903 |
 | E | integration | P18-E1 | test_parity.py + real ZiT smoke proof doc |
 
-P18-D2 through P18-D11 were added after P18-D1 completed, to correct a
-defect found while auditing P18-D1's deferred real-`sample()` path ahead of
-P18-E1 planning: every "real path" stub across Groups A–D (`LoadModel`,
-`LoadVae`, `LoadClip`, `ClipTextEncode`, `EmptyLatent`, `Sampler`, and
-`arch/zit.py`'s own `sample()`) deferred to either itself, a task that never
-touched the file, or no task at all. See `docs/TASKS_PHASE903.md` for the
-two prerequisite fixes (model path resolution, real pipeline cache wiring)
-these tasks depend on.
+P18-D2 through P18-D11 (original numbering) were added after P18-D1
+completed, to correct a defect found while auditing P18-D1's deferred
+real-`sample()` path ahead of P18-E1 planning: every "real path" stub
+across Groups A–D (`LoadModel`, `LoadVae`, `LoadClip`, `ClipTextEncode`,
+`EmptyLatent`, `Sampler`, and `arch/zit.py`'s own `sample()`) deferred to
+either itself, a task that never touched the file, or no task at all. See
+`docs/TASKS_PHASE903.md` for the two prerequisite fixes (model path
+resolution, real pipeline cache wiring) these tasks depend on.
+
+**P18-D7 through P18-D14 were inserted between (original) P18-D6 and
+P18-D7 after P18-D4/D5/D6 shipped**, correcting a second, independent
+defect discovered while wiring real model files: D4/D5/D6 each used
+`diffusers`/`transformers` `from_pretrained(model_id, subfolder=...)`,
+which requires an HF-style snapshot **directory** (`config.json` +
+subfolder layout). The actual model storage convention for this project is
+manually-downloaded, standalone `.safetensors` **files** — `from_pretrained`
+on a single file either fails outright or silently treats the file as a
+directory path and fails differently. This also deviated from
+`ANVILML_DESIGN.md §10.5`, which specifies loading weights directly via the
+`safetensors` library, not via HF directory conventions — the deviation
+was an implementation drift introduced during D4/D5/D6's authoring, not a
+specification change.
+
+The fix is single-file loading as the **active and only** path for now.
+The original `from_pretrained(directory)` code is preserved, not deleted,
+inside new `_load_from_hf_directory(...)` functions that are never called
+— kept for a possible future reactivation, per explicit project decision.
+`LoadClip` additionally gained an `arch/clip/` dispatch package (mirroring
+the existing `arch/diffusion/` pattern used by `Sampler`/`EmptyLatent`),
+since its three `clip_type` families (`qwen3`, `clip_l`, `t5`) each need
+genuinely different tokenizer vendoring and weight-loading code, not just
+different class names in one `if/elif` chain. Every renumbered task from
+(original) P18-D7 onward shifted by 9 slots; see the per-task headers below
+for old→new ID mappings. The `worker/nodes/arch/` package itself was also
+split into `arch/diffusion/` and `arch/clip/` siblings (P18-D7) for
+structural symmetry — `zit.py`/`flux.py` moved, with no behavior change.
 
 ## Prerequisites
 
@@ -49,10 +77,11 @@ dict placeholder (`P903-A2`). See `docs/TASKS_PHASE903.md`.
 
 | Contract document | Relevant tasks | What must match |
 |-------------------|---------------|-----------------|
-| `ANVILML_DESIGN.md §10.3` | All | Node type names, INPUT_SLOTS, OUTPUT_SLOTS per table (note: `EmptyLatent` gained an optional `model:MODEL` input slot in P18-D8 — table updated) |
-| `ANVILML_DESIGN.md §10.4` | P18-D1, P18-D2, P18-D3b, P18-D8, P18-D9a–c, P18-D10 | `can_handle()`/`get_module()`/`sample()`/`compute_latent_shape()` arch module interface; the latent shape formula is architecture-specific and must not be hardcoded in generic nodes |
-| `ANVILML_DESIGN.md §10.5` | P18-C1, P18-D1, P18-D4–D6 | FP8 dtype handling: transformer stays float8, no upcast; text_encoder/vae stay bf16 |
-| `ANVILML_DESIGN.md Appendix B` | P18-E1, P18-D4–D6 | Example workflow JSON structure; `model_id` is submitted as a hash and resolved to a path before the worker sees it (Retrofit 903) |
+| `ANVILML_DESIGN.md §10.3` | All | Node type names, INPUT_SLOTS, OUTPUT_SLOTS per table (note: `EmptyLatent` gained an optional `model:MODEL` input slot in P18-D19 — table updated) |
+| `ANVILML_DESIGN.md §10.4` | P18-D1, P18-D2, P18-D3b, P18-D19, P18-D18a–c, P18-D17 | `can_handle()`/`get_module()`/`sample()`/`compute_latent_shape()` arch module interface (now `arch/diffusion/`); the latent shape formula is architecture-specific and must not be hardcoded in generic nodes |
+| `ANVILML_DESIGN.md §10.4a` (new) | P18-D7, P18-D8, P18-D9, P18-D10, P18-D11, P18-D12 | `arch/clip/` dispatch interface: `can_handle(clip_type:str)`/`get_module(clip_type:str)`/`load(model_id,torch_dtype)`, mirroring §10.4's diffusion contract but dispatching on the `clip_type` string, not a loaded object |
+| `ANVILML_DESIGN.md §10.5` | P18-C1, P18-D1, P18-D4–D6, P18-D7–D14 | FP8 dtype handling: transformer stays float8, no upcast; text_encoder/vae stay bf16. §10.5 also specifies direct `safetensors` weight loading — P18-D7–D14 corrects D4–D6's deviation from this (see narrative note above) |
+| `ANVILML_DESIGN.md Appendix B` | P18-E1, P18-D4–D6 | Example workflow JSON structure; `model_id` is submitted as a hash and resolved to a path before the worker sees it (Retrofit 903); as of P18-D13/D14/D12, that resolved path is always a single `.safetensors` file, never an HF directory |
 
 ## Task Descriptions
 
@@ -216,25 +245,159 @@ component type `ZImagePipeline.__init__` expects for its `vae=` argument.
 tokenizer/text-encoder pair matching the `clip_type` hint (Qwen2Tokenizer +
 Qwen3Model for `"qwen3"`, the Z-Image-Turbo baseline) via
 `pipeline_cache.get_or_load()`. The returned object's exact attribute names
-must be coordinated with P18-D7 (`ClipTextEncode`), which is the sole
+must be coordinated with P18-D16 (`ClipTextEncode`), which is the sole
 consumer.
 
 **Acceptance criterion:** Existing mock tests in
 `worker/tests/test_nodes_loader.py` continue to pass unchanged.
 
-#### P18-D7: worker/nodes/encoder.py: ClipTextEncode real path
+> **Note on P18-D4/D5/D6's outcome:** all three real paths shipped using
+> `from_pretrained(model_id, subfolder=...)`, which requires `model_id` to
+> resolve to an HF-style snapshot **directory**. The project's actual model
+> storage convention is manually-downloaded, standalone `.safetensors`
+> **files** — this is a contract violation against `ANVILML_DESIGN.md
+> §10.5`'s own "load weights directly via the `safetensors` library"
+> language, discovered only once real model files were wired up for
+> testing. P18-D7 through P18-D14 below correct this with single-file
+> loading as the active path, preserving the original directory-based code
+> (unreachable, kept for possible future reactivation) rather than deleting
+> it. The same audit also found a `self.ctx` vs bare `ctx` bug in all three
+> loader real paths (a `NameError` that no existing test caught, since
+> every test in this suite runs in mock mode only) — fixed in the same
+> tasks that touch each affected `execute()` method.
+
+#### P18-D7: worker/nodes/arch/: restructure into arch/diffusion/ + arch/clip/ siblings
+
+**Goal:** Move `zit.py` (and Phase 19's `flux.py`) into a new
+`worker/nodes/arch/diffusion/` subpackage; `arch/__init__.py` becomes a
+thin re-export shim, with all `pkgutil.iter_modules()` scanning logic moved
+into `arch/diffusion/__init__.py`, now scanning its own directory instead
+of `arch/`'s. No behavior change — `get_module()`/`can_handle()` still work
+identically; only the module `__name__` returned by `get_module()` changes
+(`worker.nodes.arch.zit` → `worker.nodes.arch.diffusion.zit`). This sets up
+structural symmetry for the new `arch/clip/` package (P18-D8) added
+alongside it. `test_arch_init.py` and `test_arch_zit.py` updated for the
+new import paths; `ANVILML_DESIGN.md §10.4` updated for the new paths.
+
+**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_init.py worker/tests/test_arch_zit.py -v` exits 0.
+
+#### P18-D8: worker/nodes/arch/clip/__init__.py: clip dispatcher
+
+**Goal:** Create `worker/nodes/arch/clip/__init__.py` mirroring
+`arch/diffusion/__init__.py`'s `can_handle()`/`get_module()` contract
+exactly, but dispatching on the `clip_type` **string** directly rather than
+a loaded model object — no object exists yet at the point `LoadClip` needs
+to decide which loader to call. No clip arch modules exist yet; this task
+only adds the dispatcher itself, tested against a temporary dummy module
+removed before commit.
+
+**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_init.py -v` exits 0.
+
+#### P18-D9 / P18-D10 / P18-D11: worker/nodes/arch/clip/{qwen3,clip_l,t5}.py
+
+**Goal:** One clip-arch module per `clip_type` family, each exposing
+`can_handle(clip_type)` and `load(model_id, torch_dtype) -> RealClip`.
+`model_id` is always a single `.safetensors` file — none of these ever call
+`from_pretrained` on it. Each module's tokenizer loads from a vendored
+local directory under `worker/assets/` (no network at worker runtime; see
+`worker/tools/seed_tokenizers.sh`/`.ps1` for provenance and re-seeding):
+
+| Task | Module | clip_type | Tokenizer class | Vendored assets | Weights class |
+|------|--------|-----------|-----------------|------------------|----------------|
+| D9 | `qwen3.py` | `"qwen3"` | `Qwen2Tokenizer` | `worker/assets/qwen25_tokenizer/` | `Qwen3ForCausalLM` |
+| D10 | `clip_l.py` | `"clip_l"` | `CLIPTokenizer` | `worker/assets/clip_l_tokenizer/` | `CLIPTextModelWithProjection` |
+| D11 | `t5.py` | `"t5"` | `T5TokenizerFast` (switched from slow `T5Tokenizer`) | `worker/assets/t5_tokenizer/` | `T5EncoderModel` |
+
+Each weights class is constructed via `<Class>.from_config(config)` then
+`load_state_dict(safetensors.torch.load_file(model_id))` — `transformers`
+text-encoder classes have no `from_single_file()` equivalent (unlike the
+`diffusers` model classes used by `LoadModel`/`LoadVae`, see P18-D13/D14),
+so config fields must be confirmed against the actual checkpoint tensor
+shapes at ACT time. `RealClip` (existing class in `loader.py`) is imported
+lazily inside each module's `load()` to avoid a circular import with
+`loader.py` (which calls `arch.clip.get_module()`).
+
+**T5 tokenizer sourcing note:** `T5TokenizerFast.from_pretrained()` reads a
+consolidated `tokenizer.json` directly. `google/t5-v1_1-xxl` does not ship
+one (SentencePiece `spiece.model` only); the repo that does
+(`black-forest-labs/FLUX.1-dev`'s `tokenizer_2/`, matching ComfyUI's own
+vendored copy) is **gated** — requires HF auth and accepting a
+non-commercial license, unsuitable for an anonymous `curl`/
+`Invoke-WebRequest` import. `worker/assets/t5_tokenizer/` is sourced
+instead from `InvokeAI/t5-v1_1-xxl`'s `bfloat16/tokenizer_2/` subfolder —
+Apache-2.0, ungated, an explicitly-licensed re-host of the same
+`FLUX.1-schnell` tokenizer content.
+
+**Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_qwen3.py worker/tests/test_arch_clip_l.py worker/tests/test_arch_clip_t5.py -v` exits 0, each with ≥3 tests.
+
+#### P18-D12: worker/nodes/loader.py: LoadClip dispatches via arch.clip
+
+**Goal:** Replace `LoadClip`'s inline `if clip_type == "qwen3": ... elif
+...` dispatch with `arch.clip.get_module(clip_type)`, mirroring
+`Sampler`'s existing `arch.get_module(model)` pattern. Fixes the
+`self.ctx` vs bare `ctx` bug (see note above P18-D7). The original
+`from_pretrained`-based branch bodies move unchanged into a new
+`_load_from_hf_directory(model_id, clip_type)` function — kept, never
+called, preserved for future reactivation.
+
+**Acceptance criterion:** Existing mock tests in
+`worker/tests/test_nodes_loader.py` continue to pass unchanged.
+
+#### P18-D13: worker/nodes/loader.py: LoadModel single-file path
+
+**Goal:** Replace `from_pretrained(model_id, subfolder="unet")` with
+`ZImageTransformer2DModel.from_single_file(model_id, torch_dtype=torch.float16)`
+— confirmed registered in `diffusers.loaders.single_file_model.
+SINGLE_FILE_LOADABLE_CLASSES`, which infers the model's config from the
+checkpoint's own tensor keys, no `config.json` needed. The existing
+`safe_open()` metadata read for `arch` detection is unchanged; the result
+is still wrapped in `RealModel(transformer, arch=arch)` exactly as before
+— `Sampler`/`EmptyLatent` depend on `.arch`/`.in_channels` via this
+wrapper. The original directory-based code moves into
+`_load_from_hf_directory(model_id, arch)`, kept but never called. Fixes
+the `self.ctx` vs bare `ctx` bug.
+
+**Acceptance criterion:** Existing mock tests in
+`worker/tests/test_nodes_loader.py` continue to pass unchanged.
+
+#### P18-D14: worker/nodes/loader.py: LoadVae single-file path
+
+**Goal:** Replace `from_pretrained(model_id, subfolder="vae")` with
+`AutoencoderKL.from_single_file(model_id, torch_dtype=torch.bfloat16)` —
+same `SINGLE_FILE_LOADABLE_CLASSES` mechanism as P18-D13. `LoadVae`
+continues to return the bare `AutoencoderKL` instance unwrapped (it
+already exposes `.config.block_out_channels` etc., no wrapper needed, per
+the original P18-A2/D5 design). The original directory-based code moves
+into `_load_from_hf_directory(model_id)`, kept but never called. Fixes the
+`self.ctx` vs bare `ctx` bug.
+
+**Acceptance criterion:** Existing mock tests in
+`worker/tests/test_nodes_loader.py` continue to pass unchanged.
+
+*(Note: `P18-D15` is intentionally unused — the new-task block grew from
+an initially-scoped 3 tasks to 8 (`P18-D7`–`P18-D14`) during planning, once
+the `LoadClip` `clip_type` dispatch redesign was added; the renumbered tail
+below picks back up at `P18-D16` rather than leaving a different gap
+later. No task was dropped.)*
+
+#### P18-D16: worker/nodes/encoder.py: ClipTextEncode real path
+
+*(originally numbered P18-D7; renumbered when P18-D7–D14 were inserted
+above — see the narrative note earlier in this document.)*
 
 **Goal:** Replace `ClipTextEncode`'s real-path `NotImplementedError` (this
 TODO currently carries no task reference at all — this task is its
 correct owner). Call the loaded CLIP object's encode method to produce
 `prompt_embeds`/`negative_prompt_embeds` matching
 `ZImagePipeline.__call__`'s expected shape. Return a conditioning object
-exposing `.positive`/`.negative` — the exact contract P18-D9a–c consume.
+exposing `.positive`/`.negative` — the exact contract P18-D18a–c consume.
 
 **Acceptance criterion:** Existing mock tests in
 `worker/tests/test_nodes_encoder.py` continue to pass unchanged.
 
-#### P18-D8: worker/nodes/sampler.py: EmptyLatent real path + new model input
+#### P18-D17: worker/nodes/sampler.py: EmptyLatent real path + new model input
+
+*(originally numbered P18-D8.)*
 
 **Goal:** Add an optional `model:MODEL` input slot to `EmptyLatent`
 (`ANVILML_DESIGN.md §10.3` updated accordingly). Real path dispatches via
@@ -251,44 +414,49 @@ formula.
 `worker/tests/test_nodes_sampler.py` continue to pass unchanged (mock mode
 ignores the new optional input).
 
-#### P18-D9a / P18-D9b / P18-D9c: worker/nodes/arch/zit.py: real sample()
+#### P18-D18a / P18-D18b / P18-D18c: worker/nodes/arch/diffusion/zit.py: real sample()
+
+*(originally numbered P18-D9a/b/c.)*
 
 Split into three atomic sub-tasks; the original single-task scope (pipeline
 assembly + callback adapter + invocation + cancellation) was too large for
 one task.
 
-**Goal (D9a):** Assemble the `ZImagePipeline` from cached components via
+**Goal (D18a):** Assemble the `ZImagePipeline` from cached components via
 `pipeline_cache.get_or_load(f"{model_id}:pipeline", ...)`, per the
 component/pipeline caching split already specified in P18-D1's own goal
 above. Also corrects this module's docstring, which currently misdescribes
-the real callback shape. **`defers_to: ["P18-D9c"]`** — this task assembles
+the real callback shape. **`defers_to: ["P18-D18c"]`** — this task assembles
 the pipeline but does not invoke it; per
 `FORGE_TASK_AUTHORING_SPEC.md §12a`, the stub site must carry the code
-comment `# defers_to: P18-D9c — pipeline assembled, not yet invoked`.
+comment `# defers_to: P18-D18c — pipeline assembled, not yet invoked`.
 
-**Goal (D9b):** Build a `callback_on_step_end` adapter closure bridging
+**Goal (D18b):** Build a `callback_on_step_end` adapter closure bridging
 diffusers' real 4-argument callback signature (`self, i, t,
 callback_kwargs`) to the simpler 2-argument `emit_progress(step, total)`
 interface `sample()`'s own public signature exposes, plus cooperative
 cancellation via a private sentinel exception. This task fully implements
 the adapter function itself — it does not carry a `defers_to`; the adapter
-being unused until D9c wires it in is ordinary sequencing, not deferred
+being unused until D18c wires it in is ordinary sequencing, not deferred
 scope.
 
-**Goal (D9c):** Invoke the assembled pipeline (received via `defers_to`
-from `P18-D9a`) with `output_type="latent"` — returning the raw denoised
-latent rather than a decoded image, since `VaeDecode` (P18-D11) remains the
+**Goal (D18c):** Invoke the assembled pipeline (received via `defers_to`
+from `P18-D18a`) with `output_type="latent"` — returning the raw denoised
+latent rather than a decoded image, since `VaeDecode` (P18-D20) remains the
 sole node responsible for decoding, per the explicit-VAE-input contract
 already established in this document. Return `(latent, seed)`. This task
-is the named recipient of `P18-D9a`'s `defers_to` entry — its own
+is the named recipient of `P18-D18a`'s `defers_to` entry — its own
 implementation report should confirm the assembled pipeline is actually
 invoked here, closing that link.
 
 **Acceptance criteria:** Each sub-task's existing mock tests in
-`worker/tests/test_arch_zit.py` continue to pass; D9a and D9b each add new
-tests per their task `context`.
+`worker/tests/test_arch_zit.py` continue to pass; D18a and D18b each add new
+tests per their task `context`. Note: after P18-D7's restructure, this file
+is `worker/nodes/arch/diffusion/zit.py`, not `worker/nodes/arch/zit.py`.
 
-#### P18-D10: worker/nodes/sampler.py: Sampler real dispatch
+#### P18-D19: worker/nodes/sampler.py: Sampler real dispatch
+
+*(originally numbered P18-D10.)*
 
 **Goal:** Replace `Sampler.execute()`'s real-path `NotImplementedError`
 (currently mislabeled as deferred to P18-C1, which is `pipeline_cache.py`
@@ -299,7 +467,9 @@ architecture")` per `ANVILML_DESIGN.md §10.4` if no module matches.
 **Acceptance criterion:** Existing mock tests in
 `worker/tests/test_nodes_sampler.py` continue to pass unchanged.
 
-#### P18-D11: worker/nodes/decode.py: VaeDecode real path
+#### P18-D20: worker/nodes/decode.py: VaeDecode real path
+
+*(originally numbered P18-D11.)*
 
 **Goal:** Replace `VaeDecode`'s real-path `NotImplementedError` (this TODO
 currently carries no task reference at all — this task is its correct
@@ -314,7 +484,7 @@ unchanged `SaveImage` node to encode to PNG.
 
 #### P18-E1: test_parity.py + ZiT smoke proof documentation
 
-**Goal:** Create `worker/tests/test_parity.py` verifying that NODE_REGISTRY contains exactly the 9 baseline node types from `ANVILML_DESIGN.md §10.3`. Create `docs/PROOF_phase018.md` documenting the manual real-hardware runnable proof: exact curl commands to submit the Appendix B ZiT workflow JSON and observe JobCompleted + PNG artifact.
+**Goal:** Create `worker/tests/test_parity.py` verifying that NODE_REGISTRY contains exactly the 9 baseline node types from `ANVILML_DESIGN.md §10.3`. Create `docs/PROOF_phase018.md` documenting the manual real-hardware runnable proof: exact curl commands to submit the Appendix B ZiT workflow JSON and observe JobCompleted + PNG artifact. `model_id` values in the workflow JSON are single `.safetensors` filesystem paths (post P18-D7–D20's single-file-only loading), never HF directory paths.
 
 **Acceptance criterion:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_parity.py -v` exits 0; PROOF_phase018.md documents all commands and expected output.
 
@@ -338,8 +508,11 @@ cargo test --workspace --features mock-hardware
 - There is no `diffusers.ZitPipeline`. The correct class is `diffusers.ZImagePipeline`.
 - `diffusers.FluxPipeline` **does exist**, but it is the FLUX.1 class and is architecturally incompatible with Flux 2 Klein weights (see Phase 019). Do not use it for Flux 2 Klein — use `Flux2KleinPipeline`.
 - Arch modules must not call `<Pipeline>.from_pretrained(model_id)` inside `sample()`. The diffusion transformer is already loaded and cached by `LoadModel`; arch modules assemble the full pipeline from cached components once per `model_id` and cache the assembled pipeline separately.
-- `model_id` as received by the Python worker (Group A/D loader nodes) is always a real filesystem path, never the SHA256 hash the job submitter provides. The scheduler rewrites the graph's `LoadModel`/`LoadVae`/`LoadClip` `model_id` inputs in place immediately before dispatch (Retrofit Phase 903, `P903-A1`). Loader nodes must not attempt to decode or look up a hash themselves.
+- `model_id` as received by the Python worker (Group A/D loader nodes) is always a real filesystem path, never the SHA256 hash the job submitter provides. The scheduler rewrites the graph's `LoadModel`/`LoadVae`/`LoadClip` `model_id` inputs in place immediately before dispatch (Retrofit Phase 903, `P903-A1`). Loader nodes must not attempt to decode or look up a hash themselves. As of P18-D12/D13/D14, that resolved path is always a single `.safetensors` **file**, never an HF-style snapshot directory — the original directory-based `from_pretrained` code is preserved but unreachable in `_load_from_hf_directory(...)` functions, not deleted.
 - `NodeContext.pipeline_cache` is a real `PipelineCache` instance (Retrofit Phase 903, `P903-A2`), not an empty dict. All loader and arch real paths can rely on `ctx.pipeline_cache.get_or_load(...)` working correctly.
 - `diffusers.ZImagePipeline.__call__()` performs denoising and VAE decoding together by default. Passing `output_type="latent"` (a genuinely supported value) returns the raw denoised latent instead, which is required for `Sampler` and `VaeDecode` to remain two separate, single-purpose nodes per this document's node graph.
-- `diffusers.ZImagePipeline`'s real `callback_on_step_end` signature is `(self, i, t, callback_kwargs) -> dict`, not the simpler 2-argument `emit_progress(step, total)` shape `arch/zit.py`'s public `sample()` interface exposes to the rest of the codebase. An adapter closure bridges the two (P18-D9b).
-- `ZImagePipeline.prepare_latents()` strictly validates the shape of any pre-supplied `latents=` tensor against `(batch_size, num_channels_latents, height_scaled, width_scaled)` and raises `ValueError` on mismatch. The exact shape formula is architecture-specific (e.g. Flux 2 Klein's 2×2 latent patch packing produces a structurally different formula, not just a different scale factor — see Phase 019) and therefore lives inside each arch module as `compute_latent_shape()` (`P18-D3b`), not inline in `EmptyLatent` (`P18-D8`) or as a single shared constant.
+- `diffusers.ZImagePipeline`'s real `callback_on_step_end` signature is `(self, i, t, callback_kwargs) -> dict`, not the simpler 2-argument `emit_progress(step, total)` shape `arch/diffusion/zit.py`'s public `sample()` interface exposes to the rest of the codebase. An adapter closure bridges the two (P18-D18b).
+- `ZImagePipeline.prepare_latents()` strictly validates the shape of any pre-supplied `latents=` tensor against `(batch_size, num_channels_latents, height_scaled, width_scaled)` and raises `ValueError` on mismatch. The exact shape formula is architecture-specific (e.g. Flux 2 Klein's 2×2 latent patch packing produces a structurally different formula, not just a different scale factor — see Phase 019) and therefore lives inside each arch module as `compute_latent_shape()` (`P18-D3b`), not inline in `EmptyLatent` (`P18-D17`) or as a single shared constant.
+- `worker/nodes/arch/` is split into `arch/diffusion/` (diffusion model dispatch — `zit.py`, `flux.py`) and `arch/clip/` (text-encoder dispatch — `qwen3.py`, `clip_l.py`, `t5.py`) as of P18-D7/D8. Both follow the same `can_handle()`/`get_module()` contract shape; `arch/diffusion/` dispatches on a loaded model object's `.arch` attribute, `arch/clip/` dispatches on the `clip_type` string directly (no object exists yet at that point).
+- `transformers` text-encoder classes (`Qwen3ForCausalLM`, `CLIPTextModelWithProjection`, `T5EncoderModel`) have no `from_single_file()` equivalent — unlike `diffusers` model classes (`ZImageTransformer2DModel`, `AutoencoderKL`), which do (confirmed via `diffusers.loaders.single_file_model.SINGLE_FILE_LOADABLE_CLASSES`). `LoadModel`/`LoadVae` (P18-D13/D14) use `from_single_file()`; `arch/clip/*.py` modules (P18-D9/D10/D11) use manual `from_config()` + `load_state_dict()` instead, since no shortcut exists on the `transformers` side.
+- Vendored tokenizer assets live under `worker/assets/{qwen25_tokenizer,clip_l_tokenizer,t5_tokenizer}/`, committed to git (not gitignored — these are small, static, redistributable files, not user model weights). Re-seed via `worker/tools/seed_tokenizers.sh`/`.ps1`; see that script's header comments for exact source-repo provenance and why certain obvious-seeming sources (`google/t5-v1_1-xxl`, `black-forest-labs/FLUX.1-dev`) were deliberately not used.
