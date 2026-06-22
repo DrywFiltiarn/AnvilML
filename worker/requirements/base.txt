@@ -1,7 +1,7 @@
-pyzmq>=26.0
-msgpack>=1.0
-pillow>=10.0
-safetensors>=0.4
+pyzmq>=27.0
+msgpack>=1.2
+pillow>=12.2
+safetensors>=0.8
 diffusers>=0.38.0
 transformers>=5.12
-pytest>=8.0
+pytest>=9.1
