@@ -277,12 +277,13 @@ class LoadVae(BaseNode):
             (mock mode) or a loaded VAE pipeline component (real mode).
 
         Raises:
-            NotImplementedError: If called in non-mock mode. The real
-                safetensors loading path is stubbed until P18-D1.
+            Exception: Propagates errors from diffusers model loading
+                (e.g. ``OSError`` if the model path is invalid,
+                ``ValueError`` if the config is malformed).
         """
         # Read the model_id input. In mock mode this is a
         # placeholder string; in real mode it references a
-        # VAE file path registered in the model store.
+        # VAE directory path registered in the model store.
         model_id = inputs.get("model_id", "")
 
         # Check mock mode by inspecting the environment variable.
@@ -295,16 +296,38 @@ class LoadVae(BaseNode):
             # tests fast and avoids requiring GPU hardware or torch.
             return {"vae": MockVae()}
 
-        # Real mode: load actual safetensors weights for the VAE.
-        # This path is stubbed — the real implementation will use
-        # safetensors.safe_open() to read the VAE weight tensors
-        # and load via pipeline_cache.get_or_load(). The
-        # pipeline_cache module is implemented in task P18-D1.
-        # TODO(P18-A2): Implement real safetensors loading path.
-        raise NotImplementedError(
-            "Real LoadVae path not yet implemented — "
-            "use ANVILML_WORKER_MOCK=1 for testing"
+        # Real mode: load actual VAE weights via diffusers.
+        # Lazy imports — these packages are not available in mock mode
+        # (no torch installed), so importing them here keeps the worker
+        # importable when ANVILML_WORKER_MOCK=1.
+        from diffusers import AutoencoderKL
+        import torch
+
+        # Define the loader closure that constructs the AutoencoderKL.
+        # This is passed to pipeline_cache.get_or_load() so the actual
+        # model loading only happens on cache miss. The closure captures
+        # model_id and torch_dtype to avoid redundant resolution.
+        # from_pretrained with subfolder="vae" is used because the VAE
+        # weights and config.json reside in a "vae/" subdirectory within
+        # the model directory, matching the standard diffusers layout.
+        def loader_fn() -> AutoencoderKL:
+            return AutoencoderKL.from_pretrained(
+                model_id,
+                subfolder="vae",
+                torch_dtype=torch.bfloat16,
+            )
+
+        # Get the VAE from cache or load it via loader_fn.
+        # The cache key uses "bf16" dtype string — bfloat16 is the
+        # native half-precision format for modern GPUs (A100/H100)
+        # and avoids the overflow issues of fp16 during training.
+        # Note: ctx.pipeline_cache is typed as dict[str, Any] in
+        # NodeContext but a PipelineCache instance at runtime
+        # (retrofitted by P903-A2), so .get_or_load() is available.
+        result = ctx.pipeline_cache.get_or_load(
+            model_id, "bf16", loader_fn
         )
+        return {"vae": result}
 
 
 @register
