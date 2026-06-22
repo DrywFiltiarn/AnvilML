@@ -3294,3 +3294,39 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** torch removed from ``sys.modules`` before import.
 **Expected output:** Module imports successfully and ``"torch"`` is absent from ``sys.modules``, confirming mock-mode import isolation.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_qwen3.py::test_load_mock_no_torch_import -v` exits 0.
+
+## test_can_handle_clip_l (worker.nodes.arch.clip.clip_l)
+
+**File:** `worker/tests/test_arch_clip_l.py`
+**Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture, ensuring mock mode is active.
+**Tests:** Call ``can_handle("clip_l")`` and assert the result is ``True``.
+**Inputs:** ``clip_type="clip_l"``.
+**Expected output:** ``can_handle("clip_l") == True`` — the CLIP-L arch module claims this clip type.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_l.py::test_can_handle_clip_l -v` exits 0.
+
+## test_can_handle_non_clip_l (worker.nodes.arch.clip.clip_l)
+
+**File:** `worker/tests/test_arch_clip_l.py`
+**Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture, ensuring mock mode is active.
+**Tests:** Call ``can_handle("qwen3")`` and ``can_handle("t5")``, assert both return ``False``.
+**Inputs:** ``clip_type="qwen3"`` and ``clip_type="t5"``.
+**Expected output:** ``can_handle("qwen3") == False`` and ``can_handle("t5") == False`` — the CLIP-L arch module does not claim these clip types.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_l.py::test_can_handle_non_clip_l -v` exits 0.
+
+## test_load_mock_returns_realclip (worker.nodes.arch.clip.clip_l)
+
+**File:** `worker/tests/test_arch_clip_l.py`
+**Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture, ensuring the mock code path is taken.
+**Tests:** Call ``load("/fake/path", None)`` and assert the result is a ``RealClip`` instance whose ``.tokenizer`` is a ``MockTokenizer`` and ``.text_encoder`` is a ``MockTextEncoder``.
+**Inputs:** ``model_id="/fake/path"``, ``torch_dtype=None``.
+**Expected output:** ``isinstance(result, RealClip)`` is ``True``, ``isinstance(result.tokenizer, MockTokenizer)`` is ``True``, and ``isinstance(result.text_encoder, MockTextEncoder)`` is ``True``.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_l.py::test_load_mock_returns_realclip -v` exits 0.
+
+## test_load_mock_no_torch_import (worker.nodes.arch.clip.clip_l)
+
+**File:** `worker/tests/test_arch_clip_l.py`
+**Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture.
+**Tests:** Remove ``torch`` from ``sys.modules`` (if present), remove the module from cache, and re-import the ``clip_l`` module. Assert that no ``ImportError`` is raised and that ``torch`` is not in ``sys.modules`` after import — proving no top-level import of torch occurs.
+**Inputs:** torch removed from ``sys.modules`` before import.
+**Expected output:** Module imports successfully and ``"torch"`` is absent from ``sys.modules``, confirming mock-mode import isolation.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_l.py::test_load_mock_no_torch_import -v` exits 0.
