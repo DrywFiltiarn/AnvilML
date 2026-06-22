@@ -3204,3 +3204,12 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** `_make_model("zit")` and `_make_model("unknown")`.
 **Expected output:** `can_handle(zit_model) == True` and `can_handle(unknown_model) == False`.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_init.py::test_can_handle_still_works_after_refactor -v` exits 0.
+
+## test_vae_scale_factor_value (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** `ANVILML_WORKER_MOCK=1` is set by the `conftest.py` autouse fixture, ensuring mock mode is active. Reading a module-level constant does not affect process-global state, so no environment variable mutation is needed.
+**Tests:** Import `VAE_SCALE_FACTOR` from the `worker.nodes.arch.zit` module and assert it equals `8`.
+**Inputs:** None (reads a module-level constant).
+**Expected output:** `VAE_SCALE_FACTOR == 8` — the Z-Image-Turbo VAE spatial compression factor matches the published config.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_vae_scale_factor_value -v` exits 0.

@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from worker.nodes.arch.zit import MockLatent, can_handle, sample
+from worker.nodes.arch.zit import MockLatent, VAE_SCALE_FACTOR, can_handle, sample
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +44,31 @@ def _make_model(arch: str | None = "zit") -> Any:
         # This tests the getattr fallback in can_handle().
         return type("Model", (), {})()
     return type("Model", (), {"arch": arch})()
+
+
+# ---------------------------------------------------------------------------
+# Tests: VAE_SCALE_FACTOR
+# ---------------------------------------------------------------------------
+
+
+def test_vae_scale_factor_value() -> None:
+    """Verify ``VAE_SCALE_FACTOR`` module constant equals ``8``.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse
+        fixture, ensuring mock mode is active (not strictly required for
+        reading a module-level constant, but consistent with the test file
+        convention).
+
+    Tests:
+        Import ``VAE_SCALE_FACTOR`` from the module under test and
+        assert it equals ``8``.
+
+    Expected output:
+        ``VAE_SCALE_FACTOR == 8`` — the Z-Image-Turbo VAE spatial
+        compression factor matches the published config.
+    """
+    assert VAE_SCALE_FACTOR == 8
 
 
 # ---------------------------------------------------------------------------

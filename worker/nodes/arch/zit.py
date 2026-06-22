@@ -24,7 +24,13 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
-__all__ = ["can_handle", "sample", "MockLatent"]
+__all__ = ["can_handle", "sample", "MockLatent", "VAE_SCALE_FACTOR"]
+
+# Z-Image-Turbo's published VAE config has block_out_channels=[128,256,512,512]
+# (4 entries), giving 2**(4-1)=8 per ZImagePipeline.__init__'s vae_scale_factor
+# formula; independently corroborated as 8x spatial compression
+# (1024x1024 image -> 128x128 latent grid).
+VAE_SCALE_FACTOR: int = 8
 
 
 class MockLatent:
