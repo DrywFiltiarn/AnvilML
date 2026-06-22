@@ -508,12 +508,15 @@ class LoadClip(BaseNode):
             encoder_cls = CLIPTextModelWithProjection
 
         elif clip_type == "t5":
-            # T5 (Google) uses T5Tokenizer + T5ForConditionalGeneration —
+            # T5 (Google) uses T5TokenizerFast + T5ForConditionalGeneration —
             # the T5 text encoder is a general-purpose encoder-decoder
             # model used in Stable Diffusion XL and related architectures.
-            from transformers import T5ForConditionalGeneration, T5Tokenizer
+            # T5TokenizerFast is used instead of the slow T5Tokenizer
+            # because it provides the same interface with much faster
+            # tokenization — important for real-time inference pipelines.
+            from transformers import T5ForConditionalGeneration, T5TokenizerFast
 
-            tokenizer_cls = T5Tokenizer
+            tokenizer_cls = T5TokenizerFast
             encoder_cls = T5ForConditionalGeneration
 
         else:
