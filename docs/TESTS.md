@@ -3168,3 +3168,12 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Job graph with `{"nodes": [{"id": "sampler", "type": "Sampler", "inputs": {"seed": 42, "steps": 20}}]}`.
 **Expected output:** DB `graph` column contains `node[0].inputs.seed == 42` and `node[0].inputs.steps == 20` (unchanged); job status is `running`; queue is empty.
 **Acceptance command:** `cargo test -p anvilml-scheduler --features mock-hardware -- test_non_loader_node_inputs_untouched` exits 0.
+
+## test_pipeline_cache_reused_across_jobs (worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** Worker subprocess spawned with `ANVILML_WORKER_MOCK=1` on a random port. A `sitecustomize.py` monkey-patch is placed on `PYTHONPATH` to intercept `NodeContext.__init__` and capture the `pipeline_cache` argument's `id()` into a temp file. The `sitecustomize` module is loaded by Python at startup before any other imports, so the patch is active before `worker.worker_main` constructs any `NodeContext`.
+**Tests:** Spawns a worker, drains the Ready event, sends two sequential Execute messages with empty graphs (zero nodes, so no real model loading occurs), drains the Completed events, then reads the temp file to verify both `id()` values are identical — proving the module-level `_pipeline_cache` singleton is shared across jobs.
+**Inputs:** Two Execute messages with empty graphs (`graph: []`), sent to a mock-mode worker.
+**Expected output:** Both jobs complete successfully; the temp file contains two identical `id()` values.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py -v` exits 0.

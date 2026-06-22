@@ -321,3 +321,140 @@ def test_env_vars_read_from_environment():
             proc.wait(timeout=5)
     finally:
         router.close(linger=0)
+
+
+def test_pipeline_cache_reused_across_jobs():
+    """Verify the same PipelineCache instance is reused across two Execute jobs.
+
+    Preconditions:
+        A ROUTER socket is bound on a random port; a temp directory with
+        a ``sitecustomize.py`` monkey-patch is on ``PYTHONPATH``.
+
+    Expects:
+        Two sequential Execute messages both complete successfully, and the
+        captured ``id()`` of the ``pipeline_cache`` argument in
+        ``NodeContext.__init__`` is identical for both jobs — proving the
+        module-level ``_pipeline_cache`` singleton is shared across jobs.
+    """
+    import tempfile
+
+    _reset_ipc_state()
+    ctx = zmq.Context.instance()
+    router = ctx.socket(zmq.ROUTER)
+    port = router.bind_to_random_port("tcp://127.0.0.1")
+
+    # Create a temp directory for the monkey-patch sitecustomize module
+    # and a temp file for capturing pipeline_cache id() values.
+    tmpdir = tempfile.mkdtemp()
+    ids_file = os.path.join(tmpdir, "pipeline_cache_ids.txt")
+
+    # Write a sitecustomize.py that monkey-patches NodeContext.__init__
+    # to capture the pipeline_cache id() into the ids file.
+    # sitecustomize is loaded by Python at startup before any other
+    # imports, so the patch is in place before worker.worker_main runs.
+    #
+    # We must add the repo root to sys.path first, because the venv's
+    # site-packages does not include the project root, and the worker
+    # package lives there. PYTHONPATH only adds the temp dir (where
+    # sitecustomize.py lives), not the repo root.
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    sitecustomize_path = os.path.join(tmpdir, "sitecustomize.py")
+    with open(sitecustomize_path, "w") as f:
+        f.write(
+            f"_PC_IDS_FILE = {repr(ids_file)}\n"
+            f"import sys; sys.path.insert(0, {repr(repo_root)})\n"
+            f"\n"
+            f"import worker.nodes.base as _ncb\n"
+            f"\n"
+            f"_original_init = _ncb.NodeContext.__init__\n"
+            f"\n"
+            f"\n"
+            f"def _patched_init(self, *args, **kwargs):\n"
+            f"    # Capture the id() of the pipeline_cache argument.\n"
+            f"    # This proves the same PipelineCache singleton is used\n"
+            f"    # for every NodeContext construction in this worker process.\n"
+            f"    pc = kwargs.get('pipeline_cache')\n"
+            f"    if pc is not None:\n"
+            f"        with open(_PC_IDS_FILE, \"a\") as _f:\n"
+            f"            _f.write(str(id(pc)) + \"\\n\")\n"
+            f"    return _original_init(self, *args, **kwargs)\n"
+            f"\n"
+            f"\n"
+            f"_ncb.NodeContext.__init__ = _patched_init\n"
+        )
+
+    worker_env = _make_worker_env({
+        "ANVILML_IPC_PORT": str(port),
+        "PYTHONPATH": tmpdir,
+    })
+
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "worker.worker_main"],
+            env=worker_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            # Wait for the worker to start and emit Ready.
+            time.sleep(0.3)
+
+            # Drain the Ready event that the worker sends on startup.
+            _recv_with_timeout(router, proc)  # Ready — discard
+
+            # Send first Execute message with an empty graph.
+            # An empty graph runs zero nodes, so no real model loading
+            # occurs — we only care about NodeContext construction.
+            # The graph must be a dict with a "nodes" key (per run_graph
+            # contract), not a raw list.
+            execute_msg1 = msgpack.packb({
+                "_type": "Execute",
+                "job_id": "job-cache-1",
+                "graph": {"nodes": []},
+                "settings": {},
+            }, use_bin_type=True)
+            router.send_multipart([b"worker-0", execute_msg1])
+
+            # Receive the Completed event for job 1.
+            completed1 = _recv_with_timeout(router, proc)
+            assert completed1["_type"] == "Completed"
+            assert completed1["job_id"] == "job-cache-1"
+
+            # Send second Execute message.
+            execute_msg2 = msgpack.packb({
+                "_type": "Execute",
+                "job_id": "job-cache-2",
+                "graph": {"nodes": []},
+                "settings": {},
+            }, use_bin_type=True)
+            router.send_multipart([b"worker-0", execute_msg2])
+
+            # Receive the Completed event for job 2.
+            completed2 = _recv_with_timeout(router, proc)
+            assert completed2["_type"] == "Completed"
+            assert completed2["job_id"] == "job-cache-2"
+
+            # Read the captured id() values from the temp file.
+            time.sleep(0.1)  # ensure worker has written both entries
+            with open(ids_file, "r") as f:
+                lines = [l.strip() for l in f.readlines() if l.strip()]
+
+            assert len(lines) == 2, (
+                f"Expected 2 id() entries, got {len(lines)}: {lines}"
+            )
+
+            # Both ids should be identical — same PipelineCache singleton.
+            id1 = int(lines[0])
+            id2 = int(lines[1])
+            assert id1 == id2, (
+                f"PipelineCache id() differs across jobs: "
+                f"job1={id1}, job2={id2}"
+            )
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+    finally:
+        router.close(linger=0)
+        # Clean up temp files and directory
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)

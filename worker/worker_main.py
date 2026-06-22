@@ -38,6 +38,7 @@ from worker.ipc import connect, recv_message, send_event
 from worker.nodes import NODE_REGISTRY
 from worker.nodes.base import NodeContext
 from worker.executor import run_graph
+from worker.pipeline_cache import PipelineCache
 
 
 # Module-level cancel flag for job cancellation.
@@ -45,6 +46,11 @@ from worker.executor import run_graph
 # Execute handler. A list is used (mutable container) so it can be
 # modified from the CancelJob handler without needing global state.
 _cancel_flag: list[bool] = [False]
+
+# Module-level PipelineCache instance — created once at worker process
+# startup so cache entries (loaded model components) persist across
+# all jobs dispatched to this worker process.
+_pipeline_cache: PipelineCache = PipelineCache()
 
 
 def _import_nodes() -> None:
@@ -224,15 +230,18 @@ def main() -> None:
             # The cancel_flag is a list (mutable container) so nodes
             # can check and set it during long-running operations.
             # We reset the cancel flag for each new job execution.
-            # The pipeline_cache is an empty dict — nodes can store
-            # cross-node data here within the same job.
+            # The pipeline_cache is a shared LRU cache (PipelineCache
+            # instance) created once at module level — cache entries
+            # (loaded model components) persist across jobs dispatched
+            # to this worker process, enabling cache hits on repeated
+            # model loads within the same worker lifetime.
             _cancel_flag[0] = False
             ctx = NodeContext(
                 job_id=job_id,
                 device=device,
                 cancel_flag=_cancel_flag,
                 emit=send_event,
-                pipeline_cache={},
+                pipeline_cache=_pipeline_cache,  # shared LRU cache (see module-level _pipeline_cache)
             )
 
             try:
