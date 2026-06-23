@@ -600,6 +600,11 @@ class LoadClip(BaseNode):
             # and avoids requiring GPU hardware or torch.
             return {"clip": MockClip(clip_type=clip_type)}
 
+        # Real mode: lazy imports — these packages are not available
+        # in mock mode (no torch installed), so importing them here
+        # keeps the worker importable when ANVILML_WORKER_MOCK=1.
+        import torch
+
         # Dispatch to the correct architecture module via the clip
         # registry. The arch_clip.get_module() function iterates over
         # all loaded arch modules and returns the one whose can_handle()
