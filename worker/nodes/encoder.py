@@ -5,6 +5,11 @@ object, a prompt string, and an optional negative prompt string, then returns
 a ``CONDITIONING`` slot. In mock mode (``ANVILML_WORKER_MOCK=1``), it returns
 a lightweight ``MockConditioning`` sentinel carrying the encoded text.
 
+In real mode, the CLIP object's ``encode()`` method is called to produce
+positive and negative embedding lists (matching ``ZImagePipeline.__call__``'s
+``prompt_embeds``/``negative_prompt_embeds`` contract), wrapped in a
+``Conditioning`` object.
+
 The ``torch``, ``diffusers``, and ``safetensors`` packages must never be
 imported at the top level of this module. Importing them here would cause
 the worker to fail on systems without GPU hardware or these libraries.
@@ -22,7 +27,45 @@ from typing import Any
 
 from worker.nodes.base import BaseNode, NodeContext, SlotSpec, register
 
-__all__ = ["ClipTextEncode", "MockConditioning"]
+__all__ = ["ClipTextEncode", "MockConditioning", "Conditioning"]
+
+
+class Conditioning:
+    """Conditioning object carrying positive and negative embedding lists.
+
+    Produced by ``ClipTextEncode.execute()`` in real mode. The
+    ``.positive`` and ``.negative`` attributes each hold a
+    ``list[torch.FloatTensor]`` — one tensor per hidden state
+    layer — that downstream nodes (Sampler, VAEDecode, etc.) use
+    as classifier-free guidance signals.
+
+    In classifier-free guidance, the sampler processes both the
+    positive and negative embeddings in parallel and interpolates
+    between them using a guidance scale parameter. The negative
+    embedding typically encodes an empty prompt (or a deliberately
+    contrasting prompt) to steer generation away from undesired
+    features.
+
+    Args:
+        positive: List of positive prompt embedding tensors.
+            Each tensor is shaped ``(seq_len, hidden_dim)`` where
+            ``seq_len`` is the number of non-padding tokens and
+            ``hidden_dim`` is the text encoder's hidden size.
+        negative: List of negative prompt embedding tensors with
+            the same shape as ``positive``.
+    """
+
+    def __init__(
+        self, positive: list[Any], negative: list[Any]
+    ) -> None:
+        """Initialise a conditioning object.
+
+        Args:
+            positive: List of positive prompt embedding tensors.
+            negative: List of negative prompt embedding tensors.
+        """
+        self.positive = positive
+        self.negative = negative
 
 
 class MockConditioning:
@@ -97,13 +140,13 @@ class ClipTextEncode(BaseNode):
 
         Returns:
             Dict with key ``"conditioning"`` containing either a
-            ``MockConditioning`` (mock mode) or a real conditioning
+            ``MockConditioning`` (mock mode) or a ``Conditioning``
             object (real mode).
 
         Raises:
-            NotImplementedError: If called in non-mock mode. The real
-                CLIP encoding path is stubbed until the real encoder
-                implementation is added in a future phase.
+            Exception: Propagates errors from the CLIP encoder's
+                ``encode()`` method (e.g. ``OSError`` for missing
+                model files, ``RuntimeError`` for shape mismatches).
         """
         # Read the clip and text inputs from the job graph.
         # The clip object was produced by a prior LoadClip node;
@@ -125,14 +168,20 @@ class ClipTextEncode(BaseNode):
             # to clip.encode() for dual-conditioning output.
             return {"conditioning": MockConditioning(text=text)}
 
-        # Real mode: encode text using the loaded CLIP encoder.
-        # This path is stubbed — the real implementation will call
-        # clip.encode(text, negative_text) to produce positive and
-        # negative conditioning objects, then merge them into a
-        # single CONDITIONING output. The CLIP encoding uses
-        # safetensors-loaded weights via the pipeline_cache module.
-        # TODO: Implement real CLIP encoding path.
-        raise NotImplementedError(
-            "Real ClipTextEncode path not yet implemented — "
-            "use ANVILML_WORKER_MOCK=1 for testing"
-        )
+        # Real mode: read the negative_text input and call clip.encode()
+        # to produce positive and negative embedding lists. The result
+        # is wrapped in a Conditioning object for downstream consumers.
+        negative_text = inputs.get("negative_text", "")
+
+        # The clip object is a RealClip (or MockClip) with an encode()
+        # method that handles both the chat template application,
+        # tokenisation, text encoder inference, and attention mask
+        # filtering. In mock mode, encode() returns empty lists.
+        positive_embeds, negative_embeds = clip.encode(text, negative_text)
+
+        # Dual-conditioning: ZImagePipeline uses classifier-free
+        # guidance (always enabled), so both positive and negative
+        # embeddings are required. The negative embeds are produced
+        # by encoding the negative_text string through the same text
+        # encoder pipeline.
+        return {"conditioning": Conditioning(positive_embeds, negative_embeds)}

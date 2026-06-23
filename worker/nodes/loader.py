@@ -137,15 +137,25 @@ class RealClip:
             ``T5ForConditionalGeneration``).
     """
 
-    def __init__(self, tokenizer: Any, text_encoder: Any) -> None:
+    def __init__(
+        self,
+        tokenizer: Any,
+        text_encoder: Any,
+        device: str = "cpu",
+    ) -> None:
         """Initialise the real clip wrapper.
 
         Args:
             tokenizer: The transformers tokenizer component.
             text_encoder: The transformers text-encoder model.
+            device: Target device string for tensor placement
+                (e.g. ``"cuda:0"``, ``"cpu"``). Defaults to ``"cpu"``
+                for backward compatibility with mock mode which does
+                not pass this argument.
         """
         self._tokenizer = tokenizer
         self._text_encoder = text_encoder
+        self._device = device
 
     @property
     def tokenizer(self) -> Any:
@@ -156,6 +166,159 @@ class RealClip:
     def text_encoder(self) -> Any:
         """The transformers text-encoder model instance."""
         return self._text_encoder
+
+    def encode(
+        self, text: str, negative_text: str = ""
+    ) -> tuple[list[Any], list[Any]]:
+        """Encode text and negative text into embedding lists.
+
+        Applies the chat template (for Qwen3-style tokenisers), tokenises
+        the resulting string, runs it through the text encoder, extracts
+        ``hidden_states[-2]``, and filters by attention mask. Returns
+        two lists of tensors: one for the positive prompt and one for
+        the negative prompt.
+
+        In mock mode (``ANVILML_WORKER_MOCK=1``) returns empty lists
+        without importing ``torch``.
+
+        Args:
+            text: The positive prompt string to encode.
+            negative_text: The negative prompt string. Defaults to
+                ``""`` — an empty string produces a zero-length embedding
+                sequence that the downstream pipeline interprets as a
+                "no-op" negative condition.
+
+        Returns:
+            A tuple of ``(positive_embeds, negative_embeds)`` where each
+            element is a ``list[torch.FloatTensor]`` — one tensor per
+            hidden state layer that survived attention-mask filtering.
+
+        Raises:
+            Exception: Propagates errors from the tokenizer or text
+                encoder (e.g. ``OSError`` for missing files,
+                ``RuntimeError`` for shape mismatches).
+        """
+        # Check mock mode — return empty lists without importing
+        # torch when running in CI/test environments.
+        if os.environ.get("ANVILML_WORKER_MOCK") == "1":
+            return ([], [])
+
+        # Real mode: lazy-import torch and transformers here so
+        # the module remains importable in mock mode.
+        import torch
+
+        # Encode the positive prompt.
+        # Qwen3 tokenisers use apply_chat_template to prepend the
+        # correct system prompt and generation tokens — this is
+        # mandatory because the text encoder was trained with these
+        # tokens and will produce garbage embeddings without them.
+        # enable_thinking=True matches the training configuration of
+        # Qwen3-4B which was trained with explicit thinking tags.
+        templated_text = self._tokenizer.apply_chat_template(
+            messages=[{"role": "user", "content": text}],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=True,
+        )
+
+        # Tokenise the templated text with fixed-length padding.
+        # max_length=512 is the standard context window for text
+        # encoders in diffusion pipelines — longer prompts are
+        # truncated, shorter ones are padded to a uniform length.
+        text_inputs = self._tokenizer(
+            templated_text,
+            padding="max_length",
+            max_length=512,
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        # Move inputs to the target device.
+        # This ensures the text encoder (which lives on GPU in
+        # production) receives tensors on the correct device.
+        text_input_ids = text_inputs.input_ids.to(self._device)
+        prompt_masks = text_inputs.attention_mask.to(self._device).bool()
+
+        # Run through the text encoder with hidden state extraction.
+        # output_hidden_states=True returns all layer outputs; we
+        # take hidden_states[-2] (penultimate layer) which is the
+        # standard practice for CLIP-like text encoding — the last
+        # layer tends to overfit to the LM head and loses semantic
+        # information needed for cross-modal alignment.
+        hidden = self._text_encoder(
+            input_ids=text_input_ids,
+            attention_mask=prompt_masks,
+            output_hidden_states=True,
+        ).hidden_states[-2]
+
+        # Filter out padding tokens using the attention mask.
+        # Only tokens with attention_mask==1 contain real text;
+        # masked tokens are padding and should not contribute to
+        # the conditioning signal.
+        positive_embeds = [
+            hidden[i][prompt_masks[i]] for i in range(len(hidden))
+        ]
+
+        # Dual-conditioning: ZImagePipeline uses classifier-free
+        # guidance (always enabled), so both positive and negative
+        # embeddings are required. The negative embeds are produced
+        # by encoding the negative_text string through the same
+        # text encoder pipeline.
+        if negative_text:
+            neg_templated = self._tokenizer.apply_chat_template(
+                messages=[{"role": "user", "content": negative_text}],
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=True,
+            )
+
+            neg_inputs = self._tokenizer(
+                neg_templated,
+                padding="max_length",
+                max_length=512,
+                truncation=True,
+                return_tensors="pt",
+            )
+
+            neg_input_ids = neg_inputs.input_ids.to(self._device)
+            neg_masks = neg_inputs.attention_mask.to(self._device).bool()
+
+            neg_hidden = self._text_encoder(
+                input_ids=neg_input_ids,
+                attention_mask=neg_masks,
+                output_hidden_states=True,
+            ).hidden_states[-2]
+
+            negative_embeds = [
+                neg_hidden[i][neg_masks[i]] for i in range(len(neg_hidden))
+            ]
+        else:
+            # Empty negative prompt: encode an empty string so the
+            # negative embed has the same structure as the positive
+            # embed. This is required for classifier-free guidance
+            # which concatenates positive and negative along the
+            # batch dimension.
+            neg_inputs = self._tokenizer(
+                "",
+                padding="max_length",
+                max_length=512,
+                truncation=True,
+                return_tensors="pt",
+            )
+            neg_input_ids = neg_inputs.input_ids.to(self._device)
+            neg_masks = neg_inputs.attention_mask.to(self._device).bool()
+
+            neg_hidden = self._text_encoder(
+                input_ids=neg_input_ids,
+                attention_mask=neg_masks,
+                output_hidden_states=True,
+            ).hidden_states[-2]
+
+            negative_embeds = [
+                neg_hidden[i][neg_masks[i]] for i in range(len(neg_hidden))
+            ]
+
+        return (positive_embeds, negative_embeds)
 
 
 class RealModel:

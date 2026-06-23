@@ -220,3 +220,34 @@ def test_cliptextencode_negative_text_defaults_to_empty() -> None:
     assert "conditioning" in result
     assert isinstance(result["conditioning"], MockConditioning)
     assert result["conditioning"].text == "hello"
+
+
+def test_conditioning_class_has_positive_negative() -> None:
+    """Verify ``Conditioning`` exposes ``.positive`` and ``.negative`` attributes.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse
+        fixture, ensuring the mock code path is taken.
+
+    Tests:
+        Import ``Conditioning`` from ``worker.nodes.encoder``, construct
+        an instance with two lists of mock tensor objects (plain ``list``
+        instances since ``torch`` is unavailable in mock mode), and
+        assert that ``.positive`` and ``.negative`` match the inputs.
+
+    Expected output:
+        ``c.positive == [1, 2]`` and ``c.negative == [3, 4]``.
+    """
+    from worker.nodes.encoder import Conditioning
+
+    # Use plain lists as stand-ins for torch.FloatTensor lists.
+    # In real mode these would be list[torch.FloatTensor], but
+    # the Conditioning class does not inspect the tensor type —
+    # it simply stores whatever list is passed in.
+    positive_mock = [[1.0, 2.0], [3.0, 4.0]]
+    negative_mock = [[5.0, 6.0], [7.0, 8.0]]
+
+    c = Conditioning(positive_mock, negative_mock)
+
+    assert c.positive == positive_mock
+    assert c.negative == negative_mock

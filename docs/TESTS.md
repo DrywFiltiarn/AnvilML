@@ -3366,3 +3366,12 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** torch removed from ``sys.modules`` before import.
 **Expected output:** Module imports successfully and ``"torch"`` is absent from ``sys.modules``, confirming mock-mode import isolation.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_t5.py::test_load_mock_no_torch_import -v` exits 0.
+
+## test_conditioning_class_has_positive_negative (worker.nodes.encoder)
+
+**File:** `worker/tests/test_nodes_encoder.py`
+**Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture, ensuring the mock code path is taken.
+**Tests:** Import ``Conditioning`` from ``worker.nodes.encoder``, construct an instance with two lists of mock tensor objects (plain ``list`` instances since ``torch`` is unavailable in mock mode), and assert that ``.positive`` and ``.negative`` match the inputs.
+**Inputs:** ``Conditioning([[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]])``.
+**Expected output:** ``c.positive == [[1.0, 2.0], [3.0, 4.0]]`` and ``c.negative == [[5.0, 6.0], [7.0, 8.0]]``.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_encoder.py::test_conditioning_class_has_positive_negative -v` exits 0.
