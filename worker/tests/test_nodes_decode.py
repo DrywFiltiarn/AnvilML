@@ -1,7 +1,7 @@
 """Unit tests for the VaeDecode node and MockImage sentinel.
 
 Tests cover registry registration, mock-mode execution, missing-input
-handling, and metadata attribute verification.
+handling, metadata attribute verification, and the real decode path.
 
 .. versionadded:: 0.1.0
 """
@@ -9,6 +9,7 @@ handling, and metadata attribute verification.
 from __future__ import annotations
 
 import importlib
+import os
 from typing import Any
 
 import pytest
@@ -204,3 +205,130 @@ def test_vaedeode_execute_missing_inputs_returns_mock() -> None:
 
     assert "image" in result
     assert isinstance(result["image"], MockImage)
+
+
+# ---------------------------------------------------------------------------
+# Real-path test (non-mock mode)
+# ---------------------------------------------------------------------------
+
+
+class _MockVaeConfig:
+    """Minimal VAE config for the real decode path test.
+
+    Mirrors the config attributes that ``VaeDecode.execute()`` reads
+    from a real ``AutoencoderKL`` instance.
+
+    Attributes:
+        scaling_factor: The VAE's latent scaling factor (default 0.18215
+            for SD-style VAEs).
+        shift_factor: The VAE's latent shift factor (defaults to 0.0
+            when the model predates the shift parameter).
+    """
+
+    def __init__(self, scaling_factor: float = 0.18215, shift_factor: float = 0.0) -> None:
+        """Initialise the mock VAE config.
+
+        Args:
+            scaling_factor: The latent scaling factor. Defaults to
+                0.18215 (the diffusers AutoencoderKL default).
+            shift_factor: The latent shift factor. Defaults to 0.0.
+        """
+        self.scaling_factor = scaling_factor
+        self.shift_factor = shift_factor
+
+
+class _MockVaeWithDecode:
+    """Mock VAE with a real ``decode()`` method for the real-path test.
+
+    The ``decode()`` method returns a tuple containing a real torch
+    tensor, which ``VaeDecode.execute()`` passes to
+    ``VaeImageProcessor.postprocess()``.
+
+    Attributes:
+        config: A ``_MockVaeConfig`` instance carrying
+            ``scaling_factor`` and ``shift_factor``.
+    """
+
+    def __init__(self, scaling_factor: float = 0.18215, shift_factor: float = 0.0) -> None:
+        """Initialise a mock VAE with a real decode method.
+
+        Args:
+            scaling_factor: Passed through to ``_MockVaeConfig``.
+            shift_factor: Passed through to ``_MockVaeConfig``.
+        """
+        self.config = _MockVaeConfig(scaling_factor, shift_factor)
+
+    def decode(self, latents: Any, return_dict: bool = True) -> tuple:
+        """Decode latent tensor to a raw image tensor.
+
+        Returns a plain tuple (since ``return_dict=False`` is always
+        passed by ``VaeDecode.execute()``) containing a real torch
+        tensor in the ``[-1, 1]`` range.
+
+        Args:
+            latents: The latent tensor to decode.
+            return_dict: Unused — the real method always returns a
+                plain tuple to match the ``return_dict=False`` call
+                in ``VaeDecode.execute()``.
+
+        Returns:
+            A tuple with one element: a ``torch.Tensor`` in the
+            ``[-1, 1]`` range (typical VAE decoder output).
+        """
+        import torch
+
+        # Produce a small random tensor in [-1, 1] — the exact values
+        # don't matter for the test; only the shape and type matter.
+        # The postprocess step will handle any valid tensor.
+        return (torch.rand(1, 3, 64, 64, dtype=torch.float32),)
+
+
+def test_vaedeode_real_path_returns_pil_image() -> None:
+    """Verify ``execute()`` returns a ``PIL.Image.Image`` in real mode.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK`` is unset (cleared by this test) so that
+        the real decode code path is exercised.
+        NODE_REGISTRY is cleared by the ``registry_clean`` fixture.
+
+    Tests:
+        Clear ``ANVILML_WORKER_MOCK``, instantiate ``VaeDecode`` with
+        a ``mock_context``, call ``execute()`` with a ``MockVaeWithDecode``
+        and a real torch tensor as ``latent``, and assert the returned
+        image is a ``PIL.Image.Image``.
+
+    Expected output:
+        ``result["image"]`` is a ``PIL.Image.Image`` instance.
+    """
+    # Capture the pre-existing env value and restore unconditionally
+    # after the test, per the env isolation convention (§11.3).
+    # The conftest sets ANVILML_WORKER_MOCK=1, so we pop it to
+    # exercise the real-mode branch.
+    original = os.environ.pop("ANVILML_WORKER_MOCK", None)
+    try:
+        import worker.nodes.decode
+
+        importlib.reload(worker.nodes.decode)
+        from worker.nodes.decode import VaeDecode
+
+        import torch
+
+        vae = _MockVaeWithDecode()
+        latent = torch.randn(1, 4, 64, 64, dtype=torch.float32)
+
+        node = VaeDecode(mock_context)
+        result = node.execute(vae=vae, latent=latent)
+
+        assert "image" in result
+        # Verify the image is a real PIL Image, not a MockImage sentinel.
+        from PIL import Image
+
+        assert isinstance(result["image"], Image.Image)
+        # Also verify it is NOT a MockImage — the sentinel must be
+        # absent from the real-mode output.
+        assert not isinstance(result["image"], worker.nodes.decode.MockImage)
+    finally:
+        # Restore the env var unconditionally so no other test sees
+        # a modified environment.
+        if original is not None:
+            os.environ["ANVILML_WORKER_MOCK"] = original

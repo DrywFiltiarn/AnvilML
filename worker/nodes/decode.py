@@ -29,10 +29,7 @@ class MockImage:
     """Sentinel image object for mock mode.
 
     A lightweight placeholder that stands in for a real decoded image
-    (typically a ``torch.Tensor`` or ``PIL.Image``) during testing.
-    Real images produced by the VAE decoder will have their own
-    structure defined when the real decode path is implemented
-    (future phase).
+    (a ``PIL.Image.Image`` produced by the VAE decoder) during testing.
     """
     pass
 
@@ -76,13 +73,8 @@ class VaeDecode(BaseNode):
 
         Returns:
             Dict with key ``"image"`` containing either a
-            ``MockImage`` (mock mode) or a decoded image tensor
-            (real mode).
-
-        Raises:
-            NotImplementedError: If called in non-mock mode. The real
-                VAE decode path is stubbed until the real decode
-                implementation is added in a future phase.
+            ``PIL.Image.Image`` (real mode) or a ``MockImage``
+            sentinel (mock mode).
         """
         # Read the vae and latent inputs from the job graph.
         # The vae object was produced by a prior LoadVae node;
@@ -104,12 +96,50 @@ class VaeDecode(BaseNode):
             return {"image": MockImage()}
 
         # Real mode: decode latent tensor using the loaded VAE.
-        # This path is stubbed — the real implementation will call
-        # vae.decode(latent) to produce the final image tensor.
-        # The VAE decoder uses safetensors-loaded weights via the
-        # pipeline_cache module.
-        # TODO: Implement real VAE decode path.
-        raise NotImplementedError(
-            "Real VaeDecode path not yet implemented — "
-            "use ANVILML_WORKER_MOCK=1 for testing"
-        )
+        # Inverse of the encode-time scaling: during encoding, latents
+        # were scaled as z = z * scaling_factor + shift_factor
+        # (conceptually); the decoder expects the original scale, so we
+        # undo it here:
+        #   latents = (latents / vae.config.scaling_factor) +
+        #             vae.config.shift_factor
+        # This reverses the normalization that compresses the latent
+        # space to unit variance during VAE training (see Kingma &
+        # Welling 2013, and the diffusers AutoencoderKL config default
+        # scaling_factor=0.18215).
+        latents = inputs.get("latent")
+
+        # Lazy imports — torch/diffusers must never be imported at
+        # module top level, or CI tests without GPU hardware will
+        # fail on import.
+        import torch
+        from diffusers.image_processor import VaeImageProcessor
+
+        # Apply the inverse-of-encode scaling.
+        # The VAE was trained with latents normalised to unit variance
+        # using scaling_factor (default 0.18215 for SD-style VAEs).
+        # To decode, we undo this normalisation before passing to the
+        # decoder.
+        #
+        # Guard: some VAE configs (older diffusers versions) do not
+        # include a shift_factor attribute, or set it to None.  In
+        # that case the additive shift is zero and the formula
+        # simplifies to latents / scaling_factor.
+        shift = vae.config.shift_factor if vae.config.shift_factor is not None else 0.0
+        latents = (latents / vae.config.scaling_factor) + shift
+
+        # Decode the latent to a raw image tensor.
+        # return_dict=False returns a plain tuple; [0] extracts the
+        # tensor. The tensor is in the VAE's output space (typically
+        # [-1, 1] range).
+        decoded = vae.decode(latents, return_dict=False)[0]
+
+        # Postprocess the raw decoded tensor to a PIL Image.
+        # VaeImageProcessor handles denormalization ([-1,1] -> [0,1]),
+        # conversion to numpy, and conversion to PIL. The vae_scale_factor
+        # of 16 matches ZImagePipeline's own image_processor construction
+        # (self.vae_scale_factor=8 * 2 = 16 for ZiT's 4-block VAE).
+        processor = VaeImageProcessor(vae_scale_factor=16)
+        pil_images = processor.postprocess(decoded, output_type="pil")
+
+        # Return the first (and typically only) PIL Image.
+        return {"image": pil_images[0]}

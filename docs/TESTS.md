@@ -3447,3 +3447,48 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** ``model_id="test_model"``, ``steps=8``, ``cfg=7.5``, ``seed=99``, ``device="cuda"``.
 **Expected output:** Pipeline ``__call__`` called with ``output_type="latent"``, ``return_dict=False``, correct steps/cfg; returned tuple is ``(latent_result, 99)``.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_sample_real_invokes_pipeline_with_correct_args -v` exits 0.
+
+## test_vaedeode_registered_in_registry (worker.nodes.decode)
+
+**File:** `worker/tests/test_nodes_decode.py`
+**Context:** `VaeDecode` is registered in `NODE_REGISTRY` via the `@register` decorator at module level. The `registry_clean` fixture clears `NODE_REGISTRY` before each test, and `importlib.reload()` re-executes the module body so the decorator runs again.
+**Tests:** After reloading the `worker.nodes.decode` module, assert that `"VaeDecode"` is a key in `NODE_REGISTRY`, the registered class is `VaeDecode`, and `NODE_TYPE == "VaeDecode"`.
+**Inputs:** None (uses `NODE_REGISTRY` cleared by fixture).
+**Expected output:** `"VaeDecode" in NODE_REGISTRY`, `NODE_REGISTRY["VaeDecode"] is VaeDecode`, `NODE_TYPE == "VaeDecode"`.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vaedeode_registered_in_registry -v` exits 0.
+
+## test_vaedeode_execute_returns_mock_image (worker.nodes.decode)
+
+**File:** `worker/tests/test_nodes_decode.py`
+**Context:** `ANVILML_WORKER_MOCK=1` is set by the `conftest.py` autouse fixture, ensuring the mock code path is taken. `NODE_REGISTRY` is cleared by the `registry_clean` fixture.
+**Tests:** Instantiate `VaeDecode` with a `mock_context`, call `execute(vae=MockVae(), latent=MockLatent(width=8, height=8))`, and assert the returned dict contains a `MockImage`.
+**Inputs:** `vae=MockVae()`, `latent=MockLatent(width=8, height=8)`.
+**Expected output:** `result["image"]` is a `MockImage` instance.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vaedeode_execute_returns_mock_image -v` exits 0.
+
+## test_vaedeode_metadata_attributes (worker.nodes.decode)
+
+**File:** `worker/tests/test_nodes_decode.py`
+**Context:** `VaeDecode` class is accessible via direct import from `worker.nodes.decode`.
+**Tests:** Assert each of the six required metadata attributes (`NODE_TYPE`, `CATEGORY`, `DISPLAY_NAME`, `DESCRIPTION`, `INPUT_SLOTS`, `OUTPUT_SLOTS`) has the correct value and type.
+**Inputs:** None (uses `VaeDecode` class attributes directly).
+**Expected output:** `NODE_TYPE == "VaeDecode"`, `CATEGORY == "Decoding"`, `DISPLAY_NAME == "VAE Decode"`, `DESCRIPTION` is a non-empty string, `INPUT_SLOTS` has two specs, `OUTPUT_SLOTS` has one spec.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vaedeode_metadata_attributes -v` exits 0.
+
+## test_vaedeode_execute_missing_inputs_returns_mock (worker.nodes.decode)
+
+**File:** `worker/tests/test_nodes_decode.py`
+**Context:** `ANVILML_WORKER_MOCK=1` is set by the `conftest.py` autouse fixture. Mock mode ignores inputs entirely.
+**Tests:** Call `execute()` without providing any inputs, and assert the returned dict contains a `MockImage`.
+**Inputs:** None (no inputs provided to `execute()`).
+**Expected output:** `result["image"]` is a `MockImage`.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vaedeode_execute_missing_inputs_returns_mock -v` exits 0.
+
+## test_vaedeode_real_path_returns_pil_image (worker.nodes.decode)
+
+**File:** `worker/tests/test_nodes_decode.py`
+**Context:** `ANVILML_WORKER_MOCK` is unset by this test (cleared via `os.environ.pop()`), overriding the autouse fixture to exercise the real decode code path. A `MockVaeWithDecode` object provides a real torch tensor from its `.decode()` method. The test uses real `torch` and `diffusers` code paths (lazy imports inside `VaeDecode.execute()`). Environment variable isolation is maintained via capture-and-restore in a `try/finally` block.
+**Tests:** Clear `ANVILML_WORKER_MOCK`, instantiate `VaeDecode` with a `mock_context`, call `execute(vae=MockVaeWithDecode(), latent=torch.randn(1, 4, 64, 64))`, and assert the returned image is a `PIL.Image.Image` and not a `MockImage`.
+**Inputs:** `vae=MockVaeWithDecode()`, `latent=torch.randn(1, 4, 64, 64)`.
+**Expected output:** `result["image"]` is a `PIL.Image.Image` instance, not a `MockImage`.
+**Acceptance command:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vaedeode_real_path_returns_pil_image -v` exits 0 (only runs when `ANVILML_WORKER_MOCK` is not set).
