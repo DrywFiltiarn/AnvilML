@@ -31,12 +31,20 @@ will say so).
 
 ## Setup
 
+```powershell
+$env:ANVILML_MODELS_DIR="/path/to/models"
+$env:ANVILML_ZIT_MODEL="zit_fp8.safetensors"
+$env:ANVILML_ZIT_VAE="zit_vae.safetensors"
+$env:ANVILML_ZIT_CLIP="qwen3_4b.safetensors"
+$env:ANVILML_DEVICE="cuda:0"
+```
+
 ```bash
-export ANVILML_MODELS_DIR=E:/AnvilML/models                      # has diffusion/, vae/, text_encoders/ subdirs
-export ANVILML_ZIT_MODEL=z_image_turbo_fp8_e4m3fn.safetensors    # filename inside diffusion/
-export ANVILML_ZIT_VAE=zit.vae.safetensors                       # filename inside vae/
-export ANVILML_ZIT_CLIP=qwen_3_4b_abliterated_v2.safetensors     # filename inside text_encoders/
-export ANVILML_DEVICE=cuda:0                                     # optional, defaults to cuda:0
+export ANVILML_MODELS_DIR=/path/to/models
+export ANVILML_ZIT_MODEL=zit_fp8.safetensors
+export ANVILML_ZIT_VAE=zit_vae.safetensors
+export ANVILML_ZIT_CLIP=qwen3_4b.safetensors
+export ANVILML_DEVICE=cuda:0
 ```
 
 `ANVILML_WORKER_MOCK` must be unset (or `"0"`) — every script hard-aborts
