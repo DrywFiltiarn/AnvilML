@@ -70,6 +70,7 @@ _REPO_ROOT_CANDIDATES = [
     Path.cwd(),
     Path(__file__).resolve().parent,
     Path(__file__).resolve().parent.parent,
+    Path(__file__).resolve().parent.parent.parent,
 ]
 for _candidate in _REPO_ROOT_CANDIDATES:
     if (_candidate / "worker" / "nodes").is_dir():
