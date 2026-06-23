@@ -122,16 +122,17 @@
     "P18-D19",
     "P18-D20",
     "P904-A1",
-    "P904-A2"
+    "P904-A2",
+    "P904-A3"
   ],
-  "in_progress": "P904-A3",
+  "in_progress": "P904-A4",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-23T21:13:57+0200",
+  "last_updated": "2026-06-23T21:36:32+0200",
   "plan_approved": true,
-  "current_plan": "defers_to (from JSON): absent.\n\n**Step 1.** Open `worker/nodes/loader.py`. Locate the `LoadClip.execute()` method (lines 561\u2013618).\n\n**Step 2.** After the mock-mode early return block (lines 596\u2013601 \u2014 the `if os.environ.get(\"ANVILML_WORKER_MOCK\") == \"1\":` block ending with `return {\"clip\": MockClip(clip_type=clip_type)}`), insert a local `import torch` statement.\n\n**Step 3.** Add an inline comment on the import line explaining the lazy-import rationale, matching the convention used by sibling functions. The comment should reference the module-level docstring's requirement (lines 17\u201322) that `torch` must never be imported at the top level. The exact comment wording from `LoadVae.execute()` (line 498\u2013500) is:\n\n```python\n        # Real mode: lazy imports \u2014 these packages are not available\n        # in mock mode (no torch installed), so importing them here\n        # keeps the worker importable when ANVILML_WORKER_MOCK=1.\n        import torch\n```\n\n**Step 4.** Verify that the `import torch` line appears before line 618 (`return module.load(model_id, torch_dtype=torch.bfloat16)`), ensuring `torch` is defined at the point of use.\n\n**Step 5.** Run the existing mock-mode test suite to confirm no regression:\n```bash\nANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py -v\n```\n\n**Step 6.** Run the acceptance criterion verification:\n```bash\npython3 -c \"\nimport ast\ntree = ast.parse(open('worker/nodes/loader.py').read())\nsrc = open('worker/nodes/loader.py').read()\nassert 'import torch' in src.split('class LoadClip')[1].split('class ')[0]\n\"\n```",
-  "plan_approval_message_id": "1519055448916099102",
+  "current_plan": "1. Open `worker/nodes/sampler.py`. Navigate to line 182\u2013184, inside `EmptyLatent.execute()`'s real-mode branch (the `torch.randn(...)` call).\n2. Change line 183 from `device=ctx.device` to `device=self.ctx.device`. The surrounding lines (182\u2013184) change from:\n   ```python\n   return {\"latent\": torch.randn(\n       shape, dtype=torch.float32, device=ctx.device\n   )}\n   ```\n   to:\n   ```python\n   return {\"latent\": torch.randn(\n       shape, dtype=torch.float32, device=self.ctx.device\n   )}\n   ```\n3. Verify no other bare `ctx` references remain in the file: run `grep -n \"device=ctx\\.\" worker/nodes/sampler.py` \u2014 must return zero matches.\n4. Verify the fix is present: run `grep -n \"device=self\\.ctx\\.device\" worker/nodes/sampler.py` \u2014 must return at least one match (line 183, and line 331 from Sampler).\n\nRationale: This is a direct substitution of an unbound name for the correct bound instance attribute. No surrounding code changes are needed because `self` is always available in instance methods, and `self.ctx` was already correctly used elsewhere in the same file (Sampler at line 331).",
+  "plan_approval_message_id": "1519063444060377209",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1519055446563098736",
+  "plan_report_message_id": "1519063441900437545",
   "impl_report_message_id": null
 }

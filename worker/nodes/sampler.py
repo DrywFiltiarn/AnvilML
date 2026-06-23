@@ -180,7 +180,7 @@ class EmptyLatent(BaseNode):
         import torch
 
         return {"latent": torch.randn(
-            shape, dtype=torch.float32, device=ctx.device
+            shape, dtype=torch.float32, device=self.ctx.device
         )}
 
 
