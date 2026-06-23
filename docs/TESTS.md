@@ -3232,6 +3232,24 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Expected output:** ``(2, 4, 128, 128)``.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_compute_latent_shape_non_divisible -v` exits 0.
 
+## test_make_callback_emits_progress (worker.nodes.arch.diffusion.zit)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture, ensuring mock mode is active. No I/O, no subprocess, no network.
+**Tests:** Build a list accumulator for ``emit_progress``, create an unset ``threading.Event`` as ``cancel_flag`` (no cancellation), and call ``_make_callback()`` with ``total_steps=4``. Invoke the returned closure with ``i=0`` and ``callback_kwargs={}``. Assert ``emit_progress`` was called exactly once with ``(0, 4)`` and the return value equals ``{}``.
+**Inputs:** ``emit_progress`` as list accumulator; ``cancel_flag`` as unset ``threading.Event``; ``total_steps=4``; closure called with ``self=None, i=0, t=None, callback_kwargs={}``.
+**Expected output:** ``emit_progress`` called once with ``(0, 4)``; return value is ``{}`` — the callback_kwargs passed through unchanged.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_make_callback_emits_progress -v` exits 0.
+
+## test_make_callback_raises_on_cancellation (worker.nodes.arch.diffusion.zit)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture, ensuring mock mode is active. No I/O, no subprocess, no network.
+**Tests:** Create a ``threading.Event`` and set it before calling the callback (simulating a cancellation request). Build the closure with ``total_steps=4`` and invoke it with ``i=2``. Assert that ``emit_progress`` was called with ``(2, 4)`` (progress is emitted before cancellation check) and that ``_SamplingCancelled`` is raised.
+**Inputs:** ``emit_progress`` as list accumulator; ``cancel_flag`` as ``threading.Event`` with ``.set()`` called before callback invocation; ``total_steps=4``; closure called with ``self=None, i=2, t=None, callback_kwargs={}``.
+**Expected output:** ``emit_progress`` called once with ``(2, 4)``; ``_SamplingCancelled`` raised — the adapter detected the cancellation request and raised the sentinel exception.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_make_callback_raises_on_cancellation -v` exits 0.
+
 ## test_get_module_returns_dummy_for_dummy_clip_type (worker.nodes.arch.clip)
 
 **File:** `worker/tests/test_arch_clip_init.py`

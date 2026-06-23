@@ -44,6 +44,82 @@ __all__ = [
 VAE_SCALE_FACTOR: int = 8
 
 
+class _SamplingCancelled(Exception):
+    """Sentinel exception raised when the sampling callback detects cancellation.
+
+    This is a module-private exception (underscore-prefixed, not in ``__all__``).
+    The ``_make_callback`` adapter raises it when ``cancel_flag.is_set()`` is true;
+    P18-D18c's ``try/except _SamplingCancelled`` block around the pipeline call
+    will catch it and propagate the cancellation to the caller.
+    """
+
+    pass
+
+
+def _make_callback(
+    emit_progress: Callable[[int, int], None],
+    cancel_flag: Any,
+    total_steps: int,
+) -> Callable[[Any, int, int, dict[str, Any]], dict[str, Any]]:
+    """Build a ``callback_on_step_end`` adapter for the diffusers pipeline.
+
+    Bridges ``diffusers``' real ``callback_on_step_end`` signature
+    ``(self, i, t, callback_kwargs) -> dict`` to the simpler
+    2-argument ``emit_progress(step, total)`` interface that ``sample()``
+    exposes to the rest of the codebase. The adapter calls
+    ``emit_progress`` per step, checks a cancellation flag, and raises
+    ``_SamplingCancelled`` if the sampling has been cancelled.
+
+    The ``cancel_flag`` is expected to be a ``threading.Event`` (as
+    specified in ``ANVILML_DESIGN.md §1550``); ``.is_set()`` is used
+    to check whether cancellation was requested.
+
+    Args:
+        emit_progress: Callback invoked as ``emit_progress(step, total)``
+            after each denoising step for progress reporting.
+        cancel_flag: A ``threading.Event`` that is set when the job is
+            cancelled. The adapter checks ``.is_set()`` on each step.
+        total_steps: Total number of denoising steps (used as the second
+            argument to ``emit_progress``).
+
+    Returns:
+        A closure with the signature
+        ``(self, i, t, callback_kwargs) -> dict`` that matches
+        ``diffusers``' ``callback_on_step_end`` API. On each call
+        it emits progress, checks for cancellation, and returns
+        ``callback_kwargs`` unchanged so that ``diffusers`` proceeds
+        with its internal state unmodified.
+    """
+
+    def callback(
+        self: Any,  # noqa: ARG001 — accepted for API compatibility with
+        # diffusers (it passes the pipeline instance as self), but unused.
+        i: int,
+        t: Any,  # noqa: ARG001 — diffusers passes the current timestamp;
+        # the adapter only needs the step index for progress reporting.
+        callback_kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        # Emit progress before checking cancellation — the caller needs
+        # to see progress up to (and including) the step where cancellation
+        # was detected.
+        emit_progress(i, total_steps)
+
+        # Check cancellation flag using threading.Event.is_set() as
+        # specified in ANVILML_DESIGN.md §1550. The cancel_flag is a
+        # threading.Event shared across all steps of a single sampling
+        # run; the closure captures it by reference so changes made
+        # between steps are observed.
+        if cancel_flag.is_set():
+            raise _SamplingCancelled("sampling cancelled at step {}".format(i))
+
+        # Return callback_kwargs unchanged — diffusers expects the
+        # callback to return the kwargs dict; returning it unmodified
+        # means diffusers proceeds with its internal state unchanged.
+        return callback_kwargs
+
+    return callback
+
+
 def compute_latent_shape(
     batch_size: int,
     height: int,

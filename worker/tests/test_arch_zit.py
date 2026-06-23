@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+import threading
 from typing import Any
 
 import pytest
@@ -19,6 +20,8 @@ import pytest
 from worker.nodes.arch.diffusion.zit import (
     MockLatent,
     VAE_SCALE_FACTOR,
+    _SamplingCancelled,
+    _make_callback,
     can_handle,
     compute_latent_shape,
     sample,
@@ -378,3 +381,94 @@ def test_compute_latent_shape_non_divisible() -> None:
     """
     result = compute_latent_shape(2, 1025, 1026, 4)
     assert result == (2, 4, 128, 128)
+
+
+# ---------------------------------------------------------------------------
+# Tests: _make_callback
+# ---------------------------------------------------------------------------
+
+
+def test_make_callback_emits_progress() -> None:
+    """Verify ``_make_callback()`` returns a closure that emits progress.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse
+        fixture, ensuring mock mode is active.
+
+    Tests:
+        Build a list accumulator for ``emit_progress``, create an unset
+        ``threading.Event`` as ``cancel_flag`` (no cancellation), and
+        call ``_make_callback()`` with ``total_steps=4``. Invoke the
+        returned closure with ``i=0`` and ``callback_kwargs={}``.
+        Assert ``emit_progress`` was called exactly once with ``(0, 4)``
+        and the return value equals ``{}``.
+
+    Expected output:
+        ``emit_progress`` called once with ``(0, 4)``; return value is
+        ``{}`` — the callback_kwargs passed through unchanged.
+    """
+    # Use a list as a mutable accumulator to record emit_progress calls.
+    progress_calls: list[tuple[int, int]] = []
+
+    def emit_progress(step: int, total: int) -> None:
+        progress_calls.append((step, total))
+
+    # An unset threading.Event — no cancellation pending.
+    cancel_flag = threading.Event()
+
+    # Build the callback adapter.
+    callback = _make_callback(emit_progress, cancel_flag, total_steps=4)
+
+    # Invoke with self=None (diffusers passes the pipeline instance,
+    # but the adapter doesn't need it), i=0, t=None, callback_kwargs={}.
+    result = callback(None, 0, None, {})
+
+    # Assert progress was emitted with the correct (step, total) values.
+    assert len(progress_calls) == 1
+    assert progress_calls[0] == (0, 4)
+
+    # Assert callback_kwargs was returned unchanged.
+    assert result == {}
+
+
+def test_make_callback_raises_on_cancellation() -> None:
+    """Verify ``_make_callback()`` raises ``_SamplingCancelled`` when cancelled.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse
+        fixture, ensuring mock mode is active.
+
+    Tests:
+        Create a ``threading.Event`` and set it before calling the
+        callback (simulating a cancellation request). Build the closure
+        with ``total_steps=4`` and invoke it with ``i=2``. Assert that
+        ``emit_progress`` was called with ``(2, 4)`` (progress is
+        emitted before cancellation check) and that ``_SamplingCancelled``
+        is raised.
+
+    Expected output:
+        ``emit_progress`` called once with ``(2, 4)``;
+        ``_SamplingCancelled`` raised — the adapter detected the
+        cancellation request and raised the sentinel exception.
+    """
+    # Use a list as a mutable accumulator to record emit_progress calls.
+    progress_calls: list[tuple[int, int]] = []
+
+    def emit_progress(step: int, total: int) -> None:
+        progress_calls.append((step, total))
+
+    # Create a threading.Event and set it — cancellation is pending.
+    cancel_flag = threading.Event()
+    cancel_flag.set()
+
+    # Build the callback adapter.
+    callback = _make_callback(emit_progress, cancel_flag, total_steps=4)
+
+    # Invoke with i=2 — progress should be emitted, then cancellation
+    # detected and _SamplingCancelled raised.
+    with pytest.raises(_SamplingCancelled, match="sampling cancelled at step 2"):
+        callback(None, 2, None, {})
+
+    # Assert progress was emitted before cancellation was detected.
+    assert len(progress_calls) == 1
+    assert progress_calls[0] == (2, 4)
