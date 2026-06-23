@@ -467,3 +467,27 @@ def test_pipeline_cache_reused_across_jobs():
         # Clean up temp files and directory
         import shutil
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_cancel_flag_is_threading_event():
+    """Verify the module-level ``_cancel_flag`` is a ``threading.Event``.
+
+    Preconditions:
+        The ``worker.worker_main`` module is importable from the test
+        process (same venv as the worker subprocess).
+
+    Expects:
+        ``worker.worker_main._cancel_flag`` is a ``threading.Event``
+        instance (not a list), confirming the type contract change
+        from the previous ``list[bool]`` implementation.
+    """
+    import threading
+
+    import worker.worker_main
+
+    assert isinstance(
+        worker.worker_main._cancel_flag,
+        threading.Event,
+    ), "_cancel_flag should be a threading.Event, not a list"
+    # Verify the event starts in the cleared (False) state.
+    assert not worker.worker_main._cancel_flag.is_set()

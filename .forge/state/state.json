@@ -123,16 +123,17 @@
     "P18-D20",
     "P904-A1",
     "P904-A2",
-    "P904-A3"
+    "P904-A3",
+    "P904-A4"
   ],
-  "in_progress": "P904-A4",
+  "in_progress": "P904-A5",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-23T21:36:32+0200",
+  "last_updated": "2026-06-23T22:20:52+0200",
   "plan_approved": true,
-  "current_plan": "1. Open `worker/nodes/sampler.py`. Navigate to line 182\u2013184, inside `EmptyLatent.execute()`'s real-mode branch (the `torch.randn(...)` call).\n2. Change line 183 from `device=ctx.device` to `device=self.ctx.device`. The surrounding lines (182\u2013184) change from:\n   ```python\n   return {\"latent\": torch.randn(\n       shape, dtype=torch.float32, device=ctx.device\n   )}\n   ```\n   to:\n   ```python\n   return {\"latent\": torch.randn(\n       shape, dtype=torch.float32, device=self.ctx.device\n   )}\n   ```\n3. Verify no other bare `ctx` references remain in the file: run `grep -n \"device=ctx\\.\" worker/nodes/sampler.py` \u2014 must return zero matches.\n4. Verify the fix is present: run `grep -n \"device=self\\.ctx\\.device\" worker/nodes/sampler.py` \u2014 must return at least one match (line 183, and line 331 from Sampler).\n\nRationale: This is a direct substitution of an unbound name for the correct bound instance attribute. No surrounding code changes are needed because `self` is always available in instance methods, and `self.ctx` was already correctly used elsewhere in the same file (Sampler at line 331).",
-  "plan_approval_message_id": "1519063444060377209",
+  "current_plan": "1. **Read `worker/worker_main.py`** and confirm the three locations that reference `_cancel_flag`: line 48 (declaration), line 238 (`_cancel_flag[0] = False`), line 280 (`_cancel_flag[0] = True`). Confirm no other references exist by grepping for `_cancel_flag` in the file.\n\n2. **Add `import threading`** at the top of `worker/worker_main.py`, after the existing `import time` line (line 35) and before the `from worker.ipc import ...` imports (line 37). This follows the established convention of standard library imports grouped together before third-party/project imports.\n\n3. **Replace the module-level declaration** (line 48): change `_cancel_flag: list[bool] = [False]` to `_cancel_flag = threading.Event()`. Remove the type annotation since `threading.Event` is a concrete class and the assignment is explicit.\n\n4. **Update the module-level comment** (lines 44\u201347): change the comment block from *\"A list is used (mutable container) so it can be modified from the CancelJob handler without needing global state\"* to *\"A `threading.Event` is used so the CancelJob handler can signal cancellation to any thread checking the flag. The `.set()` / `.clear()` API is used instead of list indexing.\"*\n\n5. **Replace `_cancel_flag[0] = False`** (line 238, inside the Execute handler) with `_cancel_flag.clear()`. This resets the cancel flag for the new job execution, matching the original intent of setting the flag to `False`.\n\n6. **Replace `_cancel_flag[0] = True`** (line 280, inside the CancelJob handler) with `_cancel_flag.set()`. This signals cancellation to any thread checking the flag, matching the original intent of setting the flag to `True`.\n\n7. **Update the NodeContext construction comment** (lines 229\u2013232): change *\"The cancel_flag is a list (mutable container) so nodes can check and set it during long-running operations\"* to *\"The cancel_flag is a `threading.Event` \u2014 nodes check `.is_set()` during long-running operations.\"*\n\n8. **Verify no other `_cancel_flag` references** exist by running `grep -n '_cancel_flag' worker/worker_main.py` and confirming only the four expected lines remain (import, declaration, clear, set).\n\n9. **Run the existing test suite** (`ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py -v`) to confirm no regressions. The existing tests do not exercise the cancel flag path, so they should pass unchanged.\n\n10. **Add a verification test** in `worker/tests/test_worker_main.py`: `test_cancel_flag_is_threading_event` \u2014 spawns the worker subprocess, inspects the `_cancel_flag` attribute of the `worker.worker_main` module to confirm it is a `threading.Event` instance (not a list).",
+  "plan_approval_message_id": "1519068092888781083",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1519063441900437545",
+  "plan_report_message_id": "1519068090741035090",
   "impl_report_message_id": null
 }

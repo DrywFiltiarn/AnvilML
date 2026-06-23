@@ -3492,3 +3492,12 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** `vae=MockVaeWithDecode()`, `latent=torch.randn(1, 4, 64, 64)`.
 **Expected output:** `result["image"]` is a `PIL.Image.Image` instance, not a `MockImage`. When torch is absent: test is SKIPPED (not ERROR or FAILED).
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vaedeode_real_path_returns_pil_image -v` exits 0, output contains "SKIPPED".
+
+## test_cancel_flag_is_threading_event (worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** The `_cancel_flag` module-level variable was changed from `list[bool]` to `threading.Event` to provide a proper thread-synchronisation primitive for job cancellation. This test imports the `worker.worker_main` module in the test process and verifies the type. No subprocess is spawned — the module is imported from the same venv that the worker subprocess would use.
+**Tests:** Imports `worker.worker_main`, asserts `_cancel_flag` is a `threading.Event` instance, and verifies it starts in the cleared (False) state.
+**Inputs:** None (uses the module-level `_cancel_flag` attribute directly).
+**Expected output:** `isinstance(_cancel_flag, threading.Event) == True` and `_cancel_flag.is_set() == False`.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py::test_cancel_flag_is_threading_event -v` exits 0.

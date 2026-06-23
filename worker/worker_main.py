@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 
 from worker.ipc import connect, recv_message, send_event
@@ -43,9 +44,10 @@ from worker.pipeline_cache import PipelineCache
 
 # Module-level cancel flag for job cancellation.
 # This is set by the CancelJob message handler and checked by the
-# Execute handler. A list is used (mutable container) so it can be
-# modified from the CancelJob handler without needing global state.
-_cancel_flag: list[bool] = [False]
+# Execute handler. A threading.Event is used so the CancelJob handler
+# can signal cancellation to any thread checking the flag. The
+# .set() / .clear() API is used instead of list indexing.
+_cancel_flag = threading.Event()
 
 # Module-level PipelineCache instance — created once at worker process
 # startup so cache entries (loaded model components) persist across
@@ -227,15 +229,15 @@ def main() -> None:
             start = time.monotonic()
 
             # Build a NodeContext for this job execution.
-            # The cancel_flag is a list (mutable container) so nodes
-            # can check and set it during long-running operations.
+            # The cancel_flag is a threading.Event — nodes check
+            # .is_set() during long-running operations.
             # We reset the cancel flag for each new job execution.
             # The pipeline_cache is a shared LRU cache (PipelineCache
             # instance) created once at module level — cache entries
             # (loaded model components) persist across jobs dispatched
             # to this worker process, enabling cache hits on repeated
             # model loads within the same worker lifetime.
-            _cancel_flag[0] = False
+            _cancel_flag.clear()
             ctx = NodeContext(
                 job_id=job_id,
                 device=device,
@@ -277,7 +279,7 @@ def main() -> None:
             # The executor checks this flag between nodes/steps.
             # After setting the flag, send a Cancelled event back to the
             # supervisor so the scheduler can update the job status.
-            _cancel_flag[0] = True
+            _cancel_flag.set()
             send_event({
                 "_type": "Cancelled",
                 "job_id": msg.get("job_id"),
