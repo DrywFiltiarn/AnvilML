@@ -3375,3 +3375,39 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** ``Conditioning([[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]])``.
 **Expected output:** ``c.positive == [[1.0, 2.0], [3.0, 4.0]]`` and ``c.negative == [[5.0, 6.0], [7.0, 8.0]]``.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_encoder.py::test_conditioning_class_has_positive_negative -v` exits 0.
+
+## test_emptylatent_metadata_attributes (worker.nodes.sampler)
+
+**File:** `worker/tests/test_nodes_sampler.py`
+**Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture, ensuring the mock code path is taken. NODE_REGISTRY is cleared by the ``registry_clean`` fixture.
+**Tests:** Import and reload the ``sampler`` module, then assert all six metadata attributes on ``EmptyLatent``: ``NODE_TYPE == "EmptyLatent"``, ``CATEGORY == "Latents"``, ``DISPLAY_NAME == "Empty Latent"``, ``DESCRIPTION`` is a non-empty string, ``INPUT_SLOTS`` has four specs (width, height, batch_size, model), and ``OUTPUT_SLOTS`` has one spec. Verify each slot's name, type, and optional flag.
+**Inputs:** None (class-level inspection after reload).
+**Expected output:** ``INPUT_SLOTS`` has 4 specs: width (INT, required), height (INT, required), batch_size (INT, optional), model (MODEL, optional). ``OUTPUT_SLOTS`` has 1 spec: latent (LATENT, required).
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py::test_emptylatent_metadata_attributes -v` exits 0.
+
+## test_emptylatent_execute_returns_mock_latent (worker.nodes.sampler)
+
+**File:** `worker/tests/test_nodes_sampler.py`
+**Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture, ensuring the mock code path is taken. NODE_REGISTRY is cleared by the ``registry_clean`` fixture.
+**Tests:** Import and reload the ``sampler`` module, instantiate ``EmptyLatent`` with a ``mock_context``, call ``execute(width=512, height=512, batch_size=4)``, and assert the returned dict contains a ``MockLatent`` with the correct dimensions.
+**Inputs:** ``width=512``, ``height=512``, ``batch_size=4``.
+**Expected output:** ``result["latent"]`` is a ``MockLatent`` with ``width==512``, ``height==512``, ``batch_size==4``.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py::test_emptylatent_execute_returns_mock_latent -v` exits 0.
+
+## test_emptylatent_default_batch_size (worker.nodes.sampler)
+
+**File:** `worker/tests/test_nodes_sampler.py`
+**Context:** ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse fixture, ensuring the mock code path is taken. NODE_REGISTRY is cleared by the ``registry_clean`` fixture.
+**Tests:** Call ``execute()`` without providing a ``batch_size`` key in the inputs dict. The mock code path should default to 1.
+**Inputs:** ``width=512``, ``height=512`` (no ``batch_size``).
+**Expected output:** ``result["latent"].batch_size == 1`` — the default batch size.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py::test_emptylatent_default_batch_size -v` exits 0.
+
+## test_emptylatent_registered_in_registry (worker.nodes.sampler)
+
+**File:** `worker/tests/test_nodes_sampler.py`
+**Context:** NODE_REGISTRY is cleared by the ``registry_clean`` fixture. The ``@register`` decorator runs on import.
+**Tests:** Re-import the ``sampler`` module so ``@register`` runs against the now-empty NODE_REGISTRY. Assert that ``"EmptyLatent"`` is a key in ``NODE_REGISTRY`` and that the registered class has the correct ``NODE_TYPE``.
+**Inputs:** None (import triggers ``@register`` decorator).
+**Expected output:** ``"EmptyLatent"`` present in ``NODE_REGISTRY``, keyed by ``NODE_TYPE == "EmptyLatent"``.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py::test_emptylatent_registered_in_registry -v` exits 0.

@@ -25,6 +25,7 @@ import os
 import random
 from typing import Any
 
+from worker.nodes import arch
 from worker.nodes.base import BaseNode, NodeContext, SlotSpec, register
 
 __all__ = ["EmptyLatent", "Sampler", "MockLatent"]
@@ -76,9 +77,10 @@ class EmptyLatent(BaseNode):
         CATEGORY: The UI category for this node type.
         DISPLAY_NAME: Human-readable name shown in UI.
         DESCRIPTION: Brief description of node behaviour.
-        INPUT_SLOTS: Three slots — ``width`` (INT, required),
-            ``height`` (INT, required), and ``batch_size``
-            (INT, optional, defaults to 1).
+        INPUT_SLOTS: Four slots — ``width`` (INT, required),
+            ``height`` (INT, required), ``batch_size``
+            (INT, optional, defaults to 1), and ``model``
+            (MODEL, optional, used in real mode for architecture dispatch).
         OUTPUT_SLOTS: One ``LATENT`` slot named ``latent``.
     """
 
@@ -90,6 +92,7 @@ class EmptyLatent(BaseNode):
         SlotSpec("width", "INT"),
         SlotSpec("height", "INT"),
         SlotSpec("batch_size", "INT", optional=True),
+        SlotSpec("model", "MODEL", optional=True),
     ]
     OUTPUT_SLOTS = [SlotSpec("latent", "LATENT")]
 
@@ -111,9 +114,9 @@ class EmptyLatent(BaseNode):
             (real mode).
 
         Raises:
-            NotImplementedError: If called in non-mock mode. The real
-                noise tensor creation path is stubbed until the real
-                sampling implementation is added in a future phase.
+            ValueError: If called in non-mock mode without a ``model``
+                input — the real noise tensor path requires architecture
+                dispatch to compute the latent shape.
         """
         # Read the width and height inputs from the job graph.
         # These define the spatial resolution of the latent tensor.
@@ -136,15 +139,49 @@ class EmptyLatent(BaseNode):
             # requiring GPU hardware or torch.
             return {"latent": MockLatent(width, height, batch_size)}
 
-        # Real mode: create actual noise tensor via torch.randn.
-        # This path is stubbed — the real implementation will use
-        # torch.randn((batch_size, channels, height, width)) to
-        # create the initial noise latent for the diffusion process.
-        # TODO(P18-B2): Implement real EmptyLatent path.
-        raise NotImplementedError(
-            "Real EmptyLatent path not yet implemented — "
-            "use ANVILML_WORKER_MOCK=1 for testing"
+        # Real mode: dispatch to the architecture module to compute
+        # the latent shape, then create a noise tensor via torch.randn.
+        model = inputs.get("model")
+
+        # The real path requires a model descriptor to identify the
+        # architecture (e.g. "zit" for DiffusionTransformer). Without
+        # it we cannot determine the correct latent packing scheme.
+        if model is None:
+            raise ValueError(
+                "EmptyLatent real path requires a model input"
+            )
+
+        # Look up the architecture module that handles this model type.
+        # get_module() scans loaded arch modules and returns the first
+        # one whose can_handle() returns True for the model object.
+        mod = arch.get_module(model)
+        if mod is None:
+            raise ValueError(
+                f"EmptyLatent: unsupported model architecture for {model}"
+            )
+
+        # Read the latent channel count from the model descriptor.
+        # This attribute is set by LoadModel's real path (P18-D4/P18-D13)
+        # and represents the number of channels in the latent space.
+        num_channels_latents = model.in_channels
+
+        # Delegate shape computation to the architecture module.
+        # Different architectures use structurally different packing
+        # schemes — e.g. Flux 2 Klein uses a fundamentally different
+        # tensor layout than standard DiT models. The arch module
+        # knows the correct formula for each architecture.
+        shape = mod.compute_latent_shape(
+            batch_size, height, width, num_channels_latents
         )
+
+        # Import torch lazily inside the real-mode branch only.
+        # Top-level imports would cause the worker to fail on systems
+        # without torch installed (no GPU hardware).
+        import torch
+
+        return {"latent": torch.randn(
+            shape, dtype=torch.float32, device=ctx.device
+        )}
 
 
 @register

@@ -392,8 +392,8 @@ def test_emptylatent_metadata_attributes() -> None:
     Expected output:
         ``NODE_TYPE == "EmptyLatent"``, ``CATEGORY == "Latents"``,
         ``DISPLAY_NAME == "Empty Latent"``, ``DESCRIPTION`` is a
-        non-empty string, ``INPUT_SLOTS`` has three specs (width,
-        height, batch_size), and ``OUTPUT_SLOTS`` has one spec.
+        non-empty string, ``INPUT_SLOTS`` has four specs (width,
+        height, batch_size, model), and ``OUTPUT_SLOTS`` has one spec.
     """
     import worker.nodes.sampler
 
@@ -406,9 +406,9 @@ def test_emptylatent_metadata_attributes() -> None:
     assert isinstance(EmptyLatent.DESCRIPTION, str)
     assert len(EmptyLatent.DESCRIPTION) > 0
 
-    # Verify INPUT_SLOTS — three specs: width (required), height
-    # (required), batch_size (optional).
-    assert len(EmptyLatent.INPUT_SLOTS) == 3
+    # Verify INPUT_SLOTS — four specs: width (required), height
+    # (required), batch_size (optional), model (optional).
+    assert len(EmptyLatent.INPUT_SLOTS) == 4
 
     width_spec = EmptyLatent.INPUT_SLOTS[0]
     assert isinstance(width_spec, SlotSpec)
@@ -427,6 +427,15 @@ def test_emptylatent_metadata_attributes() -> None:
     assert batch_spec.name == "batch_size"
     assert batch_spec.slot_type == "INT"
     assert batch_spec.optional is True
+
+    # The 4th slot is the optional model input for real-mode
+    # architecture dispatch. It is optional so existing job graphs
+    # without it still pass registration.
+    model_spec = EmptyLatent.INPUT_SLOTS[3]
+    assert isinstance(model_spec, SlotSpec)
+    assert model_spec.name == "model"
+    assert model_spec.slot_type == "MODEL"
+    assert model_spec.optional is True
 
     # Verify OUTPUT_SLOTS.
     assert len(EmptyLatent.OUTPUT_SLOTS) == 1
