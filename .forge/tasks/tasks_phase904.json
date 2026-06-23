@@ -1,0 +1,168 @@
+[
+  {
+    "id": "P904-A1",
+    "description": "worker/tests/test_nodes_decode.py: unconditional torch import breaks CI (no torch in base.txt)",
+    "phase": "904",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-D20"
+    ],
+    "context": "P18-D20's committed real-path test (test_vaedeode_real_path_returns_pil_image) and its _MockVaeWithDecode.decode() helper both do a bare 'import torch' with no guard, inside worker/tests/test_nodes_decode.py -- collected by the default CI invocation (pytest worker/tests -v, ANVILML_WORKER_MOCK=1). base.txt deliberately excludes torch (confirmed: diffusers/transformers do not pull it transitively -- torch is only an optional 'extra' on diffusers). This test fails in CI the moment it runs, since CI's venv has no torch. Fix: guard with pytest.importorskip(\"torch\") at the top of the test function, OR move the test into Group B's realcpu-marked suite instead (decide which; if moved, remove it from this file and note the move in the implementation report).",
+    "tags": []
+  },
+  {
+    "id": "P904-A2",
+    "description": "worker/nodes/arch/clip/qwen3.py + clip_l.py: fix tokenizer asset directory depth",
+    "phase": "904",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-D9",
+      "P18-D10",
+      "P904-A1"
+    ],
+    "context": "Both files resolve tokenizer_dir as Path(__file__).parent.parent / \"assets\" / \"<name>_tokenizer\". From worker/nodes/arch/clip/{qwen3,clip_l}.py this resolves to worker/nodes/arch/assets/<name>_tokenizer, which does not exist -- confirmed via find on live repo. Real location is worker/assets/<name>_tokenizer (one level higher). worker/nodes/arch/clip/t5.py already uses .parent.parent.parent with an inline comment explaining the correction ('the plan originally specified parent.parent, but the actual asset layout places tokenizers at worker/assets/'); apply the identical fix to qwen3.py and clip_l.py: change .parent.parent to .parent.parent.parent in both files, and add the same explanatory comment t5.py has. Do not change t5.py itself -- it is already correct. ANVILML_WORKER_MOCK=0 (real mode) instantiation of Qwen2Tokenizer.from_pretrained(tokenizer_dir) and CLIPTokenizer.from_pretrained(tokenizer_dir) must resolve to an existing directory containing tokenizer_config.json.",
+    "tags": []
+  },
+  {
+    "id": "P904-A3",
+    "description": "worker/nodes/loader.py: LoadClip.execute() missing torch import causes NameError before dispatch",
+    "phase": "904",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-D12",
+      "P904-A2"
+    ],
+    "context": "LoadClip.execute()'s real-mode branch calls module.load(model_id, torch_dtype=torch.bfloat16) but never imports torch anywhere in that method's scope -- confirmed by direct execution: NameError: name 'torch' is not defined, fires before dispatch even reaches arch_clip.get_module(). Every other real-mode function in this file (LoadVae.execute()'s loader_fn, _load_model_from_hf_directory, _load_clip_from_hf_directory) does its own local 'import torch' immediately before use, per this module's documented lazy-import convention. Add 'import torch' inside LoadClip.execute()'s real-mode branch (after the ANVILML_WORKER_MOCK=='1' early return, before the torch_dtype=torch.bfloat16 reference), matching the placement convention used in LoadVae.execute(). This task's fix is what makes P904-A2's tokenizer-path fix observable in isolation -- this task's NameError currently fires first and masks P904-A2's OSError.",
+    "tags": []
+  },
+  {
+    "id": "P904-A4",
+    "description": "worker/nodes/sampler.py: EmptyLatent real path references unbound name ctx instead of self.ctx",
+    "phase": "904",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-D17",
+      "P904-A3"
+    ],
+    "context": "EmptyLatent.execute()'s real-mode branch ends with: return {\"latent\": torch.randn(shape, dtype=torch.float32, device=ctx.device)}. execute() is an instance method; the NodeContext is available as self.ctx, not a bare ctx -- there is no local or enclosing ctx in scope. This is a plain NameError the instant the real branch is reached with a model input provided (confirmed by direct execution). Change device=ctx.device to device=self.ctx.device. This is the only change required in this task -- do not alter the surrounding arch dispatch or shape-computation logic, which is correct.",
+    "tags": []
+  },
+  {
+    "id": "P904-A5",
+    "description": "worker/nodes/arch/diffusion/zit.py + worker/worker_main.py: reconcile cancel_flag type contract (threading.Event vs list[bool])",
+    "phase": "904",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-D18b",
+      "P904-A4"
+    ],
+    "context": "zit.py's _make_callback() calls cancel_flag.is_set(); its docstring says cancel_flag 'is expected to be a threading.Event (ANVILML_DESIGN.md SS1550)'. worker_main.py instead constructs _cancel_flag: list[bool] = [False] (line 48) with _cancel_flag[0]=False/True assignments. list[bool] has no .is_set() -- AttributeError on the first real denoising step once D18c's invocation is reached. Fix worker_main.py only: replace _cancel_flag: list[bool] = [False] with _cancel_flag = threading.Event(); replace _cancel_flag[0]=False with _cancel_flag.clear(); replace _cancel_flag[0]=True with _cancel_flag.set(). Do not touch zit.py -- threading.Event is the documented design. ANVILML_DESIGN.md SS1550 was verified directly during this phase's authoring -- it still specifies threading.Event exactly as NodeContext's docstring shows; worker_main.py's list[bool] is confirmed the side that diverges. No doc update or escalation needed for this task.",
+    "tags": []
+  },
+  {
+    "id": "P904-A6",
+    "description": "worker/nodes/arch/diffusion/zit.py + sampler.py: loader_fn reads tokenizer/text_encoder off the wrong object",
+    "phase": "904",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-D18a",
+      "P18-D19",
+      "P904-A5"
+    ],
+    "context": "zit.py sample()'s loader_fn does: tokenizer=getattr(conditioning,\"tokenizer\",None); text_encoder=getattr(conditioning,\"text_encoder\",None). Conditioning (encoder.py) only has .positive/.negative -- those live on RealClip (the clip object LoadClip produces). Fix: add clip: Any = None to sample()'s signature (after conditioning, defaulted like the existing vae param, so the three mock-mode calls in test_arch_zit.py that omit it keep working unchanged); loader_fn reads tokenizer/text_encoder from clip instead of conditioning. Update Sampler.execute() (sampler.py): add SlotSpec(\"clip\",\"CLIP\") to INPUT_SLOTS, pass clip=inputs.get(\"clip\") through. The two real-mode tests (test_sample_real_assembles_pipeline_via_cache, test_sample_real_invokes_pipeline_with_correct_args) should still pass a mock clip explicitly; update their docs/TESTS.md entries to match. Do NOT edit docs/ANVILML_DESIGN.md -- human-authored only.",
+    "tags": []
+  },
+  {
+    "id": "P904-A6b",
+    "description": "worker/nodes/arch/diffusion/zit.py: remove vestigial vae parameter from sample()/loader_fn",
+    "phase": "904",
+    "project": "anvilml",
+    "prereqs": [
+      "P904-A6"
+    ],
+    "context": "zit.py sample() carries an unused-by-design vae: Any=None parameter, forwarded into loader_fn's ZImagePipeline(vae=vae,...) construction. Confirmed via diffusers 0.38.0 source: ZImagePipeline.__init__ accepts vae=None without raising (register_modules tolerates None; vae_scale_factor falls back to 8), and __call__ never dereferences self.vae when output_type=\"latent\" (only at final decode, ~lines 583-586, which Sampler's call never reaches). Sampler must never receive or forward vae -- VaeDecode (P18-D20) is the sole owner. Remove the vae parameter entirely from sample()'s signature and the 'vae=vae' line from loader_fn's ZImagePipeline(...) call. Do not add a vae input to Sampler.INPUT_SLOTS. worker/tests/test_arch_zit.py passes vae=None and vae=mock_vae at two call sites -- remove both kwargs, since sample() no longer accepts vae; update the corresponding docs/TESTS.md entries to match.",
+    "tags": []
+  },
+  {
+    "id": "P904-A7",
+    "description": "worker/nodes/arch/clip/{qwen3,clip_l,t5}.py: text encoder models never moved to ctx.device, always run on CPU",
+    "phase": "904",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-D9",
+      "P18-D10",
+      "P18-D11",
+      "P904-A6b"
+    ],
+    "context": "None of the three load() functions call .to(device) on the constructed model after model.load_state_dict(...). RealClip is also never constructed with device= anywhere in the chain. Net effect: text encoding silently runs on CPU even when ctx.device is cuda:0, no exception raised. Fix: widen each load(model_id, torch_dtype) to load(model_id, torch_dtype, device: str = \"cpu\") -- defaulted to match RealClip's own existing default, so the three existing mock-mode tests calling load(\"/fake/path\", None) positionally in each of test_arch_clip_{qwen3,l,t5}.py keep working unchanged; LoadClip.execute() passes device=self.ctx.device explicitly in real mode. Each load() calls model.to(device) before returning, constructs RealClip(tokenizer, model, device=device). Apply identically to qwen3.py, clip_l.py, t5.py. Do NOT edit docs/ANVILML_DESIGN.md -- human-authored only.",
+    "tags": []
+  },
+  {
+    "id": "P904-A8",
+    "description": "worker/nodes/loader.py: LoadModel and LoadVae real paths never move loaded components to ctx.device",
+    "phase": "904",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-D13",
+      "P18-D14",
+      "P904-A7"
+    ],
+    "context": "Same defect class as P904-A8, broader scope: _load_model_from_hf_directory's ZImageTransformer2DModel.from_single_file(model_id, torch_dtype=torch.float16) and LoadVae.execute()'s AutoencoderKL.from_single_file(model_id, torch_dtype=torch.bfloat16) never reference self.ctx.device, pass no device_map, and never call .to(device) on the result -- both default to CPU placement. Fix: _load_model_from_hf_directory gains a device: str param (LoadModel.execute() calls it as _load_model_from_hf_directory(model_id, model_id, self.ctx.device)), calls transformer.to(device) before constructing RealModel. LoadVae.execute()'s loader_fn closure captures self.ctx.device, calls .to(device) on the AutoencoderKL result before returning. Verify the post-.to() return value is what gets used -- .to() returns a new reference for some wrappers and mutates in place for others depending on diffusers version; always assign the return value.",
+    "tags": []
+  },
+  {
+    "id": "P904-B1",
+    "description": "worker/tests/real_fixtures.py: synthetic tiny-config safetensors checkpoint generator",
+    "phase": "904",
+    "project": "anvilml",
+    "prereqs": [
+      "P904-A8"
+    ],
+    "context": "Real Z-Image-Turbo/Qwen3-4B weights are multi-GB, not viable as test fixtures. Create worker/tests/real_fixtures.py with pytest fixtures constructing tiny-config real model instances directly (no download), saving state_dict via safetensors.torch.save_file to tmp_path: (1) tiny_zit_transformer -- ZImageTransformer2DModel(dim=64, n_layers=2, n_heads=2, n_kv_heads=2, cap_feat_dim=64, in_channels=4) (register_to_config accepts plain kwargs, no config.json needed); (2) tiny_vae -- AutoencoderKL(block_out_channels=(8,16), latent_channels=4) (diffusers infers shapes from checkpoint at from_single_file time, absolute size irrelevant; this same fixture is reused by both LoadVae tests in B3 and the now-in-scope VaeDecode tests in B4/B5); (3) tiny_qwen3_clip / tiny_clip_l_clip / tiny_t5_clip -- each via its real Config class with hidden_size=32, num_hidden_layers=2. Each fixture returns the saved file path, not the model object. Imported by all P904-B2..B5 test files.",
+    "tags": []
+  },
+  {
+    "id": "P904-B2",
+    "description": "pytest.ini + .github/workflows/ci.yml: register realcpu marker, exclude from CI",
+    "phase": "904",
+    "project": "anvilml",
+    "prereqs": [
+      "P904-B1"
+    ],
+    "context": "Register a marker so the new real-mode CPU suite is opt-in, never picked up by CI's default invocation (pytest worker/tests -v, ANVILML_WORKER_MOCK=1, .github/workflows/ci.yml ~line 80). Add to worker/tests/pytest.ini: markers = realcpu: real-mode CPU test, requires torch+diffusers+transformers, not run by default CI. Update ci.yml's worker job to add -m \"not realcpu\" to the pytest call as defense-in-depth (redundant with torch's absence from base.txt causing collection errors otherwise, but explicit is clearer). worker/requirements/cpu-linux-agent.txt (torch via the PyTorch CPU index, --index-url https://download.pytorch.org/whl/cpu) already exists on main -- creating it is OUT OF SCOPE for this task; only consume it as a given fact when documenting how P904-B3..B5 are run (manual-install-only, matching the existing rocm-linux.txt/rocm-windows.txt convention -- do not wire it into install_worker_deps.sh).",
+    "tags": []
+  },
+  {
+    "id": "P904-B3",
+    "description": "worker/tests/test_real_loaders.py: real CPU node tests for LoadModel/LoadVae/LoadClip",
+    "phase": "904",
+    "project": "anvilml",
+    "prereqs": [
+      "P904-B2"
+    ],
+    "context": "Create worker/tests/test_real_loaders.py, all tests marked @pytest.mark.realcpu, using P904-B1's tiny fixtures and ANVILML_WORKER_MOCK=0 forced per-test (same override pattern as test_arch_zit.py's test_sample_real_assembles_pipeline_via_cache). Mirror test_nodes_loader.py's existing mock-mode test structure but assert on real outputs: LoadModel.execute(model_id=<tiny_zit_transformer fixture path>) returns a RealModel with .arch and correct .in_channels matching the tiny config (4, not the real model's 16); LoadVae.execute(model_id=<tiny_vae path>) returns a real AutoencoderKL instance; LoadClip.execute(model_id=<tiny_qwen3_clip path>, clip_type=\"qwen3\") returns a RealClip with .tokenizer/.text_encoder both non-None and .text_encoder on the device requested via ctx.device (verifies P904-A8's fix). Run each loader for qwen3, clip_l, and t5 clip_types using their respective B1 fixtures -- do not test only one clip type.",
+    "tags": []
+  },
+  {
+    "id": "P904-B4",
+    "description": "worker/tests/test_real_encoder_sampler.py: real CPU node tests for ClipTextEncode/EmptyLatent/Sampler/VaeDecode",
+    "phase": "904",
+    "project": "anvilml",
+    "prereqs": [
+      "P904-B3"
+    ],
+    "context": "Create worker/tests/test_real_encoder_sampler.py, all tests @pytest.mark.realcpu, building on P904-B3's loader outputs as direct inputs (no mocking), using B1's tiny fixtures. ClipTextEncode.execute(clip=<real RealClip>, text=\"a\", negative_text=\"\") returns Conditioning with .positive/.negative as non-empty lists of real torch.Tensor, last-dim matching B1's tiny hidden_size. EmptyLatent.execute(width=128, height=128, batch_size=1, model=<real RealModel>) returns a real torch.Tensor matching compute_latent_shape() (verifies A4). Sampler.execute(..., steps=1, cfg=1.0, seed=0) -- minimal load, no meaningful image needed -- returns unchanged-shape latent + resolved int seed (verifies A5, A6/A6b). VaeDecode.execute(vae=<real tiny_vae>, latent=<matching-shape real tensor>) returns a real PIL.Image.Image (D20 committed after B1-B3 were originally scoped; first real-mode coverage for it, no A-group bugfix needed -- D20's formula verified correct against ZImagePipeline's own decode step).",
+    "tags": []
+  },
+  {
+    "id": "P904-B5",
+    "description": "worker/tests/test_real_chain.py: full LoadModel->LoadVae->LoadClip->ClipTextEncode->EmptyLatent->Sampler->VaeDecode chain on tiny CPU weights",
+    "phase": "904",
+    "project": "anvilml",
+    "prereqs": [
+      "P904-B4"
+    ],
+    "context": "Create worker/tests/test_real_chain.py, marked @pytest.mark.realcpu, one end-to-end test wiring all seven node outputs into the next node's inputs exactly as worker/executor.py's run_graph() would (do not call run_graph() itself -- construct and call each node directly in sequence, so the test is independent of executor.py's own correctness). Use B1's tiny fixtures, width=height=128, steps=1, single batch. Assert: no exception raised end-to-end; Sampler's output latent shape equals EmptyLatent's output shape; resolved seed is a non-negative int; final VaeDecode output is a real PIL.Image.Image, not a MockImage. The chain now extends through VaeDecode (P18-D20, committed after this task was originally scoped to stop at Sampler) -- this is the project's first test exercising the complete real-mode node graph, model load through decoded image, end-to-end.",
+    "tags": []
+  }
+]

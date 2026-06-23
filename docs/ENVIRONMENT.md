@@ -137,6 +137,7 @@ underscores (`__`). All variables are optional; compiled-in defaults apply when 
 | `ANVILML_VENV_PATH` | `venv_path` | `./worker/.venv` | Python venv root |
 | `ANVILML_SEEDS_PATH` | `seeds_path` | `./database/seeds` | SQL seed files directory |
 | `ANVILML_MAX_IPC_PAYLOAD_MIB` | `max_ipc_payload_mib` | `256` | Max IPC message size |
+| `ANVILML_NUM_THREADS` | `num_threads` | unset (= num_cpus) | Tokio worker thread count |
 
 ### 3.2 GPU Selection
 
@@ -414,36 +415,37 @@ Write the implementation report and update `.forge/state/CURRENT_TASK.md`.
 
 ### GitHub CI job matrix (reference)
 
-The following jobs run automatically on every push to `main`. They are not steps the
-agent executes — they are listed here so agents understand what the CI infrastructure
-validates and can write tasks that account for all four runners.
+The following jobs run automatically on every push to `main` (`.github/workflows/ci.yml`).
+They are not steps the agent executes — they are listed here so agents understand what
+the CI infrastructure validates.
 
-| Job | Runner | Command |
-|:----|:-------|:--------|
-| `rust-linux` | Ubuntu latest | `bash scripts/install_worker_deps.sh && cargo fmt --all -- --check && cargo clippy --workspace --features mock-hardware -- -D warnings && cargo test --workspace --features mock-hardware` |
-| `rust-windows` | Windows latest | `scripts\install_worker_deps.ps1 && cargo clippy --workspace --features mock-hardware -- -D warnings && cargo test --workspace --features mock-hardware` |
-| `worker-linux` | Ubuntu latest | `bash scripts/install_worker_deps.sh && worker/.venv/bin/python -m py_compile $(git ls-files 'worker/*.py') && ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v` |
-| `worker-windows` | Windows latest | `scripts\install_worker_deps.ps1 && worker\.venv\Scripts\python -m py_compile (git ls-files 'worker/*.py') && ANVILML_WORKER_MOCK=1 worker\.venv\Scripts\python -m pytest worker/tests/ -v` |
-| `openapi-drift` | Ubuntu latest | `cargo run -p anvilml-openapi && git diff --exit-code api/openapi.json` |
-| `config-drift` | Ubuntu latest | `cargo test -p anvilml --features mock-hardware -- config_reference` |
+| Job | Runner (matrix) | Steps |
+|:----|:----------------|:------|
+| `rust` | ubuntu-latest, windows-latest | Provision worker venv; `cargo fmt --all -- --check` (Linux only); `cargo clippy --workspace --features mock-hardware -- -D warnings`; `cargo test --workspace --features mock-hardware` |
+| `worker` | ubuntu-latest, windows-latest | Provision worker venv; `ANVILML_WORKER_MOCK=1 <matrix-python> -m pytest worker/tests -v` |
+| `openapi-drift` | ubuntu-latest | `cargo run -p anvilml-openapi`; `git diff --exit-code api/openapi.json` |
+| `config-drift` | ubuntu-latest | `cargo test -p anvilml --features mock-hardware -- config_reference` |
 
-The `py_compile` step in `worker-linux`/`worker-windows` runs before pytest and fails the
-job in milliseconds on any `SyntaxError`, rather than letting a subprocess-dependent test
-hang until the CI job's own timeout kills it. This is a CI-level mirror of local Step 7 —
-both must exist; CI is the backstop for a task where Step 7 was skipped locally.
+**The real `worker` CI job does not run a `py_compile` step.** Step 7's mandatory
+local `py_compile` check exists for exactly the reason described above (the
+`test_mock_startup_sends_ready` incident), but CI currently has no equivalent backstop —
+if Step 7 is skipped locally, a syntax error reaches `pytest worker/tests -v` directly in
+CI, with whatever hang or failure mode that produces. Do not assume CI catches what a
+skipped Step 7 would have caught; this gap is real, not theoretical, and should be raised
+with the project owner rather than silently relied upon as a safety net.
 
-`worker-windows` is required because the Python worker runs on Windows in production
-(ROCm on Windows is a mandatory MVP backend). Pytest failures on Windows that do not
-reproduce on Linux indicate platform-specific path handling, line-ending issues, or
-Windows-only socket behaviour in the worker code.
+The `worker` job's Windows matrix entry is required because the Python worker runs on
+Windows in production (ROCm on Windows is a mandatory MVP backend). Pytest failures on
+Windows that do not reproduce on Linux indicate platform-specific path handling,
+line-ending issues, or Windows-only socket behaviour in the worker code.
 
-All four runner jobs (`rust-linux`, `rust-windows`, `worker-linux`, `worker-windows`)
-provision `worker/.venv` via `scripts/install_worker_deps.sh` (Linux) or
-`scripts\install_worker_deps.ps1` (Windows) before any test step. This ensures the venv
-interpreter and `base.txt` dependencies are present for any Rust test that spawns a Python
-subprocess. The `rust` jobs do not set `ANVILML_WORKER_MOCK` — the `mock-hardware` feature
-flag causes `build_worker_env()` to inject `ANVILML_WORKER_MOCK=1` into the spawned
-subprocess automatically.
+The `rust` job provisions `worker/.venv` via `scripts/install_worker_deps.sh` (Linux) or
+`scripts\install_worker_deps.ps1` (Windows) before any test step, even though it runs no
+Python tests itself — this ensures the venv interpreter and `base.txt` dependencies are
+present for any Rust test that spawns a Python subprocess. The `rust` job does not set
+`ANVILML_WORKER_MOCK` itself — the `mock-hardware` feature flag causes
+`build_worker_env()` to inject `ANVILML_WORKER_MOCK=1` into the spawned subprocess
+automatically.
 
 ---
 
@@ -518,7 +520,7 @@ when the trigger conditions are met.
 ### Gate 3 — Node Parity
 
 **Trigger:** any task that adds, removes, or renames a node type in `worker/nodes/`,
-or modifies `crates/anvilml-scheduler/src/node_registry.rs`.
+or modifies `crates/anvilml-core/src/node_registry.rs`.
 
 ```bash
 ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_parity.py -v
@@ -671,7 +673,8 @@ def connect(port: int, worker_id: str) -> None:
 
     Args:
         port: TCP port on 127.0.0.1 where the Rust ROUTER is bound.
-        worker_id: Stable worker identity string (e.g. "worker-0").
+        worker_id: Stable worker identity string — the bare device index
+            as injected via ANVILML_WORKER_ID in production (e.g. "0").
 
     Raises:
         RuntimeError: If called more than once.
@@ -856,6 +859,7 @@ the root `Cargo.toml`) is **read-only** — never modify it in a task.
 | `anvilml-core` | `crates/anvilml-core/Cargo.toml` | `[package] version` |
 | `anvilml-hardware` | `crates/anvilml-hardware/Cargo.toml` | `[package] version` |
 | `anvilml-registry` | `crates/anvilml-registry/Cargo.toml` | `[package] version` |
+| `anvilml-artifacts` | `crates/anvilml-artifacts/Cargo.toml` | `[package] version` |
 | `anvilml-ipc` | `crates/anvilml-ipc/Cargo.toml` | `[package] version` |
 | `anvilml-worker` | `crates/anvilml-worker/Cargo.toml` | `[package] version` |
 | `anvilml-scheduler` | `crates/anvilml-scheduler/Cargo.toml` | `[package] version` |

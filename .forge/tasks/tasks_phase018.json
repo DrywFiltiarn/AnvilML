@@ -330,7 +330,8 @@
     "phase": "18",
     "project": "anvilml",
     "prereqs": [
-      "P18-D20"
+      "P18-D20",
+      "P904-B5"
     ],
     "context": "Create worker/tests/test_parity.py: import NODE_REGISTRY; assert set(NODE_REGISTRY.keys())=={\"LoadModel\",\"LoadVae\",\"LoadClip\",\"ClipTextEncode\",\"EmptyLatent\",\"Sampler\",\"VaeDecode\",\"ImageResize\",\"SaveImage\"}. Create docs/example_workflows/zit_fp8.json (Appendix B workflow JSON) -- model_id values are single .safetensors filesystem paths (post P18-D7..D20's single-file-only loading), NOT HF directory paths; clip_type=\"qwen3\". Create docs/PROOF_phase018.md: step-by-step commands to submit zit_fp8.json, poll job status, fetch PNG artifact on real hardware. ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_parity.py exits 0.",
     "tags": []

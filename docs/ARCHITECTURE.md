@@ -48,27 +48,41 @@ AnvilML/
 │   │   ├── main.rs                   # Entry point: parse CLI, load config, start server
 │   │   ├── cli.rs                    # clap argument parsing
 │   │   └── shutdown.rs               # Cross-platform graceful shutdown signal handler
-│   └── tests/                        # Integration tests (Rust): api_*.rs, config_reference.rs
+│   └── tests/                        # Integration tests (Rust): cli_tests.rs, config_reference.rs
 │
 ├── crates/
 │   ├── anvilml-core/                 # Domain types, config, errors — zero I/O, zero async
-│   │   └── src/
-│   │       ├── lib.rs                # re-exports only; ≤ 80 lines
-│   │       ├── config.rs             # ServerConfig and nested config structs
-│   │       ├── error.rs              # AnvilError enum + IntoResponse
-│   │       └── types/
-│   │           ├── mod.rs
-│   │           ├── job.rs            # Job, JobStatus, JobSettings
-│   │           ├── model.rs          # ModelMeta, ModelKind, ModelDtype, ModelFormat
-│   │           ├── artifact.rs       # ArtifactMeta
-│   │           ├── hardware.rs       # HardwareInfo, GpuDevice, DeviceType, InferenceCaps
-│   │           ├── worker.rs         # WorkerInfo, WorkerStatus, EnvReport, ProvisioningState
-│   │           ├── node.rs           # NodeTypeDescriptor, SlotDescriptor, SlotType
-│   │           └── events.rs         # WsEvent and all sub-event structs
+│   │   ├── src/
+│   │   │   ├── lib.rs                # re-exports only; ≤ 80 lines
+│   │   │   ├── config.rs             # ServerConfig and nested config structs
+│   │   │   ├── config_load.rs        # load(): layered config precedence (defaults → toml → env → CLI)
+│   │   │   ├── error.rs              # AnvilError enum + IntoResponse
+│   │   │   ├── node_registry.rs      # NodeTypeRegistry: dynamic registry, populated from worker Ready events
+│   │   │   └── types/
+│   │   │       ├── mod.rs
+│   │   │       ├── job.rs            # Job, JobStatus, JobSettings
+│   │   │       ├── model.rs          # ModelMeta, ModelKind, ModelDtype, ModelFormat
+│   │   │       ├── artifact.rs       # ArtifactMeta
+│   │   │       ├── hardware.rs       # HardwareInfo, GpuDevice, DeviceType, InferenceCaps
+│   │   │       ├── worker.rs         # WorkerInfo, WorkerStatus, EnvReport, ProvisioningState
+│   │   │       ├── node.rs           # NodeTypeDescriptor, SlotDescriptor, SlotType
+│   │   │       └── events.rs         # WsEvent and all sub-event structs
+│   │   └── tests/
+│   │       ├── config_tests.rs
+│   │       ├── config_load_tests.rs
+│   │       ├── error_tests.rs
+│   │       ├── node_tests.rs
+│   │       ├── job_tests.rs
+│   │       ├── model_tests.rs
+│   │       ├── artifact_tests.rs
+│   │       ├── hardware_tests.rs
+│   │       ├── worker_tests.rs
+│   │       └── events_tests.rs
 │   │
 │   ├── anvilml-hardware/             # GPU + host detection; refreshable VRAM snapshot
 │   │   ├── src/
-│   │   │   ├── lib.rs                # detect_all_devices(); DeviceDetector trait
+│   │   │   ├── lib.rs                # re-exports; declares submodules
+│   │   │   ├── detect.rs             # detect_all_devices(); DeviceDetector trait
 │   │   │   ├── cpu.rs                # CpuDetector
 │   │   │   ├── vulkan.rs             # VulkanDetector (primary, SDK-free via ash)
 │   │   │   ├── dxgi.rs               # DxgiDetector (Windows fallback)
@@ -78,6 +92,8 @@ AnvilML/
 │   │   │   └── mock.rs               # MockDetector (mock-hardware feature only)
 │   │   └── tests/
 │   │       ├── vulkan_tests.rs
+│   │       ├── cpu_tests.rs
+│   │       ├── dxgi_sysfs_tests.rs
 │   │       ├── device_db_tests.rs
 │   │       └── mock_tests.rs
 │   │
@@ -93,6 +109,7 @@ AnvilML/
 │   │       ├── db_tests.rs
 │   │       ├── scanner_tests.rs
 │   │       ├── store_tests.rs
+│   │       ├── device_store_tests.rs
 │   │       └── seed_loader_tests.rs
 │   │
 │   ├── anvilml-artifacts/             # Content-addressed PNG artifact storage; shared by scheduler+server
@@ -105,13 +122,16 @@ AnvilML/
 │   ├── anvilml-ipc/                  # ZeroMQ ROUTER transport + message types
 │   │   ├── src/
 │   │   │   ├── lib.rs
+│   │   │   ├── error.rs              # IPC-specific error types
 │   │   │   ├── messages.rs           # WorkerMessage and WorkerEvent enums
 │   │   │   ├── transport.rs          # RouterTransport: ROUTER socket wrapper
 │   │   │   └── ws/                   # EventBroadcaster: WsEvent + WorkerEvent broadcast channels
 │   │   │       ├── mod.rs
 │   │   │       └── broadcaster.rs
 │   │   └── tests/
-│   │       └── roundtrip_tests.rs    # msgpack roundtrip for all message variants
+│   │       ├── roundtrip_tests.rs    # msgpack roundtrip for all message variants
+│   │       ├── transport_tests.rs
+│   │       └── stress_test.rs        # 1000-round-trip ROUTER/DEALER stress test
 │   │
 │   │
 │   ├── anvilml-worker/               # Worker pool: spawn, supervise, respawn
@@ -122,12 +142,17 @@ AnvilML/
 │   │   │   ├── spawn.rs              # Subprocess Command construction + env injection
 │   │   │   ├── bridge.rs             # IPC bridge: two independent reader/writer tasks
 │   │   │   ├── keepalive.rs          # Ping/Pong heartbeat + timeout watchdog
+│   │   │   ├── demux.rs              # Demultiplexes incoming WorkerEvents by job_id/type
 │   │   │   ├── env.rs                # WorkerEnv: environment variable map builder
+│   │   │   ├── job_object.rs         # Windows Job Object orphan-cleanup wrapper (Windows only)
 │   │   │   └── respawn.rs            # RespawnPolicy: backoff, max-attempt guard
 │   │   └── tests/
 │   │       ├── pool_tests.rs
 │   │       ├── managed_tests.rs
+│   │       ├── spawn_tests.rs
 │   │       ├── bridge_tests.rs
+│   │       ├── keepalive_tests.rs
+│   │       ├── demux_tests.rs
 │   │       ├── env_tests.rs
 │   │       └── respawn_tests.rs
 │   │
@@ -139,22 +164,28 @@ AnvilML/
 │   │   │   ├── ledger.rs             # VramLedger: per-device VRAM reservation
 │   │   │   ├── dag.rs                # GraphValidator: validate_graph() collect-all-errors
 │   │   │   ├── types.rs              # ValidatedGraph newtype; GraphError enum
-│   │   │   └── node_registry.rs      # NodeTypeRegistry: dynamic registry from Ready events
+│   │   │   └── event_loop.rs         # Subscribes to WorkerEvent broadcast; updates job status in DB
 │   │   └── tests/
 │   │       ├── queue_tests.rs
 │   │       ├── ledger_tests.rs
 │   │       ├── dag_tests.rs
-│   │       └── node_registry_tests.rs
+│   │       ├── scheduler_tests.rs
+│   │       ├── scheduler_cancel_tests.rs
+│   │       ├── dispatch_tests.rs
+│   │       ├── event_loop_tests.rs
+│   │       ├── image_ready_tests.rs
+│   │       ├── progress_tests.rs
+│   │       ├── model_resolve_tests.rs
+│   │       └── node_registry_tests.rs   # tests anvilml-core's NodeTypeRegistry as consumed here
 │   │
 │   ├── anvilml-server/               # axum HTTP/WS server, all handlers
 │   │   ├── src/
 │   │   │   ├── lib.rs                # build_router() → axum::Router
 │   │   │   ├── state.rs              # AppState struct
-│   │   │   ├── error.rs              # IntoResponse impl for AnvilError
 │   │   │   ├── handlers/
 │   │   │   │   ├── mod.rs
 │   │   │   │   ├── health.rs         # GET /health
-│   │   │   │   ├── system.rs         # GET /v1/system, /env, /versions
+│   │   │   │   ├── system.rs         # GET /v1/system, /v1/system/env
 │   │   │   │   ├── jobs.rs           # POST/GET/DELETE /v1/jobs and /:id
 │   │   │   │   ├── models.rs         # GET/POST /v1/models
 │   │   │   │   ├── workers.rs        # GET/POST /v1/workers
@@ -166,7 +197,18 @@ AnvilML/
 │   │   │       ├── handler.rs        # GET /v1/events WebSocket upgrade
 │   │   │       └── stats_tick.rs     # Background task: SystemStats every 5s
 │   │   └── tests/
-│   │       └── (integration tests via backend/tests/)
+│   │       ├── state_tests.rs
+│   │       ├── health_tests.rs
+│   │       ├── system_tests.rs
+│   │       ├── jobs_tests.rs
+│   │       ├── models_tests.rs
+│   │       ├── workers_tests.rs
+│   │       ├── artifacts_tests.rs
+│   │       ├── artifact_store_tests.rs
+│   │       ├── nodes_tests.rs
+│   │       ├── handler_tests.rs
+│   │       ├── broadcaster_tests.rs
+│   │       └── stats_tick_tests.rs
 │   │
 │   └── anvilml-openapi/              # Build-time binary: emits api/openapi.json
 │       └── src/
@@ -193,7 +235,7 @@ AnvilML/
 │   │   ├── encoder.py                # ClipTextEncode
 │   │   ├── sampler.py                # Sampler (dispatches to arch/)
 │   │   ├── decode.py                 # VaeDecode
-│   │   ├── image.py                  # SaveImage, ImageResize
+│   │   ├── image.py                  # SaveImage
 │   │   └── arch/
 │   │       ├── __init__.py           # Re-export shim -> arch/diffusion/
 │   │       ├── diffusion/
@@ -218,7 +260,8 @@ AnvilML/
 │   │   ├── cuda.txt                  # torch + CUDA index
 │   │   ├── rocm-linux.txt            # torch + ROCm index (Linux)
 │   │   ├── rocm-windows.txt          # AMD PyTorch-on-Windows (ROCm ≥ 7.2)
-│   │   └── cpu.txt                   # torch CPU-only
+│   │   ├── cpu.txt                   # torch CPU-only
+│   │   └── cpu-linux-agent.txt       # torch CPU index, manual-install-only — ACT-time/dev real-mode test suite
 │   └── tests/
 │       ├── conftest.py               # Shared pytest fixtures only
 │       ├── test_ipc.py               # ipc.py: connect, send_event, recv_message
@@ -232,6 +275,11 @@ AnvilML/
 │       ├── test_nodes_image.py       # image.py: SaveImage, ImageResize (mock)
 │       ├── test_arch_zit.py          # arch/zit.py: ZiT helpers (mock)
 │       ├── test_arch_flux.py         # arch/flux.py: Flux helpers (mock)
+│       ├── test_arch_init.py         # arch/diffusion/__init__.py: can_handle/get_module dispatch (mock)
+│       ├── test_arch_clip_init.py    # arch/clip/__init__.py: can_handle/get_module dispatch (mock)
+│       ├── test_arch_clip_qwen3.py   # arch/clip/qwen3.py: Qwen3 load/encode (mock)
+│       ├── test_arch_clip_l.py       # arch/clip/clip_l.py: CLIP-L load/encode (mock)
+│       ├── test_arch_clip_t5.py      # arch/clip/t5.py: T5-XXL load/encode (mock)
 │       ├── test_worker_main.py       # worker_main.py: startup, Ready, dispatch loop
 │       └── test_parity.py            # NODE_REGISTRY vs NodeTypeRegistry parity check
 │
@@ -339,7 +387,7 @@ See `ANVILML_DESIGN.md §10` for the full specification.
 | `LoadClip` | Loaders | `model_id`, `clip_type?` → `CLIP` |
 | `ClipTextEncode` | Conditioning | `CLIP`, `text`, `negative_text?` → `CONDITIONING` |
 | `EmptyLatent` | Latents | `width`, `height` → `LATENT` |
-| `Sampler` | Sampling | `MODEL`, `CONDITIONING`, `LATENT`, `steps`, `cfg`, `seed` → `LATENT`, `seed` |
+| `Sampler` | Sampling | `MODEL`, `CONDITIONING`, `CLIP`, `LATENT`, `steps`, `cfg`, `seed` → `LATENT`, `seed` |
 | `VaeDecode` | Decoding | `VAE`, `LATENT` → `IMAGE` |
 | `ImageResize` | Images | `IMAGE`, `width`, `height` → `IMAGE` |
 | `SaveImage` | Output | `IMAGE`, `seed?`, `steps?` → *(none)* |
@@ -362,7 +410,6 @@ All routes are under `/v1/` except `/health`. Full list:
 GET  /health
 GET  /v1/system
 GET  /v1/system/env
-GET  /v1/system/versions
 GET  /v1/nodes
 POST /v1/jobs
 GET  /v1/jobs               ?status= ?limit= ?before=
@@ -421,10 +468,8 @@ See `docs/ENVIRONMENT.md §6–8` for full commands.
 
 | Job | Runner | Purpose |
 |:----|:-------|:--------|
-| `rust-linux` | Ubuntu latest | `cargo fmt --check`, clippy, full Rust test suite (`--features mock-hardware`) |
-| `rust-windows` | Windows latest | clippy, full Rust test suite (`--features mock-hardware`) |
-| `worker-linux` | Ubuntu latest | `bash scripts/install_worker_deps.sh && ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v` |
-| `worker-windows` | Windows latest | `scripts\install_worker_deps.ps1 && ANVILML_WORKER_MOCK=1 worker\.venv\Scripts\python -m pytest worker/tests/ -v` |
+| `rust` (matrix: ubuntu-latest, windows-latest) | Both | `cargo fmt --all -- --check` (Linux only), clippy, full Rust test suite (`--features mock-hardware`) |
+| `worker` (matrix: ubuntu-latest, windows-latest) | Both | Provision venv, then `ANVILML_WORKER_MOCK=1 <matrix-python> -m pytest worker/tests -v` |
 | `openapi-drift` | Ubuntu latest | Regenerate `openapi.json`, assert no diff |
 | `config-drift` | Ubuntu latest | `cargo test -p anvilml --features mock-hardware -- config_reference` |
 
@@ -449,6 +494,7 @@ The `x86_64-pc-windows-gnu` target must be installed: `rustup target add x86_64-
 | `docs/PHASES.md` | Agents + humans | Phase registry: number, name, vertical slice delivered, Runnable Proof per phase |
 | `docs/RUNNABLE_PROOF.md` | Agents + humans | Project-wide index of every phase's Runnable Proof, excluding standard test gates |
 | `docs/TESTS.md` | Agents + humans | Test catalogue: every test, its context, inputs, and expected outputs |
+| `docs/SUPPORTED_DEVICES_DB.md` | Agents + humans | Authoritative source data for the `device_capabilities` SQLite seed table (PCI-ID → capability rows) |
 | `docs/TASKS_PHASE*.md` | Agents | Per-phase narrative: overview, task descriptions, interfaces, Runnable Proof |
 
 **Session reading order for agents:**

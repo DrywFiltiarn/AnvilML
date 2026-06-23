@@ -122,10 +122,10 @@ AnvilML/
 │   │   ├── __init__.py               # NODE_REGISTRY + auto-import
 │   │   ├── base.py                   # BaseNode ABC, @register decorator, SlotType enum
 │   │   ├── loader.py                 # Generic LoadModel, LoadClip, LoadVae nodes
-│   │   ├── encoder.py                # Generic ClipTextEncode, TokenizeText nodes
+│   │   ├── encoder.py                # Generic ClipTextEncode node
 │   │   ├── sampler.py                # Generic Sampler node (dispatches by arch)
 │   │   ├── decode.py                 # Generic Decode (VAE decode) node
-│   │   ├── image.py                  # SaveImage, PreviewImage, ImageResize nodes
+│   │   ├── image.py                  # SaveImage node
 │   │   └── arch/
 │   │       ├── __init__.py           # Re-export shim -> arch/diffusion/
 │   │       ├── diffusion/
@@ -305,7 +305,9 @@ Every task that modifies any source file inside a crate must increment that crat
 anvilml-core/src/
 ├── lib.rs          # re-exports; declares submodules
 ├── config.rs       # ServerConfig and all nested config structs
+├── config_load.rs  # load(): layered config precedence (defaults → toml → env → CLI)
 ├── error.rs        # AnvilError enum
+├── node_registry.rs # NodeTypeRegistry: dynamic node type map, populated from worker Ready events
 └── types/
     ├── mod.rs      # re-exports all type modules
     ├── job.rs      # Job, JobStatus, JobSettings, SubmitJobRequest, SubmitJobResponse
@@ -645,7 +647,8 @@ Detection runs **once at startup** before any worker is spawned. VRAM is refresh
 
 ```
 anvilml-hardware/src/
-├── lib.rs          # detect_all_devices(), DeviceDetector trait, orchestration logic
+├── lib.rs          # re-exports; declares submodules
+├── detect.rs       # detect_all_devices(), DeviceDetector trait, orchestration logic
 ├── cpu.rs          # CpuDetector: always returns one CPU device
 ├── vulkan.rs       # VulkanDetector: headless Vulkan enumeration via ash
 ├── dxgi.rs         # DxgiDetector: Windows DXGI IDXGIFactory1 (Windows only)
@@ -800,8 +803,12 @@ Key properties:
 ```
 anvilml-ipc/src/
 ├── lib.rs          # re-exports; declares modules
+├── error.rs        # IPC-specific error types
 ├── messages.rs     # WorkerMessage and WorkerEvent enums
-└── transport.rs    # RouterTransport: the Rust-side ZeroMQ ROUTER wrapper
+├── transport.rs    # RouterTransport: the Rust-side ZeroMQ ROUTER wrapper
+└── ws/
+    ├── mod.rs          # declares ws submodules
+    └── broadcaster.rs  # EventBroadcaster: tokio::sync::broadcast wrapper (placed here to avoid an anvilml-worker/anvilml-server cycle)
 ```
 
 ```
@@ -937,7 +944,12 @@ anvilml-worker/src/
 ├── lib.rs          # re-exports WorkerPool, ManagedWorker, WorkerEnv
 ├── pool.rs         # WorkerPool: manages Vec<ManagedWorker>, routes dispatches
 ├── managed.rs      # ManagedWorker: subprocess lifecycle, status machine, keepalive
+├── spawn.rs        # Subprocess Command construction + env injection
+├── bridge.rs       # IPC bridge: two independent reader/writer tasks
+├── keepalive.rs    # Ping/Pong heartbeat + timeout watchdog
+├── demux.rs        # Demultiplexes incoming WorkerEvents by job_id/type
 ├── env.rs          # WorkerEnv: builds environment variable map for subprocess
+├── job_object.rs   # Windows Job Object orphan-cleanup wrapper (Windows only)
 └── respawn.rs      # RespawnPolicy: backoff logic for repeated crashes
 ```
 
@@ -1029,7 +1041,7 @@ There is no combined select loop. There is no socket clone problem. The ROUTER s
 | Variable | Value |
 |:---------|:------|
 | `ANVILML_IPC_PORT` | TCP port of the ROUTER socket (u16 decimal) |
-| `ANVILML_WORKER_ID` | Logical worker ID (e.g., `"worker-0"`) |
+| `ANVILML_WORKER_ID` | Bare device index as a decimal string (e.g. `"0"`) — also the ZMQ DEALER identity the worker registers with the ROUTER |
 | `ANVILML_DEVICE_INDEX` | GPU device index (u32 decimal) |
 | `ANVILML_DEVICE_TYPE` | `"cuda"`, `"rocm"`, or `"cpu"` |
 | `ANVILML_WORKER_MOCK` | `"1"` if the `mock-hardware` feature is active, else unset |
@@ -1083,7 +1095,7 @@ The MVP targets standalone `.safetensors` files for every model component. There
 | `LoadClip` | Loaders | `model_id: String, clip_type: String?` | `clip: Clip` | Loads a text encoder from a safetensors file. `clip_type` hint: `"clip_l"`, `"t5"`, `"qwen3"`. Determines the tokeniser and architecture used internally. |
 | `ClipTextEncode` | Conditioning | `clip: Clip, text: String, negative_text: String?` | `conditioning: Conditioning` | Encodes a text prompt using any loaded CLIP-compatible encoder. Architecture-agnostic. |
 | `EmptyLatent` | Latents | `width: Int, height: Int, batch_size: Int?, model: Model?` | `latent: Latent` | Creates a blank noise latent tensor at the requested resolution. The optional `model` input is required in real (non-mock) mode: the node dispatches to the loaded model's architecture module (via `arch.get_module()`) and calls its `compute_latent_shape()` function, since the latent shape formula — not just a scale factor — varies by architecture (e.g. spatial-only downscale vs. patch-packed channels) and cannot be assumed. Mock mode ignores this input. |
-| `Sampler` | Sampling | `model: Model, conditioning: Conditioning, latent: Latent, steps: Int, cfg: Float, seed: Int` | `latent: Latent, seed: Int` | Architecture-agnostic sampler. Dispatches internally to the correct arch module based on the model object. Returns the denoised latent and the actual seed used (`-1` resolves to a random seed). |
+| `Sampler` | Sampling | `model: Model, conditioning: Conditioning, clip: Clip, latent: Latent, steps: Int, cfg: Float, seed: Int` | `latent: Latent, seed: Int` | Architecture-agnostic sampler. Dispatches internally to the correct arch module based on the model object. Returns the denoised latent and the actual seed used (`-1` resolves to a random seed). |
 | `VaeDecode` | Decoding | `vae: Vae, latent: Latent` | `image: Image` | Decodes a denoised latent tensor to a PIL image using the explicitly provided VAE. |
 | `ImageResize` | Images | `image: Image, width: Int, height: Int, method: String?` | `image: Image` | Resizes a PIL image. `method` defaults to `"lanczos"`. |
 | `SaveImage` | Output | `image: Image, seed: Int?, steps: Int?` | *(none)* | Encodes the image to PNG, writes to the artifact store, and emits `ImageReady` IPC event. |
@@ -1103,7 +1115,7 @@ def can_handle(model_obj: Any) -> bool:
     """Return True if this arch module can process the given model object."""
     ...
 
-def sample(model, conditioning, latent, steps, cfg, seed, device, cancel_flag, emit_progress) -> tuple[Any, int]:
+def sample(model, conditioning, clip, latent, steps, cfg, seed, device, cancel_flag, emit_progress) -> tuple[Any, int]:
     """Run the sampling loop. Returns (latent_tensor, actual_seed)."""
     ...
 ```
@@ -1168,7 +1180,7 @@ def can_handle(clip_type: str) -> bool:
     """Return True if this clip arch module handles the given clip_type."""
     ...
 
-def load(model_id: str, torch_dtype: Any) -> "RealClip":
+def load(model_id: str, torch_dtype: Any, device: str) -> "RealClip":
     """Load tokenizer + text encoder from a single .safetensors file."""
     ...
 ```
@@ -1196,10 +1208,10 @@ considered and rejected in favor of `InvokeAI/t5-v1_1-xxl`, an ungated,
 Apache-2.0 re-host).
 
 `LoadClip` dispatches via `arch.clip.get_module(clip_type)`, then calls
-`.load(model_id, torch_dtype=torch.bfloat16)` on the matching module — the
-same shape as `Sampler`'s `arch.get_module(model).sample(...)` call in
-§10.4. If no module matches, `LoadClip` raises
-`ValueError(f"unsupported clip_type: {clip_type!r}")`.
+`.load(model_id, torch_dtype=torch.bfloat16, device=ctx.device)` on the
+matching module — the same shape as `Sampler`'s
+`arch.get_module(model).sample(...)` call in §10.4. If no module matches,
+`LoadClip` raises `ValueError(f"unsupported clip_type: {clip_type!r}")`.
 
 ### 10.5 FP8 Safetensors Support
 
@@ -1220,12 +1232,12 @@ An HF-style directory-based loading path (`from_pretrained(model_id, subfolder=.
 ```
 anvilml-scheduler/src/
 ├── lib.rs          # re-exports JobScheduler and public types
-├── scheduler.rs    # JobScheduler: owns queue, ledger, node_registry; dispatch loop
+├── scheduler.rs    # JobScheduler: owns queue, ledger; dispatch loop
 ├── queue.rs        # JobQueue: FIFO with O(1) cancel; sorted by priority+created_at
 ├── ledger.rs       # VramLedger: per-device VRAM accounting
 ├── dag.rs          # GraphValidator: validate_graph() — collect-all-errors mode
 ├── types.rs        # ValidatedGraph newtype; GraphError enum
-└── node_registry.rs # Dynamic NodeTypeRegistry: populated from worker Ready events
+└── event_loop.rs   # Subscribes to WorkerEvent broadcast; updates job status in DB on Completed/Failed/Cancelled/ImageReady/Progress
 ```
 
 ```
@@ -1237,6 +1249,8 @@ anvilml-scheduler/tests/
 ```
 
 ### 11.2 Node Registry (Dynamic)
+
+`NodeTypeRegistry` lives in `anvilml-core` (`crates/anvilml-core/src/node_registry.rs`), not in `anvilml-scheduler` — both the scheduler (graph validation) and the server (`GET /v1/nodes`) need access to it, and `anvilml-core` is the shared dependency both already have.
 
 ```rust
 /// Holds the current set of node types that workers can execute.
@@ -1302,7 +1316,6 @@ Worker selection:
 anvilml-server/src/
 ├── lib.rs              # build_router() → axum::Router; AppState construction
 ├── state.rs            # AppState struct
-├── error.rs            # IntoResponse impl for AnvilError
 └── handlers/
     ├── mod.rs          # declares handler modules
     ├── health.rs       # GET /health
@@ -1314,6 +1327,8 @@ anvilml-server/src/
     ├── artifacts.rs    # GET /v1/artifacts, GET /v1/artifacts/:hash
     └── nodes.rs        # GET /v1/nodes — lists registered node types
 ```
+
+`AnvilError`'s `IntoResponse` impl lives in `anvilml-core/src/error.rs`, alongside the enum itself (§5.2) — there is no separate `error.rs` in `anvilml-server`.
 
 ```
 anvilml-server/src/ws/
@@ -1451,7 +1466,8 @@ def connect(port: int, worker_id: str) -> None:
 
     Args:
         port: TCP port on 127.0.0.1 where the Rust ROUTER is bound.
-        worker_id: Stable worker identity string (e.g. "worker-0").
+        worker_id: Stable worker identity string — the bare device index
+            as injected via ANVILML_WORKER_ID in production (e.g. "0").
     """
     global _ctx, _sock
     _ctx = zmq.Context.instance()
@@ -1786,9 +1802,8 @@ GitHub CI runs on two real target platforms only. There is no emulated or cross-
 
 | Job | Runner OS | Commands |
 |:----|:----------|:---------|
-| `rust-linux` | Ubuntu latest | `cargo fmt --check`, `cargo clippy --workspace --features mock-hardware -- -D warnings`, `cargo test --workspace --features mock-hardware` |
-| `rust-windows` | Windows latest | `cargo clippy --workspace --features mock-hardware -- -D warnings`, `cargo test --workspace --features mock-hardware` |
-| `python-worker` | Ubuntu latest | `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v` |
+| `rust` (matrix: ubuntu-latest, windows-latest) | Both | `cargo fmt --all -- --check` (Linux only), `cargo clippy --workspace --features mock-hardware -- -D warnings`, `cargo test --workspace --features mock-hardware` |
+| `worker` (matrix: ubuntu-latest, windows-latest) | Both | `ANVILML_WORKER_MOCK=1 <matrix-python> -m pytest worker/tests -v` |
 | `openapi-drift` | Ubuntu latest | Re-generate `openapi.json`, `git diff --exit-code api/openapi.json` |
 | `config-drift` | Ubuntu latest | `cargo test -p anvilml --features mock-hardware -- config_reference` |
 
@@ -1954,6 +1969,7 @@ worker process.
       "inputs": {
         "model": { "node_id": "model", "output_slot": "model" },
         "conditioning": { "node_id": "cond", "output_slot": "conditioning" },
+        "clip": { "node_id": "encoder", "output_slot": "clip" },
         "latent": { "node_id": "latent", "output_slot": "latent" },
         "steps": 20,
         "cfg": 3.5,
