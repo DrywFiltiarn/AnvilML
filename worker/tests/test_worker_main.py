@@ -259,6 +259,15 @@ def test_shutdown_exits_cleanly():
             # Wait for the worker to start and emit Ready.
             time.sleep(0.3)
 
+            # Consume the Ready event that the worker sends on startup.
+            # This is required for the same reason as in test_ping_returns_pong:
+            # the ROUTER only learns the worker's DEALER identity once a
+            # message has actually been received from it, so draining Ready
+            # first guarantees the worker is connected before Shutdown is
+            # sent — the fixed sleep above is not itself a reliable barrier.
+            # Bounded receive — see module docstring and _recv_with_timeout.
+            _recv_with_timeout(router, proc)  # Ready event — discard
+
             # Send a Shutdown message to the worker.
             shutdown_msg = msgpack.packb({"_type": "Shutdown"}, use_bin_type=True)
             router.send_multipart([b"worker-0", shutdown_msg])
