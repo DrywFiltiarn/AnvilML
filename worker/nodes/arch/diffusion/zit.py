@@ -212,13 +212,14 @@ def can_handle(model_obj: Any) -> bool:
 def sample(
     model: Any,
     conditioning: Any,
-    latent: Any,
-    steps: int,
-    cfg: float,
-    seed: int,
-    device: str,
-    cancel_flag: Any,
-    emit_progress: Callable[[int, int], None],
+    clip: Any = None,
+    latent: Any = None,
+    steps: int = 4,
+    cfg: float = 7.0,
+    seed: int = 42,
+    device: str = "cpu",
+    cancel_flag: Any = None,
+    emit_progress: Callable[[int, int], None] | None = None,
     vae: Any = None,
     *,
     pipeline_cache: Any = None,
@@ -240,6 +241,9 @@ def sample(
         model: The model descriptor object (carries ``arch``,
             ``model_id``, and other metadata).
         conditioning: Conditioning tensor or prompt encoding.
+        clip: The CLIP object (``RealClip``) carrying ``tokenizer``
+            and ``text_encoder`` attributes. Produced by
+            ``LoadClip``. ``None`` in mock-mode tests.
         latent: The initial latent tensor or ``MockLatent`` sentinel.
         steps: Number of denoising iterations.
         cfg: Classifier-free guidance scale.
@@ -303,11 +307,12 @@ def sample(
         if transformer is None:
             transformer = model
 
-        # Pull tokenizer and text_encoder from conditioning.
-        # Conditioning objects carry these from the encoder node
-        # (P18-D16) that produced them.
-        tokenizer = getattr(conditioning, "tokenizer", None)
-        text_encoder = getattr(conditioning, "text_encoder", None)
+        # Pull tokenizer and text_encoder from clip (RealClip).
+        # The clip object is produced by LoadClip and carries these
+        # attributes. Guard against None for mock-mode tests that
+        # call sample() without a clip argument.
+        tokenizer = getattr(clip, "tokenizer", None) if clip else None
+        text_encoder = getattr(clip, "text_encoder", None) if clip else None
 
         # VAE is passed directly to sample() as a separate argument.
         # The scheduler is constructed fresh each time since it is

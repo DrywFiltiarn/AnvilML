@@ -205,10 +205,11 @@ class Sampler(BaseNode):
         CATEGORY: The UI category for this node type.
         DISPLAY_NAME: Human-readable name shown in UI.
         DESCRIPTION: Brief description of node behaviour.
-        INPUT_SLOTS: Six slots — ``model`` (MODEL, required),
-            ``conditioning`` (CONDITIONING, required), ``latent``
-            (LATENT, required), ``steps`` (INT, required),
-            ``cfg`` (FLOAT, required), and ``seed`` (INT, required).
+        INPUT_SLOTS: Seven slots — ``model`` (MODEL, required),
+            ``conditioning`` (CONDITIONING, required), ``clip``
+            (CLIP, required), ``latent`` (LATENT, required),
+            ``steps`` (INT, required), ``cfg`` (FLOAT, required),
+            and ``seed`` (INT, required).
         OUTPUT_SLOTS: Two slots — ``latent`` (LATENT) and ``seed``
             (INT, the resolved seed value).
         EMITS_PROGRESS: Set to True so the executor emits Progress
@@ -222,6 +223,7 @@ class Sampler(BaseNode):
     INPUT_SLOTS = [
         SlotSpec("model", "MODEL"),
         SlotSpec("conditioning", "CONDITIONING"),
+        SlotSpec("clip", "CLIP"),
         SlotSpec("latent", "LATENT"),
         SlotSpec("steps", "INT"),
         SlotSpec("cfg", "FLOAT"),
@@ -254,14 +256,16 @@ class Sampler(BaseNode):
             ValueError: If called in non-mock mode and the model's
                 architecture is not supported by any loaded arch module.
         """
-        # Read all six input slots from the job graph.
+        # Read all seven input slots from the job graph.
         # These are the standard ComfyUI sampler parameters:
         # model (the diffusion model), conditioning (positive/negative
-        # prompts), latent (the initial noise or intermediate latent),
+        # prompts), clip (CLIP object with tokenizer/text_encoder),
+        # latent (the initial noise or intermediate latent),
         # steps (number of denoising iterations), cfg (classifier-free
         # guidance scale), and seed (random seed for reproducibility).
         model = inputs.get("model")
         conditioning = inputs.get("conditioning")
+        clip = inputs.get("clip")
         latent = inputs.get("latent")
         steps = inputs.get("steps")
         cfg = inputs.get("cfg")
@@ -326,8 +330,10 @@ class Sampler(BaseNode):
         # Invoke the architecture module's sample() function with all
         # required arguments. The module resolves the pipeline from
         # cache, assembles it, and runs the denoising loop.
+        # clip is the third positional argument matching sample()'s
+        # new signature (after model and conditioning).
         result = mod.sample(
-            model, conditioning, latent, steps, cfg, seed,
+            model, conditioning, clip, latent, steps, cfg, seed,
             self.ctx.device, self.ctx.cancel_flag, emit_progress,
             pipeline_cache=self.ctx.pipeline_cache,
         )

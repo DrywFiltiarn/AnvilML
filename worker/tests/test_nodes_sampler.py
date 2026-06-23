@@ -304,8 +304,8 @@ def test_sampler_metadata_attributes() -> None:
     Expected output:
         ``NODE_TYPE == "Sampler"``, ``CATEGORY == "Sampling"``,
         ``DISPLAY_NAME == "Sampler"``, ``DESCRIPTION`` is a
-        non-empty string, ``INPUT_SLOTS`` has six specs, and
-        ``OUTPUT_SLOTS`` has two specs.
+        non-empty string, ``INPUT_SLOTS`` has seven specs (including
+        ``clip``), and ``OUTPUT_SLOTS`` has two specs.
     """
     import worker.nodes.sampler
 
@@ -318,9 +318,9 @@ def test_sampler_metadata_attributes() -> None:
     assert isinstance(Sampler.DESCRIPTION, str)
     assert len(Sampler.DESCRIPTION) > 0
 
-    # Verify INPUT_SLOTS — six specs: model, conditioning, latent,
-    # steps, cfg, seed.
-    assert len(Sampler.INPUT_SLOTS) == 6
+    # Verify INPUT_SLOTS — seven specs: model, conditioning, clip,
+    # latent, steps, cfg, seed.
+    assert len(Sampler.INPUT_SLOTS) == 7
 
     model_spec = Sampler.INPUT_SLOTS[0]
     assert isinstance(model_spec, SlotSpec)
@@ -334,25 +334,31 @@ def test_sampler_metadata_attributes() -> None:
     assert cond_spec.slot_type == "CONDITIONING"
     assert cond_spec.optional is False
 
-    latent_spec = Sampler.INPUT_SLOTS[2]
+    clip_spec = Sampler.INPUT_SLOTS[2]
+    assert isinstance(clip_spec, SlotSpec)
+    assert clip_spec.name == "clip"
+    assert clip_spec.slot_type == "CLIP"
+    assert clip_spec.optional is False
+
+    latent_spec = Sampler.INPUT_SLOTS[3]
     assert isinstance(latent_spec, SlotSpec)
     assert latent_spec.name == "latent"
     assert latent_spec.slot_type == "LATENT"
     assert latent_spec.optional is False
 
-    steps_spec = Sampler.INPUT_SLOTS[3]
+    steps_spec = Sampler.INPUT_SLOTS[4]
     assert isinstance(steps_spec, SlotSpec)
     assert steps_spec.name == "steps"
     assert steps_spec.slot_type == "INT"
     assert steps_spec.optional is False
 
-    cfg_spec = Sampler.INPUT_SLOTS[4]
+    cfg_spec = Sampler.INPUT_SLOTS[5]
     assert isinstance(cfg_spec, SlotSpec)
     assert cfg_spec.name == "cfg"
     assert cfg_spec.slot_type == "FLOAT"
     assert cfg_spec.optional is False
 
-    seed_spec = Sampler.INPUT_SLOTS[5]
+    seed_spec = Sampler.INPUT_SLOTS[6]
     assert isinstance(seed_spec, SlotSpec)
     assert seed_spec.name == "seed"
     assert seed_spec.slot_type == "INT"

@@ -245,14 +245,21 @@ def test_sample_real_assembles_pipeline_via_cache() -> None:
         conditioning = type("Conditioning", (), {
             "positive": None,
             "negative": None,
-            "tokenizer": None,
-            "text_encoder": None,
+        })()
+
+        # Build a mock clip object with tokenizer/text_encoder.
+        # These attributes are read by loader_fn from clip (not
+        # conditioning) to fix the wiring defect.
+        mock_clip = type("RealClip", (), {
+            "tokenizer": MagicMock(),
+            "text_encoder": MagicMock(),
         })()
 
         # Call sample() — the real path now invokes the pipeline.
         result = sample(
             model=model,
             conditioning=conditioning,
+            clip=mock_clip,
             latent=None,
             steps=4,
             cfg=7.0,
@@ -337,6 +344,12 @@ def test_sample_real_invokes_pipeline_with_correct_args() -> None:
         conditioning = type("Conditioning", (), {
             "positive": MagicMock(),
             "negative": MagicMock(),
+        })()
+
+        # Build a mock clip object with tokenizer/text_encoder.
+        # These attributes are read by loader_fn from clip (not
+        # conditioning) to fix the wiring defect.
+        mock_clip = type("RealClip", (), {
             "tokenizer": MagicMock(),
             "text_encoder": MagicMock(),
         })()
@@ -348,6 +361,7 @@ def test_sample_real_invokes_pipeline_with_correct_args() -> None:
         result = sample(
             model=model,
             conditioning=conditioning,
+            clip=mock_clip,
             latent=None,
             steps=steps,
             cfg=cfg,
