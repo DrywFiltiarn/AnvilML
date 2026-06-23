@@ -251,9 +251,8 @@ class Sampler(BaseNode):
             (the resolved seed value, always a positive integer).
 
         Raises:
-            NotImplementedError: If called in non-mock mode. The real
-                denoising loop using ``arch.sample()`` is stubbed until
-                P18-C1 implements the architecture module.
+            ValueError: If called in non-mock mode and the model's
+                architecture is not supported by any loaded arch module.
         """
         # Read all six input slots from the job graph.
         # These are the standard ComfyUI sampler parameters:
@@ -297,13 +296,42 @@ class Sampler(BaseNode):
                 "seed": seed,
             }
 
-        # Real mode: run the denoising sampling loop.
-        # This path is stubbed — the real implementation will call
-        # arch.sample(model, conditioning, latent, steps, cfg, seed)
-        # to execute the actual diffusion process. The arch module
-        # is implemented in task P18-C1.
-        # TODO(P18-C1): Implement real sampling path via arch.sample().
-        raise NotImplementedError(
-            "Real Sampler path not yet implemented — "
-            "use ANVILML_WORKER_MOCK=1 for testing"
+        # Real mode: dispatch to the architecture module for the
+        # denoising sampling loop. Build the emit_progress wrapper
+        # before dispatch so it is available to the arch module.
+        def emit_progress(step: int, total: int) -> None:
+            """Emit a Progress event for the executor's progress tracking.
+
+            Args:
+                step: The current denoising step (0-indexed).
+                total: Total number of denoising steps.
+            """
+            self.ctx.emit({
+                "_type": "Progress",
+                "job_id": self.ctx.job_id,
+                "step": step,
+                "total_steps": total,
+                "preview_b64": None,
+            })
+
+        # Look up the architecture module that handles this model type.
+        # get_module() scans loaded arch modules and returns the first
+        # one whose can_handle() returns True for the model object.
+        # If no module claims this architecture, raise ValueError per
+        # the dispatch contract (same pattern as EmptyLatent line 158).
+        mod = arch.get_module(model)
+        if mod is None:
+            raise ValueError("unsupported model architecture")
+
+        # Invoke the architecture module's sample() function with all
+        # required arguments. The module resolves the pipeline from
+        # cache, assembles it, and runs the denoising loop.
+        result = mod.sample(
+            model, conditioning, latent, steps, cfg, seed,
+            self.ctx.device, self.ctx.cancel_flag, emit_progress,
+            pipeline_cache=self.ctx.pipeline_cache,
         )
+
+        # Extract the denoised latent tensor (index 0) and the
+        # resolved seed value (index 1) from the sample() return tuple.
+        return {"latent": result[0], "seed": result[1]}
