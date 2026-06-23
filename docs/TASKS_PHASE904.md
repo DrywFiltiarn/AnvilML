@@ -10,17 +10,20 @@
 
 ## Overview
 
-Phase 904 is an eight-task retrofit correcting defects discovered while
-building a real-path node verification harness against the committed state
+Phase 904 is a retrofit correcting defects discovered while building and
+running a real-path node verification harness against the committed state
 of Phase 18 groups D16–D20 (`ClipTextEncode`, `EmptyLatent`, `Sampler`,
-`VaeDecode`, and the ZiT arch module's pipeline assembly and invocation). All eight defects
-were found by reading the live source and, where torch/diffusers were
-available, confirmed by direct execution — not inferred from the task
-descriptions or design docs alone.
+`VaeDecode`, and the ZiT arch module's pipeline assembly and invocation).
+Defects were found by reading the live source, by direct execution where
+torch/diffusers were available, and — for the most significant defect in
+this phase — by the project owner running the harness against real GPU
+hardware. None were inferred from the task descriptions or design docs
+alone.
 
-None of the eight are caught by the existing `worker/tests/` suite, because
+The first nine defects (P904-A1 through P904-A8, counting the A6/A6b
+split) are not caught by the existing `worker/tests/` suite, because
 `worker/tests/conftest.py` forces `ANVILML_WORKER_MOCK=1` for every test via
-an autouse fixture, and all eight live exclusively in real-mode code paths
+an autouse fixture, and all nine live exclusively in real-mode code paths
 that mock mode never reaches. This is also why they survived from D16
 through D19 without being noticed: each individual task's own mock-mode
 tests passed, because the defect was never on a path those tests exercised.
@@ -77,19 +80,54 @@ transitively; it is only an optional `extra` on `diffusers`). This breaks
 CI the moment it runs against this commit. P904-A1 fixes that. Because every
 other Group A task's own commit needs working CI to validate against, and
 P904-A1 has no dependency on any other P904 task (only `P18-D20`), it is
-sequenced first in this phase's task ordering, with P904-A2 through P904-A8
-each chaining sequentially off the task before it. Group B's
+sequenced first in this phase's task ordering, with P904-A2 through
+P904-A14 each chaining sequentially off the task before it. Group B's
 scope (B1, B4, B5) has also been widened to include `VaeDecode` in its real
 fixture set and chain coverage, since D20 is now committed and the
 real-mode test suite should cover the full node graph through to a decoded
 image, not stop short at `Sampler`'s output latent.
 
+P904-A9 through P904-A14 address a defect found after this phase's
+original drafting, by the project owner actually running the manual
+real-path verification harness against real hardware: console output
+showed `config.json: 100%` being fetched from HuggingFace Hub during
+`LoadModel`'s real path, directly contradicting the project's stated
+local-only-`.safetensors` design intent. Root cause, confirmed by reading
+`diffusers` 0.38.0 source: `ZImageTransformer2DModel.from_single_file()`
+and `AutoencoderKL.from_single_file()` (identical `FromOriginalModelMixin`
+code path) both fall through to `fetch_diffusers_config(checkpoint)` —
+which guesses an HF repo id and downloads its `config.json` — whenever
+neither `config=` nor `original_config=` is supplied, which neither
+`LoadModel` nor `LoadVae` did. `local_files_only` is not a sufficient fix,
+since it only skips the download if the guessed repo happens to already be
+cached locally. The fix (P904-A10, P904-A11) bypasses `from_single_file()`
+entirely: each currently-supported architecture's loading logic moves into
+its own arch module (`zit.py` gains `load_transformer()`/`load_vae()`),
+using locally-known default configs (already-published architecture
+constants, requiring no config file at all) and reusing `diffusers`' own
+internal, network-free checkpoint key-remapping functions
+(`convert_z_image_transformer_checkpoint_to_diffusers`,
+`convert_ldm_vae_checkpoint`) rather than reimplementing that remap logic.
+This mirrors the pattern ComfyUI uses for the same problem — detect
+architecture and remap keys from the checkpoint's own tensor names, never
+from a network-fetched config. `loader.py`'s three loading functions
+(P904-A12) become thin wrappers that dispatch to the correct arch module by
+name (P904-A13, since no model object exists yet at this dispatch point)
+rather than calling `diffusers` classes directly. The deprecated
+HF-directory loading remnants kept "for future use" (P904-A9) are deleted
+outright rather than retained, per explicit reversal of that earlier
+decision. Because P904-A10/A11's functions consume raw, pre-remap
+checkpoint key formats, Group B's original transformer/VAE fixture design
+(P904-B1, saving a model's own post-construction `state_dict()`) would
+never have exercised the new remap path at all — P904-B1b's raw-checkpoint
+fixtures close that gap by inverting the same remap tables before saving.
+
 ## Group Reference
 
 | Group | Subsystem | Tasks | Summary |
 |-------|-----------|-------|---------|
-| A | retrofit | P904-A1 … P904-A8 (incl. A6b) | Seven independent real-path defects in D16–D19, plus two systemic findings from the D1–D15 re-audit, plus a CI-breaking unguarded `torch` import found in D20's own committed test (D20's production code itself required no fix) — nine tasks total, sequenced linearly |
-| B | test infrastructure | P904-B1 … P904-B5 | Opt-in, CI-excluded real-mode CPU test suite mirroring the mock suite's per-node and chain coverage, now extended through `VaeDecode` (D20), using synthetic tiny-config checkpoints |
+| A | retrofit | P904-A1 … P904-A14 (incl. A6b) | Seven real-path defects in D16–D19, two systemic device-placement findings from the D1–D15 re-audit, a CI-breaking `torch` import in D20's own test, and a confirmed-by-execution HF-network-access defect in `LoadModel`/`LoadVae`'s real path (discovered by the project owner running the manual real-path harness against real hardware) requiring offline-loading rework across `loader.py` and `zit.py` — fifteen tasks total, sequenced linearly |
+| B | test infrastructure | P904-B1 … P904-B5 (incl. B1b) | Opt-in, CI-excluded real-mode CPU test suite mirroring the mock suite's per-node and chain coverage, now extended through `VaeDecode` (D20) and through raw-checkpoint-format fixtures that exercise the offline key-remap path (A10/A11), using synthetic tiny-config checkpoints |
 
 ## Prerequisites
 
@@ -358,32 +396,211 @@ grep -n "\.to(device)" worker/nodes/loader.py
 # -> at least two matches (LoadModel's transformer, LoadVae's AutoencoderKL)
 ```
 
+#### P904-A9: worker/nodes/loader.py: remove deprecated HF-directory loading remnants entirely
+
+**Goal:** Delete `_load_from_hf_directory` and `_load_clip_from_hf_directory` outright —
+both are dead code kept "for future reactivation," and that decision is reversed.
+
+**Files to create or modify:**
+- `worker/nodes/loader.py` — delete both functions and any now-unused imports they alone required
+
+**Key implementation notes:**
+- Both functions are never called anywhere in the codebase — confirmed by their own docstrings ("kept but never called") and by grep
+- After deletion, check whether `CLIPTextModelWithProjection`, `CLIPTokenizer`, `Qwen2Tokenizer`, `Qwen3ForCausalLM`, `T5ForConditionalGeneration`, `T5TokenizerFast` are still imported anywhere else in this file — if not, remove those imports too
+- Do not rename or touch `_load_model_from_hf_directory` in this task — that is P904-A12's job, kept in a separate task so the deletion diff here stays clean and easy to review independently of the rename/restructure diff
+- This is a pure removal; no behavior change for any currently-passing test
+
+**Acceptance criterion:**
+```bash
+ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py -v
+# -> exits 0, same test count as before
+grep -n "_load_from_hf_directory\|_load_clip_from_hf_directory" worker/nodes/loader.py
+# -> zero matches
+```
+
+#### P904-A10: worker/nodes/arch/diffusion/zit.py: add load_transformer() — offline transformer loading, no HF network access
+
+**Goal:** Stop `LoadModel`'s real path from silently contacting HuggingFace Hub during
+generation. Root cause confirmed by direct execution (console showed `config.json: 100%`
+being fetched) and by reading `diffusers` 0.38.0 source: `ZImageTransformer2DModel.
+from_single_file()` with no `config=`/`original_config=` kwarg falls through to
+`fetch_diffusers_config(checkpoint)`, which guesses an HF repo id and downloads its
+`config.json`. `local_files_only` alone does not reliably fix this — it only skips the
+download if the guessed repo happens to already be in the local HF cache.
+
+**Files to create or modify:**
+- `worker/nodes/arch/diffusion/zit.py` — add `load_transformer(model_id: str) -> ZImageTransformer2DModel`
+
+**Key implementation notes:**
+- `ZImageTransformer2DModel()` constructed with zero arguments already matches the published 6B ZiT architecture — `dim=3840, n_layers=30, n_heads=30, n_kv_heads=30, cap_feat_dim=2560` are all registered defaults, confirmed by reading the class's `@register_to_config __init__`; no separate config dict is needed for this single currently-supported architecture
+- Load the raw checkpoint via `safetensors.torch.load_file(model_id)`, remap its keys via `diffusers.loaders.single_file_utils.convert_z_image_transformer_checkpoint_to_diffusers(checkpoint)` — this is `diffusers`' own tested key-remap and QKV-defuse logic (handles the fused `attention.qkv.weight` → separate `to_q`/`to_k`/`to_v` split, the `x_embedder.`/`final_layer.` → `all_x_embedder.2-1.`/`all_final_layer.2-1.` rename, and the `model.diffusion_model.` prefix strip) — reuse it as-is, do not reimplement
+- Then `model.load_state_dict(remapped_checkpoint)` and return the model
+- Zero network calls anywhere in this function — this is the actual fix, not a flag toggle
+- `diffusers.loaders.single_file_utils` is a private module path, not part of the public API — flag in the implementation report that this may break across `diffusers` version bumps and should be re-verified on upgrade
+
+**Acceptance criterion:**
+```bash
+ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py -v
+# -> exits 0, same test count as before (mock-mode tests don't exercise this function)
+python3 -c "
+import os
+os.environ['ANVILML_WORKER_MOCK'] = '1'
+from worker.nodes.arch.diffusion.zit import load_transformer
+assert callable(load_transformer)
+"
+```
+
+#### P904-A11: worker/nodes/arch/diffusion/zit.py: add load_vae() — offline VAE loading, no HF network access
+
+**Goal:** Stop `LoadVae`'s real path from the same HF-contacting defect, for the VAE
+component. VAE loading lives in `zit.py`, not a separate module — it is bound 1:1 to
+the diffusion model's latent space, and `VAE_SCALE_FACTOR` already lives here as a
+documented constant.
+
+**Files to create or modify:**
+- `worker/nodes/arch/diffusion/zit.py` — add `load_vae(model_id: str) -> AutoencoderKL`
+
+**Key implementation notes:**
+- Same root cause as P904-A10 — `AutoencoderKL.from_single_file()` shares the identical `FromOriginalModelMixin` code path, confirmed by reading the source
+- Construct `AutoencoderKL(block_out_channels=[128, 256, 512, 512], ...)` using the published config this file's own `VAE_SCALE_FACTOR` comment already documents
+- Load the raw checkpoint via `safetensors.torch.load_file(model_id)`; remap keys via `diffusers.loaders.single_file_utils.convert_ldm_vae_checkpoint(checkpoint, config)` where `config` is a plain dict containing `down_block_types`/`up_block_types` matching the 4-entry `block_out_channels` length — this function only reads list *length* from `config`, not a full LDM-format YAML; confirmed by reading its source. Do not attempt to construct a YAML-shaped `original_config`
+- `convert_ldm_vae_checkpoint` correctly handles both prefixed (`first_stage_model.`/`vae.`) and bare standalone-file keys — confirmed: when no recognized prefix is found, its internal `vae_key` stays `""`, and every key matches `str.startswith("")`, so a standalone file with unprefixed keys passes through unchanged. No special-casing needed for the standalone-file case this project actually uses
+
+**Acceptance criterion:**
+```bash
+ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py -v
+# -> exits 0, same test count as before
+python3 -c "
+import os
+os.environ['ANVILML_WORKER_MOCK'] = '1'
+from worker.nodes.arch.diffusion.zit import load_vae
+assert callable(load_vae)
+"
+```
+
+#### P904-A12: worker/nodes/loader.py: rewrite LoadModel/LoadVae/LoadClip's loader functions as thin per-arch wrappers
+
+**Goal:** Make `LoadModel` and `LoadVae`'s real paths dispatch through the arch system
+consistently, the way `LoadClip` already correctly does via `arch_clip.get_module()` —
+currently `LoadModel`/`LoadVae` call `diffusers` classes directly inline, bypassing the
+per-architecture abstraction entirely.
+
+**Files to create or modify:**
+- `worker/nodes/loader.py` — rename `_load_model_from_hf_directory` to `_load_model_from_safetensors`; rewrite `LoadVae.execute()`'s inline `loader_fn` into a named `_load_vae_from_safetensors`; rewrite `LoadClip.execute()`'s inline dispatch into a named `_load_clip_from_safetensors`
+
+**Key implementation notes:**
+- `_load_model_from_safetensors`: keep the existing safetensors-metadata arch-detection logic exactly as-is (the `safe_open(...).metadata` read and the path-stripping fallback are unrelated to the HF-network bug) — only replace the direct `ZImageTransformer2DModel.from_single_file(...)` call with `arch.diffusion.get_module_by_name(detected_arch).load_transformer(model_id)` (P904-A10, dispatch added by P904-A13)
+- `_load_vae_from_safetensors(model_id, arch)`: same dispatch pattern, calling `get_module_by_name(arch).load_vae(model_id)` (P904-A11)
+- `_load_clip_from_safetensors(model_id, clip_type)`: this is a pure rename/extraction for naming symmetry with the other two — `LoadClip.execute()`'s existing dispatch via `arch_clip.get_module()` is already correct and needs no behavior change, only a name
+- Update `LoadModel.execute()`/`LoadVae.execute()`/`LoadClip.execute()`'s call sites to use the new function names
+
+**Acceptance criterion:**
+```bash
+ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py -v
+# -> exits 0, same test count as before
+grep -n "_load_model_from_safetensors\|_load_vae_from_safetensors\|_load_clip_from_safetensors" worker/nodes/loader.py
+# -> all three names present
+grep -n "_load_model_from_hf_directory" worker/nodes/loader.py
+# -> zero matches (old name fully retired)
+```
+
+#### P904-A13: worker/nodes/arch/diffusion/__init__.py: add an arch-by-name lookup
+
+**Goal:** `LoadModel`/`LoadVae` (P904-A12) only have a bare architecture string at
+dispatch time — no model object exists yet to call the existing `get_module(model_obj)`
+with. Add a lookup that works from a name alone.
+
+**Files to create or modify:**
+- `worker/nodes/arch/diffusion/__init__.py` — add `get_module_by_name(arch: str) -> ModuleType | None`
+
+**Key implementation notes:**
+- Reuse the same `pkgutil.iter_modules()` scan `get_module(model_obj)` already does, but match each module's `can_handle()` against a tiny shim object carrying only `.arch = arch` — `can_handle()` only ever reads `getattr(model_obj, "arch", None)` (confirmed by reading `zit.py`'s source), so a bare shim with just that one attribute satisfies it without constructing a real model
+- Do not change `can_handle()`'s signature or `get_module(model_obj)`'s existing behavior — this is a pure addition alongside it, zero risk to already-passing callers
+- A minimal local class or `types.SimpleNamespace(arch=arch)` both work as the shim; either is acceptable
+
+**Acceptance criterion:**
+```bash
+ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_init.py -v
+# -> exits 0, same test count as before
+python3 -c "
+import os
+os.environ['ANVILML_WORKER_MOCK'] = '1'
+from worker.nodes.arch.diffusion import get_module_by_name
+mod = get_module_by_name('zit')
+assert mod is not None
+assert mod.__name__.endswith('.zit')
+"
+```
+
+#### P904-A14: realpath harness: update 01_loaders.py for the new offline loading path, confirm zero HF network calls
+
+**Goal:** The manual real-path verification harness (`01_loaders.py`, run by the project
+owner on real GPU hardware — not part of this repo's committed tests) is what surfaced
+this entire defect: console output showed `config.json: 100%` being fetched from HF
+during `LoadModel`. Update the harness to match the new offline loading path and add an
+explicit check that would have caught this immediately rather than requiring a human to
+notice a progress bar.
+
+**Files to create or modify:**
+- `01_loaders.py` (external harness, not part of this repo's committed code — lives wherever the project owner keeps it) — update docstring/expectations to reflect P904-A9–A13's fix
+
+**Key implementation notes:**
+- Add a network-call guard: monkeypatch or wrap `huggingface_hub`'s network entry point (e.g. `huggingface_hub.file_download.hf_hub_download`) to raise immediately if invoked during this script's run, rather than silently succeeding and only being noticed by a human watching console output
+- Re-run against the same real ZiT FP8 weights that originally surfaced this bug and confirm clean output — no `config.json: 100%` line, no `huggingface_hub` warnings about unauthenticated requests
+- This task's deliverable lives outside this repo's own test suite; coordinate directly with the project owner on where the updated script should be placed/shared
+
+**Acceptance criterion:**
+```bash
+# Run manually against real hardware, not part of any automated gate:
+python3 01_loaders.py
+# -> no config.json download line, no huggingface_hub warnings, LoadModel/LoadVae/LoadClip
+#    all PASS using only local worker/assets/ and the provided .safetensors files
+```
+
 ### Group B — Real-Mode CPU Test Infrastructure
 
-#### P904-B1: worker/tests/real_fixtures.py: synthetic tiny-config safetensors checkpoint generator
+#### P904-B1: worker/tests/real_fixtures.py: synthetic tiny clip checkpoint fixtures (qwen3/clip_l/t5)
 
 **Goal:** Provide pytest fixtures that produce small, fast, real (not
 mocked) `.safetensors` checkpoints for every component type the real-mode
 suite needs, without depending on multi-gigabyte real model downloads.
 
 **Files to create or modify:**
-- `worker/tests/real_fixtures.py` — new file; fixtures `tiny_zit_transformer`, `tiny_vae`, `tiny_qwen3_clip`, `tiny_clip_l_clip`, `tiny_t5_clip`, each returning a saved checkpoint file path
+- `worker/tests/real_fixtures.py` — new file; fixtures `tiny_qwen3_clip`, `tiny_clip_l_clip`, `tiny_t5_clip`, each returning a saved checkpoint file path
 
 **Key implementation notes:**
-- `ZImageTransformer2DModel`'s constructor (`@register_to_config`) accepts plain kwargs with no external `config.json` dependency — instantiate directly with `dim=64, n_layers=2, n_heads=2, n_kv_heads=2, cap_feat_dim=64, in_channels=4`, call `.state_dict()`, save via `safetensors.torch.save_file()`
-- `AutoencoderKL`'s `from_single_file()` infers shapes from the checkpoint's own tensor shapes at load time — a tiny `block_out_channels=(8,16), latent_channels=4` instance saves and loads correctly with no size-dependent special-casing needed; this same `tiny_vae` fixture is reused by `LoadVae`'s tests in B3 and by `VaeDecode`'s tests in B4/B5, since D20 is now in scope
-- For the three CLIP variants, reuse each real loader module's own `config_values` pattern (`qwen3.py`/`clip_l.py`/`t5.py` already show the exact `Config(**values)` → model → `load_state_dict` construction) but with drastically reduced `hidden_size`/`num_hidden_layers` (e.g. `hidden_size=32, num_hidden_layers=2`) — do not invent a different construction path from the one production code already uses
+- For each CLIP variant, reuse the real loader module's own `config_values` pattern (`qwen3.py`/`clip_l.py`/`t5.py` already show the exact `Config(**values)` → model → `load_state_dict` construction) but with drastically reduced `hidden_size`/`num_hidden_layers` (e.g. `hidden_size=32, num_hidden_layers=2`) — do not invent a different construction path from the one production code already uses
+- These fixtures are unaffected by the raw-checkpoint-format concern that applies to the transformer/VAE fixtures (P904-B1b) — `qwen3.py`/`clip_l.py`/`t5.py` call `load_state_dict()` directly on whatever is saved, with no key-remap step in between, so a model's own native `state_dict()` is exactly the correct format to save here
 - Each fixture must return a file **path** (`tmp_path`-scoped), not the in-memory model object — the tests in B3–B5 are specifically exercising the file-load path (`from_single_file`, `load_state_dict(safetensors_load_file(...))`), not bypassing it
 
 **Acceptance criterion:**
 ```bash
-worker/.venv-cpu-agent/bin/python -c "
-from worker.tests.real_fixtures import tiny_zit_transformer
-import pytest, _pytest.fixtures
-# fixtures require a pytest session to resolve tmp_path; smoke-test via:
-"
 ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/real_fixtures.py --collect-only
 # -> collects without error (file itself has no test_ functions, just fixtures; verifies no import-time failure)
+```
+
+#### P904-B1b: worker/tests/real_fixtures.py: raw-checkpoint-format ZiT transformer and VAE fixtures (pre-remap keys)
+
+**Goal:** Provide tiny fixtures in the same raw, pre-remap key format real
+`.safetensors` checkpoints actually use — `load_transformer()`/`load_vae()`
+(P904-A10/A11) consume fused QKV weights and original (non-diffusers)
+key names, and a fixture saving a model's own post-construction
+`state_dict()` would skip the remap/QKV-defuse path entirely, producing a
+test that passes without ever exercising the code it's meant to verify.
+
+**Files to create or modify:**
+- `worker/tests/real_fixtures.py` — add `tiny_zit_transformer_raw`, `tiny_vae_raw` fixtures
+
+**Key implementation notes:**
+- `tiny_zit_transformer_raw`: build a tiny `ZImageTransformer2DModel(dim=64, n_layers=2, n_heads=2, cap_feat_dim=64)`, take its `state_dict()`, then invert it into raw-checkpoint format before saving — fuse `to_q`/`to_k`/`to_v` into a single `qkv.weight` via `torch.cat`, rename `all_x_embedder.2-1.`/`all_final_layer.2-1.` back to `x_embedder.`/`final_layer.`, and prepend `model.diffusion_model.` to every key
+- Build this inverse mapping by reading `diffusers.loaders.single_file_utils.convert_z_image_transformer_checkpoint_to_diffusers`'s own rename table directly — do not guess at the mapping independently; the two must be exact inverses of each other, or the round-trip test is meaningless (it would pass even if the real remap function were broken)
+- `tiny_vae_raw`: same approach, inverting `convert_ldm_vae_checkpoint`'s `DIFFUSERS_TO_LDM_MAPPING` for a tiny `AutoencoderKL(block_out_channels=(8,16), latent_channels=4)`
+- Both fixtures return a saved file **path**, matching B1's convention
+
+**Acceptance criterion:**
+```bash
+ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/real_fixtures.py --collect-only
+# -> collects without error
 ```
 
 #### P904-B2: pytest.ini + ci.yml: register realcpu marker, exclude from CI
@@ -422,14 +639,16 @@ suite.
 
 **Key implementation notes:**
 - Force `ANVILML_WORKER_MOCK=0` per-test using the same override-and-restore pattern already established in `test_arch_zit.py`'s `test_sample_real_assembles_pipeline_via_cache`
-- `LoadModel.execute(model_id=<tiny_zit_transformer fixture path>)` must return a `RealModel` whose `.in_channels` matches the *tiny* fixture's config (`4`), not the real architecture's published value (`16`) — this is the test's way of confirming it actually loaded the tiny checkpoint rather than silently falling back to something else
-- `LoadClip.execute(model_id=<fixture path>, clip_type=...)` must be run once per clip type (`qwen3`, `clip_l`, `t5`) using each of B1's three respective fixtures — do not test only one and assume the others are equivalent, which is exactly the assumption that let P904-A2's bug exist identically in two of the three files and go unnoticed in the third
+- `LoadModel.execute(model_id=<tiny_zit_transformer_raw fixture path from P904-B1b>)` must return a `RealModel` whose `.in_channels` matches the *tiny* fixture's config (`4`), not the real architecture's published value (`16`) — this is the test's way of confirming it actually loaded the tiny checkpoint rather than silently falling back to something else
+- `LoadClip.execute(model_id=<fixture path>, clip_type=...)` must be run once per clip type (`qwen3`, `clip_l`, `t5`) using each of P904-B1's three respective fixtures — do not test only one and assume the others are equivalent, which is exactly the assumption that let P904-A2's bug exist identically in two of the three files and go unnoticed in the third
 - Assert the loaded `RealClip.text_encoder`'s device matches whatever `ctx.device` was set to in the test's `NodeContext` — this is the direct regression check for P904-A7's fix
+- Add `test_loadmodel_no_network_access`: monkeypatch `huggingface_hub`'s network entry points (e.g. `huggingface_hub.file_download.hf_hub_download`) to raise immediately if called, then run `LoadModel.execute()` and assert it completes without ever triggering the guard — this is the direct regression test for the entire P904-A9–A14 HF-network-access fix, the defect this sub-effort exists to close. The harness script `01_loaders.py` (P904-A14) uses the same guard pattern on real hardware; this test is the committed, CI-adjacent (though still `realcpu`-gated) equivalent
 
 **Acceptance criterion:**
 ```bash
 ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/test_real_loaders.py -v -m realcpu
-# -> exits 0, all real-mode loader tests pass against synthetic tiny checkpoints
+# -> exits 0, all real-mode loader tests pass against synthetic tiny checkpoints,
+#    including test_loadmodel_no_network_access
 ```
 
 #### P904-B4: worker/tests/test_real_encoder_sampler.py: real CPU node tests for ClipTextEncode/EmptyLatent/Sampler/VaeDecode
@@ -448,7 +667,7 @@ task was originally scoped, now folded in).
 - `EmptyLatent.execute(width=128, height=128, ...)` is the direct regression test for P904-A4 (`self.ctx.device`, not bare `ctx.device`) — use 128×128 specifically, per the explicit minimal-load-bearing sizing agreed for this suite
 - `Sampler.execute(..., steps=1, cfg=1.0, seed=0)` with `steps=1` is deliberate: this suite verifies the code *functions* (real `ZImagePipeline.__call__` runs, real `cancel_flag.is_set()` doesn't raise, real `loader_fn` resolves `tokenizer`/`text_encoder` from the new `clip` parameter), not that the output is a meaningful image — do not increase `steps` to "look more real," it only adds CPU runtime with no additional verification value
 - This is the direct regression test for P904-A5 (`threading.Event`) and P904-A6/A6b (`clip` parameter, no `vae` parameter) together — a failure here pinpoints whether the wiring fix or the underlying pipeline call itself is the problem
-- `VaeDecode.execute(vae=<real tiny_vae from B1>, latent=<a real tensor whose shape matches the tiny VAE's expected input>)` must return a real `PIL.Image.Image` — D20's own production code was verified correct against `ZImagePipeline`'s own decode formula during this phase's D20 audit, so this is coverage, not a bugfix target; if it fails, the bug is most likely in this test's fixture shapes, not in `decode.py` itself, and should be debugged with that prior in mind
+- `VaeDecode.execute(vae=<real tiny_vae_raw fixture from P904-B1b>, latent=<a real tensor whose shape matches the tiny VAE's expected input>)` must return a real `PIL.Image.Image` — D20's own production code was verified correct against `ZImagePipeline`'s own decode formula during this phase's D20 audit, so this is coverage, not a bugfix target; if it fails, the bug is most likely in this test's fixture shapes, not in `decode.py` itself, and should be debugged with that prior in mind
 - If P904-A1 chose to relocate `test_vaedeode_real_path_returns_pil_image` into this file rather than guard it in place, incorporate it here rather than authoring a duplicate — check what P904-A1 actually did before writing this task's `VaeDecode` test from scratch
 
 **Acceptance criterion:**
@@ -489,11 +708,13 @@ ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/t
 | MODIFY | `worker/nodes/arch/clip/qwen3.py` | Fix tokenizer path depth (A2); add device param, `.to(device)`, pass device to RealClip (A7) |
 | MODIFY | `worker/nodes/arch/clip/clip_l.py` | Fix tokenizer path depth (A2); add device param, `.to(device)`, pass device to RealClip (A7) |
 | MODIFY | `worker/nodes/arch/clip/t5.py` | Add device param, `.to(device)`, pass device to RealClip (A7) — path depth already correct, not touched |
-| MODIFY | `worker/nodes/loader.py` | Add missing `import torch` in `LoadClip.execute()` (A3); pass `device=self.ctx.device` into `module.load()` (A7); add device param + `.to(device)` to `_load_model_from_hf_directory` and `LoadVae.execute()`'s loader_fn (A8) |
+| MODIFY | `worker/nodes/loader.py` | Add missing `import torch` in `LoadClip.execute()` (A3); pass `device=self.ctx.device` into `module.load()` (A7); add device param + `.to(device)` to loader functions (A8); delete deprecated `_load_from_hf_directory`/`_load_clip_from_hf_directory` (A9); rename and rewrite `_load_model_from_hf_directory`/`LoadVae`'s inline loader/`LoadClip`'s inline dispatch into `_load_model_from_safetensors`/`_load_vae_from_safetensors`/`_load_clip_from_safetensors` thin arch-dispatch wrappers (A12) |
 | MODIFY | `worker/nodes/sampler.py` | Fix `ctx` → `self.ctx` in `EmptyLatent` (A4); add `clip` input slot and pass-through in `Sampler` (A6) |
 | MODIFY | `worker/worker_main.py` | Replace `list[bool]` cancel flag with `threading.Event()` (A5) |
-| MODIFY | `worker/nodes/arch/diffusion/zit.py` | Add `clip` parameter, fix loader_fn's tokenizer/text_encoder source (A6); remove vestigial `vae` parameter (A6b) |
-| CREATE | `worker/tests/real_fixtures.py` | Synthetic tiny-config checkpoint fixtures for all five real-mode component types; `tiny_vae` reused by both `LoadVae` and `VaeDecode` coverage (B1) |
+| MODIFY | `worker/nodes/arch/diffusion/zit.py` | Add `clip` parameter, fix loader_fn's tokenizer/text_encoder source (A6); remove vestigial `vae` parameter (A6b); add `load_transformer()` (A10) and `load_vae()` (A11) — both offline, no HF network access |
+| MODIFY | `worker/nodes/arch/diffusion/__init__.py` | Add `get_module_by_name(arch: str)` lookup alongside the existing `get_module(model_obj)` (A13) |
+| MODIFY | `01_loaders.py` (external real-path harness, not part of this repo) | Update for the new offline loading path; add a network-call guard that fails loudly on any `huggingface_hub` invocation (A14) |
+| CREATE | `worker/tests/real_fixtures.py` | Tiny CLIP checkpoint fixtures (qwen3/clip_l/t5), native `state_dict()` format (B1); tiny ZiT transformer/VAE fixtures in raw, pre-remap checkpoint format — required to actually exercise A10/A11's remap path (B1b) |
 | MODIFY | `worker/tests/pytest.ini` | Register `realcpu` marker (B2) |
 | MODIFY | `.github/workflows/ci.yml` | Add `-m "not realcpu"` to the worker test job's pytest invocation (B2) |
 | CREATE | `worker/tests/test_real_loaders.py` | Real CPU tests for LoadModel/LoadVae/LoadClip (B3) |
@@ -504,12 +725,13 @@ ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/t
 
 | Test File | Test Name | What It Verifies | Preconditions | Inputs | Expected Output | Acceptance Command |
 |-----------|-----------|-------------------|----------------|--------|-------------------|---------------------|
-| `test_real_loaders.py` | `test_loadmodel_real_tiny_checkpoint` | LoadModel's real path loads a real (tiny) checkpoint without the A2/A1-class defects | `ANVILML_WORKER_MOCK=0`, `realcpu` marker, `tiny_zit_transformer` fixture | `LoadModel.execute(model_id=<fixture path>)` | `RealModel.in_channels == 4` (the tiny config's value) | `ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/test_real_loaders.py -k loadmodel -v -m realcpu` |
-| `test_real_loaders.py` | `test_loadclip_all_three_types_correct_device` | LoadClip works for qwen3/clip_l/t5 and places the text encoder on `ctx.device` | `ANVILML_WORKER_MOCK=0`, `realcpu` marker, all three tiny clip fixtures | `LoadClip.execute(model_id=<fixture>, clip_type=<type>)` for each type | `RealClip.text_encoder`'s device matches `ctx.device` for all three | `ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/test_real_loaders.py -k loadclip -v -m realcpu` |
-| `test_real_encoder_sampler.py` | `test_emptylatent_real_self_ctx` | EmptyLatent's real path doesn't reference unbound `ctx` (A4 regression) | `ANVILML_WORKER_MOCK=0`, `realcpu` marker, `tiny_zit_transformer` fixture | `EmptyLatent.execute(width=128, height=128, model=<real RealModel>)` | Real `torch.Tensor` matching `compute_latent_shape()` | `ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/test_real_encoder_sampler.py -k emptylatent -v -m realcpu` |
-| `test_real_encoder_sampler.py` | `test_sampler_real_one_step` | Sampler's real path runs a real `ZImagePipeline.__call__` without A5/A6/A6b's defects | `ANVILML_WORKER_MOCK=0`, `realcpu` marker, full B1 fixture set | `Sampler.execute(..., steps=1, cfg=1.0, seed=0)` | Unchanged-shape latent tensor, non-negative resolved seed | `ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/test_real_encoder_sampler.py -k sampler -v -m realcpu` |
-| `test_real_encoder_sampler.py` | `test_vaedecode_real_tiny_vae` | VaeDecode's real path (D20) decodes a real latent to a real image | `ANVILML_WORKER_MOCK=0`, `realcpu` marker, `tiny_vae` fixture | `VaeDecode.execute(vae=<real tiny_vae>, latent=<matching-shape tensor>)` | Real `PIL.Image.Image`, not `MockImage` | `ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/test_real_encoder_sampler.py -k vaedecode -v -m realcpu` |
-| `test_real_chain.py` | `test_full_chain_tiny_weights_128px` | The full seven-node real-mode chain functions end-to-end, model load through decoded image | `ANVILML_WORKER_MOCK=0`, `realcpu` marker, full B1 fixture set | LoadModel→LoadVae→LoadClip→ClipTextEncode→EmptyLatent→Sampler→VaeDecode, 128×128, 1 step | No exception; final output is a real `PIL.Image.Image` | `ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/test_real_chain.py -v -m realcpu` |
+| `test_real_loaders.py` | `test_loadmodel_real_tiny_checkpoint` | LoadModel's real path loads a real (tiny, raw-format) checkpoint without the A2/A3-class defects or the A9–A13 HF-network-access defect | `ANVILML_WORKER_MOCK=0`, `realcpu` marker, `tiny_zit_transformer_raw` fixture (P904-B1b) | `LoadModel.execute(model_id=<fixture path>)` | `RealModel.in_channels == 4` (the tiny config's value); zero `huggingface_hub` network calls | `ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/test_real_loaders.py -k loadmodel -v -m realcpu` |
+| `test_real_loaders.py` | `test_loadclip_all_three_types_correct_device` | LoadClip works for qwen3/clip_l/t5 and places the text encoder on `ctx.device` | `ANVILML_WORKER_MOCK=0`, `realcpu` marker, all three tiny clip fixtures (P904-B1) | `LoadClip.execute(model_id=<fixture>, clip_type=<type>)` for each type | `RealClip.text_encoder`'s device matches `ctx.device` for all three | `ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/test_real_loaders.py -k loadclip -v -m realcpu` |
+| `test_real_encoder_sampler.py` | `test_emptylatent_real_self_ctx` | EmptyLatent's real path doesn't reference unbound `ctx` (A4 regression) | `ANVILML_WORKER_MOCK=0`, `realcpu` marker, `tiny_zit_transformer_raw` fixture (P904-B1b) | `EmptyLatent.execute(width=128, height=128, model=<real RealModel>)` | Real `torch.Tensor` matching `compute_latent_shape()` | `ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/test_real_encoder_sampler.py -k emptylatent -v -m realcpu` |
+| `test_real_encoder_sampler.py` | `test_sampler_real_one_step` | Sampler's real path runs a real `ZImagePipeline.__call__` without A5/A6/A6b's defects | `ANVILML_WORKER_MOCK=0`, `realcpu` marker, full B1/B1b fixture set | `Sampler.execute(..., steps=1, cfg=1.0, seed=0)` | Unchanged-shape latent tensor, non-negative resolved seed | `ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/test_real_encoder_sampler.py -k sampler -v -m realcpu` |
+| `test_real_encoder_sampler.py` | `test_vaedecode_real_tiny_vae` | VaeDecode's real path (D20) decodes a real latent to a real image | `ANVILML_WORKER_MOCK=0`, `realcpu` marker, `tiny_vae_raw` fixture (P904-B1b) | `VaeDecode.execute(vae=<real tiny_vae_raw>, latent=<matching-shape tensor>)` | Real `PIL.Image.Image`, not `MockImage` | `ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/test_real_encoder_sampler.py -k vaedecode -v -m realcpu` |
+| `test_real_chain.py` | `test_full_chain_tiny_weights_128px` | The full seven-node real-mode chain functions end-to-end, model load through decoded image | `ANVILML_WORKER_MOCK=0`, `realcpu` marker, full B1/B1b fixture set | LoadModel→LoadVae→LoadClip→ClipTextEncode→EmptyLatent→Sampler→VaeDecode, 128×128, 1 step | No exception; final output is a real `PIL.Image.Image` | `ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/test_real_chain.py -v -m realcpu` |
+| `test_real_loaders.py` | `test_loadmodel_no_network_access` | LoadModel's real path makes zero `huggingface_hub` calls (A9–A13 regression) | `ANVILML_WORKER_MOCK=0`, `realcpu` marker, `tiny_zit_transformer_raw` fixture, `huggingface_hub` network entry points monkeypatched to raise | `LoadModel.execute(model_id=<fixture path>)` | Completes without raising; the monkeypatched network guard is never triggered | `ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/test_real_loaders.py -k no_network -v -m realcpu` |
 
 ## CI Impact
 
@@ -539,8 +761,9 @@ call.
 | `ANVILML_DESIGN.md §1550`, `§10.4`, and `§10.4a` have all been verified/pre-corrected ahead of this phase's execution (see Interfaces and Contracts above) — the residual risk is that the human-authored doc and this task list's understanding of "current" drift apart again before P904 actually executes (e.g. if `ANVILML_DESIGN.md` is edited again for unrelated reasons between this phase's authoring and its execution) | Low | Medium | Each affected task (`P904-A5`, `A6`, `A6b`, `A7`) explicitly states it must not edit the design doc itself; if an ACT agent finds the doc no longer matches what this task list describes, that is a `Status=BLOCKED` condition (per the agent operating rules — design-doc drift is outside any task's authority to self-resolve), not a license to edit the doc or silently proceed |
 | Fixing P904-A7/A8's device placement could change memory behaviour (model now actually resides on GPU) in ways not previously exercised by any test, surfacing a downstream OOM or shape issue that was latent while everything silently ran on CPU | Medium | Medium | `PipelineCache`'s existing OOM-retry-with-eviction logic (P18-C1) is designed for exactly this; no new mitigation needed beyond confirming P18-C1's tests still pass post-fix |
 | P904-A6's `clip` parameter addition to `Sampler.INPUT_SLOTS` is a public node contract change — any already-authored example workflow JSON (`docs/example_workflows/zit_fp8.json`) referencing `Sampler` without a `clip` input will need updating | High | Low | `SlotSpec` does not currently support a way to distinguish "newly required" from "always required" — confirm with the ACT agent whether `clip` should be `optional=True` with a deprecation path, or a hard-required breaking change; check `docs/example_workflows/zit_fp8.json` and update it in the same task if it references Sampler |
-| Group B's synthetic tiny-config checkpoints (P904-B1) may not faithfully reproduce every shape-dependent code path a real-size checkpoint would exercise — e.g. attention head dimension edge cases that only manifest at the real architecture's actual `n_heads`/`dim` ratio | Low | Low | Group B's stated purpose is proving the code *functions* (no crash, correct shape propagation, correct object wiring), not full numerical/architectural fidelity — the real-GPU manual harness (built separately, prior to this phase) remains the tool for full-fidelity verification against real weights |
-| A CPU-only `torch` install (P904-B2's `cpu-linux-agent.txt`) running real `diffusers`/`transformers` inference, even at `steps=1` and 128×128, could still be slow enough to make routine ACT-time runs impractical | Medium | Low | Tiny config (2-layer transformer, `dim=64`) keeps per-test runtime in the low seconds on CPU; if ACT-time runtime proves impractical in practice, the fixture configs in B1 can be shrunk further without losing coverage of the code paths being verified |
+| Group B's synthetic tiny-config checkpoints (P904-B1/B1b) may not faithfully reproduce every shape-dependent code path a real-size checkpoint would exercise — e.g. attention head dimension edge cases that only manifest at the real architecture's actual `n_heads`/`dim` ratio | Low | Low | Group B's stated purpose is proving the code *functions* (no crash, correct shape propagation, correct object wiring), not full numerical/architectural fidelity — the real-GPU manual harness (built separately, prior to this phase) remains the tool for full-fidelity verification against real weights |
+| A CPU-only `torch` install (P904-B2's `cpu-linux-agent.txt`) running real `diffusers`/`transformers` inference, even at `steps=1` and 128×128, could still be slow enough to make routine ACT-time runs impractical | Medium | Low | Tiny config (2-layer transformer, `dim=64`) keeps per-test runtime in the low seconds on CPU; if ACT-time runtime proves impractical in practice, the fixture configs in B1/B1b can be shrunk further without losing coverage of the code paths being verified |
+| P904-A10/A11 import `diffusers.loaders.single_file_utils.convert_z_image_transformer_checkpoint_to_diffusers` and `convert_ldm_vae_checkpoint` — both are private (not re-exported from `diffusers.loaders.__init__`), unversioned internal helpers. A `diffusers` upgrade could rename, move, or change the signature of either with no deprecation warning, silently breaking offline loading | Medium | High | P904-B1b's round-trip fixture test (build raw format → remap → compare to expected) will catch a signature/behavior change immediately on the next CI/ACT run after any `diffusers` version bump; pin `diffusers` more tightly than `>=0.38.0` if this risk needs tightening further, or vendor a copy of the two specific functions if upstream API stability becomes a recurring problem |
 
 ## Acceptance Criteria
 
@@ -551,25 +774,34 @@ call.
 - [ ] `docs/example_workflows/zit_fp8.json` (if it references `Sampler`) updated to include a `clip` input, or confirmed not to need updating
 - [ ] `grep -n 'not realcpu' .github/workflows/ci.yml` confirms Group B is excluded from the default CI gate
 - [ ] `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py -v` exits 0 in a venv built from `base.txt` alone, with no `torch` installed at all (the actual regression check for A1 — confirms CI is no longer broken by D20's committed test)
+- [ ] `grep -n "_load_from_hf_directory\|_load_clip_from_hf_directory" worker/nodes/loader.py` returns no hits (A9 — deprecated remnants deleted)
+- [ ] `grep -n "_load_model_from_safetensors\|_load_vae_from_safetensors\|_load_clip_from_safetensors" worker/nodes/loader.py` shows all three present (A12)
+- [ ] `python3 -c "import os; os.environ['ANVILML_WORKER_MOCK']='1'; from worker.nodes.arch.diffusion import get_module_by_name; assert get_module_by_name('zit') is not None"` exits 0 (A13)
 - [ ] `ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/ -v -m realcpu` exits 0 when run manually/at ACT time with `cpu-linux-agent.txt` installed (not part of any automated gate; this is a manual confirmation step, not a CI assertion)
 
 ```bash
 # Runnable Proof (manual): once P904 lands, the real-path verification harness
 # (run separately, not part of this repo) should be re-run end-to-end against
-# real ZiT FP8 weights to confirm all nine fixes hold together:
-#   01_loaders.py    -> LoadModel/LoadVae/LoadClip all PASS, no NameError/OSError
+# real ZiT FP8 weights to confirm every fix in this phase holds together:
+#   01_loaders.py    -> LoadModel/LoadVae/LoadClip all PASS, no NameError/OSError,
+#                       and CRITICALLY: no "config.json: 100%" download line, no
+#                       huggingface_hub warnings -- this is the actual regression
+#                       check for the A9-A14 offline-loading fix, the defect that
+#                       prompted this entire sub-effort. Confirm zero network
+#                       activity, not just that the loaders return a result.
 #   02_clip_encode.py -> ClipTextEncode PASS, hidden_dim check passes
 #   03_empty_latent.py -> EmptyLatent PASS, shape matches compute_latent_shape()
 #   04_sampler.py    -> both call sites PASS; denoised latent shape == input shape
 #   05_vae_decode.py -> VaeDecode PASS; decoded image size matches the original
-#                       EmptyLatent request (this script was originally authored
-#                       expecting D20's NotImplementedError; re-run it now that
-#                       D20 is committed to confirm it actually PASSes)
+#                       EmptyLatent request
 # This is not a committed test in this repo -- it is the external harness
-# already used to discover these defects, re-run as a manual confirmation step.
+# already used to discover the HF-network-access defect, re-run as the manual
+# confirmation step that closes the loop on it.
 #
 # Additionally, Group B's own suite (committed, but realcpu-marked and never
-# run by CI) is the project's first real-mode coverage that *is* committed:
+# run by CI) is the project's first real-mode coverage that *is* committed,
+# including test_loadmodel_no_network_access (B3) as the committed,
+# CI-adjacent mirror of the manual harness's network-call guard:
 ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/ -v -m realcpu
 # -> exits 0 against synthetic tiny checkpoints, run manually or by the
 #    OpenCode agent at ACT time on a CPU-capable box -- never by CI
@@ -610,6 +842,16 @@ ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/ 
   in this phase's audit history where the production code needed no fix;
   worth noting for calibration on how much scrutiny future similarly-sized
   groups warrant before assuming a defect must exist somewhere.
+- The P904-A9–A14 HF-network-access defect was found by neither static
+  code reading nor mock-mode tests — both had already passed for this
+  code path. It was found only because the project owner ran the manual
+  real-path harness against real GPU hardware and read the console
+  output closely enough to notice a `config.json` download progress bar.
+  This is the single strongest argument in this phase for Group B's
+  existence and for `01_loaders.py`'s continued manual use: some defects
+  are only observable as side effects (network calls, timing, resource
+  usage) that no functional assertion would catch, and only running the
+  real code against real inputs surfaces them.
 
 ## docs/RUNNABLE_PROOF.md update
 

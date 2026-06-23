@@ -1130,6 +1130,21 @@ def compute_latent_shape(batch_size: int, height: int, width: int, num_channels_
     ...
 ```
 
+Architecture modules also own loading the two components that are
+architecture-specific by construction — the diffusion transformer and its
+bound VAE (see §10.5 for why VAE loading lives here rather than as a
+separate generic path):
+
+```python
+def load_transformer(model_id: str) -> Any:
+    """Load this architecture's diffusion transformer from a raw .safetensors file."""
+    ...
+
+def load_vae(model_id: str) -> Any:
+    """Load this architecture's VAE from a raw .safetensors file."""
+    ...
+```
+
 The shape *formula* itself, not just a scale-factor constant, is
 architecture-specific: different model families pack latents differently
 (for example, some apply a simple spatial downscale, while others pack
@@ -1140,7 +1155,7 @@ additionally expose plain constants (e.g. a VAE spatial scale factor) for
 other purposes, but `compute_latent_shape()` is the only function generic
 nodes are permitted to call for shape computation.
 
-The `worker/nodes/arch/diffusion/__init__.py` package provides two
+The `worker/nodes/arch/diffusion/__init__.py` package provides three
 dispatch functions built on the same underlying iteration:
 
 ```python
@@ -1151,7 +1166,24 @@ def can_handle(model_obj: Any) -> bool:
 def get_module(model_obj: Any) -> ModuleType | None:
     """Return the actual matching arch module, or None if no module matches."""
     ...
+
+def get_module_by_name(arch: str) -> ModuleType | None:
+    """Return the arch module whose can_handle() matches a bare arch string."""
+    ...
 ```
+
+`get_module(model_obj)` requires an already-constructed model object — it
+reads `model_obj.arch` to find the matching module. `get_module_by_name(arch)`
+exists for the inverse situation: `LoadModel`/`LoadVae` only have a bare
+architecture string (read from safetensors metadata, or a path-derived
+fallback) at the point they need to dispatch to the correct arch module's
+own loading function — no model object exists yet, since loading the
+model *is* the operation being dispatched. `get_module_by_name` builds a
+minimal shim object carrying only `.arch = arch` and runs the same
+`can_handle()` matching logic against it, satisfying `can_handle()`'s
+actual contract (`getattr(model_obj, "arch", None)`) without constructing
+a real model. Both functions share the same `pkgutil.iter_modules()` scan;
+`get_module_by_name` does not duplicate or replace `get_module`.
 
 The generic `Sampler` node calls `get_module(model)` to obtain the matching
 architecture module, then calls `.sample(...)` on it directly. `EmptyLatent`
@@ -1185,15 +1217,24 @@ def load(model_id: str, torch_dtype: Any, device: str) -> "RealClip":
     ...
 ```
 
-The key structural difference from §10.4's diffusion dispatch: diffusion
-dispatch matches against a **loaded model object**'s `.arch` attribute
-(the model must already exist to know its architecture). CLIP dispatch
-matches against the **`clip_type` string itself** — `LoadClip` needs to
-know which loader to call *before* anything is loaded, since `clip_type`
-is the only signal available at that point. `worker/nodes/arch/clip/
-__init__.py` provides the same `can_handle(clip_type)` / `get_module(clip_type)`
-pair as §10.4, built on the same `pkgutil.iter_modules()` auto-import
-mechanism, just keyed on a string instead of an object.
+The key structural difference from §10.4's diffusion dispatch: `Sampler`
+and `EmptyLatent` dispatch diffusion modules against an **already-loaded
+model object**'s `.arch` attribute via `get_module(model_obj)`, since by
+the time sampling or latent shape computation happens, the model has
+already been loaded by an earlier node. `LoadModel`/`LoadVae` themselves,
+however, dispatch the *same* diffusion modules against a **bare arch
+string** via `get_module_by_name(arch)` (§10.4) — at load time, no model
+object exists yet, since loading the model is the operation being
+dispatched, exactly mirroring CLIP dispatch's situation. `LoadClip`
+dispatches CLIP modules against the **`clip_type` string itself** the same
+way, since `clip_type` is the only signal available before anything is
+loaded — `worker/nodes/arch/clip/__init__.py` provides `can_handle(clip_type)`
+/ `get_module(clip_type)` (note: CLIP dispatch's `get_module` is
+string-keyed by design, unlike diffusion dispatch's object-keyed
+`get_module` — the names are shared but the contracts differ; CLIP never
+needed a name-keyed variant alongside an object-keyed one because it only
+ever dispatches one way), built on the same `pkgutil.iter_modules()`
+auto-import mechanism as §10.4.
 
 Each `clip_type`'s tokenizer is vendored locally under `worker/assets/`
 (`qwen25_tokenizer/`, `clip_l_tokenizer/`, `t5_tokenizer/`) — small,
@@ -1209,19 +1250,92 @@ Apache-2.0 re-host).
 
 `LoadClip` dispatches via `arch.clip.get_module(clip_type)`, then calls
 `.load(model_id, torch_dtype=torch.bfloat16, device=ctx.device)` on the
-matching module — the same shape as `Sampler`'s
-`arch.get_module(model).sample(...)` call in §10.4. If no module matches,
+matching module. This is now structurally identical to `LoadModel`/`LoadVae`'s
+own dispatch (§10.5): both call `arch.diffusion.get_module_by_name(arch)`
+then `.load_transformer(model_id)`/`.load_vae(model_id)` on the matching
+module — the string-keyed-before-anything-is-loaded pattern `LoadClip`
+pioneered is now the shared convention across all three loader nodes, not
+a CLIP-specific exception to how `Sampler`'s object-keyed
+`arch.get_module(model).sample(...)` call works. If no module matches,
 `LoadClip` raises `ValueError(f"unsupported clip_type: {clip_type!r}")`.
 
 ### 10.5 FP8 Safetensors Support
 
-Both baseline models (Z-Image Turbo FP8 and Flux 2 Klein FP8) are loaded from `.safetensors` files. The `LoadModel` node uses `safetensors` library to load weights directly without converting dtype at load time (load in-place at FP8, let diffusers/torch compute at FP8 or upcast per-layer).
+Both baseline models (Z-Image Turbo FP8 and Flux 2 Klein FP8) are loaded from `.safetensors` files. The `LoadModel` node dispatches to the matching arch module's `load_transformer()` (see below), which uses the `safetensors` library to load weights directly without converting dtype at load time (load in-place at FP8, let diffusers/torch compute at FP8 or upcast per-layer).
 
 The `InferenceCaps.fp8` field must be `True` for any GPU that will execute these models. If `fp8` is `False` for the selected device, the scheduler emits a `422` at dispatch time with error `device_does_not_support_fp8`.
 
-**Component vs. pipeline caching.** `LoadModel`, `LoadVae`, and `LoadClip` each cache their own raw component (the diffusion transformer, VAE, and text encoder respectively) via `pipeline_cache.get_or_load(model_id, ...)`. `LoadModel` and `LoadVae` load each component from a single `.safetensors` file via the corresponding `diffusers` model class's `from_single_file()` (e.g. `ZImageTransformer2DModel.from_single_file()`, `AutoencoderKL.from_single_file()` — both registered in `diffusers.loaders.single_file_model.SINGLE_FILE_LOADABLE_CLASSES`, which infers the component's config from the checkpoint's own tensor keys, no `config.json` required). `LoadClip` dispatches to `worker/nodes/arch/clip/` (§10.4a) since `transformers` text-encoder classes have no equivalent single-file loader; those modules use `from_config()` + `load_state_dict()` instead. Arch modules (`arch/diffusion/zit.py`, `arch/diffusion/flux.py`) do not call a pipeline class's `from_pretrained()` inside `sample()` — doing so would reload the full model from disk on every sampling call. Instead, on the first `sample()` call for a given `model_id`, the arch module assembles the full runnable pipeline object from the already-cached components and caches that assembled pipeline itself under a separate key (`f"{model_id}:pipeline"`) via `pipeline_cache.get_or_load()`. Subsequent `sample()` calls for the same `model_id` reuse the cached pipeline. This keeps `LoadModel`/`LoadVae`/`LoadClip` decoupled from any specific diffusers pipeline class while giving arch modules — the only place that knows which pipeline class a given architecture requires — sole responsibility for pipeline assembly.
+**Component vs. pipeline caching.** `LoadModel`, `LoadVae`, and `LoadClip`
+each cache their own raw component (the diffusion transformer, VAE, and
+text encoder respectively) via `pipeline_cache.get_or_load(model_id, ...)`.
+All three are thin dispatch wrappers (`_load_model_from_safetensors`,
+`_load_vae_from_safetensors`, `_load_clip_from_safetensors` in `loader.py`)
+that resolve an architecture/clip-type string, look up the matching arch
+module via `get_module_by_name(arch)` (diffusion, §10.4) or `get_module
+(clip_type)` (CLIP, §10.4a), and call `.load_transformer(model_id)`,
+`.load_vae(model_id)`, or `.load(model_id, ...)` on it. None of the three
+loader nodes call a `diffusers` or `transformers` model class directly —
+that responsibility belongs entirely to the arch modules, which are the
+only place that knows the concrete loading mechanics a given architecture
+requires.
 
-An HF-style directory-based loading path (`from_pretrained(model_id, subfolder=...)`) was implemented first and shipped, then found to be incompatible with this project's actual model storage convention (manually-downloaded standalone `.safetensors` files, never HF snapshot directories) and replaced with the single-file approach described above as the active and only path. The directory-based code was not deleted — it remains in each affected node as an unreachable `_load_from_hf_directory(...)` function, preserved for a possible future reactivation.
+Each arch module's `load_transformer()`/`load_vae()` constructs the model
+class directly from architecture-specific default config values (no
+`config.json` of any kind, local or remote) and loads weights via
+`safetensors.torch.load_file(model_id)` followed by a key-remapping step —
+real `.safetensors` checkpoints use the original (pre-`diffusers`) key
+names and a fused QKV projection, not the names a freshly-constructed
+`diffusers` model's own `state_dict()` would produce, so a remap is
+required regardless of where the config comes from. The remap reuses
+`diffusers`' own internal conversion functions (e.g.
+`diffusers.loaders.single_file_utils.convert_z_image_transformer_checkpoint_to_diffusers`,
+`convert_ldm_vae_checkpoint`) rather than reimplementing that logic. This
+mirrors the architecture-detection-from-tensor-keys pattern other
+single-file-checkpoint-loading tools (e.g. ComfyUI) use, and is a
+deliberate choice to avoid `diffusers`' own `from_single_file()` entry
+point: `from_single_file()`, when given neither a `config=` nor
+`original_config=` argument, falls through to `fetch_diffusers_config(checkpoint)`,
+which heuristically guesses a HuggingFace Hub repo id from the checkpoint
+and downloads that repo's `config.json` over the network — confirmed by
+direct execution and by reading `diffusers` 0.38.0 source. This is
+incompatible with this project's offline-by-design requirement regardless
+of `local_files_only`, since that flag only suppresses the download if the
+guessed repo happens to already be present in the local HF cache; it does
+not stop the lookup from being attempted, nor guarantee a correct guess.
+`LoadClip` never had this problem — `transformers` text-encoder classes
+have no `from_single_file()` equivalent at all, so `arch/clip/` modules
+were always constructing the model from local config values directly; the
+diffusion side now does the same.
+
+`arch/diffusion/zit.py`'s `sample()` does not call a pipeline class's
+`from_pretrained()` or `from_single_file()` — doing so would reload the
+full model from disk on every sampling call. Instead, on the first
+`sample()` call for a given `model_id`, the arch module assembles the full
+runnable pipeline object directly from the already-cached components
+(themselves loaded via `load_transformer()`/`load_vae()`/CLIP's `load()`)
+and caches that assembled pipeline itself under a separate key
+(`f"{model_id}:pipeline"`) via `pipeline_cache.get_or_load()`. Subsequent
+`sample()` calls for the same `model_id` reuse the cached pipeline. This
+keeps `LoadModel`/`LoadVae`/`LoadClip` decoupled from any specific
+diffusers pipeline class while giving arch modules — the only place that
+knows which pipeline class a given architecture requires — sole
+responsibility for both component loading and pipeline assembly.
+
+An HF-style directory-based loading path (`from_pretrained(model_id,
+subfolder=...)`) was implemented first and shipped, then found to be
+incompatible with this project's actual model storage convention
+(manually-downloaded standalone `.safetensors` files, never HF snapshot
+directories) and replaced with a single-file approach. That replacement
+itself used `diffusers`' `from_single_file()`, which — as described above —
+turned out to retain a network dependency of its own; it has since been
+replaced by the local-config-plus-key-remap approach described above,
+which has no network dependency at all. The original directory-based code
+was deprecated rather than deleted at the time, kept as unreachable
+`_load_from_hf_directory(...)`/`_load_clip_from_hf_directory(...)`
+functions in case of future reactivation; that decision has since been
+reversed and the deprecated functions deleted outright — there is no
+remaining reference implementation for HF-directory-style loading
+anywhere in this codebase.
 
 ---
 
