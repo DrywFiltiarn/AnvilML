@@ -110,16 +110,17 @@
     "P18-D8",
     "P18-D9",
     "P18-D10",
-    "P18-D11"
+    "P18-D11",
+    "P18-D12"
   ],
-  "in_progress": "P18-D12",
+  "in_progress": "P18-D13",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-23T07:54:25+0200",
+  "last_updated": "2026-06-23T08:46:10+0200",
   "plan_approved": true,
-  "current_plan": "",
-  "plan_approval_message_id": "1518850405419712645",
+  "current_plan": "1. **Read `LoadModel.execute()` carefully to identify the bare `ctx` bug.** Search for any occurrence of bare `ctx.` (not `self.ctx.`) in the real-mode path of `LoadModel.execute()`. If the bug exists, fix it to `self.ctx.pipeline_cache`. If it does not exist (already fixed by a prior task), proceed without change.\n\n2. **Extract the existing real-mode loading code into `_load_from_hf_directory(model_id, arch) -> RealModel`.** This new function at module level (after the `LoadClip` class, similar to the existing `_load_from_hf_directory` at line 494) will contain:\n   - The `safe_open(model_id, framework=\"pt\")` metadata read for arch detection.\n   - The arch path normalization (`\"/\"` and `\"\\\\\"` splitting).\n   - The original `loader_fn` body calling `ZImageTransformer2DModel.from_pretrained(model_id, subfolder=\"unet\", torch_dtype=torch.float16)`.\n   - Return `RealModel(transformer, arch=arch)`.\n   - Add a Google-style docstring explaining this is the preserved deprecated path.\n\n3. **Replace the inline loading code in `LoadModel.execute()`'s real-mode path.** The new `loader_fn` closure will call `_load_from_hf_directory(model_id, arch)` and return its result. The `safe_open` block and arch detection are removed from inline code (they now live in `_load_from_hf_directory`). The `loader_fn` body becomes a single line: `return _load_from_hf_directory(model_id, arch)`.\n\n4. **Add the `from_single_file` call as the active loading path.** Inside `_load_from_hf_directory`, the `loader_fn` body is replaced with `ZImageTransformer2DModel.from_single_file(model_id, torch_dtype=torch.float16)`. The function still wraps the result in `RealModel(transformer, arch=arch)` and returns it.\n\n   Wait \u2014 re-reading the task context more carefully: the `_load_from_hf_directory` function is the *preserved* original code (with `from_pretrained`). The *active* path should use `from_single_file`. So the approach is:\n   \n   a. Create `_load_from_hf_directory(model_id, arch) -> RealModel` containing the original `from_pretrained` code (preserved, never called).\n   b. In `LoadModel.execute()`'s real-mode path, replace the inline code with a call to a new active loading path that uses `from_single_file`. Since the task says \"replace from_pretrained with from_single_file\" and \"the original directory-based code moves into _load_from_hf_directory\", the active path in `execute()` should directly call `from_single_file` (not go through `_load_from_hf_directory`).\n\n   Revised approach:\n   a. Create `_load_from_hf_directory(model_id, arch) -> RealModel` with the original `from_pretrained` code (preserved, never called).\n   b. In `LoadModel.execute()`'s real-mode path, replace the inline `safe_open` + `loader_fn` block with direct `ZImageTransformer2DModel.from_single_file(model_id, torch_dtype=torch.float16)` call, wrapping in `RealModel(transformer, arch=arch)`, then passing through `pipeline_cache.get_or_load()`.\n\n5. **Fix the `ctx` bug if present.** Change any bare `ctx.pipeline_cache` to `self.ctx.pipeline_cache` in `LoadModel.execute()`.\n\n6. **Update the `execute()` docstring.** Change the `Raises` section from \"NotImplementedError\" (which is no longer accurate for real mode) and update the description to reflect single-file loading.\n\n7. **Verify all existing tests pass.** Run `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py -v` \u2014 mock mode is unaffected by these changes since the mock path returns before reaching any real-mode code.",
+  "plan_approval_message_id": "1518867988516966472",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1518850402882289686",
+  "plan_report_message_id": "1518867985068982335",
   "impl_report_message_id": null
 }

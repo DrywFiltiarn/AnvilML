@@ -217,19 +217,22 @@ class LoadModel(BaseNode):
 
         Reads the ``model_id`` input, checks mock mode, and either
         returns a ``MockModel`` sentinel or loads a real model via
-        safetensors + pipeline_cache.
+        single-file safetensors loading + pipeline_cache.
 
         Args:
             **inputs: Must contain ``"model_id"`` — the identifier
-                of the model to load.
+                of the model to load (path to a ``.safetensors`` file
+                or a directory containing one).
 
         Returns:
             Dict with key ``"model"`` containing either a ``MockModel``
-            (mock mode) or a loaded pipeline model object (real mode).
+            (mock mode) or a ``RealModel`` wrapping a loaded transformer
+            (real mode).
 
         Raises:
-            NotImplementedError: If called in non-mock mode. The real
-                safetensors loading path is stubbed until P18-D1.
+            OSError: If the model file or directory does not exist.
+            ValueError: If the safetensors file is malformed or
+                missing required keys.
         """
         # Read the model_id input. In mock mode this is a
         # placeholder string; in real mode it references a
@@ -247,63 +250,14 @@ class LoadModel(BaseNode):
             # The arch="zit" matches the Phase 018 baseline model.
             return {"model": MockModel(arch="zit")}
 
-        # Real mode: load actual safetensors weights.
-        # Lazy imports — these packages are not available in mock mode
-        # (no torch installed), so importing them here keeps the worker
-        # importable when ANVILML_WORKER_MOCK=1.
-        from safetensors.torch import safe_open
-        from diffusers import ZImageTransformer2DModel
-        import torch
-
-        # Open the safetensors file to read metadata before loading.
-        # framework="pt" is used because safetensors supports multiple
-        # backends (pt, np, tf, jax); "pt" selects the PyTorch reader
-        # which is what diffusers expects for model loading.
-        with safe_open(model_id, framework="pt") as st:
-            # Read architecture from safetensors file metadata.
-            # The metadata dict is populated by the safetensors writer;
-            # if absent, fall back to the directory naming convention
-            # because not all model exports embed arch metadata.
-            metadata = st.metadata
-            arch = (metadata.get("arch") if metadata else None) or model_id
-
-        # If the arch string still looks like a path (contains "/" or
-        # "\\"), extract the directory name as the architecture hint.
-        # This handles the common case where model_id is a directory
-        # path like "/models/zit-fp8/unet" — we take the last component.
-        # The "models/" directory naming convention uses the directory
-        # name as the architecture identifier when metadata is absent.
-        if "/" in arch or "\\" in arch:
-            arch = arch.split("/")[-1].split("\\")[-1]
-
-        # Define the loader closure that constructs the transformer.
-        # This is passed to pipeline_cache.get_or_load() so the actual
-        # model loading only happens on cache miss. The closure captures
-        # model_id, arch, and torch_dtype to avoid redundant resolution.
-        def loader_fn() -> RealModel:
-            # ZImageTransformer2DModel is the correct diffusers class
-            # for Z-Image Turbo FP8 models. It provides the transformer
-            # backbone that the diffusion pipeline's denoising loop
-            # calls at every step. from_pretrained loads from the
-            # "unet" subfolder because the safetensors weights for
-            # the transformer are stored there in the standard layout.
-            transformer = ZImageTransformer2DModel.from_pretrained(
-                model_id,
-                subfolder="unet",
-                torch_dtype=torch.float16,  # FP8 models load as FP16; the pipeline keeps the transformer at FP8 via InferenceCaps.
-            )
-            return RealModel(transformer, arch=arch)
-
-        # Get the model from cache or load it via loader_fn.
-        # The cache key uses "fp8" dtype because Z-Image Turbo FP8
-        # models are stored and served in FP8 precision. The dtype
-        # string is part of the cache key so FP8 and FP16 variants
-        # of the same model are cached independently.
+        # Real mode: load actual safetensors weights via single-file
+        # loading. The _load_model_from_hf_directory helper handles
+        # arch detection and the actual diffusers loading.
         # Note: self.ctx.pipeline_cache is typed as dict[str, Any] in
         # NodeContext but a PipelineCache instance at runtime
         # (retrofitted by P903-A2), so .get_or_load() is available.
         result = self.ctx.pipeline_cache.get_or_load(
-            model_id, "fp8", loader_fn
+            model_id, "fp8", lambda: _load_model_from_hf_directory(model_id, model_id)
         )
         return {"model": result}
 
@@ -491,7 +445,74 @@ class LoadClip(BaseNode):
         return module.load(model_id, torch_dtype=torch.bfloat16)
 
 
-def _load_from_hf_directory(model_id: str, clip_type: str) -> RealClip:
+def _load_model_from_hf_directory(model_id: str, arch: str) -> RealModel:
+    """Load a diffusion transformer from a single safetensors file.
+
+    This is the active loading path for ``LoadModel`` in real mode.
+    It reads the safetensors metadata to detect the architecture,
+    normalises the arch string from a path to a bare name, then
+    loads the ``ZImageTransformer2DModel`` via
+    ``from_single_file()`` with ``torch.float16`` precision.
+
+    Args:
+        model_id: Path to the safetensors file or directory
+            containing the model weights.
+        arch: Architecture identifier (e.g. ``"zit"``). Used as a
+            fallback when the safetensors metadata does not contain
+            an ``arch`` key.
+
+    Returns:
+        A ``RealModel`` wrapping the loaded transformer and arch.
+
+    Raises:
+        OSError: If the model file or directory does not exist.
+        ValueError: If the safetensors file is malformed.
+    """
+    # Lazy imports — these packages are not available in mock mode
+    # (no torch installed), so importing them here keeps the worker
+    # importable when ANVILML_WORKER_MOCK=1.
+    from safetensors.torch import safe_open
+    from diffusers import ZImageTransformer2DModel
+    import torch
+
+    # Open the safetensors file to read metadata before loading.
+    # framework="pt" is used because safetensors supports multiple
+    # backends (pt, np, tf, jax); "pt" selects the PyTorch reader
+    # which is what diffusers expects for model loading.
+    with safe_open(model_id, framework="pt") as st:
+        # Read architecture from safetensors file metadata.
+        # The metadata dict is populated by the safetensors writer;
+        # if absent, fall back to the arch argument (which defaults
+        # to model_id in the caller) because not all model exports
+        # embed arch metadata.
+        metadata = st.metadata
+        detected_arch = (metadata.get("arch") if metadata else None) or arch
+
+    # If the arch string still looks like a path (contains "/" or
+    # "\\"), extract the directory name as the architecture hint.
+    # This handles the common case where model_id is a directory
+    # path like "/models/zit-fp8/unet" — we take the last component.
+    # The "models/" directory naming convention uses the directory
+    # name as the architecture identifier when metadata is absent.
+    if "/" in detected_arch or "\\" in detected_arch:
+        detected_arch = detected_arch.split("/")[-1].split("\\")[-1]
+
+    # Load the transformer from a single safetensors file using
+    # ``from_single_file()``. This method loads weights directly
+    # from the file without requiring a ``config.json`` or a
+    # directory structure — it is the correct path for models
+    # stored as standalone ``.safetensors`` files.
+    # ``torch_dtype=torch.float16`` is used because FP8 models
+    # load as FP16; the pipeline keeps the transformer at FP8
+    # via InferenceCaps.
+    transformer = ZImageTransformer2DModel.from_single_file(
+        model_id,
+        torch_dtype=torch.float16,
+    )
+    return RealModel(transformer, arch=detected_arch)
+
+
+def _load_clip_from_hf_directory(model_id: str, clip_type: str) -> RealClip:
     """(Deprecated) Load a text encoder from an HF-style directory.
 
     This function preserves the original from_pretrained-based loading
