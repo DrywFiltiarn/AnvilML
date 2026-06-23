@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from worker.nodes.arch import clip as arch_clip
 from worker.nodes.base import BaseNode, NodeContext, SlotSpec, register
 
 __all__ = [
@@ -298,10 +299,10 @@ class LoadModel(BaseNode):
         # models are stored and served in FP8 precision. The dtype
         # string is part of the cache key so FP8 and FP16 variants
         # of the same model are cached independently.
-        # Note: ctx.pipeline_cache is typed as dict[str, Any] in
+        # Note: self.ctx.pipeline_cache is typed as dict[str, Any] in
         # NodeContext but a PipelineCache instance at runtime
         # (retrofitted by P903-A2), so .get_or_load() is available.
-        result = ctx.pipeline_cache.get_or_load(
+        result = self.ctx.pipeline_cache.get_or_load(
             model_id, "fp8", loader_fn
         )
         return {"model": result}
@@ -392,10 +393,10 @@ class LoadVae(BaseNode):
         # The cache key uses "bf16" dtype string — bfloat16 is the
         # native half-precision format for modern GPUs (A100/H100)
         # and avoids the overflow issues of fp16 during training.
-        # Note: ctx.pipeline_cache is typed as dict[str, Any] in
+        # Note: self.ctx.pipeline_cache is typed as dict[str, Any] in
         # NodeContext but a PipelineCache instance at runtime
         # (retrofitted by P903-A2), so .get_or_load() is available.
-        result = ctx.pipeline_cache.get_or_load(
+        result = self.ctx.pipeline_cache.get_or_load(
             model_id, "bf16", loader_fn
         )
         return {"vae": result}
@@ -472,85 +473,97 @@ class LoadClip(BaseNode):
             # and avoids requiring GPU hardware or torch.
             return {"clip": MockClip(clip_type=clip_type)}
 
-        # Real mode: load actual transformers text-encoder weights.
-        # Lazy imports — these packages are not available in mock mode
-        # (no torch installed), so importing them here keeps the worker
-        # importable when ANVILML_WORKER_MOCK=1.
-        import torch
+        # Dispatch to the correct architecture module via the clip
+        # registry. The arch_clip.get_module() function iterates over
+        # all loaded arch modules and returns the one whose can_handle()
+        # matches the clip_type string. This mirrors the Sampler node's
+        # arch.get_module(model) pattern for diffusion dispatch.
+        module = arch_clip.get_module(clip_type)
+        if module is None:
+            # No arch module claims this clip_type — raise a clear error
+            # so the operator knows which values are valid.
+            raise ValueError(f"unsupported clip_type: {clip_type!r}")
+        # Delegate to the matched module's load() function with the
+        # bfloat16 dtype — this is the standard precision for text
+        # encoders in diffusion pipelines. The module's load() handles
+        # mock mode internally, returning a RealClip sentinel when
+        # ANVILML_WORKER_MOCK=1.
+        return module.load(model_id, torch_dtype=torch.bfloat16)
 
-        # Dispatch to the correct transformers classes based on clip_type.
-        # The mapping rationale: different model families use different
-        # tokeniser and text-encoder class names in the transformers
-        # library. The clip_type hint (from the model metadata or
-        # user-provided) tells us which family the model belongs to.
-        # We resolve the class references here (cheap) and defer the
-        # actual model loading (expensive) to the loader_fn closure
-        # so that pipeline_cache.get_or_load() can skip it on cache hits.
-        if clip_type == "qwen3":
-            # Qwen3 models use Qwen2Tokenizer (shared tokenizer) and
-            # Qwen3ForCausalLM as the text encoder — the causal LM head
-            # provides the contextual embeddings needed for CLIP-like
-            # text encoding.
-            from transformers import Qwen2Tokenizer, Qwen3ForCausalLM
 
-            tokenizer_cls = Qwen2Tokenizer
-            encoder_cls = Qwen3ForCausalLM
+def _load_from_hf_directory(model_id: str, clip_type: str) -> RealClip:
+    """(Deprecated) Load a text encoder from an HF-style directory.
 
-        elif clip_type == "clip_l":
-            # CLIP-L (OpenAI CLIP) uses CLIPTokenizer +
-            # CLIPTextModelWithProjection — the standard CLIP text
-            # encoder with projection head for cross-modal alignment.
-            from transformers import CLIPTextModelWithProjection
+    This function preserves the original from_pretrained-based loading
+    path that was replaced by the arch.clip.get_module() dispatcher
+    in P18-D12. It is kept but never called — it may be reactivated
+    in a future task if HF-directory loading is needed again.
 
-            from transformers import CLIPTokenizer
+    Args:
+        model_id: Path to the model directory.
+        clip_type: The clip type string (e.g. "qwen3", "clip_l", "t5").
 
-            tokenizer_cls = CLIPTokenizer
-            encoder_cls = CLIPTextModelWithProjection
+    Returns:
+        A RealClip instance with tokenizer and text_encoder.
 
-        elif clip_type == "t5":
-            # T5 (Google) uses T5TokenizerFast + T5ForConditionalGeneration —
-            # the T5 text encoder is a general-purpose encoder-decoder
-            # model used in Stable Diffusion XL and related architectures.
-            # T5TokenizerFast is used instead of the slow T5Tokenizer
-            # because it provides the same interface with much faster
-            # tokenization — important for real-time inference pipelines.
-            from transformers import T5ForConditionalGeneration, T5TokenizerFast
+    Raises:
+        ValueError: If clip_type is not one of the supported types.
+    """
+    # This function preserves the original inline dispatch logic
+    # that was replaced by arch.clip.get_module() in P18-D12.
+    # It is intentionally never called — kept for future reactivation.
+    from transformers import (
+        CLIPTextModelWithProjection,
+        CLIPTokenizer,
+        Qwen2Tokenizer,
+        Qwen3ForCausalLM,
+        T5ForConditionalGeneration,
+        T5TokenizerFast,
+    )
+    import torch
 
-            tokenizer_cls = T5TokenizerFast
-            encoder_cls = T5ForConditionalGeneration
+    if clip_type == "qwen3":
+        # Qwen3 models use Qwen2Tokenizer (shared tokenizer) and
+        # Qwen3ForCausalLM as the text encoder — the causal LM head
+        # provides the contextual embeddings needed for CLIP-like
+        # text encoding.
+        tokenizer_cls = Qwen2Tokenizer
+        encoder_cls = Qwen3ForCausalLM
 
-        else:
-            # Unsupported clip_type — raise a clear error so the
-            # operator knows which values are valid.
-            raise ValueError(
-                f"unsupported clip_type: {clip_type!r}. "
-                f"Expected one of: 'qwen3', 'clip_l', 't5'."
-            )
+    elif clip_type == "clip_l":
+        # CLIP-L (OpenAI CLIP) uses CLIPTokenizer +
+        # CLIPTextModelWithProjection — the standard CLIP text
+        # encoder with projection head for cross-modal alignment.
+        tokenizer_cls = CLIPTokenizer
+        encoder_cls = CLIPTextModelWithProjection
 
-        # Define the loader closure that constructs the RealClip.
-        # This is passed to pipeline_cache.get_or_load() so the actual
-        # from_pretrained calls only happen on cache miss. The closure
-        # captures tokenizer_cls, encoder_cls, model_id, and torch_dtype
-        # to avoid redundant resolution.
-        def loader_fn() -> RealClip:
-            tokenizer = tokenizer_cls.from_pretrained(model_id)
-            text_encoder = encoder_cls.from_pretrained(
-                model_id, torch_dtype=torch.bfloat16
-            )
-            # Wrap the tokenizer and text encoder in a RealClip.
-            # This provides a unified interface that downstream nodes
-            # (like ClipTextEncode) can rely on regardless of the
-            # underlying transformers class.
-            return RealClip(tokenizer, text_encoder)
+    elif clip_type == "t5":
+        # T5 (Google) uses T5TokenizerFast + T5ForConditionalGeneration —
+        # the T5 text encoder is a general-purpose encoder-decoder
+        # model used in Stable Diffusion XL and related architectures.
+        # T5TokenizerFast is used instead of the slow T5Tokenizer
+        # because it provides the same interface with much faster
+        # tokenization — important for real-time inference pipelines.
+        tokenizer_cls = T5TokenizerFast
+        encoder_cls = T5ForConditionalGeneration
 
-        # Get the clip from cache or load it via loader_fn.
-        # The cache key uses "bf16" dtype string — bfloat16 is the
-        # native half-precision format for modern GPUs (A100/H100)
-        # and is the standard precision for text encoders in diffusion
-        # pipelines. Note: ctx.pipeline_cache is typed as dict[str, Any]
-        # in NodeContext but a PipelineCache instance at runtime
-        # (retrofitted by P903-A2), so .get_or_load() is available.
-        result = ctx.pipeline_cache.get_or_load(
-            model_id, "bf16", loader_fn
+    else:
+        # Unsupported clip_type — raise a clear error so the
+        # operator knows which values are valid.
+        raise ValueError(
+            f"unsupported clip_type: {clip_type!r}. "
+            f"Expected one of: 'qwen3', 'clip_l', 't5'."
         )
-        return {"clip": result}
+
+    def loader_fn() -> RealClip:
+        tokenizer = tokenizer_cls.from_pretrained(model_id)
+        text_encoder = encoder_cls.from_pretrained(
+            model_id, torch_dtype=torch.bfloat16
+        )
+        # Wrap the tokenizer and text encoder in a RealClip.
+        # This provides a unified interface that downstream nodes
+        # (like ClipTextEncode) can rely on regardless of the
+        # underlying transformers class.
+        return RealClip(tokenizer, text_encoder)
+
+    return loader_fn()

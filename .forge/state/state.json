@@ -109,16 +109,17 @@
     "P18-D7",
     "P18-D8",
     "P18-D9",
-    "P18-D10"
+    "P18-D10",
+    "P18-D11"
   ],
-  "in_progress": "P18-D11",
+  "in_progress": "P18-D12",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-23T01:15:36+0200",
+  "last_updated": "2026-06-23T07:54:25+0200",
   "plan_approved": true,
-  "current_plan": "1. **Create `worker/nodes/arch/clip/t5.py`** \u2014 mirror the qwen3.py / clip_l.py pattern exactly:\n   - Module docstring describing T5-XXL dispatch, mock mode behavior, and the no-import-at-top-level constraint. Include `.. versionadded:: 0.1.0`.\n   - `from __future__ import annotations`, `import os`, `from typing import Any`.\n   - `__all__ = [\"can_handle\", \"load\"]`.\n   - `def can_handle(clip_type: str) -> bool:` \u2014 docstring with Args/Returns, inline comment explaining the canonical identifier. Return `clip_type == \"t5\"`.\n   - `def load(model_id: str, torch_dtype: Any) -> RealClip:  # noqa: F821` \u2014 docstring with Args/Returns/Raises. Check `_mock = os.environ.get(\"ANVILML_WORKER_MOCK\") == \"1\"`. In mock path: `from worker.nodes.loader import MockTokenizer, MockTextEncoder, RealClip`, return `RealClip(MockTokenizer(), MockTextEncoder())`. In real path: lazy imports \u2014 `from pathlib import Path`, `from safetensors.torch import load_file as safetensors_load_file`, `from transformers import T5Config, T5EncoderModel, T5TokenizerFast`, `from worker.nodes.loader import RealClip`. Resolve tokenizer dir: `Path(__file__).parent.parent / \"assets\" / \"t5_tokenizer\"`. Load tokenizer: `T5TokenizerFast.from_pretrained(tokenizer_dir)`. Verbatim config values from `google/t5-v1_1-xxl`: `vocab_size=32128, d_model=4096, d_kv=64, d_ff=10240, num_layers=24, num_heads=64, relative_attention_num_buckets=32, feed_forward_proj=\"gated-gelu\", tie_word_embeddings=False`. Construct: `T5EncoderModel(T5Config(**config_values))`. Load weights: `.load_state_dict(safetensors_load_file(model_id))`. Return `RealClip(tokenizer, model)`.\n\n2. **Modify `worker/nodes/loader.py`** \u2014 change the T5 branch (around line 514):\n   - Change `from transformers import T5ForConditionalGeneration, T5Tokenizer` to `from transformers import T5ForConditionalGeneration, T5TokenizerFast`.\n   - Change `tokenizer_cls = T5Tokenizer` to `tokenizer_cls = T5TokenizerFast`.\n   - This is a mechanical one-line change to keep the loader.py path consistent with the t5.py real-mode usage.\n\n3. **Create `worker/tests/test_arch_clip_t5.py`** \u2014 mirror the qwen3.py test pattern exactly:\n   - `test_can_handle_t5()` \u2014 assert `can_handle(\"t5\") is True`.\n   - `test_can_handle_non_t5()` \u2014 assert `can_handle(\"qwen3\")` and `can_handle(\"clip_l\")` are `False`.\n   - `test_load_mock_returns_realclip()` \u2014 assert `load(\"/fake/path\", None)` returns `RealClip` with `MockTokenizer` and `MockTextEncoder`.\n   - `test_load_mock_no_torch_import()` \u2014 remove torch from sys.modules, re-import, assert torch absent, assert public API callable.\n\n4. **Pre-stop verification** \u2014 write the report, run the three pre-stop checks.",
-  "plan_approval_message_id": "1518752827571441739",
+  "current_plan": "",
+  "plan_approval_message_id": "1518850405419712645",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1518752826057035946",
+  "plan_report_message_id": "1518850402882289686",
   "impl_report_message_id": null
 }
