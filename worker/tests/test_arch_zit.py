@@ -195,29 +195,52 @@ def test_sample_mock_preserves_seed_value() -> None:
         assert result[1] == test_seed
 
 
-def test_sample_real_path_raises_not_implemented() -> None:
-    """Verify ``sample()`` raises ``NotImplementedError`` in real mode.
+def test_sample_real_assembles_pipeline_via_cache() -> None:
+    """Verify ``sample()`` calls ``pipeline_cache.get_or_load()`` in real mode.
 
     Preconditions:
         ``ANVILML_WORKER_MOCK`` is temporarily set to ``"0"`` by this
-        test, overriding the autouse fixture.
+        test, overriding the autouse fixture. A mock ``pipeline_cache``
+        is provided with a ``get_or_load`` mock.
 
     Tests:
-        Call ``sample()`` with ``ANVILML_WORKER_MOCK=0`` and assert
-        a ``NotImplementedError`` is raised with the expected message.
+        Call ``sample()`` in real mode with a mock model that carries
+        ``model_id="test_model"`` and a mock ``pipeline_cache``. Assert
+        that ``get_or_load`` was called with a key containing ``:pipeline``.
+        The call raises ``NotImplementedError`` (pipeline assembled but not
+        yet invoked — P18-D18c handles invocation), but ``get_or_load`` is
+        called before that exception.
 
     Expected output:
-        ``NotImplementedError`` with message containing
-        "Real ZiT sampling path not yet implemented".
+        ``get_or_load.assert_called_once()`` with the first positional
+        argument matching ``"test_model:pipeline"``.
     """
     # Capture the pre-existing value and force real mode.
     original = os.environ.get("ANVILML_WORKER_MOCK")
     os.environ["ANVILML_WORKER_MOCK"] = "0"
     try:
-        with pytest.raises(NotImplementedError, match="Real ZiT sampling path"):
+        # Build a mock pipeline cache with a MagicMock for get_or_load.
+        from unittest.mock import MagicMock
+
+        mock_cache = MagicMock()
+        # get_or_load returns a mock pipeline object.
+        mock_cache.get_or_load.return_value = MagicMock()
+
+        # Build a model object that carries model_id (like RealModel).
+        model = type("Model", (), {"arch": "zit", "model_id": "test_model"})()
+
+        # Build a conditioning object with tokenizer and text_encoder.
+        conditioning = type("Conditioning", (), {
+            "positive": None,
+            "negative": None,
+            "tokenizer": None,
+            "text_encoder": None,
+        })()
+
+        with pytest.raises(NotImplementedError, match="pipeline assembled"):
             sample(
-                model=None,
-                conditioning=None,
+                model=model,
+                conditioning=conditioning,
                 latent=None,
                 steps=4,
                 cfg=7.0,
@@ -225,7 +248,19 @@ def test_sample_real_path_raises_not_implemented() -> None:
                 device="cpu",
                 cancel_flag=[False],
                 emit_progress=lambda step, total: None,
+                vae=None,
+                pipeline_cache=mock_cache,
             )
+
+        # Assert get_or_load was called with the correct cache key.
+        # This assertion runs after the exception — the call was already
+        # made inside sample() before the NotImplementedError was raised.
+        mock_cache.get_or_load.assert_called_once()
+        call_args = mock_cache.get_or_load.call_args
+        cache_key = call_args[0][0]
+        assert ":pipeline" in cache_key, (
+            f"Expected cache key to contain ':pipeline', got '{cache_key}'"
+        )
     finally:
         # Restore the original value unconditionally.
         if original is None:

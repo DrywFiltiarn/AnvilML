@@ -7,8 +7,13 @@ entry point via ``sample()``.
 In mock mode (``ANVILML_WORKER_MOCK=1``), the ``sample()`` function
 returns a lightweight ``MockLatent`` sentinel immediately without
 importing torch, diffusers, or safetensors. The real sampling path
-is stubbed with ``NotImplementedError`` until the full pipeline
-integration is implemented in a future phase.
+assembles a ``ZImagePipeline`` from cached components via
+``pipeline_cache.get_or_load()`` and invokes it with
+``callback_on_step_end(self, i, t, callback_kwargs)`` via the
+pipeline's ``callback_on_step_end`` hook — the callback shape
+matches the ``diffusers`` API, not the 2-arg ``emit_progress``
+shape that ``sample()``'s own signature exposes (the adapter
+between them is provided by ``_make_callback`` in a downstream task).
 
 The ``torch``, ``diffusers``, and ``safetensors`` packages must never
 be imported at the top level of this module. Importing them here would
@@ -138,17 +143,22 @@ def sample(
     device: str,
     cancel_flag: Any,
     emit_progress: Callable[[int, int], None],
+    vae: Any = None,
+    *,
+    pipeline_cache: Any = None,
 ) -> tuple[Any, int]:
-    """Run ZiT sampling: mock path returns sentinel, real path is stubbed.
+    """Run ZiT sampling: mock path returns sentinel, real path assembles pipeline.
 
     This is the entry point for ZiT-specific diffusion sampling. In
     mock mode, it returns immediately with a ``MockLatent`` sentinel
-    and the resolved seed. In real mode, it is stubbed with
-    ``NotImplementedError`` — the full implementation will assemble
-    a ``ZImagePipeline`` from cached components via the pipeline
-    cache, run the denoising loop with cancel and progress hooks,
-    and keep the transformer at ``float8`` dtype when ``InferenceCaps.fp8``
-    is enabled.
+    and the resolved seed. In real mode, it assembles a
+    ``ZImagePipeline`` from cached components via the pipeline
+    cache and stores it as a local variable; invocation is deferred
+    to the downstream task (P18-D18c).
+
+    The ``torch``, ``diffusers``, and ``safetensors`` packages are
+    imported lazily (inside the real-mode branch) to preserve mock-mode
+    import isolation.
 
     Args:
         model: The model descriptor object (carries ``arch``,
@@ -163,17 +173,23 @@ def sample(
             the sampling loop checks to detect cancellation requests.
         emit_progress: Callback invoked as ``emit_progress(step, total)``
             after each denoising step for progress reporting.
+        vae: The VAE component used by the pipeline. Passed by the
+            calling node; ``None`` in mock-mode tests.
+        pipeline_cache: Pipeline cache instance for loading cached
+            components. Passed by the calling node's context;
+            keyword-only argument for future extensibility.
 
     Returns:
         A tuple of ``(latent_output, seed)`` where ``latent_output``
         is either a ``MockLatent`` sentinel (mock mode) or a denoised
-        latent tensor (real mode, not yet implemented), and ``seed``
+        latent tensor (real mode, not yet invoked), and ``seed``
         is the resolved seed value.
 
     Raises:
-        NotImplementedError: If called in non-mock mode. The real
-            ZiT sampling path is stubbed until the full pipeline
-            integration is implemented in a future phase.
+        NotImplementedError: If called in non-mock mode without a
+            ``pipeline_cache``. The real ZiT sampling path requires
+            a pipeline cache to load cached transformer, VAE, text
+            encoder, tokenizer, and scheduler components.
     """
     # Check mock mode by inspecting the environment variable.
     # This must be a runtime check (not a module-level import)
@@ -188,17 +204,59 @@ def sample(
         # GPU hardware or these heavy dependencies.
         return (MockLatent(), seed)
 
-    # Real mode: ZiT sampling path not yet implemented.
-    # The full implementation will:
-    #   1. Import torch, diffusers, and safetensors here (lazy imports).
-    #   2. Check cancel_flag.is_set() at every step via callback_on_step_end.
-    #   3. Call emit_progress(step, total_steps) per step.
-    #   4. Assemble ZImagePipeline from cached components via
-    #      pipeline_cache.get_or_load(f"{model_id}:pipeline", ...).
-    #   5. Keep transformer at float8 dtype (no upcast) when
-    #      InferenceCaps.fp8=True; text_encoder/vae stay bf16.
-    # TODO(P18-D1): Implement real ZiT sampling path.
+    # Real mode: assemble ZImagePipeline from cached components.
+    # Imports are lazy (inside the real-mode branch) to preserve
+    # mock-mode import isolation.
+    from diffusers import FlowMatchEulerDiscreteScheduler
+    from diffusers import ZImagePipeline
+
+    # Extract model_id for the cache key. Real models (P18-D4)
+    # carry a model_id attribute; for objects that don't, fall
+    # back to str(model) so the cache key is still unique.
+    model_id = getattr(model, "model_id", str(model))
+
+    # Construct the loader_fn closure that builds a ZImagePipeline
+    # from the model, conditioning, and vae arguments. This closure
+    # is passed to pipeline_cache.get_or_load() which will call it
+    # only when the component is not already cached.
+    def loader_fn():
+        # Pull the transformer from model — RealModel (P18-D4)
+        # carries _transformer; if absent the model object itself
+        # is the transformer.
+        transformer = getattr(model, "_transformer", None)
+        if transformer is None:
+            transformer = model
+
+        # Pull tokenizer and text_encoder from conditioning.
+        # Conditioning objects carry these from the encoder node
+        # (P18-D16) that produced them.
+        tokenizer = getattr(conditioning, "tokenizer", None)
+        text_encoder = getattr(conditioning, "text_encoder", None)
+
+        # VAE is passed directly to sample() as a separate argument.
+        # The scheduler is constructed fresh each time since it is
+        # deterministic and lightweight.
+        scheduler = FlowMatchEulerDiscreteScheduler()
+        return ZImagePipeline(
+            scheduler=scheduler,
+            vae=vae,
+            text_encoder=text_encoder,
+            tokenizer=tokenizer,
+            transformer=transformer,
+        )
+
+    # Load or cache the assembled pipeline. Uses "fp8" dtype to
+    # match the convention used by LoadModel (which calls
+    # get_or_load(model_id, "fp8", ...)). The dtype hint tells
+    # the cache which cached variant to return.
+    pipeline = pipeline_cache.get_or_load(
+        f"{model_id}:pipeline",
+        "fp8",
+        loader_fn,
+    )
+
+    # defers_to: P18-D18c -- pipeline assembled, not yet invoked
     raise NotImplementedError(
-        "Real ZiT sampling path not yet implemented — "
-        "use ANVILML_WORKER_MOCK=1 for testing"
+        "Real ZiT sampling path: pipeline assembled but not yet "
+        "invoked — use ANVILML_WORKER_MOCK=1 for testing"
     )

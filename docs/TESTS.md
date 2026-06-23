@@ -3411,3 +3411,12 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** None (import triggers ``@register`` decorator).
 **Expected output:** ``"EmptyLatent"`` present in ``NODE_REGISTRY``, keyed by ``NODE_TYPE == "EmptyLatent"``.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py::test_emptylatent_registered_in_registry -v` exits 0.
+
+## test_sample_real_assembles_pipeline_via_cache (worker.nodes.arch.diffusion.zit)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** ``ANVILML_WORKER_MOCK`` is temporarily set to ``"0"`` by this test, overriding the autouse fixture. A mock ``pipeline_cache`` is provided with a ``get_or_load`` mock. The test imports ``MagicMock`` from ``unittest.mock`` inside the test body to avoid importing it at module level.
+**Tests:** Call ``sample()`` in real mode with a mock model that carries ``model_id="test_model"``, a mock conditioning object with ``tokenizer`` and ``text_encoder`` attributes, and a mock ``pipeline_cache``. Assert that ``get_or_load`` was called with a key containing ``":pipeline"``.
+**Inputs:** ``model_id="test_model"``, ``steps=4``, ``seed=42``, ``cfg=7.0``, ``device="cpu"``.
+**Expected output:** ``get_or_load.assert_called_once()`` with the first positional argument matching ``"test_model:pipeline"``.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_sample_real_assembles_pipeline_via_cache -v` exits 0.
