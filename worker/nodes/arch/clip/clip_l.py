@@ -97,9 +97,12 @@ def load(model_id: str, torch_dtype: Any) -> RealClip:  # noqa: F821
     from worker.nodes.loader import RealClip
 
     # Resolve the tokenizer directory relative to this module.
-    # The tokenizer assets live in worker/nodes/assets/clip_l_tokenizer/
-    # (two levels up from this file's parent, then into assets).
-    tokenizer_dir = Path(__file__).parent.parent / "assets" / "clip_l_tokenizer"
+    # The tokenizer assets live in worker/assets/clip_l_tokenizer/
+    # (four levels up from this file's parent, then into assets).
+    # Note: the plan originally specified parent.parent.parent, but the
+    # actual asset layout places tokenizers at worker/assets/
+    # (one level higher than parent.parent.parent would resolve).
+    tokenizer_dir = Path(__file__).parent.parent.parent.parent / "assets" / "clip_l_tokenizer"
 
     # Load the CLIPTokenizer from the bundled asset directory.
     # CLIP-L uses the standard OpenAI CLIP tokenizer with a 49408-token

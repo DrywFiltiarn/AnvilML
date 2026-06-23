@@ -98,11 +98,11 @@ def load(model_id: str, torch_dtype: Any) -> RealClip:  # noqa: F821
 
     # Resolve the tokenizer directory relative to this module.
     # The tokenizer assets live in worker/assets/t5_tokenizer/
-    # (three levels up from this file's parent, then into assets).
-    # Note: the plan originally specified parent.parent, but the
+    # (four levels up from this file's parent, then into assets).
+    # Note: the plan originally specified parent.parent.parent, but the
     # actual asset layout places tokenizers at worker/assets/
-    # (one level higher than parent.parent would resolve).
-    tokenizer_dir = Path(__file__).parent.parent.parent / "assets" / "t5_tokenizer"
+    # (one level higher than parent.parent.parent would resolve).
+    tokenizer_dir = Path(__file__).parent.parent.parent.parent / "assets" / "t5_tokenizer"
 
     # Load the T5TokenizerFast from the bundled asset directory.
     # T5-XXL uses the standard T5 tokenizer — this is the tokenizer

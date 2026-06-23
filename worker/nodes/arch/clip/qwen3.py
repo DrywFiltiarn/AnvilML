@@ -97,9 +97,12 @@ def load(model_id: str, torch_dtype: Any) -> RealClip:  # noqa: F821
     from worker.nodes.loader import RealClip
 
     # Resolve the tokenizer directory relative to this module.
-    # The tokenizer assets live in worker/nodes/assets/qwen25_tokenizer/
-    # (two levels up from this file's parent, then into assets).
-    tokenizer_dir = Path(__file__).parent.parent / "assets" / "qwen25_tokenizer"
+    # The tokenizer assets live in worker/assets/qwen25_tokenizer/
+    # (four levels up from this file's parent, then into assets).
+    # Note: the plan originally specified parent.parent.parent, but the
+    # actual asset layout places tokenizers at worker/assets/
+    # (one level higher than parent.parent.parent would resolve).
+    tokenizer_dir = Path(__file__).parent.parent.parent.parent / "assets" / "qwen25_tokenizer"
 
     # Load the Qwen2 tokenizer from the bundled asset directory.
     # Qwen3 models use the Qwen2 tokenizer family — this is a shared
