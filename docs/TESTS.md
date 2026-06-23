@@ -3433,8 +3433,17 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 ## test_sample_real_assembles_pipeline_via_cache (worker.nodes.arch.diffusion.zit)
 
 **File:** `worker/tests/test_arch_zit.py`
-**Context:** ``ANVILML_WORKER_MOCK`` is temporarily set to ``"0"`` by this test, overriding the autouse fixture. A mock ``pipeline_cache`` is provided with a ``get_or_load`` mock. The test imports ``MagicMock`` from ``unittest.mock`` inside the test body to avoid importing it at module level.
-**Tests:** Call ``sample()`` in real mode with a mock model that carries ``model_id="test_model"``, a mock conditioning object with ``tokenizer`` and ``text_encoder`` attributes, and a mock ``pipeline_cache``. Assert that ``get_or_load`` was called with a key containing ``":pipeline"``.
+**Context:** ``ANVILML_WORKER_MOCK`` is temporarily set to ``"0"`` by this test, overriding the autouse fixture. A mock ``pipeline_cache`` is provided with a ``get_or_load`` mock. The test imports ``MagicMock`` from ``unittest.mock`` inside the test body to avoid importing it at module level. The mock pipeline's ``__call__`` is configured to return ``[MagicMock(), seed]`` matching ``return_dict=False`` output format.
+**Tests:** Call ``sample()`` in real mode with a mock model that carries ``model_id="test_model"``, a mock conditioning object with ``tokenizer`` and ``text_encoder`` attributes, and a mock ``pipeline_cache``. Assert that ``get_or_load`` was called with a key containing ``":pipeline"`` and that the returned tuple has the correct structure ``(latent_result, seed)``.
 **Inputs:** ``model_id="test_model"``, ``steps=4``, ``seed=42``, ``cfg=7.0``, ``device="cpu"``.
-**Expected output:** ``get_or_load.assert_called_once()`` with the first positional argument matching ``"test_model:pipeline"``.
+**Expected output:** ``get_or_load.assert_called_once()`` with the first positional argument matching ``"test_model:pipeline"``; returned tuple is ``(mock_latent, 42)``.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_sample_real_assembles_pipeline_via_cache -v` exits 0.
+
+## test_sample_real_invokes_pipeline_with_correct_args (worker.nodes.arch.diffusion.zit)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** ``ANVILML_WORKER_MOCK`` is temporarily set to ``"0"`` by this test, overriding the autouse fixture. A mock ``pipeline_cache`` returns a ``MagicMock`` pipeline object whose ``__call__`` is configured to return ``[MagicMock(), seed]``. Verifies the pipeline is called with all expected keyword arguments.
+**Tests:** Call ``sample()`` in real mode with a mock model (``arch="zit"``, ``model_id="test_model"``), mock conditioning (with ``positive``/``negative`` attributes), mock VAE, and a ``threading.Event()`` as ``cancel_flag``. Assert that the mock pipeline's ``__call__`` was invoked with ``output_type="latent"``, ``return_dict=False``, ``num_inference_steps=steps``, ``guidance_scale=cfg``, and a callable ``callback_on_step_end``. Also assert the returned tuple has the correct structure.
+**Inputs:** ``model_id="test_model"``, ``steps=8``, ``cfg=7.5``, ``seed=99``, ``device="cuda"``.
+**Expected output:** Pipeline ``__call__`` called with ``output_type="latent"``, ``return_dict=False``, correct steps/cfg; returned tuple is ``(latent_result, 99)``.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_sample_real_invokes_pipeline_with_correct_args -v` exits 0.

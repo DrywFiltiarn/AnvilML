@@ -13,7 +13,7 @@ assembles a ``ZImagePipeline`` from cached components via
 pipeline's ``callback_on_step_end`` hook — the callback shape
 matches the ``diffusers`` API, not the 2-arg ``emit_progress``
 shape that ``sample()``'s own signature exposes (the adapter
-between them is provided by ``_make_callback`` in a downstream task).
+between them is provided by ``_make_callback``).
 
 The ``torch``, ``diffusers``, and ``safetensors`` packages must never
 be imported at the top level of this module. Importing them here would
@@ -223,14 +223,14 @@ def sample(
     *,
     pipeline_cache: Any = None,
 ) -> tuple[Any, int]:
-    """Run ZiT sampling: mock path returns sentinel, real path assembles pipeline.
+    """Run ZiT sampling: mock path returns sentinel, real path invokes pipeline.
 
     This is the entry point for ZiT-specific diffusion sampling. In
     mock mode, it returns immediately with a ``MockLatent`` sentinel
     and the resolved seed. In real mode, it assembles a
-    ``ZImagePipeline`` from cached components via the pipeline
-    cache and stores it as a local variable; invocation is deferred
-    to the downstream task (P18-D18c).
+    ``ZImagePipeline`` from cached components via the pipeline cache,
+    invokes the pipeline with ``output_type="latent"``, and returns
+    the denoised latent tensor.
 
     The ``torch``, ``diffusers``, and ``safetensors`` packages are
     imported lazily (inside the real-mode branch) to preserve mock-mode
@@ -245,8 +245,9 @@ def sample(
         cfg: Classifier-free guidance scale.
         seed: Random seed for reproducibility.
         device: Device string (e.g. ``"cuda"`` or ``"cpu"``).
-        cancel_flag: A mutable container (e.g. ``list[bool]``) that
-            the sampling loop checks to detect cancellation requests.
+        cancel_flag: A ``threading.Event`` that is set when the job
+            is cancelled. The sampling callback checks ``.is_set()``
+            on each step.
         emit_progress: Callback invoked as ``emit_progress(step, total)``
             after each denoising step for progress reporting.
         vae: The VAE component used by the pipeline. Passed by the
@@ -258,14 +259,13 @@ def sample(
     Returns:
         A tuple of ``(latent_output, seed)`` where ``latent_output``
         is either a ``MockLatent`` sentinel (mock mode) or a denoised
-        latent tensor (real mode, not yet invoked), and ``seed``
-        is the resolved seed value.
+        latent tensor (real mode), and ``seed`` is the resolved seed
+        value.
 
     Raises:
-        NotImplementedError: If called in non-mock mode without a
-            ``pipeline_cache``. The real ZiT sampling path requires
-            a pipeline cache to load cached transformer, VAE, text
-            encoder, tokenizer, and scheduler components.
+        _SamplingCancelled: When the ``cancel_flag`` is set during
+            sampling — the callback detects cancellation and raises
+            this sentinel exception, which propagates to the caller.
     """
     # Check mock mode by inspecting the environment variable.
     # This must be a runtime check (not a module-level import)
@@ -331,8 +331,28 @@ def sample(
         loader_fn,
     )
 
-    # defers_to: P18-D18c -- pipeline assembled, not yet invoked
-    raise NotImplementedError(
-        "Real ZiT sampling path: pipeline assembled but not yet "
-        "invoked — use ANVILML_WORKER_MOCK=1 for testing"
-    )
+    # Invoke the assembled pipeline with output_type="latent" so it
+    # returns the raw denoised latent tensor (not a decoded image).
+    # return_dict=False means diffusers returns a list; index 0 is
+    # the latent tensor. Wrap in try/except to propagate cancellation.
+    try:
+        result = pipeline(
+            prompt_embeds=conditioning.positive,
+            negative_prompt_embeds=conditioning.negative,
+            latents=latent,
+            num_inference_steps=steps,
+            guidance_scale=cfg,
+            output_type="latent",
+            callback_on_step_end=_make_callback(
+                emit_progress, cancel_flag, steps
+            ),
+            return_dict=False,
+        )
+    except _SamplingCancelled:
+        # Re-raise the cancellation sentinel so it propagates to
+        # worker_main.py's exception handler. The CancelJob handler
+        # already sends a Cancelled event; this exception propagates
+        # as a Failed event with the cancellation reason in the error.
+        raise
+
+    return (result[0], seed)

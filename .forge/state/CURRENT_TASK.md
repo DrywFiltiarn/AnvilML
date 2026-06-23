@@ -1,4 +1,4 @@
-Task: P18-D18b
+Task: P18-D18c
 Step: IMPLEMENT
 Status: COMPLETE
-Updated: 2026-06-23T13:10:00Z
+Updated: 2026-06-23T14:00:00+0200

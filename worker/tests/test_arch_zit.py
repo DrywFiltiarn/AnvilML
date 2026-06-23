@@ -208,15 +208,17 @@ def test_sample_real_assembles_pipeline_via_cache() -> None:
 
     Tests:
         Call ``sample()`` in real mode with a mock model that carries
-        ``model_id="test_model"`` and a mock ``pipeline_cache``. Assert
-        that ``get_or_load`` was called with a key containing ``:pipeline``.
-        The call raises ``NotImplementedError`` (pipeline assembled but not
-        yet invoked — P18-D18c handles invocation), but ``get_or_load`` is
-        called before that exception.
+        ``model_id="test_model"`` and a mock ``pipeline_cache``.
+        Configure the mock pipeline's ``__call__`` to return
+        ``[MagicMock(), seed]`` (matching ``return_dict=False`` output
+        format). Assert that ``get_or_load`` was called with a key
+        containing ``:pipeline`` and that the returned tuple has the
+        correct structure.
 
     Expected output:
         ``get_or_load.assert_called_once()`` with the first positional
-        argument matching ``"test_model:pipeline"``.
+        argument matching ``"test_model:pipeline"``; returned tuple
+        is ``(mock_latent, 42)``.
     """
     # Capture the pre-existing value and force real mode.
     original = os.environ.get("ANVILML_WORKER_MOCK")
@@ -227,12 +229,19 @@ def test_sample_real_assembles_pipeline_via_cache() -> None:
 
         mock_cache = MagicMock()
         # get_or_load returns a mock pipeline object.
-        mock_cache.get_or_load.return_value = MagicMock()
+        mock_pipeline = MagicMock()
+        mock_cache.get_or_load.return_value = mock_pipeline
+
+        # Configure the mock pipeline's __call__ to return a list
+        # matching return_dict=False output: [latent_result, seed].
+        # For a MagicMock, __call__ is the same as the mock's return_value.
+        latent_result = MagicMock()
+        mock_pipeline.return_value = [latent_result, 42]
 
         # Build a model object that carries model_id (like RealModel).
         model = type("Model", (), {"arch": "zit", "model_id": "test_model"})()
 
-        # Build a conditioning object with tokenizer and text_encoder.
+        # Build a conditioning object with positive/negative embeds.
         conditioning = type("Conditioning", (), {
             "positive": None,
             "negative": None,
@@ -240,30 +249,137 @@ def test_sample_real_assembles_pipeline_via_cache() -> None:
             "text_encoder": None,
         })()
 
-        with pytest.raises(NotImplementedError, match="pipeline assembled"):
-            sample(
-                model=model,
-                conditioning=conditioning,
-                latent=None,
-                steps=4,
-                cfg=7.0,
-                seed=42,
-                device="cpu",
-                cancel_flag=[False],
-                emit_progress=lambda step, total: None,
-                vae=None,
-                pipeline_cache=mock_cache,
-            )
+        # Call sample() — the real path now invokes the pipeline.
+        result = sample(
+            model=model,
+            conditioning=conditioning,
+            latent=None,
+            steps=4,
+            cfg=7.0,
+            seed=42,
+            device="cpu",
+            cancel_flag=[False],
+            emit_progress=lambda step, total: None,
+            vae=None,
+            pipeline_cache=mock_cache,
+        )
 
         # Assert get_or_load was called with the correct cache key.
-        # This assertion runs after the exception — the call was already
-        # made inside sample() before the NotImplementedError was raised.
+        # The call was made inside sample() before the pipeline was
+        # invoked.
         mock_cache.get_or_load.assert_called_once()
         call_args = mock_cache.get_or_load.call_args
         cache_key = call_args[0][0]
         assert ":pipeline" in cache_key, (
             f"Expected cache key to contain ':pipeline', got '{cache_key}'"
         )
+
+        # Assert the returned tuple has the correct structure:
+        # (latent_result, seed) matching return_dict=False format.
+        assert result[0] is latent_result
+        assert result[1] == 42
+    finally:
+        # Restore the original value unconditionally.
+        if original is None:
+            os.environ.pop("ANVILML_WORKER_MOCK", None)
+        else:
+            os.environ["ANVILML_WORKER_MOCK"] = original
+
+
+def test_sample_real_invokes_pipeline_with_correct_args() -> None:
+    """Verify ``sample()`` calls the pipeline with all expected keyword arguments.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK`` is temporarily set to ``"0"`` by this
+        test, overriding the autouse fixture. A mock ``pipeline_cache``
+        returns a ``MagicMock`` pipeline object whose ``__call__`` is
+        configured to return ``[MagicMock(), seed]``.
+
+    Tests:
+        Call ``sample()`` in real mode with a mock model (``arch="zit"``,
+        ``model_id="test_model"``), mock conditioning (with
+        ``positive``/``negative`` attributes), mock VAE, and a
+        ``threading.Event()`` as ``cancel_flag``. Assert that the mock
+        pipeline's ``__call__`` was invoked with ``output_type="latent"``,
+        ``return_dict=False``, ``num_inference_steps=steps``,
+        ``guidance_scale=cfg``, and a callable ``callback_on_step_end``.
+        Also assert the returned tuple has the correct structure.
+
+    Expected output:
+        Pipeline ``__call__`` called with all expected keyword arguments
+        matching the plan's invocation signature.
+    """
+    # Capture the pre-existing value and force real mode.
+    original = os.environ.get("ANVILML_WORKER_MOCK")
+    os.environ["ANVILML_WORKER_MOCK"] = "0"
+    try:
+        from unittest.mock import MagicMock
+
+        steps = 8
+        cfg = 7.5
+        seed = 99
+
+        # Build a mock pipeline cache that returns a mock pipeline.
+        mock_cache = MagicMock()
+        mock_pipeline = MagicMock()
+        mock_cache.get_or_load.return_value = mock_pipeline
+
+        # Configure the mock pipeline's __call__ to return a list
+        # matching return_dict=False output format.
+        # For a MagicMock, __call__ is the same as the mock's return_value.
+        latent_result = MagicMock()
+        mock_pipeline.return_value = [latent_result, seed]
+
+        # Build a mock model with arch="zit" and model_id.
+        model = type("Model", (), {"arch": "zit", "model_id": "test_model"})()
+
+        # Build a conditioning object with positive/negative embeds.
+        conditioning = type("Conditioning", (), {
+            "positive": MagicMock(),
+            "negative": MagicMock(),
+            "tokenizer": MagicMock(),
+            "text_encoder": MagicMock(),
+        })()
+
+        # Build a mock VAE and a threading.Event as cancel_flag.
+        mock_vae = MagicMock()
+        cancel_flag = threading.Event()
+
+        result = sample(
+            model=model,
+            conditioning=conditioning,
+            latent=None,
+            steps=steps,
+            cfg=cfg,
+            seed=seed,
+            device="cuda",
+            cancel_flag=cancel_flag,
+            emit_progress=lambda step, total: None,
+            vae=mock_vae,
+            pipeline_cache=mock_cache,
+        )
+
+        # Assert the pipeline was called with all expected keyword args.
+        # For a MagicMock, call_args is on the mock itself (not __call__).
+        call_kwargs = mock_pipeline.call_args[1]
+        assert call_kwargs["output_type"] == "latent"
+        assert call_kwargs["return_dict"] is False
+        assert call_kwargs["num_inference_steps"] == steps
+        assert call_kwargs["guidance_scale"] == cfg
+
+        # callback_on_step_end must be a callable (the _make_callback adapter).
+        assert callable(call_kwargs["callback_on_step_end"])
+
+        # prompt_embeds and negative_prompt_embeds must match conditioning.
+        assert call_kwargs["prompt_embeds"] is conditioning.positive
+        assert call_kwargs["negative_prompt_embeds"] is conditioning.negative
+
+        # latents must be the value passed in.
+        assert call_kwargs["latents"] is None
+
+        # Assert the returned tuple has the correct structure.
+        assert result[0] is latent_result
+        assert result[1] == seed
     finally:
         # Restore the original value unconditionally.
         if original is None:
