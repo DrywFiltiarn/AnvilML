@@ -3487,8 +3487,8 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 ## test_vaedeode_real_path_returns_pil_image (worker.nodes.decode)
 
 **File:** `worker/tests/test_nodes_decode.py`
-**Context:** `ANVILML_WORKER_MOCK` is unset by this test (cleared via `os.environ.pop()`), overriding the autouse fixture to exercise the real decode code path. A `MockVaeWithDecode` object provides a real torch tensor from its `.decode()` method. The test uses real `torch` and `diffusers` code paths (lazy imports inside `VaeDecode.execute()`). Environment variable isolation is maintained via capture-and-restore in a `try/finally` block.
-**Tests:** Clear `ANVILML_WORKER_MOCK`, instantiate `VaeDecode` with a `mock_context`, call `execute(vae=MockVaeWithDecode(), latent=torch.randn(1, 4, 64, 64))`, and assert the returned image is a `PIL.Image.Image` and not a `MockImage`.
+**Context:** `ANVILML_WORKER_MOCK` is unset by this test (cleared via `os.environ.pop()`), overriding the autouse fixture to exercise the real decode code path. A `MockVaeWithDecode` object provides a real torch tensor from its `.decode()` method. The test uses real `torch` and `diffusers` code paths (lazy imports inside `VaeDecode.execute()`). Environment variable isolation is maintained via capture-and-restore in a `try/finally` block. The file has a module-level `pytest.importorskip("torch")` guard, so when torch is absent (CI's base.txt venv), the entire test file is skipped during collection.
+**Tests:** Clear `ANVILML_WORKER_MOCK`, instantiate `VaeDecode` with a `mock_context`, call `execute(vae=MockVaeWithDecode(), latent=torch.randn(1, 4, 64, 64))`, and assert the returned image is a `PIL.Image.Image` and not a `MockImage`. When torch is absent, the test is skipped with a descriptive message.
 **Inputs:** `vae=MockVaeWithDecode()`, `latent=torch.randn(1, 4, 64, 64)`.
-**Expected output:** `result["image"]` is a `PIL.Image.Image` instance, not a `MockImage`.
-**Acceptance command:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vaedeode_real_path_returns_pil_image -v` exits 0 (only runs when `ANVILML_WORKER_MOCK` is not set).
+**Expected output:** `result["image"]` is a `PIL.Image.Image` instance, not a `MockImage`. When torch is absent: test is SKIPPED (not ERROR or FAILED).
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vaedeode_real_path_returns_pil_image -v` exits 0, output contains "SKIPPED".

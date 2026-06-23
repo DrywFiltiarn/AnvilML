@@ -19,6 +19,26 @@ from worker.nodes.base import BaseNode, NodeContext, SlotSpec, register
 
 
 # ---------------------------------------------------------------------------
+# Guarded torch import
+# ---------------------------------------------------------------------------
+
+# Guarded torch import — the test file must be importable even when
+# torch is not installed (CI's base.txt venv excludes torch by design).
+# pytest.importorskip() below handles the skip; this try/except
+# prevents an ImportError from breaking module-level collection.
+try:
+    import torch
+except ImportError:
+    torch = None  # type: ignore[assignment]
+
+# Skip this entire test file when torch is not installed.
+# This is the primary CI guard — pytest skips the file during
+# collection, so the guarded import above is only a fallback
+# for edge cases (e.g. manual `python -c "import ..."` without pytest).
+pytest.importorskip("torch")
+
+
+# ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
@@ -274,8 +294,20 @@ class _MockVaeWithDecode:
         Returns:
             A tuple with one element: a ``torch.Tensor`` in the
             ``[-1, 1]`` range (typical VAE decoder output).
+
+        Raises:
+            ImportError: If torch is not installed (this method requires
+                torch to produce a tensor output).
         """
-        import torch
+        # Guard: this method requires torch to produce tensor output.
+        # When torch is absent, raise ImportError so the outer try/except
+        # in the test function can catch it and skip the test.
+        try:
+            import torch
+        except ImportError:
+            raise ImportError(
+                "torch required for _MockVaeWithDecode.decode()"
+            ) from None
 
         # Produce a small random tensor in [-1, 1] — the exact values
         # don't matter for the test; only the shape and type matter.
@@ -300,35 +332,41 @@ def test_vaedeode_real_path_returns_pil_image() -> None:
     Expected output:
         ``result["image"]`` is a ``PIL.Image.Image`` instance.
     """
-    # Capture the pre-existing env value and restore unconditionally
-    # after the test, per the env isolation convention (§11.3).
-    # The conftest sets ANVILML_WORKER_MOCK=1, so we pop it to
-    # exercise the real-mode branch.
-    original = os.environ.pop("ANVILML_WORKER_MOCK", None)
+    # Guard against torch not being installed — this can happen when
+    # running the test manually outside of pytest (importorskip above
+    # handles the pytest collection path).
     try:
-        import worker.nodes.decode
+        # Capture the pre-existing env value and restore unconditionally
+        # after the test, per the env isolation convention (§11.3).
+        # The conftest sets ANVILML_WORKER_MOCK=1, so we pop it to
+        # exercise the real-mode branch.
+        original = os.environ.pop("ANVILML_WORKER_MOCK", None)
+        try:
+            import worker.nodes.decode
 
-        importlib.reload(worker.nodes.decode)
-        from worker.nodes.decode import VaeDecode
+            importlib.reload(worker.nodes.decode)
+            from worker.nodes.decode import VaeDecode
 
-        import torch
+            import torch  # noqa: F401  # Already imported at module level; noqa for clarity
 
-        vae = _MockVaeWithDecode()
-        latent = torch.randn(1, 4, 64, 64, dtype=torch.float32)
+            vae = _MockVaeWithDecode()
+            latent = torch.randn(1, 4, 64, 64, dtype=torch.float32)
 
-        node = VaeDecode(mock_context)
-        result = node.execute(vae=vae, latent=latent)
+            node = VaeDecode(mock_context)
+            result = node.execute(vae=vae, latent=latent)
 
-        assert "image" in result
-        # Verify the image is a real PIL Image, not a MockImage sentinel.
-        from PIL import Image
+            assert "image" in result
+            # Verify the image is a real PIL Image, not a MockImage sentinel.
+            from PIL import Image
 
-        assert isinstance(result["image"], Image.Image)
-        # Also verify it is NOT a MockImage — the sentinel must be
-        # absent from the real-mode output.
-        assert not isinstance(result["image"], worker.nodes.decode.MockImage)
-    finally:
-        # Restore the env var unconditionally so no other test sees
-        # a modified environment.
-        if original is not None:
-            os.environ["ANVILML_WORKER_MOCK"] = original
+            assert isinstance(result["image"], Image.Image)
+            # Also verify it is NOT a MockImage — the sentinel must be
+            # absent from the real-mode output.
+            assert not isinstance(result["image"], worker.nodes.decode.MockImage)
+        finally:
+            # Restore the env var unconditionally so no other test sees
+            # a modified environment.
+            if original is not None:
+                os.environ["ANVILML_WORKER_MOCK"] = original
+    except ImportError as exc:
+        pytest.skip(f"torch not available: {exc}")
