@@ -1,9 +1,18 @@
-"""LoadModel node — loads a diffusion model from a safetensors file.
+"""LoadModel, LoadVae, and LoadClip nodes — load diffusion components from safetensors.
 
-This module defines the ``LoadModel`` node, which accepts a ``model_id``
-STRING input and outputs a ``MODEL`` slot containing either a real loaded
-pipeline model object (in non-mock mode) or a lightweight ``MockModel``
-sentinel (in mock mode).
+This module defines three loader nodes:
+
+* ``LoadModel`` — loads a diffusion transformer (UNet / DiT) from a
+  safetensors file via ``from_single_file()``.
+* ``LoadVae`` — loads a VAE from a standalone safetensors file via
+  ``from_single_file()``.
+* ``LoadClip`` — loads a text encoder (CLIP / T5 / Qwen3) from a
+  safetensors file via the architecture-dispatcher in
+  ``worker.nodes.arch.clip``.
+
+Each node accepts a ``model_id`` STRING input and outputs a typed slot
+(MODEL, VAE, or CLIP) containing either a real loaded pipeline
+component (in non-mock mode) or a lightweight sentinel (in mock mode).
 
 The ``torch``, ``diffusers``, and ``safetensors`` packages must never be
 imported at the top level of this module. Importing them here would cause
@@ -333,13 +342,14 @@ class LoadVae(BaseNode):
         # This is passed to pipeline_cache.get_or_load() so the actual
         # model loading only happens on cache miss. The closure captures
         # model_id and torch_dtype to avoid redundant resolution.
-        # from_pretrained with subfolder="vae" is used because the VAE
-        # weights and config.json reside in a "vae/" subdirectory within
-        # the model directory, matching the standard diffusers layout.
+        # from_single_file() infers the VAE architecture from checkpoint
+        # tensor keys automatically (AutoencoderKL is registered in
+        # SINGLE_FILE_LOADABLE_CLASSES), so no config.json or subfolder
+        # argument is needed — it works directly on a standalone
+        # .safetensors file.
         def loader_fn() -> AutoencoderKL:
-            return AutoencoderKL.from_pretrained(
+            return AutoencoderKL.from_single_file(
                 model_id,
-                subfolder="vae",
                 torch_dtype=torch.bfloat16,
             )
 
@@ -443,6 +453,36 @@ class LoadClip(BaseNode):
         # mock mode internally, returning a RealClip sentinel when
         # ANVILML_WORKER_MOCK=1.
         return module.load(model_id, torch_dtype=torch.bfloat16)
+
+
+def _load_from_hf_directory(model_id: str) -> Any:
+    """(Deprecated) Load a VAE from an HF-style directory.
+
+    This function preserves the original ``from_pretrained``-based loading
+    path that was replaced by ``from_single_file()`` in P18-D14.
+    It is kept but never called — it may be reactivated in a future
+    task if HF-directory loading is needed again.
+
+    Args:
+        model_id: Path to the VAE model directory.
+
+    Returns:
+        An ``AutoencoderKL`` instance loaded from the directory.
+
+    Raises:
+        OSError: If the model directory does not exist.
+    """
+    # Lazy imports — these packages are not available in mock mode
+    # (no torch installed), so importing them here keeps the worker
+    # importable when ANVILML_WORKER_MOCK=1.
+    from diffusers import AutoencoderKL
+    import torch
+
+    return AutoencoderKL.from_pretrained(
+        model_id,
+        subfolder="vae",
+        torch_dtype=torch.bfloat16,
+    )
 
 
 def _load_model_from_hf_directory(model_id: str, arch: str) -> RealModel:
