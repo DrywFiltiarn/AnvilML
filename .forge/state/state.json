@@ -133,16 +133,17 @@
     "P904-A9",
     "P904-A10",
     "P904-A11",
-    "P904-A12"
+    "P904-A12",
+    "P904-A13"
   ],
-  "in_progress": "P904-A13",
+  "in_progress": "P904-A14",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-24T12:28:23+0200",
+  "last_updated": "2026-06-24T13:58:39+0200",
   "plan_approved": true,
-  "current_plan": "**Step 1: Verify existing implementation correctness.**\nConfirm that the existing `get_module_by_name` in `worker/nodes/arch/diffusion/__init__.py`:\n- Accepts `arch: str` and returns `ModuleType | None`\n- Constructs a minimal shim with only `.arch = arch`\n- Delegates to `get_module(_Shim())`\n- Does not modify `can_handle()` or `get_module()`\n- Has a Google-style docstring with Args/Returns sections\n- Is listed in `__all__`\n\nThis is a read-only verification \u2014 no source changes needed for this step.\n\n**Step 2: Add tests to `worker/tests/test_arch_init.py`.**\nAdd a new test section (after the existing `can_handle` delegation tests) with three test functions:\n\n1. `test_get_module_by_name_returns_zit_for_zit()` \u2014 Call `get_module_by_name(\"zit\")`, assert the returned module is not None and `mod.__name__ == \"worker.nodes.arch.diffusion.zit\"`.\n\n2. `test_get_module_by_name_returns_none_for_unknown_arch()` \u2014 Call `get_module_by_name(\"unknown\")`, assert it returns `None`.\n\n3. `test_get_module_by_name_does_not_construct_real_model()` \u2014 Call `get_module_by_name(\"zit\")` and verify the shim pattern works: the function should succeed without any real model object being constructed (this is implicitly verified by the mock-mode test environment where torch/diffusers are not importable, but we add an explicit assertion that the shim class is a simple class without any model-like attributes).\n\nEach test imports `get_module_by_name` from `worker.nodes.arch.diffusion` (not from `worker.nodes.arch`, since that module does not re-export it).\n\n**Step 3: Update `docs/TESTS.md`.**\nAdd catalogue entries for the three new tests, following the format defined in ANVILML_DESIGN.md \u00a716.1.\n\n**Step 4: Run syntax check and tests.**\nRun `python3 -m py_compile worker/nodes/arch/diffusion/__init__.py worker/tests/test_arch_init.py` to confirm no syntax errors. Then run `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_init.py -v` to confirm all tests pass.",
-  "plan_approval_message_id": "1519287886292451419",
+  "current_plan": "1. **Fix `LoadVae.execute()` call site (line 513).** Change:\n   ```python\n   result = self.ctx.pipeline_cache.get_or_load(\n       model_id, \"bf16\", lambda: _load_vae_from_safetensors(model_id, \"zit\")\n   )\n   ```\n   to:\n   ```python\n   result = self.ctx.pipeline_cache.get_or_load(\n       model_id, \"bf16\", lambda: _load_vae_from_safetensors(model_id, \"zit\", self.ctx.device)\n   )\n   ```\n   Rationale: `self.ctx.device` is the worker's assigned device string (e.g. `\"cuda:0\"`). This matches the exact pattern used by `LoadModel.execute()` (line 439) and `LoadClip.execute()` (line 595). Without this, `_load_vae_from_safetensors` raises `TypeError: missing 1 required positional argument: 'device'`.\n\n2. **Update `LoadClip.execute()` docstring.** Replace the stale `Raises:` section:\n   ```\n   Raises:\n       NotImplementedError: If called in non-mock mode. The real\n           safetensors loading path is stubbed until P18-D1.\n   ```\n   with accurate behavior:\n   ```\n   Raises:\n       OSError: If the model file or directory does not exist.\n       ValueError: If no architecture module claims the specified\n           clip_type (e.g. unknown tokeniser type).\n   ```\n   Rationale: The real dispatch via `_load_clip_from_safetensors` (landed in P904-A12) calls `module.load()` which raises `OSError` for missing files and `ValueError` for unsupported clip types \u2014 matching the other loader nodes' docstrings.\n\n3. **Verify correctness.** Run the acceptance criteria commands to confirm both fixes are applied.",
+  "plan_approval_message_id": "1519309453235585081",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1519287884266344509",
+  "plan_report_message_id": "1519309451386028153",
   "impl_report_message_id": null
 }

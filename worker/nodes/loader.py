@@ -509,8 +509,13 @@ class LoadVae(BaseNode):
         # Note: self.ctx.pipeline_cache is typed as dict[str, Any] in
         # NodeContext but a PipelineCache instance at runtime
         # (retrofitted by P903-A2), so .get_or_load() is available.
+        # Capture self.ctx.device before passing into the lambda closure
+        # so the VAE is placed on the worker's assigned device (e.g.
+        # "cuda:0") instead of silently defaulting to CPU.
         result = self.ctx.pipeline_cache.get_or_load(
-            model_id, "bf16", lambda: _load_vae_from_safetensors(model_id, "zit")
+            model_id,
+            "bf16",
+            lambda: _load_vae_from_safetensors(model_id, "zit", self.ctx.device),
         )
         return {"vae": result}
 
@@ -562,8 +567,9 @@ class LoadClip(BaseNode):
             (mock mode) or a loaded text-encoder object (real mode).
 
         Raises:
-            NotImplementedError: If called in non-mock mode. The real
-                safetensors loading path is stubbed until P18-D1.
+            OSError: If the model file or directory does not exist.
+            ValueError: If no architecture module claims the specified
+                clip_type (e.g. unknown tokeniser type).
         """
         # Read the model_id input. In mock mode this is a
         # placeholder string; in real mode it references a
