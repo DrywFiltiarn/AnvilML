@@ -24,6 +24,7 @@ from worker.nodes.arch.diffusion.zit import (
     _make_callback,
     can_handle,
     compute_latent_shape,
+    load_transformer,
     sample,
 )
 
@@ -128,6 +129,32 @@ def test_can_handle_non_zit() -> None:
     # Test with a model that has no arch attribute at all.
     no_arch_model = _make_model(None)
     assert can_handle(no_arch_model) is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: load_transformer
+# ---------------------------------------------------------------------------
+
+
+def test_load_transformer_is_callable() -> None:
+    """Verify ``load_transformer`` is a callable in mock mode.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse
+        fixture, ensuring mock mode is active.
+
+    Tests:
+        Assert that ``load_transformer`` is a callable (a function
+        object) — this confirms the symbol exists and is importable
+        without requiring torch or diffusers. The test does NOT
+        exercise the real loading path (that requires raw-format
+        fixtures from P904-B1b).
+
+    Expected output:
+        ``callable(load_transformer) == True`` — the function symbol
+        exists and is importable in mock mode.
+    """
+    assert callable(load_transformer)
 
 
 # ---------------------------------------------------------------------------

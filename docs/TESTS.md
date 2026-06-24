@@ -3501,3 +3501,12 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** None (uses the module-level `_cancel_flag` attribute directly).
 **Expected output:** `isinstance(_cancel_flag, threading.Event) == True` and `_cancel_flag.is_set() == False`.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py::test_cancel_flag_is_threading_event -v` exits 0.
+
+## test_load_transformer_is_callable (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The ``load_transformer()`` function was added to the ZiT architecture dispatch module (``worker.nodes.arch.diffusion.zit``) as an offline transformer loading entry point. This test verifies the symbol exists and is callable in mock mode — no torch, diffusers, or safetensors are imported at module load time. The test does NOT exercise the real loading path (that requires raw-format fixtures from P904-B1b).
+**Tests:** Asserts that ``load_transformer`` is a callable function object, confirming it is importable and part of the module's public API.
+**Inputs:** None (uses the ``load_transformer`` function imported from ``worker.nodes.arch.diffusion.zit``).
+**Expected output:** ``callable(load_transformer) == True``.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_transformer_is_callable -v` exits 0.

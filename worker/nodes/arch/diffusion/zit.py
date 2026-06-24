@@ -32,6 +32,7 @@ from typing import Any, Callable
 __all__ = [
     "can_handle",
     "compute_latent_shape",
+    "load_transformer",
     "sample",
     "MockLatent",
     "VAE_SCALE_FACTOR",
@@ -207,6 +208,88 @@ def can_handle(model_obj: Any) -> bool:
     # canonical architecture identifier for Z-Image Turbo models
     # that use the FP8 diffusion pipeline with ZImagePipeline.
     return arch == "zit"
+
+
+def load_transformer(model_id: str) -> Any:
+    """Load a Z-Image Turbo (ZiT) transformer from a raw ``.safetensors`` file.
+
+    Constructs a ``ZImageTransformer2DModel`` with zero arguments — the class's
+    registered defaults (``dim=3840``, ``n_layers=30``, ``n_heads=30``,
+    ``cap_feat_dim=2560``) match the published 6B ZiT architecture config.
+    Weights are loaded from the provided ``.safetensors`` file via
+    ``safetensors.torch.load_file``, and keys are remapped to the diffusers
+    convention by reusing ``diffusers.loaders.single_file_utils``'s internal
+    conversion function (the same logic that ``FromOriginalModelMixin`` uses
+    internally, but applied manually to avoid any HuggingFace network access).
+
+    This function performs **zero network calls**. It never queries HuggingFace
+    for a ``config.json`` or any other remote resource — all architecture
+    parameters are hard-coded defaults, and the checkpoint file is read locally.
+
+    In mock mode (``ANVILML_WORKER_MOCK=1``), returns ``None`` immediately
+    without importing torch, diffusers, or safetensors.
+
+    Args:
+        model_id: Path to a ``.safetensors`` file containing raw ZiT
+            transformer weights (the format produced by
+            ``ZImageTransformer2DModel.state_dict()`` — fused QKV keys,
+            ``model.diffusion_model.`` prefix, etc.).
+
+    Returns:
+        A ``ZImageTransformer2DModel`` instance with weights loaded and
+        remapped, or ``None`` in mock mode.
+
+    Raises:
+        OSError: If the file at ``model_id`` does not exist or is
+            inaccessible.
+        ValueError: If the checkpoint is malformed and cannot be remapped
+            or loaded into the model's state dict.
+    """
+    # Check mock mode by inspecting the environment variable.
+    # This must be a runtime check (not a module-level import)
+    # so that CI tests running with ANVILML_WORKER_MOCK=1
+    # never touch torch/diffusers/safetensors at import time.
+    _mock = os.environ.get("ANVILML_WORKER_MOCK") == "1"
+
+    if _mock:
+        # In mock mode, return None immediately without importing
+        # torch, diffusers, or safetensors. This keeps tests fast
+        # and avoids requiring GPU hardware or these heavy deps.
+        return None
+
+    # Real mode: lazy-import all heavy dependencies inside the
+    # real-mode branch to preserve mock-mode import isolation.
+    from diffusers import ZImageTransformer2DModel
+    from diffusers.loaders.single_file_utils import (
+        convert_z_image_transformer_checkpoint_to_diffusers,
+    )
+    from safetensors.torch import load_file as safetensors_load_file
+
+    # Construct the model with zero arguments — the class's
+    # registered defaults match the published 6B ZiT architecture
+    # config (dim=3840, n_layers=30, n_heads=30, cap_feat_dim=2560).
+    # We rely on these defaults rather than reading a config file,
+    # which would require network access to HuggingFace.
+    model = ZImageTransformer2DModel()
+
+    # Load the raw checkpoint from the .safetensors file.
+    # The raw format contains fused QKV keys (qkv.weight) and
+    # the model.diffusion_model. prefix — diffusers' remap
+    # function handles both transformations.
+    checkpoint = safetensors_load_file(model_id)
+
+    # Remap keys from the raw checkpoint format to the diffusers
+    # convention. This function fuses separate to_q/to_k/to_v
+    # weights into qkv.weight and removes the model.diffusion_model.
+    # prefix — the exact inverse of what ZImageTransformer2DModel
+    # produces in state_dict().
+    remapped = convert_z_image_transformer_checkpoint_to_diffusers(checkpoint)
+
+    # Load the remapped state dict into the model. This applies
+    # the weights to the zero-arg-constructed model instance.
+    model.load_state_dict(remapped)
+
+    return model
 
 
 def sample(
