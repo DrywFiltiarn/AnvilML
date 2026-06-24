@@ -140,16 +140,17 @@
     "P904-B2",
     "P904-B3",
     "P904-B4",
-    "P904-Z1"
+    "P904-Z1",
+    "P904-Z1b"
   ],
-  "in_progress": "P904-Z1b",
+  "in_progress": "P904-Z2",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-24T17:39:50+0200",
+  "last_updated": "2026-06-24T19:09:07+0200",
   "plan_approved": true,
-  "current_plan": "",
-  "plan_approval_message_id": "1519365598952296508",
+  "current_plan": "1. **Update `worker/tests/pytest.ini`**: Append a `markers` line after the existing\n   `testpaths` line. The value will be:\n   ```\n   markers =\n       realcpu: real-mode CPU test, requires torch+diffusers+transformers, not run by default CI\n   ```\n   This is the standard pytest `markers` multi-line format (PEP-compliant: each marker\n   gets its own indented line). pytest reads this at collection time and suppresses the\n   \"unknown option\" warning for `@pytest.mark.realcpu` annotations. Tests decorated with\n   `@pytest.mark.realcpu` are automatically excluded from any pytest invocation that does\n   not explicitly request them (i.e. the default `pytest worker/tests -v` will not collect\n   them).\n\n2. **Update `.github/workflows/ci.yml`**: On line 80, change the pytest run command from:\n   ```yaml\n   run: ${{ matrix.python }} -m pytest worker/tests -v\n   ```\n   to:\n   ```yaml\n   run: ${{ matrix.python }} -m pytest worker/tests -v -m \"not realcpu\"\n   ```\n   This adds the `-m \"not realcpu\"` selection expression as defense-in-depth. While the\n   absence of `torch` in base.txt already causes collection errors (or test skips) for any\n   real-mode test that imports torch, the `-m` expression is an explicit, self-documenting\n   guard that makes the exclusion intent clear to any engineer reading the CI config. It\n   also protects against a future scenario where `torch` is added to base.txt without\n   updating the marker registration.\n\nNo other files are modified. No Rust source, no tests, no documentation updates needed\n(this task does not add or modify any test functions).",
+  "plan_approval_message_id": "1519388781722079502",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1519365597027369103",
+  "plan_report_message_id": "1519388779159355439",
   "impl_report_message_id": null
 }

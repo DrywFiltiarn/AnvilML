@@ -77,7 +77,7 @@ jobs:
       - name: Run worker tests
         env:
           ANVILML_WORKER_MOCK: "1"
-        run: ${{ matrix.python }} -m pytest worker/tests -v
+        run: ${{ matrix.python }} -m pytest worker/tests -v -m "not realcpu"
 
   openapi-drift:
     runs-on: ubuntu-latest
