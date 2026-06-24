@@ -285,5 +285,16 @@
     ],
     "context": "Create worker/tests/test_real_chain.py, marked @pytest.mark.realcpu, one end-to-end test wiring all seven node outputs into the next node's inputs exactly as worker/executor.py's run_graph() would (do not call run_graph() itself -- construct and call each node directly in sequence, so the test is independent of executor.py's own correctness). Use B1/B1b's tiny fixtures, width=height=128, steps=1, single batch. Assert: no exception raised end-to-end; Sampler's output latent shape equals EmptyLatent's output shape; resolved seed is a non-negative int; final VaeDecode output is a real PIL.Image.Image, not a MockImage. The chain now extends through VaeDecode (P18-D20, committed after this task was originally scoped to stop at Sampler) -- this is the project's first test exercising the complete real-mode node graph, model load through decoded image, end-to-end.",
     "tags": []
+  },
+  {
+    "id": "P904-Z6",
+    "description": "worker/tests/test_arch_zit.py: fix CI failures \u2014 5 B1/B2 tests unmarked, running torch-less in CI",
+    "phase": "904",
+    "project": "anvilml",
+    "prereqs": [
+      "P904-Z5"
+    ],
+    "context": "Confirmed via live CI log: 5 tests in test_arch_zit.py (added during B1/B2) do a bare 'import torch' with no realcpu marker, in a file CI collects by default with no torch installed -- ModuleNotFoundError every run since Z2 landed (marker registered, but these tests were never tagged). Per-test review, not a blanket fix: test_remap_key_transformations genuinely needs torch -- _remap_z_image_keys() calls torch.chunk() internally for the QKV defuse, confirmed by reading the function; mark it @pytest.mark.realcpu, the first such test in this codebase. The other 4 (test_infer_vae_config_from_checkpoint, test_infer_vae_config_missing_key_raises, test_remap_ldm_vae_keys, test_remap_ldm_vae_keys_first_stage_model_prefix) only do string key manipulation and .shape[N] indexing -- neither tested function calls anything torch-specific. Rewrite these 4 with a tiny local shape-only stand-in instead of torch.ones(...), drop import torch; do not mark these realcpu, only their fixture data was wrong.",
+    "tags": []
   }
 ]

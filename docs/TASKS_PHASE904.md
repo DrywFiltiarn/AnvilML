@@ -150,7 +150,7 @@ replacement, since both expect the identical raw checkpoint format).
 |-------|-----------|-------|---------|
 | A | retrofit | P904-A1 … P904-A14 (incl. A6b) | Seven real-path defects in D16–D19, two systemic device-placement findings from the D1–D15 re-audit, a CI-breaking `torch` import in D20's own test, an HF-network-access defect in `LoadModel`/`LoadVae`'s real path requiring offline-loading rework across `loader.py` and `zit.py`, and two further defects found in that rework's own committed code (a missing `device` argument, a stale docstring) — fifteen tasks total, sequenced linearly |
 | B | offline config inference rework | P904-B1 … P904-B4 | Replaces Group A's reliance on private, unversioned `diffusers` internals (`convert_z_image_transformer_checkpoint_to_diffusers`, `convert_ldm_vae_checkpoint`) with direct, ComfyUI-style shape inference from each checkpoint's own raw tensor keys — four tasks, sequenced linearly |
-| Z | test infrastructure | P904-Z1 … P904-Z5 (incl. Z1b) | Opt-in, CI-excluded real-mode CPU test suite mirroring the mock suite's per-node and chain coverage, extended through `VaeDecode` (D20) and through raw-checkpoint-format fixtures that exercise Group B's shape-inference path, using synthetic tiny-config checkpoints |
+| Z | test infrastructure | P904-Z1 … P904-Z6 (incl. Z1b) | Opt-in, CI-excluded real-mode CPU test suite mirroring the mock suite's per-node and chain coverage, extended through `VaeDecode` (D20) and through raw-checkpoint-format fixtures that exercise Group B's shape-inference path, using synthetic tiny-config checkpoints; Z6 fixes a live CI failure where 5 of Group B's own tests landed unmarked in the mock-mode test file |
 
 ## Prerequisites
 
@@ -833,6 +833,37 @@ ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/t
 # -> exits 0, full chain completes without exception, final output is a real PIL.Image.Image
 ```
 
+#### P904-Z6: worker/tests/test_arch_zit.py: fix CI failures — 5 B1/B2 tests unmarked, running torch-less in CI
+
+**Goal:** Fix a live CI failure confirmed via the actual GitHub Actions log:
+5 tests added during P904-B1/B2's own implementation do a bare `import torch`
+with no `realcpu` marker, in a file CI collects by default in a venv with no
+`torch` installed. `ModuleNotFoundError` on every run since P904-Z2 landed —
+the marker was registered, but these five tests were never tagged with it.
+Sequenced last in this phase, after the rest of Group Z, since it is a
+standalone fix to an existing file rather than something the Z1–Z5 chain's
+own fixtures or infrastructure depend on.
+
+**Files to create or modify:**
+- `worker/tests/test_arch_zit.py` — mark one test `@pytest.mark.realcpu`; rewrite four others to drop their `torch` dependency entirely
+
+**Key implementation notes:**
+- This is a **per-test decision, not a blanket fix** — the five tests do not all have the same underlying need for `torch`, confirmed by reading the production functions each one exercises:
+  - `test_remap_key_transformations` genuinely needs `torch`: it tests `_remap_z_image_keys()`, which calls `torch.chunk(fused_qkv, 3, dim=0)` internally to defuse the QKV projection — there is no way to exercise this function without a real `torch.Tensor`. Add `@pytest.mark.realcpu` to this test. This will be the **first** `realcpu`-marked test in the codebase; no existing pattern to follow beyond the marker registration itself from P904-Z2
+  - `test_infer_vae_config_from_checkpoint`, `test_infer_vae_config_missing_key_raises`, `test_remap_ldm_vae_keys`, `test_remap_ldm_vae_keys_first_stage_model_prefix` test `_infer_vae_config_from_checkpoint()` and `_remap_ldm_vae_keys()` — confirmed by reading both functions, neither ever calls anything `torch`-specific; both only do `.shape[N]` integer indexing and plain string/dict key manipulation. These four tests' own docstrings already say `torch`/`diffusers` import is "not strictly required" — that claim is correct for these two functions (it is *not* correct for `_remap_z_image_keys`, despite a near-identical docstring sentence appearing on `test_remap_key_transformations` too — don't assume the docstrings are reliable signals on their own, verify against the actual function each test calls)
+- For the four torch-free rewrites: replace every `torch.ones(...)` checkpoint-fixture entry with a tiny local stand-in exposing only `.shape` as a plain tuple (e.g. a small class or even a bare tuple subclass) — the production functions never read anything else off these objects. Remove the `import torch` line from each of these four test bodies entirely
+- Do not change the synthetic shape values used in any test's fixture data (e.g. `decoder.conv_out.weight` using `(64, 64, 3, 3)` rather than the real checkpoint's actual `(3, 128, 3, 3)`) — this is deliberate, exercising the function's arithmetic independently of real-world values, not a bug to "correct" to match the real scan
+
+**Acceptance criterion:**
+```bash
+ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py -v -m "not realcpu"
+# -> exits 0, the 4 rewritten tests pass with no torch installed in this venv
+grep -n "@pytest.mark.realcpu" worker/tests/test_arch_zit.py
+# -> exactly one match, on test_remap_key_transformations
+grep -n "^    import torch" worker/tests/test_arch_zit.py
+# -> only test_remap_key_transformations still has this line among the five tests in question
+```
+
 
 ## Files Affected
 
@@ -847,6 +878,7 @@ ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/t
 | MODIFY | `worker/worker_main.py` | Replace `list[bool]` cancel flag with `threading.Event()` (A5) |
 | MODIFY | `worker/nodes/arch/diffusion/zit.py` | Add `clip` parameter, fix loader_fn's tokenizer/text_encoder source (A6); remove vestigial `vae` parameter (A6b); add `load_transformer()` (A10) and `load_vae()` (A11) — both offline, no HF network access; replace both functions' reliance on private `diffusers` internals with direct shape-inferred config + manual key remap (B1, B2) |
 | MODIFY | `worker/nodes/arch/diffusion/__init__.py` | Add `get_module_by_name(arch: str)` lookup alongside the existing `get_module(model_obj)` (A13) |
+| MODIFY | `worker/tests/test_arch_zit.py` | Update two existing tests to pass `clip`/drop `vae=` keyword args (A6, A6b); mark `test_remap_key_transformations` `@pytest.mark.realcpu` and rewrite four other B1/B2 tests to drop their unneeded `torch` dependency, fixing a live CI failure (Z6) |
 | CREATE | `worker/tests/real_fixtures.py` | Tiny CLIP checkpoint fixtures (qwen3/clip_l/t5), native `state_dict()` format (Z1); tiny ZiT transformer/VAE fixtures in raw, pre-remap checkpoint format — required to actually exercise Group B's shape-inference remap path (Z1b) |
 | MODIFY | `worker/tests/pytest.ini` | Register `realcpu` marker (Z2) |
 | MODIFY | `.github/workflows/ci.yml` | Add `-m "not realcpu"` to the worker test job's pytest invocation (Z2) |
@@ -878,6 +910,20 @@ run only by the OpenCode agent at ACT time on a CPU-capable box (using
 `worker/requirements/cpu-linux-agent.txt`, manually installed) or by a developer
 locally — never as part of any automated gate.
 
+Despite Z2 landing the marker correctly, CI broke anyway between Z2 and Z6:
+five tests added during P904-B1/B2's own implementation landed directly in
+`test_arch_zit.py` (the mock-mode file) with a bare `import torch` and no
+`realcpu` tag, confirmed by a live CI log showing `ModuleNotFoundError: No
+module named 'torch'` on every one of them. P904-Z6 fixes this — one test
+genuinely needs `torch` and is retroactively marked `realcpu`; the other
+four needed no `torch` dependency at all and are rewritten without it.
+This is the first concrete evidence in this phase that registering a
+marker is necessary but not sufficient — every PR touching a mock-mode
+test file still needs a human or agent to apply the marker correctly at
+the point a new real-mode test is added, since CI itself cannot tell the
+difference between a correctly-marked and an incorrectly-unmarked test
+until it fails.
+
 ## Platform Considerations
 
 `threading.Event()` (P904-A5) is cross-platform standard library and
@@ -900,7 +946,7 @@ call.
 
 ## Acceptance Criteria
 
-- [ ] `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v` exits 0 (no regressions across the full mock-mode suite; this invocation must also implicitly skip Group Z since `torch` is absent from this venv)
+- [ ] `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/ -v -m "not realcpu"` exits 0 (no regressions across the full mock-mode suite, with the one genuinely-real-mode test in `test_arch_zit.py` explicitly excluded — this invocation is also CI's actual command as of P904-Z2)
 - [ ] `grep -n "device=ctx.device" worker/nodes/sampler.py` returns no hits
 - [ ] `grep -n "_cancel_flag\[0\]" worker/worker_main.py` returns no hits
 - [ ] `python3 -c "import inspect,os; os.environ['ANVILML_WORKER_MOCK']='1'; from worker.nodes.arch.diffusion.zit import sample; s=inspect.signature(sample); assert 'clip' in s.parameters and 'vae' not in s.parameters"` exits 0
@@ -912,6 +958,7 @@ call.
 - [ ] `python3 -c "import os; os.environ['ANVILML_WORKER_MOCK']='1'; from worker.nodes.arch.diffusion import get_module_by_name; assert get_module_by_name('zit') is not None"` exits 0 (A13)
 - [ ] `grep -n '_load_vae_from_safetensors(model_id, "zit", self.ctx.device)' worker/nodes/loader.py` confirms A14's argument fix
 - [ ] `grep -n "convert_z_image_transformer_checkpoint_to_diffusers\|convert_ldm_vae_checkpoint" worker/nodes/arch/diffusion/zit.py` returns no hits (B1, B2 — private `diffusers` internals fully removed)
+- [ ] `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py -v -m "not realcpu"` exits 0 in a venv with no `torch` installed (the actual regression check for Z6 — confirms CI is no longer broken by the five unmarked B1/B2 tests)
 - [ ] `ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/ -v -m realcpu` exits 0 when run manually/at ACT time with `cpu-linux-agent.txt` installed (not part of any automated gate; this is a manual confirmation step, not a CI assertion)
 
 ```bash
@@ -1009,6 +1056,21 @@ ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/ 
   needed before `n_layers`/`n_refiner_layers`/the VAE's block structure
   could be confirmed with confidence; an incomplete scan can look
   complete enough to trust if you don't already know what's missing.
+- Registering the `realcpu` marker (P904-Z2) did not, by itself, prevent
+  CI from breaking — confirmed by a live CI log showing five tests added
+  during P904-B1/B2's own implementation landed directly in
+  `test_arch_zit.py` with a bare `import torch` and no marker applied at
+  all, fixed in P904-Z6. A marker is only as good as every future commit
+  remembering to apply it; this is a process gap, not a tooling gap, and
+  no amount of CI configuration alone closes it. It's also worth noting
+  that not every test needing `torch.ones(...)` in its fixture data
+  actually needs `torch` for the function it's testing — two of the five
+  failing tests had near-identical "torch not strictly required" docstring
+  language, but only one of the underlying production functions
+  (`_remap_z_image_keys`, via `torch.chunk`) was actually `torch`-dependent;
+  the others used `torch.ones()` for fixture convenience on functions that
+  only ever read `.shape[N]`. Don't assume a docstring's claim about its
+  own test is reliable without checking the production function itself.
 
 ## docs/RUNNABLE_PROOF.md update
 
