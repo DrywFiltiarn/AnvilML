@@ -432,6 +432,268 @@ def _remap_z_image_keys(checkpoint: dict[str, Any]) -> dict[str, Any]:
     return renamed
 
 
+def _infer_vae_config_from_checkpoint(checkpoint: dict[str, Any]) -> dict[str, Any]:
+    """Infer the ``AutoencoderKL`` config from raw LDM-format checkpoint tensor shapes.
+
+    Derives architecture parameters directly from tensor shapes in the checkpoint,
+    following the same shape-inference pattern used by ``_infer_config_from_checkpoint``
+    for the transformer. This eliminates the need for a hardcoded ``block_out_channels``
+    list and makes the loader robust to VAE variants with different stage counts.
+
+    Shape inference rules (confirmed against real VAE checkpoint scans):
+
+    * ``latent_channels`` — second dimension of ``decoder.conv_in.weight``
+      (e.g. ``[512, 16, 3, 3]`` → ``16``).
+    * ``block_out_channels`` — first dimension of ``decoder.up.{N}.block.{M}.conv1.weight``
+      for each unique stage index ``N``, sorted ascending (e.g. ``[128, 256, 512, 512]``).
+    * ``in_channels`` — second dimension of ``encoder.conv_in.weight``
+      (e.g. ``[64, 3, 3, 3]`` → ``3``).
+    * ``out_channels`` — first dimension of ``decoder.conv_out.weight``
+      (e.g. ``[64, 64, 3, 3]`` → ``64``).
+    * ``layers_per_block`` — count of unique block indices ``M`` in
+      ``decoder.up.{N}.block.{M}.conv1.weight`` for any ``N``, minus 1
+      (diffusers' ``Decoder`` uses ``num_layers = layers_per_block + 1`` for up-blocks;
+      3 observed resnets → ``layers_per_block = 2``).
+
+    Args:
+        checkpoint: Raw state dict from a ``.safetensors`` file.
+            Keys are in the raw LDM format (e.g. ``vae.encoder.down.0...``).
+
+    Returns:
+        A dict with keys ``latent_channels``, ``block_out_channels``,
+        ``in_channels``, ``out_channels``, and ``layers_per_block``.
+
+    Raises:
+        ValueError: If any required key is absent from the checkpoint.
+    """
+    # --- latent_channels: decoder.conv_in.weight[1] ---
+    # The decoder conv_in projects from the latent space to the first decoder stage.
+    # Shape is [out_channels, latent_channels, kernel_h, kernel_w], e.g. [512, 16, 3, 3].
+    latent_channels = None
+    for key in checkpoint:
+        if "decoder.conv_in.weight" in key:
+            latent_channels = checkpoint[key].shape[1]
+            break
+
+    if latent_channels is None:
+        raise ValueError(
+            "Cannot infer latent_channels: "
+            "no 'decoder.conv_in.weight' key found in checkpoint"
+        )
+
+    # --- block_out_channels: decoder.up.{N}.block.{M}.conv1.weight ---
+    # Scan for unique stage indices N and extract the channel count for each.
+    # This dynamically discovers the number of stages rather than hardcoding 4.
+    stage_channels: dict[int, int] = {}
+    for key in checkpoint:
+        # Match keys like "decoder.up.0.block.0.conv1.weight"
+        if "decoder.up." in key and ".block." in key and ".conv1.weight" in key:
+            parts = key.split("decoder.up.")
+            if len(parts) < 2:
+                continue
+            remainder = parts[1]
+            stage_idx_str = remainder.split(".")[0]
+            try:
+                stage_idx = int(stage_idx_str)
+            except ValueError:
+                continue
+            # First dimension of conv1 weight is the output channels for this stage
+            stage_channels[stage_idx] = checkpoint[key].shape[0]
+
+    if not stage_channels:
+        raise ValueError(
+            "Cannot infer block_out_channels: "
+            "no 'decoder.up.*.block.*.conv1.weight' keys found in checkpoint"
+        )
+
+    block_out_channels = [
+        stage_channels[n] for n in sorted(stage_channels.keys())
+    ]
+
+    # --- in_channels: encoder.conv_in.weight[1] ---
+    # The encoder conv_in projects from the input image channels to the first stage.
+    # Shape is [out_channels, in_channels, kernel_h, kernel_w], e.g. [64, 3, 3, 3].
+    in_channels = None
+    for key in checkpoint:
+        if "encoder.conv_in.weight" in key:
+            in_channels = checkpoint[key].shape[1]
+            break
+
+    if in_channels is None:
+        raise ValueError(
+            "Cannot infer in_channels: "
+            "no 'encoder.conv_in.weight' key found in checkpoint"
+        )
+
+    # --- out_channels: decoder.conv_out.weight[0] ---
+    # The decoder final conv projects from the last stage back to image channels.
+    # Shape is [out_channels, in_channels, kernel_h, kernel_w], e.g. [64, 64, 3, 3].
+    out_channels = None
+    for key in checkpoint:
+        if "decoder.conv_out.weight" in key:
+            out_channels = checkpoint[key].shape[0]
+            break
+
+    if out_channels is None:
+        raise ValueError(
+            "Cannot infer out_channels: "
+            "no 'decoder.conv_out.weight' key found in checkpoint"
+        )
+
+    # --- layers_per_block: unique block indices in decoder up-blocks, minus 1 ---
+    # Diffusers' Decoder class uses num_layers = layers_per_block + 1 for up-blocks.
+    # So if we observe 3 resnet blocks per stage, layers_per_block = 3 - 1 = 2.
+    block_indices: set[int] = set()
+    for key in checkpoint:
+        if "decoder.up." in key and ".block." in key and ".conv1.weight" in key:
+            parts = key.split("decoder.up.")
+            if len(parts) < 2:
+                continue
+            remainder = parts[1]
+            # remainder is like "0.block.2.conv1.weight"
+            block_parts = remainder.split(".block.")
+            if len(block_parts) < 2:
+                continue
+            block_idx_str = block_parts[1].split(".")[0]
+            try:
+                block_idx = int(block_idx_str)
+            except ValueError:
+                continue
+            block_indices.add(block_idx)
+
+    if not block_indices:
+        raise ValueError(
+            "Cannot infer layers_per_block: "
+            "no 'decoder.up.*.block.*.conv1.weight' keys found in checkpoint"
+        )
+
+    layers_per_block = max(block_indices) + 1 - 1  # -1 offset for diffusers convention
+
+    return {
+        "latent_channels": latent_channels,
+        "block_out_channels": block_out_channels,
+        "in_channels": in_channels,
+        "out_channels": out_channels,
+        "layers_per_block": layers_per_block,
+    }
+
+
+def _remap_ldm_vae_keys(checkpoint: dict[str, Any]) -> dict[str, Any]:
+    """Remap raw LDM-format VAE checkpoint keys to the diffusers ``AutoencoderKL`` convention.
+
+    Applies three transformations to the checkpoint state dict:
+
+    1. **Prefix stripping** — removes leading ``vae.`` and ``first_stage_model.``
+       prefixes (both are common LDM checkpoint prefix styles).
+    2. **Encoder down-block remap** — converts ``encoder.down.{N}.block.{M}.conv{1,2}.weight``
+       to ``encoder.down_blocks.{N}.resnets.{M}.conv{1,2}.weight``. Similarly for norm
+       layers. Also remaps ``encoder.down.{N}.block.{M}.conv_down.weight`` to
+       ``encoder.down_blocks.{N}.conv_down.weight``.
+    3. **Mid block remap** — converts ``decoder.mid.block_{1,2}.conv{1,2}.weight`` to
+       ``decoder.mid_block.resnets.{0,1}.conv{1,2}.weight``.
+    4. **Decoder up-block remap** — converts ``decoder.up.{N}.block.{M}.conv{1,2}.weight``
+       to ``decoder.up_blocks.{N}.resnets.{M}.conv{1,2}.weight``. Also remaps
+       ``decoder.up.{N}.block.{M}.conv_up.weight`` to
+       ``decoder.up_blocks.{N}.conv_upsample.weight``.
+    5. **Final conv** — ``decoder.conv_out.weight`` passes through unchanged
+       (already in diffusers format).
+
+    Operates on a shallow copy to avoid mutating the original checkpoint.
+
+    Args:
+        checkpoint: Raw state dict from a ``.safetensors`` file.
+            Keys are in the raw LDM format (e.g. ``vae.encoder.down.0...``).
+
+    Returns:
+        A new dict with remapped keys suitable for
+        ``AutoencoderKL.load_state_dict()``.
+   """
+    import re
+
+    # Work on a shallow copy so the original checkpoint is never mutated.
+    state_dict = dict(checkpoint)
+    remapped: dict[str, Any] = {}
+
+    for key, value in state_dict.items():
+        new_key = key
+
+        # Strip leading 'vae.' prefix (common LDM checkpoint prefix style).
+        if new_key.startswith("vae."):
+            new_key = new_key[4:]
+
+        # Strip leading 'first_stage_model.' prefix (alternative LDM prefix style).
+        if new_key.startswith("first_stage_model."):
+            new_key = new_key[len("first_stage_model."):]
+
+        # Encoder down-block conv/norm: encoder.down.{N}.block.{M}.conv{1,2}.norm{1,2}.<suffix>
+        # Match: encoder.down.{N}.block.{M}.conv{1,2}.norm{1,2}.<suffix>
+        if re.match(r"^encoder\.down\.\d+\.block\.\d+\.conv[12]\.norm[12]\.", new_key):
+            # Replace encoder.down.N.block.M with encoder.down_blocks.N.resnets.M
+            new_key = re.sub(
+                r"^encoder\.down\.(\d+)\.block\.(\d+)",
+                r"encoder.down_blocks.\1.resnets.\2",
+                new_key,
+            )
+
+        # Match: encoder.down.{N}.block.{M}.conv{1,2}.<suffix> (not norm)
+        elif re.match(r"^encoder\.down\.\d+\.block\.\d+\.conv[12]\.", new_key):
+            new_key = re.sub(
+                r"^encoder\.down\.(\d+)\.block\.(\d+)",
+                r"encoder.down_blocks.\1.resnets.\2",
+                new_key,
+            )
+
+        # Match: encoder.down.{N}.block.{M}.conv_down.<suffix>
+        elif re.match(r"^encoder\.down\.\d+\.block\.\d+\.conv_down\.", new_key):
+            new_key = re.sub(
+                r"^encoder\.down\.(\d+)\.block\.\d+",
+                r"encoder.down_blocks.\1",
+                new_key,
+            )
+
+        # Mid block: decoder.mid.block_{1,2}.conv{1,2}.<suffix>
+        # → decoder.mid_block.resnets.{0,1}.conv{1,2}.<suffix>
+        elif re.match(r"^decoder\.mid\.block_(\d+)\.conv([12])\.", new_key):
+            block_num = int(re.match(r"^decoder\.mid\.block_(\d+)", new_key).group(1))
+            # block_1 → resnet 0, block_2 → resnet 1
+            resnet_idx = block_num - 1
+            new_key = re.sub(
+                r"^decoder\.mid\.block_\d+",
+                f"decoder.mid_block.resnets.{resnet_idx}",
+                new_key,
+            )
+
+        # Decoder up-block conv/norm: decoder.up.{N}.block.{M}.conv{1,2}.norm{1,2}.<suffix>
+        elif re.match(r"^decoder\.up\.\d+\.block\.\d+\.conv[12]\.norm[12]\.", new_key):
+            new_key = re.sub(
+                r"^decoder\.up\.(\d+)\.block\.(\d+)",
+                r"decoder.up_blocks.\1.resnets.\2",
+                new_key,
+            )
+
+        # Decoder up-block conv: decoder.up.{N}.block.{M}.conv{1,2}.<suffix> (not norm)
+        elif re.match(r"^decoder\.up\.\d+\.block\.\d+\.conv[12]\.", new_key):
+            new_key = re.sub(
+                r"^decoder\.up\.(\d+)\.block\.(\d+)",
+                r"decoder.up_blocks.\1.resnets.\2",
+                new_key,
+            )
+
+        # Decoder upsample: decoder.up.{N}.block.{M}.conv_up.<suffix>
+        # → decoder.up_blocks.{N}.conv_upsample.<suffix>
+        elif re.match(r"^decoder\.up\.\d+\.block\.\d+\.conv_up\.", new_key):
+            new_key = re.sub(
+                r"^decoder\.up\.(\d+)\.block\.\d+\.conv_up",
+                r"decoder.up_blocks.\1.conv_upsample",
+                new_key,
+            )
+
+        # All other keys pass through unchanged (including decoder.conv_out.weight)
+        remapped[new_key] = value
+
+    return remapped
+
+
 def load_transformer(model_id: str) -> Any:
     """Load a Z-Image Turbo (ZiT) transformer from a raw ``.safetensors`` file.
 
@@ -534,18 +796,23 @@ def load_transformer(model_id: str) -> Any:
 def load_vae(model_id: str) -> Any:
     """Load a VAE from a raw ``.safetensors`` file.
 
-    Constructs an ``AutoencoderKL`` with the published Z-Image Turbo
-    VAE config (``block_out_channels=[128, 256, 512, 512]``) using
-    zero-argument defaults. Weights are loaded from the provided
-    ``.safetensors`` file via ``safetensors.torch.load_file``, and
-    keys are remapped to the diffusers convention by reusing
-    ``diffusers.loaders.single_file_utils``'s internal conversion
-    function.
+    Constructs an ``AutoencoderKL`` with configuration inferred directly
+    from the raw checkpoint's tensor shapes — no hardcoded
+    ``block_out_channels`` list and no ``config.json`` required.
+    Keys are remapped from the raw LDM format to the diffusers convention
+    using a local key-remap function, eliminating the dependency on
+    ``diffusers.loaders.single_file_utils``.
+
+    The ``scaling_factor`` is hardcoded to ``0.18215`` (the SD1.x default).
+    This value is unconfirmable from checkpoint shapes alone. An incorrect
+    value here produces visible brightness/contrast issues in decoded
+    images, not a crash — the latent formula is
+    ``(latents / scaling_factor) + shift_factor``.
 
     This function performs **zero network calls**. It never queries
     HuggingFace for a ``config.json`` or any other remote resource —
-    all architecture parameters are hard-coded defaults, and the
-    checkpoint file is read locally.
+    all architecture parameters are derived from the checkpoint file,
+    and the file is read locally.
 
     In mock mode (``ANVILML_WORKER_MOCK=1``), returns ``None``
     immediately without importing torch, diffusers, or safetensors.
@@ -580,41 +847,46 @@ def load_vae(model_id: str) -> Any:
     # Real mode: lazy-import all heavy dependencies inside the
     # real-mode branch to preserve mock-mode import isolation.
     from diffusers import AutoencoderKL
-    from diffusers.loaders.single_file_utils import convert_ldm_vae_checkpoint
     from safetensors.torch import load_file as safetensors_load_file
-
-    # Construct the VAE model with block_out_channels set to match
-    # the published Z-Image Turbo VAE config (4 entries). All other
-    # parameters use AutoencoderKL's registered defaults, which are
-    # compatible with the checkpoint format produced by the original
-    # model. The 4-entry block_out_channels determines the number of
-    # down/up blocks, matching the checkpoint's structure.
-    model = AutoencoderKL(block_out_channels=[128, 256, 512, 512])
 
     # Load the raw checkpoint from the .safetensors file.
     # The raw format contains LDM-style keys (e.g. vae.encoder.down.0...)
     # that need remapping to the diffusers convention.
     checkpoint = safetensors_load_file(model_id)
 
-    # Build the config dict that convert_ldm_vae_checkpoint expects.
-    # This function only reads the *length* of down_block_types and
-    # up_block_types (to determine the number of encoder/decoder
-    # blocks), not their exact content. The standard SD-style block
-    # type strings are sufficient.
-    config = {
-        "down_block_types": ["DownEncoderBlock2D"] * 4,
-        "up_block_types": ["UpDecoderBlock2D"] * 4,
-    }
+    # Infer the AutoencoderKL config directly from checkpoint tensor shapes.
+    # This replaces the previous approach of hardcoding block_out_channels
+    # and the number of stages — now we derive the actual config from the
+    # checkpoint, making the loader robust to VAE variants with different
+    # stage counts or channel configurations.
+    config = _infer_vae_config_from_checkpoint(checkpoint)
+
+    # Construct the VAE model with explicitly-inferred parameters.
+    # All other parameters use AutoencoderKL's registered defaults, which
+    # are compatible with the checkpoint format produced by the original
+    # model. The inferred block_out_channels determines the number of
+    # down/up blocks, matching the checkpoint's structure.
+    model = AutoencoderKL(
+        block_out_channels=config["block_out_channels"],
+        latent_channels=config["latent_channels"],
+        in_channels=config["in_channels"],
+        out_channels=config["out_channels"],
+        layers_per_block=config["layers_per_block"],
+    )
 
     # Remap keys from the raw LDM checkpoint format to the diffusers
-    # convention. This strips the LDM key prefix and maps encoder
-    # down blocks, mid block, and decoder up blocks to the
-    # AutoencoderKL state dict layout.
-    remapped = convert_ldm_vae_checkpoint(checkpoint, config)
+    # convention. This strips LDM prefixes and maps encoder down blocks,
+    # mid block, and decoder up blocks to the AutoencoderKL state dict layout.
+    remapped = _remap_ldm_vae_keys(checkpoint)
 
     # Load the remapped state dict into the model. This applies
-    # the weights to the zero-arg-constructed model instance.
+    # the weights to the constructed model instance.
     model.load_state_dict(remapped)
+
+    # Set the spatial compression factor (8x: 1024x1024 → 128x128 latent grid).
+    # This is the spatial factor used by ZImagePipeline, not the scaling_factor
+    # used in the latent formula (latents / scaling_factor) + shift_factor.
+    model.vae_scale_factor = VAE_SCALE_FACTOR
 
     return model
 

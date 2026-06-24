@@ -22,7 +22,9 @@ from worker.nodes.arch.diffusion.zit import (
     VAE_SCALE_FACTOR,
     _SamplingCancelled,
     _infer_config_from_checkpoint,
+    _infer_vae_config_from_checkpoint,
     _make_callback,
+    _remap_ldm_vae_keys,
     _remap_z_image_keys,
     can_handle,
     compute_latent_shape,
@@ -658,7 +660,7 @@ def test_make_callback_raises_on_cancellation() -> None:
 
 
 def test_no_diffusers_internal_import() -> None:
-    """Verify the import of ``convert_z_image_transformer_checkpoint_to_diffusers`` is removed.
+    """Verify private diffusers internal imports are removed from zit.py.
 
     Preconditions:
         ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse
@@ -666,12 +668,14 @@ def test_no_diffusers_internal_import() -> None:
 
     Tests:
         Read the source of ``worker/nodes/arch/diffusion/zit.py`` and
-        assert that the string ``convert_z_image_transformer_checkpoint_to_diffusers``
-        does not appear anywhere in the file.
+        assert that both ``convert_z_image_transformer_checkpoint_to_diffusers``
+        and ``convert_ldm_vae_checkpoint`` do not appear anywhere in the file.
 
     Expected output:
-        Zero matches for ``convert_z_image_transformer_checkpoint_to_diffusers``
-        in the source file — the private diffusers internal is no longer imported.
+        Zero matches for both
+        ``convert_z_image_transformer_checkpoint_to_diffusers`` and
+        ``convert_ldm_vae_checkpoint`` in the source file — no private
+        diffusers internals are imported.
     """
     import os
 
@@ -685,6 +689,7 @@ def test_no_diffusers_internal_import() -> None:
     )
     src = open(src_path).read()
     assert "convert_z_image_transformer_checkpoint_to_diffusers" not in src
+    assert "convert_ldm_vae_checkpoint" not in src
 
 
 # ---------------------------------------------------------------------------
@@ -816,3 +821,233 @@ def test_remap_key_transformations() -> None:
     # Verify the original checkpoint was not mutated (we operate on a copy)
     assert "model.diffusion_model.layers.29.attention.qkv.weight" in checkpoint
     assert "model.diffusion_model.norm_final.weight" in checkpoint
+
+
+# ---------------------------------------------------------------------------
+# Tests: _infer_vae_config_from_checkpoint
+# ---------------------------------------------------------------------------
+
+
+def test_infer_vae_config_from_checkpoint() -> None:
+    """Verify shape inference produces correct AutoencoderKL config from VAE checkpoint.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse
+        fixture (not strictly required — the inference function is pure
+        key/shape inspection, no torch/diffusers import needed).
+
+    Tests:
+        Build a synthetic checkpoint with keys matching the real VAE key
+        format:
+        * ``decoder.conv_in.weight`` with shape ``[512, 16, 3, 3]``
+          (latent_channels = 16)
+        * ``decoder.up.0.block.0.conv1.weight`` shape ``[128, 128, 3, 3]``
+        * ``decoder.up.1.block.0.conv1.weight`` shape ``[256, 128, 3, 3]``
+        * ``decoder.up.2.block.0.conv1.weight`` shape ``[512, 256, 3, 3]``
+        * ``decoder.up.3.block.0.conv1.weight`` shape ``[512, 512, 3, 3]``
+        * ``encoder.conv_in.weight`` shape ``[64, 3, 3, 3]`` (in_channels = 3)
+        * ``decoder.conv_out.weight`` shape ``[64, 64, 3, 3]`` (out_channels = 64)
+        * 3 resnet blocks per up-stage (blocks 0, 1, 2 → layers_per_block = 2)
+        Then call ``_infer_vae_config_from_checkpoint()`` and assert
+        the inferred config matches expected values.
+
+    Expected output:
+        ``latent_channels == 16``,
+        ``block_out_channels == [128, 256, 512, 512]``,
+        ``in_channels == 3``,
+        ``out_channels == 3``,
+        ``layers_per_block == 2`` (3 observed - 1 offset).
+    """
+    import torch
+
+    # Build a synthetic checkpoint matching the real VAE key format.
+    # decoder.conv_in: [out_ch, latent_ch, k_h, k_w] = [512, 16, 3, 3]
+    checkpoint: dict[str, Any] = {
+        "decoder.conv_in.weight": torch.ones(512, 16, 3, 3),
+        # Encoder conv_in: [out_ch, in_ch, k_h, k_w] = [64, 3, 3, 3]
+        "encoder.conv_in.weight": torch.ones(64, 3, 3, 3),
+        # Decoder final conv_out: [out_ch, in_ch, k_h, k_w] = [64, 64, 3, 3]
+        "decoder.conv_out.weight": torch.ones(64, 64, 3, 3),
+        # 4 up-stage blocks with 3 resnet blocks each (blocks 0, 1, 2)
+        # Stage 0: [128, 128, 3, 3]
+        "decoder.up.0.block.0.conv1.weight": torch.ones(128, 128, 3, 3),
+        "decoder.up.0.block.1.conv1.weight": torch.ones(128, 128, 3, 3),
+        "decoder.up.0.block.2.conv1.weight": torch.ones(128, 128, 3, 3),
+        # Stage 1: [256, 128, 3, 3]
+        "decoder.up.1.block.0.conv1.weight": torch.ones(256, 128, 3, 3),
+        "decoder.up.1.block.1.conv1.weight": torch.ones(256, 128, 3, 3),
+        "decoder.up.1.block.2.conv1.weight": torch.ones(256, 128, 3, 3),
+        # Stage 2: [512, 256, 3, 3]
+        "decoder.up.2.block.0.conv1.weight": torch.ones(512, 256, 3, 3),
+        "decoder.up.2.block.1.conv1.weight": torch.ones(512, 256, 3, 3),
+        "decoder.up.2.block.2.conv1.weight": torch.ones(512, 256, 3, 3),
+        # Stage 3: [512, 512, 3, 3]
+        "decoder.up.3.block.0.conv1.weight": torch.ones(512, 512, 3, 3),
+        "decoder.up.3.block.1.conv1.weight": torch.ones(512, 512, 3, 3),
+        "decoder.up.3.block.2.conv1.weight": torch.ones(512, 512, 3, 3),
+    }
+
+    config = _infer_vae_config_from_checkpoint(checkpoint)
+
+    # latent_channels = shape[1] of decoder.conv_in.weight = 16
+    assert config["latent_channels"] == 16
+
+    # block_out_channels from 4 stages, sorted ascending
+    assert config["block_out_channels"] == [128, 256, 512, 512]
+
+    # in_channels = shape[1] of encoder.conv_in.weight = 3
+    assert config["in_channels"] == 3
+
+    # out_channels = shape[0] of decoder.conv_out.weight = 64
+    assert config["out_channels"] == 64
+
+    # layers_per_block = max_block_idx + 1 - 1 = 2 + 1 - 1 = 2
+    # (3 blocks: 0, 1, 2 → max = 2 → 2 + 1 - 1 = 2)
+    assert config["layers_per_block"] == 2
+
+
+def test_infer_vae_config_missing_key_raises() -> None:
+    """Verify _infer_vae_config_from_checkpoint raises ValueError on missing keys.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse
+        fixture.
+
+    Tests:
+        Build a checkpoint missing the ``decoder.conv_in.weight`` key
+        and call ``_infer_vae_config_from_checkpoint()``, asserting that
+        a ``ValueError`` is raised with a message mentioning
+        ``decoder.conv_in.weight``.
+
+    Expected output:
+        ``ValueError`` raised — the function cannot infer config without
+        the required keys.
+    """
+    import torch
+
+    checkpoint: dict[str, Any] = {
+        # Missing decoder.conv_in.weight — should trigger ValueError
+        "encoder.conv_in.weight": torch.ones(64, 3, 3, 3),
+        "decoder.conv_out.weight": torch.ones(64, 64, 3, 3),
+    }
+
+    with pytest.raises(ValueError, match="decoder.conv_in.weight"):
+        _infer_vae_config_from_checkpoint(checkpoint)
+
+
+# ---------------------------------------------------------------------------
+# Tests: _remap_ldm_vae_keys
+# ---------------------------------------------------------------------------
+
+
+def test_remap_ldm_vae_keys() -> None:
+    """Verify LDM-to-diffusers key remap strips prefixes and builds correct block structure.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse
+        fixture (not strictly required — the remap function is pure
+        key manipulation, no torch/diffusers import needed).
+
+    Tests:
+        Build a synthetic checkpoint with LDM-format keys:
+        * ``vae.decoder.conv_in.weight`` (tests vae. prefix stripping)
+        * ``vae.encoder.down.0.block.0.conv1.weight`` (tests encoder down-block remap)
+        * ``vae.decoder.up.0.block.0.conv1.weight`` (tests decoder up-block remap)
+        * ``vae.decoder.mid.block_1.conv1.weight`` (tests mid block remap)
+        * ``vae.decoder.conv_out.weight`` (tests pass-through)
+        Then call ``_remap_ldm_vae_keys()`` and assert all keys are
+        correctly remapped to diffusers format.
+
+    Expected output:
+        All keys are correctly remapped:
+        * ``vae.`` prefix is stripped.
+        * ``encoder.down.0.block.0.conv1.weight`` →
+          ``encoder.down_blocks.0.resnets.0.conv1.weight``
+        * ``decoder.up.0.block.0.conv1.weight`` →
+          ``decoder.up_blocks.0.resnets.0.conv1.weight``
+        * ``decoder.mid.block_1.conv1.weight`` →
+          ``decoder.mid_block.resnets.0.conv1.weight``
+        * ``decoder.conv_out.weight`` passes through unchanged.
+    """
+    import torch
+
+    checkpoint: dict[str, Any] = {
+        # vae. prefix + decoder conv_in
+        "vae.decoder.conv_in.weight": torch.ones(512, 16, 3, 3),
+        # Encoder down-block (with vae. prefix)
+        "vae.encoder.down.0.block.0.conv1.weight": torch.ones(64, 64, 3, 3),
+        # Encoder down-block norm
+        "vae.encoder.down.0.block.0.conv1.norm1.weight": torch.ones(64),
+        # Decoder up-block (with vae. prefix)
+        "vae.decoder.up.0.block.0.conv1.weight": torch.ones(128, 128, 3, 3),
+        # Decoder up-block norm
+        "vae.decoder.up.0.block.0.conv1.norm1.weight": torch.ones(128),
+        # Mid block
+        "vae.decoder.mid.block_1.conv1.weight": torch.ones(512, 512, 3, 3),
+        "vae.decoder.mid.block_2.conv1.weight": torch.ones(512, 512, 3, 3),
+        # Final conv (pass-through, no prefix change needed)
+        "vae.decoder.conv_out.weight": torch.ones(64, 64, 3, 3),
+        # Upsample key
+        "vae.decoder.up.0.block.0.conv_up.weight": torch.ones(256, 128, 3, 3),
+    }
+
+    remapped = _remap_ldm_vae_keys(checkpoint)
+
+    # vae. prefix stripped, decoder.conv_in passes through
+    assert "decoder.conv_in.weight" in remapped
+
+    # Encoder down-block remap: encoder.down.0.block.0 → encoder.down_blocks.0.resnets.0
+    assert "encoder.down_blocks.0.resnets.0.conv1.weight" in remapped
+    assert "encoder.down_blocks.0.resnets.0.conv1.norm1.weight" in remapped
+
+    # Decoder up-block remap: decoder.up.0.block.0 → decoder.up_blocks.0.resnets.0
+    assert "decoder.up_blocks.0.resnets.0.conv1.weight" in remapped
+    assert "decoder.up_blocks.0.resnets.0.conv1.norm1.weight" in remapped
+
+    # Mid block remap: decoder.mid.block_1 → decoder.mid_block.resnets.0
+    # decoder.mid.block_2 → decoder.mid_block.resnets.1
+    assert "decoder.mid_block.resnets.0.conv1.weight" in remapped
+    assert "decoder.mid_block.resnets.1.conv1.weight" in remapped
+
+    # Final conv passes through unchanged
+    assert "decoder.conv_out.weight" in remapped
+
+    # Upsample remap: decoder.up.0.block.0.conv_up → decoder.up_blocks.0.conv_upsample
+    assert "decoder.up_blocks.0.conv_upsample.weight" in remapped
+
+    # Verify the original checkpoint was not mutated
+    assert "vae.decoder.conv_in.weight" in checkpoint
+    assert "vae.encoder.down.0.block.0.conv1.weight" in checkpoint
+
+    # Verify no vae. prefix remains in any remapped key
+    for key in remapped:
+        assert not key.startswith("vae."), f"Remapped key still has vae. prefix: {key}"
+
+
+def test_remap_ldm_vae_keys_first_stage_model_prefix() -> None:
+    """Verify _remap_ldm_vae_keys strips the first_stage_model. prefix.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse
+        fixture.
+
+    Tests:
+        Build a checkpoint with ``first_stage_model.`` prefix (an
+        alternative LDM checkpoint prefix style) and assert it is
+        correctly stripped.
+
+    Expected output:
+        ``first_stage_model.decoder.conv_in.weight`` →
+        ``decoder.conv_in.weight`` — the prefix is removed.
+    """
+    import torch
+
+    checkpoint: dict[str, Any] = {
+        "first_stage_model.decoder.conv_in.weight": torch.ones(512, 16, 3, 3),
+        "first_stage_model.encoder.down.0.block.0.conv1.weight": torch.ones(64, 64, 3, 3),
+    }
+
+    remapped = _remap_ldm_vae_keys(checkpoint)
+
+    assert "decoder.conv_in.weight" in remapped
+    assert "encoder.down_blocks.0.resnets.0.conv1.weight" in remapped

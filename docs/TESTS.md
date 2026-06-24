@@ -3573,3 +3573,30 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Synthetic checkpoint with keys like ``model.diffusion_model.layers.0.attn.qkv.weight`` (shape [11520, 3840]), ``model.diffusion_model.final_layer.linear.weight`` (shape [64, 16]), etc.
 **Expected output:** All keys correctly remapped (prefix stripped, renamed, norm_final removed, QKV split into three [3840, 3840] tensors). Original checkpoint unchanged.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_remap_key_transformations -v` exits 0.
+
+## test_infer_vae_config_from_checkpoint (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `load_vae()` function was rewritten in P904-B2 to use a local `_infer_vae_config_from_checkpoint()` helper instead of hardcoding `block_out_channels=[128, 256, 512, 512]` and 4 stages. This test verifies that the shape inference correctly derives all config parameters from tensor shapes in a synthetic VAE checkpoint.
+**Tests:** Builds a synthetic checkpoint with keys matching the real VAE key format (`decoder.conv_in.weight [512, 16, 3, 3]`, `decoder.up.0-3.block.0-2.conv1.weight` for 4 stages with 3 blocks each, `encoder.conv_in.weight [64, 3, 3, 3]`, `decoder.conv_out.weight [64, 64, 3, 3]`), calls `_infer_vae_config_from_checkpoint()`, and asserts all inferred values match expected: `latent_channels=16`, `block_out_channels=[128, 256, 512, 512]`, `in_channels=3`, `out_channels=64`, `layers_per_block=2` (3 observed resnets minus 1 offset).
+**Inputs:** Synthetic checkpoint with VAE-format keys and tensor shapes matching the published Z-Image Turbo VAE config.
+**Expected output:** All 5 config fields match expected values. A second test (`test_infer_vae_config_missing_key_raises`) verifies that `ValueError` is raised when required keys are absent.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_infer_vae_config_from_checkpoint worker/tests/test_arch_zit.py::test_infer_vae_config_missing_key_raises -v` exits 0.
+
+## test_remap_ldm_vae_keys (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `load_vae()` function was rewritten in P904-B2 to use a local `_remap_ldm_vae_keys()` helper instead of importing `diffusers.loaders.single_file_utils.convert_ldm_vae_checkpoint`. This test verifies that the manual key remap correctly strips LDM prefixes (`vae.`, `first_stage_model.`) and converts encoder down-blocks, decoder up-blocks, mid block, and upsample keys to the diffusers `AutoencoderKL` convention.
+**Tests:** Builds a synthetic checkpoint with LDM-format keys (`vae.decoder.conv_in.weight`, `vae.encoder.down.0.block.0.conv1.weight`, `vae.decoder.up.0.block.0.conv1.weight`, `vae.decoder.mid.block_1.conv1.weight`, `vae.decoder.mid.block_2.conv1.weight`, `vae.decoder.up.0.block.0.conv_up.weight`, `vae.decoder.conv_out.weight`), calls `_remap_ldm_vae_keys()`, and asserts all remapped keys match the expected diffusers convention. Also verifies that `vae.` and `first_stage_model.` prefixes are stripped, that the original checkpoint is not mutated, and that no remapped key retains the `vae.` prefix.
+**Inputs:** Synthetic checkpoint with LDM-format keys including both `vae.` and `first_stage_model.` prefix variants.
+**Expected output:** All keys correctly remapped: `vae.` prefix stripped, `encoder.down.N.block.M` → `encoder.down_blocks.N.resnets.M`, `decoder.up.N.block.M` → `decoder.up_blocks.N.resnets.M`, `decoder.mid.block_1` → `decoder.mid_block.resnets.0`, `decoder.mid.block_2` → `decoder.mid_block.resnets.1`, `conv_up` → `conv_upsample`, `decoder.conv_out` passes through unchanged. Original checkpoint unchanged.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_remap_ldm_vae_keys worker/tests/test_arch_zit.py::test_remap_ldm_vae_keys_first_stage_model_prefix -v` exits 0.
+
+## test_no_diffusers_internal_import (worker) — extended
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `load_vae()` function was rewritten in P904-B2 to remove its dependency on the private, unversioned `diffusers.loaders.single_file_utils.convert_ldm_vae_checkpoint` function. This test was extended from P904-B1 to also check for this new internal import.
+**Tests:** Reads the source of `worker/nodes/arch/diffusion/zit.py` and asserts that both `convert_z_image_transformer_checkpoint_to_diffusers` and `convert_ldm_vae_checkpoint` do not appear anywhere in the file.
+**Inputs:** Source file `worker/nodes/arch/diffusion/zit.py`.
+**Expected output:** Zero matches for both diffusers internal strings in the source file.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_no_diffusers_internal_import -v` exits 0.
