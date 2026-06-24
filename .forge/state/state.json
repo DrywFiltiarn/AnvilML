@@ -128,16 +128,17 @@
     "P904-A5",
     "P904-A6",
     "P904-A6b",
-    "P904-A7"
+    "P904-A7",
+    "P904-A8"
   ],
-  "in_progress": "P904-A8",
+  "in_progress": "P904-A9",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-24T09:30:12+0200",
+  "last_updated": "2026-06-24T10:12:24+0200",
   "plan_approved": true,
-  "current_plan": "",
-  "plan_approval_message_id": "1519243047307575357",
+  "current_plan": "1. **Open `worker/nodes/loader.py` and locate the two functions to delete.**\n   - `_load_from_hf_directory` starts at line 645 (function definition) and ends at line 672 (closing `)` of `from_pretrained` call).\n   - `_load_clip_from_hf_directory` starts at line 756 (function definition) and ends at line 831 (closing `)` of `loader_fn()` call).\n\n2. **Delete `_load_from_hf_directory` (lines 645\u2013672).**\n   - Remove the entire function body including its docstring, local imports (`from diffusers import AutoencoderKL`, `import torch`), and the `AutoencoderKL.from_pretrained()` call.\n   - Rationale: This function loads a VAE via `from_pretrained(model_id, subfolder=\"vae\")` \u2014 the active path in `LoadVae.execute()` now uses `from_single_file()` (P18-D14), making this function unreachable dead code.\n\n3. **Delete `_load_clip_from_hf_directory` (lines 756\u2013831).**\n   - Remove the entire function body including its docstring, local imports (`from transformers import CLIPTextModelWithProjection, CLIPTokenizer, Qwen2Tokenizer, Qwen3ForCausalLM, T5ForConditionalGeneration, T5TokenizerFast`, `import torch`), the `if/elif/else` clip_type dispatch, and the `loader_fn` closure.\n   - Rationale: This function contains the original inline dispatch logic that was replaced by `arch_clip.get_module()` in P18-D12. The active path in `LoadClip.execute()` now uses the arch dispatcher, making this function unreachable dead code.\n\n4. **Verify no top-level imports need removal.**\n   - The transformers imports (`CLIPTextModelWithProjection`, `CLIPTokenizer`, `Qwen2Tokenizer`, `Qwen3ForCausalLM`, `T5ForConditionalGeneration`, `T5TokenizerFast`) are all local to `_load_clip_from_hf_directory` (inside the function body). Deleting the function removes them automatically.\n   - `AutoencoderKL` is imported locally in both deleted functions but is also used in `LoadVae.execute()` (line 506: `from diffusers import AutoencoderKL`), so it must remain.\n   - `torch` is imported locally in both deleted functions but is used throughout the file in `LoadVae.execute()`, `LoadClip.execute()`, and `_load_model_from_hf_directory`, so it must remain.\n   - No changes needed to the module-level import block (lines 27\u201333).\n\n5. **Verify no other code references the deleted functions.**\n   - Grep confirms: `_load_from_hf_directory` and `_load_clip_from_hf_directory` appear only in `loader.py` (function definitions), task descriptions, design docs, and historical reports. No live call sites.\n\n6. **Run mock-mode tests to confirm no regression.**\n   - Run `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py -v` \u2014 all 11 tests should pass. These tests exercise mock-mode paths only; the deleted functions are in real-mode code paths never reached in mock mode.",
+  "plan_approval_message_id": "1519253576868958301",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1519243045403627641",
+  "plan_report_message_id": "1519253574629199932",
   "impl_report_message_id": null
 }
