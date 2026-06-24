@@ -3510,3 +3510,12 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** None (uses the ``load_transformer`` function imported from ``worker.nodes.arch.diffusion.zit``).
 **Expected output:** ``callable(load_transformer) == True``.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_transformer_is_callable -v` exits 0.
+
+## test_load_vae_is_callable (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The ``load_vae()`` function was added to the ZiT architecture dispatch module (``worker.nodes.arch.diffusion.zit``) as an offline VAE loading entry point. This test verifies the symbol exists and is callable in mock mode — no torch, diffusers, or safetensors are imported at module load time. The test does NOT exercise the real loading path (that requires raw-format VAE checkpoint fixtures).
+**Tests:** Asserts that ``load_vae`` is a callable function object, confirming it is importable and part of the module's public API.
+**Inputs:** None (uses the ``load_vae`` function imported from ``worker.nodes.arch.diffusion.zit``).
+**Expected output:** ``callable(load_vae) == True``.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_vae_is_callable -v` exits 0.

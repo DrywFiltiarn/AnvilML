@@ -25,6 +25,7 @@ from worker.nodes.arch.diffusion.zit import (
     can_handle,
     compute_latent_shape,
     load_transformer,
+    load_vae,
     sample,
 )
 
@@ -155,6 +156,27 @@ def test_load_transformer_is_callable() -> None:
         exists and is importable in mock mode.
     """
     assert callable(load_transformer)
+
+
+def test_load_vae_is_callable() -> None:
+    """Verify ``load_vae`` is a callable in mock mode.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse
+        fixture, ensuring mock mode is active.
+
+    Tests:
+        Assert that ``load_vae`` is a callable (a function
+        object) — this confirms the symbol exists and is importable
+        without requiring torch or diffusers. The test does NOT
+        exercise the real loading path (that requires raw-format
+        VAE fixtures).
+
+    Expected output:
+        ``callable(load_vae) == True`` — the function symbol
+        exists and is importable in mock mode.
+    """
+    assert callable(load_vae)
 
 
 # ---------------------------------------------------------------------------

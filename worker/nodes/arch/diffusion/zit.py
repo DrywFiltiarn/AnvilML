@@ -33,6 +33,7 @@ __all__ = [
     "can_handle",
     "compute_latent_shape",
     "load_transformer",
+    "load_vae",
     "sample",
     "MockLatent",
     "VAE_SCALE_FACTOR",
@@ -284,6 +285,94 @@ def load_transformer(model_id: str) -> Any:
     # prefix — the exact inverse of what ZImageTransformer2DModel
     # produces in state_dict().
     remapped = convert_z_image_transformer_checkpoint_to_diffusers(checkpoint)
+
+    # Load the remapped state dict into the model. This applies
+    # the weights to the zero-arg-constructed model instance.
+    model.load_state_dict(remapped)
+
+    return model
+
+
+def load_vae(model_id: str) -> Any:
+    """Load a VAE from a raw ``.safetensors`` file.
+
+    Constructs an ``AutoencoderKL`` with the published Z-Image Turbo
+    VAE config (``block_out_channels=[128, 256, 512, 512]``) using
+    zero-argument defaults. Weights are loaded from the provided
+    ``.safetensors`` file via ``safetensors.torch.load_file``, and
+    keys are remapped to the diffusers convention by reusing
+    ``diffusers.loaders.single_file_utils``'s internal conversion
+    function.
+
+    This function performs **zero network calls**. It never queries
+    HuggingFace for a ``config.json`` or any other remote resource —
+    all architecture parameters are hard-coded defaults, and the
+    checkpoint file is read locally.
+
+    In mock mode (``ANVILML_WORKER_MOCK=1``), returns ``None``
+    immediately without importing torch, diffusers, or safetensors.
+
+    Args:
+        model_id: Path to a ``.safetensors`` file containing raw VAE
+            weights (the format produced by
+            ``AutoencoderKL.state_dict()``).
+
+    Returns:
+        An ``AutoencoderKL`` instance with weights loaded and remapped,
+        or ``None`` in mock mode.
+
+    Raises:
+        OSError: If the file at ``model_id`` does not exist or is
+            inaccessible.
+        ValueError: If the checkpoint is malformed and cannot be remapped
+            or loaded into the model's state dict.
+    """
+    # Check mock mode by inspecting the environment variable.
+    # This must be a runtime check (not a module-level import)
+    # so that CI tests running with ANVILML_WORKER_MOCK=1
+    # never touch torch/diffusers/safetensors at import time.
+    _mock = os.environ.get("ANVILML_WORKER_MOCK") == "1"
+
+    if _mock:
+        # In mock mode, return None immediately without importing
+        # torch, diffusers, or safetensors. This keeps tests fast
+        # and avoids requiring GPU hardware or these heavy deps.
+        return None
+
+    # Real mode: lazy-import all heavy dependencies inside the
+    # real-mode branch to preserve mock-mode import isolation.
+    from diffusers import AutoencoderKL
+    from diffusers.loaders.single_file_utils import convert_ldm_vae_checkpoint
+    from safetensors.torch import load_file as safetensors_load_file
+
+    # Construct the VAE model with block_out_channels set to match
+    # the published Z-Image Turbo VAE config (4 entries). All other
+    # parameters use AutoencoderKL's registered defaults, which are
+    # compatible with the checkpoint format produced by the original
+    # model. The 4-entry block_out_channels determines the number of
+    # down/up blocks, matching the checkpoint's structure.
+    model = AutoencoderKL(block_out_channels=[128, 256, 512, 512])
+
+    # Load the raw checkpoint from the .safetensors file.
+    # The raw format contains LDM-style keys (e.g. vae.encoder.down.0...)
+    # that need remapping to the diffusers convention.
+    checkpoint = safetensors_load_file(model_id)
+
+    # Build the config dict that convert_ldm_vae_checkpoint expects.
+    # This function only reads the *length* of down_block_types and
+    # up_block_types (to determine the number of encoder/decoder
+    # blocks), not their exact content. The standard SD-style block
+    # type strings are sufficient.
+    config = {
+        "down_block_types": ["DownEncoderBlock2D"] * 4,
+        "up_block_types": ["UpDecoderBlock2D"] * 4,
+    }
+
+    # Remap keys from the raw LDM checkpoint format to the diffusers
+    # convention. This strips the LDM key prefix and maps encoder
+    # down blocks, mid block, and decoder up blocks to the
+    # AutoencoderKL state dict layout.
+    remapped = convert_ldm_vae_checkpoint(checkpoint, config)
 
     # Load the remapped state dict into the model. This applies
     # the weights to the zero-arg-constructed model instance.
