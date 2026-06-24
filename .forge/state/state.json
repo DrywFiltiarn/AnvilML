@@ -139,16 +139,17 @@
     "P904-B1",
     "P904-B2",
     "P904-B3",
-    "P904-B4"
+    "P904-B4",
+    "P904-Z1"
   ],
-  "in_progress": "P904-Z1",
+  "in_progress": "P904-Z1b",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-24T17:05:00+0200",
+  "last_updated": "2026-06-24T17:39:50+0200",
   "plan_approved": true,
-  "current_plan": "1. **Create `worker/tests/real_fixtures.py`** with a module-level docstring explaining that these fixtures generate synthetic tiny-config checkpoints for CLIP text encoders (qwen3, clip_l, t5) to avoid downloading multi-GB real weights in tests. Include `from __future__ import annotations`.\n\n2. **Implement `tiny_qwen3_clip(tmp_path)` fixture**:\n   - Import `torch` and `safetensors.torch` lazily inside the fixture body (not at module level, to preserve mock-mode import isolation \u2014 if torch is absent, the fixture raises a clear error)\n   - Import `Qwen3Config, Qwen3ForCausalLM` from `transformers`\n   - Construct config with `hidden_size=32, num_hidden_layers=2` plus all other parameters at their registered defaults (the Config class constructor accepts keyword overrides; unspecified fields use registered defaults)\n   - Instantiate `Qwen3ForCausalLM(config)` and call `.state_dict()` to get the raw tensor dict\n   - Save via `safetensors.torch.save_file(state_dict, str(tmp_path / \"qwen3_clip.safetensors\"))`\n   - Return the Path object\n\n3. **Implement `tiny_clip_l_clip(tmp_path)` fixture** (same pattern):\n   - Import `CLIPTextConfig, CLIPTextModelWithProjection` from `transformers`\n   - Construct with `hidden_size=32, num_hidden_layers=2`\n   - Save state_dict to tmp_path, return Path\n\n4. **Implement `tiny_t5_clip(tmp_path)` fixture** (same pattern):\n   - Import `T5Config, T5EncoderModel` from `transformers`\n   - Construct with `d_model=32, num_layers=2` (T5 uses `d_model`/`num_layers` naming, not `hidden_size`/`num_hidden_layers`)\n   - Save state_dict to tmp_path, return Path\n\n5. **Rationale on lazy torch import**: Each fixture body imports `torch` and `safetensors.torch` inside the function rather than at module level. This matches the established pattern in the CLIP arch modules where `torch`/`transformers`/`safetensors` are never top-level imports (they would break mock-mode tests). If `torch` is not installed when a fixture runs, the import failure will produce a clear error message.",
-  "plan_approval_message_id": "1519354426127552633",
+  "current_plan": "",
+  "plan_approval_message_id": "1519365598952296508",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1519354424349425705",
+  "plan_report_message_id": "1519365597027369103",
   "impl_report_message_id": null
 }

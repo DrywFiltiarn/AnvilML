@@ -3645,3 +3645,39 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** ``tmp_path`` (pytest temp directory).
 **Expected output:** Checkpoint file exists, loads successfully, and ``loaded["encoder.embed_tokens.weight"].shape[1] == 32``.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/real_fixtures.py::test_t5_checkpoint_loadable -v` exits 0.
+
+## test_zit_transformer_raw_roundtrip (worker)
+
+**File:** `worker/tests/real_fixtures.py`
+**Context:** The inverse ZiT key remap function must be the exact complement of the forward remap in ``worker.nodes.arch.diffusion.zit``. This test constructs a tiny ZiT model, saves its state dict in raw format, then roundtrips it through forward + inverse remap.
+**Tests:** Runs ``tiny_zit_transformer_raw(tmp_path)``, loads the raw checkpoint, applies ``_remap_z_image_keys`` (forward), then ``_invert_z_image_keys`` (inverse). Asserts the roundtripped key set matches the original raw key set — confirming the inverse is an exact complement.
+**Inputs:** ``tmp_path`` (pytest temp directory). Requires real ``torch`` and ``diffusers`` (``ANVILML_WORKER_MOCK=0``).
+**Expected output:** The roundtripped key set equals the original raw key set — zero key mismatches.
+**Acceptance command:** `worker/.venv/bin/python -m pytest worker/tests/real_fixtures.py::test_zit_transformer_raw_roundtrip -v` exits 0.
+
+## test_vae_raw_roundtrip (worker)
+
+**File:** `worker/tests/real_fixtures.py`
+**Context:** The inverse LDM VAE key remap function must be the exact complement of the forward remap in ``worker.nodes.arch.diffusion.zit``. This test constructs a tiny VAE model, saves its state dict in raw format, then roundtrips it through forward + inverse remap.
+**Tests:** Runs ``tiny_vae_raw(tmp_path)``, loads the raw checkpoint, applies ``_remap_ldm_vae_keys`` (forward), then ``_invert_ldm_vae_keys`` (inverse). Asserts the roundtripped key set matches the original raw key set after normalizing ``decoder.up.N.conv_up`` keys (the forward remap strips the block index from ``conv_up`` → ``conv_upsample``, so the inverse cannot perfectly recover it).
+**Inputs:** ``tmp_path`` (pytest temp directory). Requires real ``torch`` and ``diffusers`` (``ANVILML_WORKER_MOCK=0``).
+**Expected output:** The roundtripped key set equals the original raw key set after normalization — zero key mismatches.
+**Acceptance command:** `worker/.venv/bin/python -m pytest worker/tests/real_fixtures.py::test_vae_raw_roundtrip -v` exits 0.
+
+## test_zit_transformer_raw_has_raw_key_patterns (worker)
+
+**File:** `worker/tests/real_fixtures.py`
+**Context:** The raw ZiT checkpoint fixture must produce a genuine raw-checkpoint-format file, not a diffusers-convention one.
+**Tests:** Runs ``tiny_zit_transformer_raw(tmp_path)``, loads the file, and asserts: (1) keys start with ``model.diffusion_model.`` prefix, (2) at least one ``.attention.qkv.weight`` key exists (fused QKV), (3) ``x_embedder.`` and ``final_layer.`` naming is present (not ``all_x_embedder.2-1.``).
+**Inputs:** ``tmp_path`` (pytest temp directory). Requires real ``torch`` and ``diffusers`` (``ANVILML_WORKER_MOCK=0``).
+**Expected output:** All raw-format key patterns are present — confirming the fixture produces a genuine raw-checkpoint-format file.
+**Acceptance command:** `worker/.venv/bin/python -m pytest worker/tests/real_fixtures.py::test_zit_transformer_raw_has_raw_key_patterns -v` exits 0.
+
+## test_vae_raw_has_raw_key_patterns (worker)
+
+**File:** `worker/tests/real_fixtures.py`
+**Context:** The raw VAE checkpoint fixture must produce a genuine raw LDM-format file, not a diffusers-convention one.
+**Tests:** Runs ``tiny_vae_raw(tmp_path)``, loads the file, and asserts: (1) keys start with ``vae.`` prefix, (2) ``encoder.down.`` LDM-style keys exist (not ``encoder.down_blocks``), (3) ``decoder.up.`` LDM-style keys exist (not ``decoder.up_blocks``).
+**Inputs:** ``tmp_path`` (pytest temp directory). Requires real ``torch`` and ``diffusers`` (``ANVILML_WORKER_MOCK=0``).
+**Expected output:** All LDM-format key patterns are present — confirming the fixture produces a genuine raw LDM-format checkpoint.
+**Acceptance command:** `worker/.venv/bin/python -m pytest worker/tests/real_fixtures.py::test_vae_raw_has_raw_key_patterns -v` exits 0.
