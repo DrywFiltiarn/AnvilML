@@ -45,7 +45,11 @@ def can_handle(clip_type: str) -> bool:
     return clip_type == "clip_l"
 
 
-def load(model_id: str, torch_dtype: Any) -> RealClip:  # noqa: F821
+def load(
+    model_id: str,
+    torch_dtype: Any,
+    device: str = "cpu",
+) -> RealClip:  # noqa: F821
     """Load a CLIP-L text encoder from a safetensors file.
 
     In mock mode, returns a lightweight ``RealClip`` wrapping sentinel
@@ -58,6 +62,9 @@ def load(model_id: str, torch_dtype: Any) -> RealClip:  # noqa: F821
             containing the CLIP-L text encoder weights.
         torch_dtype: PyTorch dtype for the model (e.g. ``torch.bfloat16``).
             Used in real mode to cast loaded weights.
+        device: Target device string for tensor placement
+            (e.g. ``"cuda:0"``, ``"cpu"``). Defaults to ``"cpu"``
+            for backward compatibility with existing callers.
 
     Returns:
         A ``RealClip`` instance with ``.tokenizer`` and ``.text_encoder``
@@ -83,7 +90,7 @@ def load(model_id: str, torch_dtype: Any) -> RealClip:  # noqa: F821
         # GPU hardware or these heavy dependencies.
         from worker.nodes.loader import MockTokenizer, MockTextEncoder, RealClip
 
-        return RealClip(MockTokenizer(), MockTextEncoder())
+        return RealClip(MockTokenizer(), MockTextEncoder(), device=device)
 
     # Real mode: construct a CLIP-L text encoder from config values
     # and load weights from a safetensors file.
@@ -128,4 +135,11 @@ def load(model_id: str, torch_dtype: Any) -> RealClip:  # noqa: F821
     model = CLIPTextModelWithProjection(CLIPTextConfig(**config_values))
     model.load_state_dict(safetensors_load_file(model_id))
 
-    return RealClip(tokenizer, model)
+    # Move the model to the target device.
+    # .to() returns a new reference for some module types, so we
+    # must assign the return value — failing to do so leaves the
+    # original CPU model in place. This is the established PyTorch
+    # pattern for device placement.
+    model = model.to(device)
+
+    return RealClip(tokenizer, model, device=device)

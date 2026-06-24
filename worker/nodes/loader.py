@@ -616,11 +616,15 @@ class LoadClip(BaseNode):
             # so the operator knows which values are valid.
             raise ValueError(f"unsupported clip_type: {clip_type!r}")
         # Delegate to the matched module's load() function with the
-        # bfloat16 dtype — this is the standard precision for text
-        # encoders in diffusion pipelines. The module's load() handles
-        # mock mode internally, returning a RealClip sentinel when
-        # ANVILML_WORKER_MOCK=1.
-        return module.load(model_id, torch_dtype=torch.bfloat16)
+        # bfloat16 dtype and the worker's assigned device. This is the
+        # standard precision for text encoders in diffusion pipelines.
+        # Passing device=self.ctx.device ensures the text encoder is
+        # placed on the correct GPU/CPU instead of silently running
+        # on CPU. The module's load() handles mock mode internally,
+        # returning a RealClip sentinel when ANVILML_WORKER_MOCK=1.
+        return module.load(
+            model_id, torch_dtype=torch.bfloat16, device=self.ctx.device
+        )
 
 
 def _load_from_hf_directory(model_id: str) -> Any:
