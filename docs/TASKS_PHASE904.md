@@ -35,15 +35,19 @@ via the manual-install-only `worker/requirements/rocm-{linux,windows}.txt`
 files, which target a specific AMD GFX architecture and are not wired into
 `scripts/install_worker_deps.sh`. CI's runners therefore have no `torch` at
 all, by design, and cannot execute any code path that actually calls into
-it. Group Z (P904-Z1–Z5) instead builds a separate, explicitly opt-in
-real-mode CPU test suite — gated behind a new `realcpu` pytest marker that
-CI's invocation deliberately excludes — meant to be run by the OpenCode
-agent at ACT time (on a CPU-only WSL2 box, using
+it. Group Z (P904-Z1–Z7) instead builds a separate real-mode CPU test
+suite — gated behind a new `realcpu` pytest marker — initially meant to be
+run only by the OpenCode agent at ACT time (on a CPU-only WSL2 box, using
 `worker/requirements/cpu-linux-agent.txt`, which already exists on `main`
 and installs `torch` via PyTorch's dedicated CPU index rather than plain
-PyPI) or manually by a developer. It is never part of the default
-`pytest worker/tests -v` gate any task in this
-project relies on for its own Acceptance Criterion. To keep this suite fast
+PyPI) or manually by a developer. P904-Z1 through P904-Z6 build this
+suite under the assumption that it stays excluded from the default
+`pytest worker/tests -v` gate every other task in this project relies on
+for its own Acceptance Criterion — that assumption holds for all of them.
+P904-Z7 changes it: once Z7 lands, `ci.yml`'s `worker` job runs the
+`realcpu` suite itself, via a separate, CI-only `cpu-runner-reqs.txt`
+(intentionally not the same file the agent uses, so the two consumers can
+diverge later). To keep this suite fast
 and dependency-light, Group Z generates synthetic tiny-config checkpoints
 at test time (a 2-layer transformer, a tiny VAE, tiny text encoders) rather
 than depending on real multi-gigabyte Z-Image-Turbo/Qwen3-4B weights — the
@@ -150,7 +154,7 @@ replacement, since both expect the identical raw checkpoint format).
 |-------|-----------|-------|---------|
 | A | retrofit | P904-A1 … P904-A14 (incl. A6b) | Seven real-path defects in D16–D19, two systemic device-placement findings from the D1–D15 re-audit, a CI-breaking `torch` import in D20's own test, an HF-network-access defect in `LoadModel`/`LoadVae`'s real path requiring offline-loading rework across `loader.py` and `zit.py`, and two further defects found in that rework's own committed code (a missing `device` argument, a stale docstring) — fifteen tasks total, sequenced linearly |
 | B | offline config inference rework | P904-B1 … P904-B4 | Replaces Group A's reliance on private, unversioned `diffusers` internals (`convert_z_image_transformer_checkpoint_to_diffusers`, `convert_ldm_vae_checkpoint`) with direct, ComfyUI-style shape inference from each checkpoint's own raw tensor keys — four tasks, sequenced linearly |
-| Z | test infrastructure | P904-Z1 … P904-Z6 (incl. Z1b) | Opt-in, CI-excluded real-mode CPU test suite mirroring the mock suite's per-node and chain coverage, extended through `VaeDecode` (D20) and through raw-checkpoint-format fixtures that exercise Group B's shape-inference path, using synthetic tiny-config checkpoints; Z6 fixes a live CI failure where 5 of Group B's own tests landed unmarked in the mock-mode test file |
+| Z | test infrastructure | P904-Z1 … P904-Z7 (incl. Z1b) | Real-mode CPU test suite mirroring the mock suite's per-node and chain coverage, extended through `VaeDecode` (D20) and through raw-checkpoint-format fixtures that exercise Group B's shape-inference path, using synthetic tiny-config checkpoints; Z6 fixes a live CI failure where 5 of Group B's own tests landed unmarked in the mock-mode test file; Z7 wires the suite into `ci.yml` itself for the first time (previously excluded from CI entirely, run only manually/at ACT time) |
 
 ## Prerequisites
 
@@ -864,6 +868,38 @@ grep -n "^    import torch" worker/tests/test_arch_zit.py
 # -> only test_remap_key_transformations still has this line among the five tests in question
 ```
 
+#### P904-Z7: create cpu-runner-reqs.txt for CI use; wire mock-then-realcpu sequencing into ci.yml's worker job
+
+**Goal:** Give CI its own CPU-only `torch` requirements file, separate from
+`cpu-linux-agent.txt` (which remains exclusively for The Forge agents on
+WSL2, unchanged), and close the last gap in actually running Group Z's
+`realcpu` suite anywhere: `ci.yml`'s `worker` job has never installed
+either file or run any `realcpu`-marked test, on either OS, since P904-Z2
+only excluded them.
+
+**Files to create or modify:**
+- `worker/requirements/cpu-runner-reqs.txt` — new file, for CI's exclusive use
+- `.github/workflows/ci.yml` — restructure the `worker` job's test step into the mock-then-realcpu sequence described below
+
+**Key implementation notes:**
+- `cpu-linux-agent.txt` is **not renamed, not touched, not referenced as deprecated** — it stays exactly as it is, for exactly its existing purpose (The Forge agents at ACT time on WSL2). No document that currently references it needs updating
+- `cpu-runner-reqs.txt` is a deliberate duplicate, not a symlink or an alias: same content today (`--index-url https://download.pytorch.org/whl/cpu`, `torch`, `torchaudio`, `torchvision`), but a genuinely separate file so CI's pins can diverge from the agent's later without the two consumers fighting over one file's contents
+- The PyTorch CPU index itself serves both Windows and Linux wheels — `pip` resolves the correct one automatically — so `cpu-runner-reqs.txt` needs no platform-specific variant and the new CI steps need no `if: runner.os == 'Linux'` gate
+- Restructure `ci.yml`'s `worker` job from a single "Run worker tests" step into three: (1) "Run worker tests (mock mode)" — unchanged from today, `base.txt` only, `ANVILML_WORKER_MOCK=1`, `-m "not realcpu"`, runs first so the mock suite is provably torch-free at the moment it executes, exactly as it always has been; (2) "Install cpu-runner-reqs.txt" — `pip install -r worker/requirements/cpu-runner-reqs.txt`, runs only after step 1 has already passed; (3) "Run worker tests (realcpu)" — `ANVILML_WORKER_MOCK=0`, `-m realcpu`. All three steps run on **both** `ubuntu-latest` and `windows-latest` in the existing matrix
+- As of this task, zero or very few tests carry `@pytest.mark.realcpu` (only `test_remap_key_transformations` from P904-Z6) — step 3 reporting "0 selected" or a small count is expected and not a failure; the bulk of `realcpu` coverage lands with P904-Z3–Z5
+
+**Acceptance criterion:**
+```bash
+test -f worker/requirements/cpu-runner-reqs.txt && grep -q "^torch" worker/requirements/cpu-runner-reqs.txt
+test -f worker/requirements/cpu-linux-agent.txt
+# -> both files present; the original is untouched, the new one exists alongside it
+diff worker/requirements/cpu-linux-agent.txt worker/requirements/cpu-runner-reqs.txt
+# -> no diff today (deliberately identical at creation time; expected to be edited
+#    independently of each other in the future, not kept in sync mechanically)
+grep -n "runner.os == 'Linux'" .github/workflows/ci.yml | grep -v "Provision worker venv"
+# -> zero matches outside the pre-existing venv-provisioning steps (no new OS gate added)
+```
+
 
 ## Files Affected
 
@@ -901,14 +937,27 @@ grep -n "^    import torch" worker/tests/test_arch_zit.py
 ## CI Impact
 
 `.github/workflows/ci.yml`'s worker test job gains `-m "not realcpu"` on its
-pytest invocation (P904-Z2) — Group Z's entire test suite is explicitly
-excluded from CI by marker, in addition to being naturally uncollectable
-in CI's venv since `torch` is not installed there (`base.txt` deliberately
-excludes it). `rust-linux`/`rust-windows`/`config-drift`/`openapi-drift`
-are unaffected — no Rust-side changes in this phase. The Group Z suite is
-run only by the OpenCode agent at ACT time on a CPU-capable box (using
-`worker/requirements/cpu-linux-agent.txt`, manually installed) or by a developer
-locally — never as part of any automated gate.
+mock-mode pytest invocation (P904-Z2) — at that point, and through P904-Z6,
+Group Z's `realcpu`-marked tests were excluded from CI entirely, in
+addition to being naturally uncollectable in CI's venv before this since
+`torch` was not installed there (`base.txt` deliberately excludes it).
+`rust-linux`/`rust-windows`/`config-drift`/`openapi-drift` are unaffected —
+no Rust-side changes in this phase.
+
+P904-Z7 ends that exclusion. The `worker` job's single test step becomes
+three: mock-mode tests run first (unchanged, still `torch`-free, still the
+same enforcement the venv boundary always provided); `cpu-runner-reqs.txt`
+is installed into that same job's venv only after the mock-mode step has
+already passed; then the `realcpu` suite runs for real, in CI, on both
+`ubuntu-latest` and `windows-latest`. `cpu-runner-reqs.txt` is a deliberate
+duplicate of `worker/requirements/cpu-linux-agent.txt` — kept as a separate
+file rather than the same one, since the agent's file (manually installed,
+ACT-time only, WSL2-only in practice) and CI's file (provisioned fresh on
+a throwaway runner every run) are different consumers that may need to
+diverge later. From P904-Z7 onward, the `realcpu` suite is no longer a
+manual-only, never-automated check — it is part of the same CI run as the
+mock-mode suite, sequenced after it specifically so the mock-mode
+guarantee is never weakened by `torch`'s later presence in the same job.
 
 Despite Z2 landing the marker correctly, CI broke anyway between Z2 and Z6:
 five tests added during P904-B1/B2's own implementation landed directly in
@@ -920,9 +969,11 @@ four needed no `torch` dependency at all and are rewritten without it.
 This is the first concrete evidence in this phase that registering a
 marker is necessary but not sufficient — every PR touching a mock-mode
 test file still needs a human or agent to apply the marker correctly at
-the point a new real-mode test is added, since CI itself cannot tell the
-difference between a correctly-marked and an incorrectly-unmarked test
-until it fails.
+the point a new real-mode test is added. P904-Z7's ordering (mock tests
+before `torch` is even installed) is a stronger, structural version of the
+same guarantee — it does not depend on every future commit remembering to
+do anything correctly, since `torch` genuinely is not present yet at that
+point in the job.
 
 ## Platform Considerations
 
@@ -959,7 +1010,8 @@ call.
 - [ ] `grep -n '_load_vae_from_safetensors(model_id, "zit", self.ctx.device)' worker/nodes/loader.py` confirms A14's argument fix
 - [ ] `grep -n "convert_z_image_transformer_checkpoint_to_diffusers\|convert_ldm_vae_checkpoint" worker/nodes/arch/diffusion/zit.py` returns no hits (B1, B2 — private `diffusers` internals fully removed)
 - [ ] `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py -v -m "not realcpu"` exits 0 in a venv with no `torch` installed (the actual regression check for Z6 — confirms CI is no longer broken by the five unmarked B1/B2 tests)
-- [ ] `ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/ -v -m realcpu` exits 0 when run manually/at ACT time with `cpu-linux-agent.txt` installed (not part of any automated gate; this is a manual confirmation step, not a CI assertion)
+- [ ] `grep -n "Install cpu-runner-reqs.txt" .github/workflows/ci.yml` confirms Z7's new step exists in the `worker` job, after the mock-mode test step and before the `realcpu` test step
+- [ ] `ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/ -v -m realcpu` exits 0 when run manually/at ACT time with `cpu-linux-agent.txt` installed — this remains how the OpenCode agent verifies its own work locally; from P904-Z7 onward, CI runs the equivalent check itself in `ci.yml`'s `worker` job using `cpu-runner-reqs.txt`, so this manual run and the CI run should agree
 
 ```bash
 # Runnable Proof (manual): once P904 lands, re-confirm end-to-end against
@@ -980,12 +1032,15 @@ call.
 #   VaeDecode                    -> decoded image size matches the original
 #                                   EmptyLatent request
 #
-# The committed, CI-adjacent (though `realcpu`-gated, never run by CI) equivalent
-# of the network-activity check above is Group Z's own suite, which IS committed
-# in this repository, including test_loadmodel_no_network_access (Z3):
+# Group Z's own suite is the committed equivalent of the network-activity check
+# above, including test_loadmodel_no_network_access (Z3). Through P904-Z6 this
+# ran only manually/at ACT time, never in CI. From P904-Z7 onward, ci.yml's
+# worker job runs this same command itself, on both ubuntu-latest and
+# windows-latest, after the mock-mode suite has already passed and
+# cpu-runner-reqs.txt has been installed into that job's venv:
 ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/ -v -m realcpu
-# -> exits 0 against synthetic tiny checkpoints, run manually or by the
-#    OpenCode agent at ACT time on a CPU-capable box -- never by CI
+# -> exits 0 against synthetic tiny checkpoints; run manually or by the
+#    OpenCode agent at ACT time on a CPU-capable box, AND (from Z7 onward) by CI
 ```
 
 ## Known Constraints and Gotchas
@@ -1017,6 +1072,16 @@ ANVILML_WORKER_MOCK=0 worker/.venv-cpu-agent/bin/python -m pytest worker/tests/ 
   with both `base.txt` and `cpu-linux-agent.txt` installed before Group Z's
   tests can run at all; this is by design, not an oversight to streamline
   away.
+- P904-Z7's CI-side venv is a different situation from the bullet above,
+  not a contradiction of it: CI's runner is thrown away after every job,
+  so there is no persistent venv to conflate with anything. `base.txt` and
+  `cpu-runner-reqs.txt` are installed into the *same* job's venv, in
+  sequence — `cpu-runner-reqs.txt` only after the mock-mode tests have
+  already run and passed against a `torch`-free environment. This is
+  deliberately a different file from `cpu-linux-agent.txt` even though
+  both currently have identical contents — they serve different consumers
+  (a long-lived agent environment vs. a one-shot CI job) and are free to
+  diverge later without one change forcing an update to the other.
 - D20's `VaeDecode` real path was found to be correctly implemented on
   first audit — the only defect traced to it was in its own committed
   test file (P904-A1), not in `decode.py` itself. This is the first node

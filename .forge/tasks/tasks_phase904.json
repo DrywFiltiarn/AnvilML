@@ -296,5 +296,16 @@
     ],
     "context": "Confirmed via live CI log: 5 tests in test_arch_zit.py (added during B1/B2) do a bare 'import torch' with no realcpu marker, in a file CI collects by default with no torch installed -- ModuleNotFoundError every run since Z2 landed (marker registered, but these tests were never tagged). Per-test review, not a blanket fix: test_remap_key_transformations genuinely needs torch -- _remap_z_image_keys() calls torch.chunk() internally for the QKV defuse, confirmed by reading the function; mark it @pytest.mark.realcpu, the first such test in this codebase. The other 4 (test_infer_vae_config_from_checkpoint, test_infer_vae_config_missing_key_raises, test_remap_ldm_vae_keys, test_remap_ldm_vae_keys_first_stage_model_prefix) only do string key manipulation and .shape[N] indexing -- neither tested function calls anything torch-specific. Rewrite these 4 with a tiny local shape-only stand-in instead of torch.ones(...), drop import torch; do not mark these realcpu, only their fixture data was wrong.",
     "tags": []
+  },
+  {
+    "id": "P904-Z7",
+    "description": "create cpu-runner-reqs.txt for CI use; wire mock-then-realcpu sequencing into ci.yml's worker job",
+    "phase": "904",
+    "project": "anvilml",
+    "prereqs": [
+      "P904-Z6"
+    ],
+    "context": "cpu-linux-agent.txt is retained as-is for The Forge agents on WSL2 -- do not rename or touch it, no document referencing it needs updating. Create a NEW, separate file cpu-runner-reqs.txt (identical content: --index-url https://download.pytorch.org/whl/cpu, torch, torchaudio, torchvision) for CI's exclusive use. The two files are intentionally duplicated, not aliased or symlinked -- they serve different consumers (ACT-time agent vs CI runner) and free to diverge later if CI needs different pins. Restructure ci.yml's worker job: split 'Run worker tests' into 'Run worker tests (mock mode)' (base.txt only, ANVILML_WORKER_MOCK=1, -m \"not realcpu\") then 'Install cpu-runner-reqs.txt' (pip install -r worker/requirements/cpu-runner-reqs.txt) then 'Run worker tests (realcpu)' (ANVILML_WORKER_MOCK=0, -m realcpu) -- all three steps run on BOTH ubuntu-latest and windows-latest, no OS gate: the PyTorch CPU index serves both platforms, confirmed, there is no real restriction to gate on.",
+    "tags": []
   }
 ]
