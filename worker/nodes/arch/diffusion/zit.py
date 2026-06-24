@@ -220,7 +220,6 @@ def sample(
     device: str = "cpu",
     cancel_flag: Any = None,
     emit_progress: Callable[[int, int], None] | None = None,
-    vae: Any = None,
     *,
     pipeline_cache: Any = None,
 ) -> tuple[Any, int]:
@@ -254,8 +253,6 @@ def sample(
             on each step.
         emit_progress: Callback invoked as ``emit_progress(step, total)``
             after each denoising step for progress reporting.
-        vae: The VAE component used by the pipeline. Passed by the
-            calling node; ``None`` in mock-mode tests.
         pipeline_cache: Pipeline cache instance for loading cached
             components. Passed by the calling node's context;
             keyword-only argument for future extensibility.
@@ -314,13 +311,11 @@ def sample(
         tokenizer = getattr(clip, "tokenizer", None) if clip else None
         text_encoder = getattr(clip, "text_encoder", None) if clip else None
 
-        # VAE is passed directly to sample() as a separate argument.
         # The scheduler is constructed fresh each time since it is
         # deterministic and lightweight.
         scheduler = FlowMatchEulerDiscreteScheduler()
         return ZImagePipeline(
             scheduler=scheduler,
-            vae=vae,
             text_encoder=text_encoder,
             tokenizer=tokenizer,
             transformer=transformer,

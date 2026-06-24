@@ -267,7 +267,6 @@ def test_sample_real_assembles_pipeline_via_cache() -> None:
             device="cpu",
             cancel_flag=[False],
             emit_progress=lambda step, total: None,
-            vae=None,
             pipeline_cache=mock_cache,
         )
 
@@ -305,7 +304,7 @@ def test_sample_real_invokes_pipeline_with_correct_args() -> None:
     Tests:
         Call ``sample()`` in real mode with a mock model (``arch="zit"``,
         ``model_id="test_model"``), mock conditioning (with
-        ``positive``/``negative`` attributes), mock VAE, and a
+        ``positive``/``negative`` attributes), and a
         ``threading.Event()`` as ``cancel_flag``. Assert that the mock
         pipeline's ``__call__`` was invoked with ``output_type="latent"``,
         ``return_dict=False``, ``num_inference_steps=steps``,
@@ -354,8 +353,7 @@ def test_sample_real_invokes_pipeline_with_correct_args() -> None:
             "text_encoder": MagicMock(),
         })()
 
-        # Build a mock VAE and a threading.Event as cancel_flag.
-        mock_vae = MagicMock()
+        # A threading.Event as cancel_flag.
         cancel_flag = threading.Event()
 
         result = sample(
@@ -369,7 +367,6 @@ def test_sample_real_invokes_pipeline_with_correct_args() -> None:
             device="cuda",
             cancel_flag=cancel_flag,
             emit_progress=lambda step, total: None,
-            vae=mock_vae,
             pipeline_cache=mock_cache,
         )
 
