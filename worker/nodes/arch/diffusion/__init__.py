@@ -146,9 +146,17 @@ def get_module_by_name(arch: str) -> ModuleType | None:
     # provides exactly that attribute so get_module() can iterate over
     # loaded arch modules and find the one whose handler matches.
     class _Shim:
-        arch: str = arch
+        # Class-level annotation only — the actual value is set in
+        # __init__ because a class-level default of `arch: str = arch`
+        # cannot reference the enclosing function's `arch` parameter
+        # (the class body has its own namespace, no closure access).
+        arch: str
 
-    return get_module(_Shim())
+        def __init__(self, arch: str) -> None:
+            # Capture the arch parameter as an instance attribute.
+            self.arch = arch
+
+    return get_module(_Shim(arch))
 
 
 def can_handle(model_obj: Any) -> bool:

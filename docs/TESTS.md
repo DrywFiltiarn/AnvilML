@@ -3528,3 +3528,30 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** None (uses the ``load_vae`` function imported from ``worker.nodes.arch.diffusion.zit``).
 **Expected output:** ``callable(load_vae) == True``.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_vae_is_callable -v` exits 0.
+
+## test_get_module_by_name_returns_zit_for_zit (worker)
+
+**File:** `worker/tests/test_arch_init.py`
+**Context:** The ``get_module_by_name()`` function was added to ``worker.nodes.arch.diffusion.__init__`` to provide name-based architecture dispatch. This test verifies that calling it with ``"zit"`` returns the zit arch module. The function is NOT re-exported at ``worker.nodes.arch`` — tests must import it directly from ``worker.nodes.arch.diffusion``.
+**Tests:** Calls ``get_module_by_name("zit")`` and asserts the returned module is not ``None`` and its ``__name__`` is ``"worker.nodes.arch.diffusion.zit"``.
+**Inputs:** ``get_module_by_name("zit")``.
+**Expected output:** ``mod.__name__ == "worker.nodes.arch.diffusion.zit"``.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_init.py::test_get_module_by_name_returns_zit_for_zit -v` exits 0.
+
+## test_get_module_by_name_returns_none_for_unknown_arch (worker)
+
+**File:** `worker/tests/test_arch_init.py`
+**Context:** The ``get_module_by_name()`` function returns ``None`` when no loaded arch module claims the given architecture string. This test verifies the ``None`` return path for an unknown architecture.
+**Tests:** Calls ``get_module_by_name("unknown")`` and asserts the result is ``None``.
+**Inputs:** ``get_module_by_name("unknown")``.
+**Expected output:** ``result is None``.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_init.py::test_get_module_by_name_returns_none_for_unknown_arch -v` exits 0.
+
+## test_get_module_by_name_shim_pattern (worker)
+
+**File:** `worker/tests/test_arch_init.py`
+**Context:** The ``get_module_by_name()`` function uses a minimal shim class carrying only ``arch = arch`` to dispatch to ``get_module()``. This test verifies the shim pattern works: calling ``get_module_by_name("zit")`` must return the same module as ``get_module(_make_model("zit"))``, proving the shim is functionally equivalent to a full model object for dispatch purposes.
+**Tests:** Calls both ``get_module_by_name("zit")`` and ``get_module(_make_model("zit"))``, asserts both return non-``None``, and asserts they return the same object.
+**Inputs:** ``get_module_by_name("zit")``, ``get_module(_make_model("zit"))``.
+**Expected output:** Both return the same module (``worker.nodes.arch.diffusion.zit``).
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_init.py::test_get_module_by_name_shim_pattern -v` exits 0.

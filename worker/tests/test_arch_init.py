@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from worker.nodes.arch import can_handle, get_module
+from worker.nodes.arch.diffusion import get_module_by_name
 
 
 # ---------------------------------------------------------------------------
@@ -120,4 +121,86 @@ def test_can_handle_still_works_after_refactor() -> None:
     )
     assert can_handle(unknown_model) is False, (
         "can_handle() should return False for unknown model"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_module_by_name
+# ---------------------------------------------------------------------------
+
+
+def test_get_module_by_name_returns_zit_for_zit() -> None:
+    """Verify ``get_module_by_name("zit")`` returns the zit arch module.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse
+        fixture, ensuring mock mode is active.
+
+    Tests:
+        Call ``get_module_by_name("zit")`` and assert the returned
+        module is not ``None`` and its ``__name__`` identifies the
+        zit arch module.
+
+    Expected output:
+        ``mod.__name__ == "worker.nodes.arch.diffusion.zit"`` — the
+        zit arch module is returned for the "zit" architecture string.
+    """
+    mod = get_module_by_name("zit")
+
+    assert mod is not None, (
+        "get_module_by_name('zit') should return the zit module"
+    )
+    assert mod.__name__ == "worker.nodes.arch.diffusion.zit"
+
+
+def test_get_module_by_name_returns_none_for_unknown_arch() -> None:
+    """Verify ``get_module_by_name("unknown")`` returns ``None``.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse
+        fixture, ensuring mock mode is active.
+
+    Tests:
+        Call ``get_module_by_name("unknown")`` (no arch module handles
+        this architecture) and assert the result is ``None``.
+
+    Expected output:
+        ``result is None`` — no loaded arch module claims an unknown
+        architecture string.
+    """
+    result = get_module_by_name("unknown")
+
+    assert result is None, (
+        "get_module_by_name('unknown') should return None"
+    )
+
+
+def test_get_module_by_name_shim_pattern() -> None:
+    """Verify the shim object pattern satisfies ``can_handle()``.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse
+        fixture, ensuring mock mode is active.
+
+    Tests:
+        Call ``get_module_by_name("zit")`` and confirm it returns the
+        same module as ``get_module(_make_model("zit"))``, proving
+        the shim class (which carries only ``arch = "zit"``) is
+        functionally equivalent to a full model object for dispatch
+        purposes.  The shim is a bare class with no model-like
+        attributes — it relies on ``can_handle()`` reading only the
+        ``arch`` attribute via ``getattr()``.
+
+    Expected output:
+        Both calls return the same module, confirming the shim pattern
+        works correctly without constructing a real model object.
+    """
+    shim_result = get_module_by_name("zit")
+    model_result = get_module(_make_model("zit"))
+
+    assert shim_result is not None, (
+        "get_module_by_name('zit') should return a module"
+    )
+    assert shim_result is model_result, (
+        "shim and model object should resolve to the same module"
     )
