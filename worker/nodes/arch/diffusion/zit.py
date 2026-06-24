@@ -211,21 +211,246 @@ def can_handle(model_obj: Any) -> bool:
     return arch == "zit"
 
 
+def _infer_config_from_checkpoint(checkpoint: dict[str, Any]) -> dict[str, Any]:
+    """Infer the ``ZImageTransformer2DModel`` config from raw checkpoint tensor shapes.
+
+    Derives architecture parameters directly from tensor shapes in the checkpoint,
+    following the same pattern used by ComfyUI's ZiT loader. This eliminates the
+    need for a ``config.json`` or any HuggingFace network access.
+
+    Shape inference rules:
+
+    * ``dim`` — first dimension of ``attention.out.weight`` (e.g. ``[3840, 3840]`` → ``3840``).
+    * ``head_dim`` — first dimension of ``attention.q_norm.weight`` (e.g. ``[128]`` → ``128``).
+    * ``n_heads`` — ``dim // head_dim`` (e.g. ``3840 // 128 = 30``).
+    * ``n_kv_heads`` — same as ``n_heads``; ZiT has no grouped-query attention.
+    * ``n_layers`` — count of unique ``layers.N.`` key prefixes (e.g. ``layers.0`` through ``layers.29`` → ``30``).
+    * ``n_refiner_layers`` — count of unique ``context_refiner.N.`` prefixes (e.g. ``context_refiner.0``, ``context_refiner.1`` → ``2``).
+    * ``cap_feat_dim`` — first dimension of ``cap_embedder.0.weight`` (e.g. ``[2560]`` → ``2560``).
+    * ``in_channels`` — ``final_layer.linear.weight.shape[0] // (patch_size**2 * f_patch_size)``.
+      The registered defaults are ``all_patch_size=(2,)`` and ``all_f_patch_size=(1,)``,
+      so ``in_channels = weight_dim // 4`` (e.g. ``64 // 4 = 16``).
+    * ``all_patch_size``, ``all_f_patch_size`` — registered defaults ``(2,)`` and ``(1,)``.
+
+    Args:
+        checkpoint: Raw state dict from a ``.safetensors`` file.
+            Keys are in the raw ComfyUI format (e.g. ``model.diffusion_model.layers.0...``).
+
+    Returns:
+        A dict with keys ``dim``, ``head_dim``, ``n_heads``, ``n_kv_heads``,
+        ``n_layers``, ``n_refiner_layers``, ``cap_feat_dim``, ``in_channels``,
+        ``all_patch_size``, and ``all_f_patch_size``.
+
+    Raises:
+        ValueError: If required keys are absent or have unexpected shapes.
+    """
+    # Find attention.out.weight to derive dim (model hidden dimension).
+    # The first dimension is the model dim (3840 for the 6B ZiT).
+    attention_out_key = None
+    for key in checkpoint:
+        if "attention.out.weight" in key:
+            attention_out_key = key
+            break
+
+    if attention_out_key is None:
+        raise ValueError(
+            "Cannot infer dim: no 'attention.out.weight' key found in checkpoint"
+        )
+
+    dim = checkpoint[attention_out_key].shape[0]
+
+    # Find attention.q_norm.weight to derive head_dim (per-head dimension).
+    # The first dimension is the head dim (128 for the 6B ZiT).
+    q_norm_key = None
+    for key in checkpoint:
+        if "q_norm.weight" in key:
+            q_norm_key = key
+            break
+
+    if q_norm_key is None:
+        raise ValueError(
+            "Cannot infer head_dim: no 'q_norm.weight' key found in checkpoint"
+        )
+
+    head_dim = checkpoint[q_norm_key].shape[0]
+
+    # n_heads and n_kv_heads are derived from dim / head_dim.
+    # ZiT uses standard multi-head attention (no grouped-query attention),
+    # so n_kv_heads == n_heads.
+    n_heads = dim // head_dim
+    n_kv_heads = n_heads
+
+    # Count transformer layers by scanning for unique layer indices.
+    # Keys like "layers.0.attn.qkv.weight" → extract "0" → layer 0.
+    layer_indices: set[int] = set()
+    refiner_indices: set[int] = set()
+
+    for key in checkpoint:
+        # Extract layer index from "layers.N." key pattern.
+        if ".layers." in key:
+            parts = key.split(".layers.")
+            if len(parts) > 1:
+                idx_str = parts[1].split(".")[0]
+                try:
+                    layer_indices.add(int(idx_str))
+                except ValueError:
+                    pass
+        # Extract refiner index from "context_refiner.N." key pattern.
+        elif ".context_refiner." in key:
+            parts = key.split(".context_refiner.")
+            if len(parts) > 1:
+                idx_str = parts[1].split(".")[0]
+                try:
+                    refiner_indices.add(int(idx_str))
+                except ValueError:
+                    pass
+
+    n_layers = max(layer_indices) + 1 if layer_indices else 30
+    n_refiner_layers = max(refiner_indices) + 1 if refiner_indices else 2
+
+    # Find cap_embedder.0.weight to derive cap_feat_dim (conditioning feature dimension).
+    cap_feat_dim = None
+    for key in checkpoint:
+        if "cap_embedder.0.weight" in key:
+            cap_feat_dim = checkpoint[key].shape[0]
+            break
+
+    if cap_feat_dim is None:
+        raise ValueError(
+            "Cannot infer cap_feat_dim: no 'cap_embedder.0.weight' key found in checkpoint"
+        )
+
+    # Find final_layer.linear.weight to derive in_channels.
+    # The output dimension equals in_channels * patch_size^2 * f_patch_size.
+    # With registered defaults all_patch_size=(2,) and all_f_patch_size=(1,),
+    # in_channels = weight_dim // (2^2 * 1) = weight_dim // 4.
+    linear_key = None
+    for key in checkpoint:
+        if "final_layer.linear.weight" in key:
+            linear_key = key
+            break
+
+    if linear_key is None:
+        raise ValueError(
+            "Cannot infer in_channels: no 'final_layer.linear.weight' key found in checkpoint"
+        )
+
+    all_patch_size = (2,)
+    all_f_patch_size = (1,)
+    in_channels = checkpoint[linear_key].shape[0] // (all_patch_size[0] ** 2 * all_f_patch_size[0])
+
+    return {
+        "dim": dim,
+        "head_dim": head_dim,
+        "n_heads": n_heads,
+        "n_kv_heads": n_kv_heads,
+        "n_layers": n_layers,
+        "n_refiner_layers": n_refiner_layers,
+        "cap_feat_dim": cap_feat_dim,
+        "in_channels": in_channels,
+        "all_patch_size": all_patch_size,
+        "all_f_patch_size": all_f_patch_size,
+    }
+
+
+def _remap_z_image_keys(checkpoint: dict[str, Any]) -> dict[str, Any]:
+    """Remap raw ZiT checkpoint keys to the diffusers ``ZImageTransformer2DModel`` convention.
+
+    Applies three transformations to the checkpoint state dict:
+
+    1. **Key renaming** — sequential string replacement per key using the
+       same dictionary as the diffusers source:
+
+       * ``final_layer.`` → ``all_final_layer.2-1.``
+       * ``x_embedder.`` → ``all_x_embedder.2-1.``
+       * ``.attention.out.bias`` → ``.attention.to_out.0.bias``
+       * ``.attention.k_norm.weight`` → ``.attention.norm_k.weight``
+       * ``.attention.q_norm.weight`` → ``.attention.norm_q.weight``
+       * ``.attention.out.weight`` → ``.attention.to_out.0.weight``
+       * ``model.diffusion_model.`` → ``""`` (stripped)
+
+    2. **``norm_final.weight`` removal** — popped if present.
+
+    3. **QKV defuse** — any key containing ``.attention.qkv.weight`` is popped,
+       its tensor is split via ``torch.chunk(..., 3, dim=0)`` into three tensors
+       named ``to_q.weight``, ``to_k.weight``, ``to_v.weight``.
+
+    Operates on a copy of the checkpoint to avoid mutating the original.
+
+    Args:
+        checkpoint: Raw state dict from a ``.safetensors`` file.
+
+    Returns:
+        A new dict with remapped keys suitable for
+        ``ZImageTransformer2DModel.load_state_dict()``.
+    """
+    # Work on a shallow copy so the original checkpoint is never mutated.
+    state_dict = dict(checkpoint)
+
+    # Apply key-remap dictionary: sequential string replacement per key.
+    # Each replacement is applied to every key — the order matches
+    # diffusers' Z_IMAGE_KEYS_RENAME_DICT exactly.
+    Z_IMAGE_KEYS_RENAME_DICT: list[tuple[str, str]] = [
+        ("final_layer.", "all_final_layer.2-1."),
+        ("x_embedder.", "all_x_embedder.2-1."),
+        (".attention.out.bias", ".attention.to_out.0.bias"),
+        (".attention.k_norm.weight", ".attention.norm_k.weight"),
+        (".attention.q_norm.weight", ".attention.norm_q.weight"),
+        (".attention.out.weight", ".attention.to_out.0.weight"),
+        ("model.diffusion_model.", ""),
+    ]
+
+    renamed: dict[str, Any] = {}
+    for key, value in state_dict.items():
+        new_key = key
+        # Apply each replacement sequentially to the same key.
+        for old, new in Z_IMAGE_KEYS_RENAME_DICT:
+            new_key = new_key.replace(old, new)
+        renamed[new_key] = value
+
+    # Remove norm_final.weight if present — it is not used by
+    # ZImageTransformer2DModel and was removed in the diffusers source.
+    renamed.pop("norm_final.weight", None)
+
+    # QKV defuse: split fused qkv tensors into separate to_q/to_k/to_v.
+    # This handles any key containing ".attention.qkv.weight" (the key
+    # may have additional prefixes like "layers.0." or "model.diffusion_model.").
+    # torch.chunk is needed here; import it locally to avoid top-level torch
+    # import (which would break mock-mode import isolation).
+    import torch
+
+    for key, value in list(renamed.items()):
+        if ".attention.qkv.weight" not in key:
+            continue
+        # Pop the fused tensor and split into three equal parts along dim 0.
+        fused_qkv = renamed.pop(key)
+        to_q_weight, to_k_weight, to_v_weight = torch.chunk(fused_qkv, 3, dim=0)
+        renamed[key.replace(".attention.qkv.weight", ".attention.to_q.weight")] = to_q_weight
+        renamed[key.replace(".attention.qkv.weight", ".attention.to_k.weight")] = to_k_weight
+        renamed[key.replace(".attention.qkv.weight", ".attention.to_v.weight")] = to_v_weight
+
+    return renamed
+
+
 def load_transformer(model_id: str) -> Any:
     """Load a Z-Image Turbo (ZiT) transformer from a raw ``.safetensors`` file.
 
-    Constructs a ``ZImageTransformer2DModel`` with zero arguments — the class's
-    registered defaults (``dim=3840``, ``n_layers=30``, ``n_heads=30``,
-    ``cap_feat_dim=2560``) match the published 6B ZiT architecture config.
-    Weights are loaded from the provided ``.safetensors`` file via
-    ``safetensors.torch.load_file``, and keys are remapped to the diffusers
-    convention by reusing ``diffusers.loaders.single_file_utils``'s internal
-    conversion function (the same logic that ``FromOriginalModelMixin`` uses
-    internally, but applied manually to avoid any HuggingFace network access).
+    Infers the ``ZImageTransformer2DModel`` configuration directly from the raw
+    checkpoint's tensor shapes (the ComfyUI pattern) — no ``config.json`` or
+    HuggingFace network access required. The six shape-inferable parameters
+    (``dim``, ``in_channels``, ``n_layers``, ``n_refiner_layers``, ``n_heads``,
+    ``n_kv_heads``, ``cap_feat_dim``) are derived from tensor dimensions; the
+    remaining scalar hyperparameters (``norm_eps``, ``rope_theta``, ``t_scale``,
+    ``axes_dims``, ``axes_lens``, ``qk_norm``) are hardcoded constants.
+
+    Keys are remapped from the raw ComfyUI format to the diffusers convention
+    using a local key-remap dictionary and QKV-defuse logic, matching the
+    transformations that the diffusers source performs — implemented manually
+    to avoid any dependency on diffusers internals.
 
     This function performs **zero network calls**. It never queries HuggingFace
     for a ``config.json`` or any other remote resource — all architecture
-    parameters are hard-coded defaults, and the checkpoint file is read locally.
+    parameters are derived from the checkpoint file, and the file is read locally.
 
     In mock mode (``ANVILML_WORKER_MOCK=1``), returns ``None`` immediately
     without importing torch, diffusers, or safetensors.
@@ -261,33 +486,46 @@ def load_transformer(model_id: str) -> Any:
     # Real mode: lazy-import all heavy dependencies inside the
     # real-mode branch to preserve mock-mode import isolation.
     from diffusers import ZImageTransformer2DModel
-    from diffusers.loaders.single_file_utils import (
-        convert_z_image_transformer_checkpoint_to_diffusers,
-    )
     from safetensors.torch import load_file as safetensors_load_file
 
-    # Construct the model with zero arguments — the class's
-    # registered defaults match the published 6B ZiT architecture
-    # config (dim=3840, n_layers=30, n_heads=30, cap_feat_dim=2560).
-    # We rely on these defaults rather than reading a config file,
-    # which would require network access to HuggingFace.
-    model = ZImageTransformer2DModel()
-
     # Load the raw checkpoint from the .safetensors file.
-    # The raw format contains fused QKV keys (qkv.weight) and
-    # the model.diffusion_model. prefix — diffusers' remap
-    # function handles both transformations.
+    # The raw format contains fused QKV keys and the
+    # model.diffusion_model. prefix — our manual remap handles both.
     checkpoint = safetensors_load_file(model_id)
 
-    # Remap keys from the raw checkpoint format to the diffusers
-    # convention. This function fuses separate to_q/to_k/to_v
-    # weights into qkv.weight and removes the model.diffusion_model.
-    # prefix — the exact inverse of what ZImageTransformer2DModel
-    # produces in state_dict().
-    remapped = convert_z_image_transformer_checkpoint_to_diffusers(checkpoint)
+    # Infer model config directly from checkpoint tensor shapes.
+    # This replaces the previous approach of relying on the class's
+    # registered defaults — now we derive dim, n_layers, etc. from
+    # the actual checkpoint, making the loader robust to different
+    # ZiT variants without hardcoding architecture constants.
+    config = _infer_config_from_checkpoint(checkpoint)
 
-    # Load the remapped state dict into the model. This applies
-    # the weights to the zero-arg-constructed model instance.
+    # Construct the model with explicitly-inferred parameters.
+    # Hardcoded scalar constants that are never stored as weights.
+    model = ZImageTransformer2DModel(
+        dim=config["dim"],
+        in_channels=config["in_channels"],
+        n_layers=config["n_layers"],
+        n_refiner_layers=config["n_refiner_layers"],
+        n_heads=config["n_heads"],
+        n_kv_heads=config["n_kv_heads"],
+        cap_feat_dim=config["cap_feat_dim"],
+        all_patch_size=config["all_patch_size"],
+        all_f_patch_size=config["all_f_patch_size"],
+        norm_eps=1e-5,
+        rope_theta=256.0,
+        t_scale=1000.0,
+        axes_dims=[32, 48, 48],
+        axes_lens=[1024, 512, 512],
+        qk_norm=True,
+    )
+
+    # Remap keys from the raw ComfyUI format to the diffusers convention.
+    # This handles prefix renaming, norm_final.weight removal, and QKV
+    # defusion — the same transformations that the diffusers source performs.
+    remapped = _remap_z_image_keys(checkpoint)
+
+    # Load the remapped state dict into the model.
     model.load_state_dict(remapped)
 
     return model

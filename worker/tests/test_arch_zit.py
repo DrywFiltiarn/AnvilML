@@ -21,7 +21,9 @@ from worker.nodes.arch.diffusion.zit import (
     MockLatent,
     VAE_SCALE_FACTOR,
     _SamplingCancelled,
+    _infer_config_from_checkpoint,
     _make_callback,
+    _remap_z_image_keys,
     can_handle,
     compute_latent_shape,
     load_transformer,
@@ -648,3 +650,169 @@ def test_make_callback_raises_on_cancellation() -> None:
     # Assert progress was emitted before cancellation was detected.
     assert len(progress_calls) == 1
     assert progress_calls[0] == (2, 4)
+
+
+# ---------------------------------------------------------------------------
+# Tests: load_transformer — no diffusers internal import
+# ---------------------------------------------------------------------------
+
+
+def test_no_diffusers_internal_import() -> None:
+    """Verify the import of ``convert_z_image_transformer_checkpoint_to_diffusers`` is removed.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse
+        fixture (not strictly required — this test reads source text).
+
+    Tests:
+        Read the source of ``worker/nodes/arch/diffusion/zit.py`` and
+        assert that the string ``convert_z_image_transformer_checkpoint_to_diffusers``
+        does not appear anywhere in the file.
+
+    Expected output:
+        Zero matches for ``convert_z_image_transformer_checkpoint_to_diffusers``
+        in the source file — the private diffusers internal is no longer imported.
+    """
+    import os
+
+    src_path = os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "nodes",
+        "arch",
+        "diffusion",
+        "zit.py",
+    )
+    src = open(src_path).read()
+    assert "convert_z_image_transformer_checkpoint_to_diffusers" not in src
+
+
+# ---------------------------------------------------------------------------
+# Tests: _remap_z_image_keys
+# ---------------------------------------------------------------------------
+
+
+def test_remap_key_transformations() -> None:
+    """Verify the manual key remap produces correct diffusers-convention keys.
+
+    Preconditions:
+        ``ANVILML_WORKER_MOCK=1`` is set by the ``conftest.py`` autouse
+        fixture (not strictly required — the remap function is pure
+        key manipulation, no torch/diffusers import needed).
+
+    Tests:
+        Construct a synthetic checkpoint with every key type present in the
+        ZiT architecture (x_embedder, layers with qkv/out/q_norm/k_norm,
+        final_layer, cap_embedder, noise_refiner, context_refiner,
+        t_embedder, norm_final), then call ``_remap_z_image_keys()`` and
+        assert the remapped keys match the expected diffusers convention.
+
+    Expected output:
+        All keys are correctly remapped:
+        * ``model.diffusion_model.`` prefix is stripped.
+        * ``final_layer.`` → ``all_final_layer.2-1.``
+        * ``x_embedder.`` → ``all_x_embedder.2-1.``
+        * ``.attention.out.weight`` → ``.attention.to_out.0.weight``
+        * ``.attention.out.bias`` → ``.attention.to_out.0.bias``
+        * ``.attention.q_norm.weight`` → ``.attention.norm_q.weight``
+        * ``.attention.k_norm.weight`` → ``.attention.norm_k.weight``
+        * ``.attention.qkv.weight`` is split into ``to_q.weight``,
+          ``to_k.weight``, ``to_v.weight``.
+        * ``norm_final.weight`` is removed.
+    """
+    # Build a synthetic checkpoint with every key type present in the
+    # ZiT architecture. Use simple scalar tensors (shape [1]) so that
+    # torch.chunk works on the QKV split without needing real tensor
+    # shapes — each QKV split produces [1] tensors.
+    import torch
+
+    checkpoint: dict[str, Any] = {
+        # x_embedder keys (with model.diffusion_model. prefix)
+        "model.diffusion_model.x_embedder.proj.weight": torch.ones(3840, 3),
+        # Layer 0 attention keys (using .attention. prefix as in diffusers source)
+        "model.diffusion_model.layers.0.attention.qkv.weight": torch.ones(11520, 3840),
+        "model.diffusion_model.layers.0.attention.to_out.0.weight": torch.ones(3840, 3840),
+        "model.diffusion_model.layers.0.attention.to_out.0.bias": torch.ones(3840),
+        "model.diffusion_model.layers.0.attention.q_norm.weight": torch.ones(128),
+        "model.diffusion_model.layers.0.attention.k_norm.weight": torch.ones(128),
+        "model.diffusion_model.layers.0.ff.net.0.proj.weight": torch.ones(3840, 3840),
+        "model.diffusion_model.layers.0.ff.net.2.weight": torch.ones(3840, 3840),
+        "model.diffusion_model.layers.0.attention.norm_q.weight": torch.ones(128),
+        "model.diffusion_model.layers.0.attention.norm_k.weight": torch.ones(128),
+        # Layer 1 attention keys (with separate to_q/to_k/to_v — no qkv)
+        "model.diffusion_model.layers.1.attention.to_q.weight": torch.ones(3840, 3840),
+        "model.diffusion_model.layers.1.attention.to_k.weight": torch.ones(3840, 3840),
+        "model.diffusion_model.layers.1.attention.to_v.weight": torch.ones(3840, 3840),
+        # Layer 29 (last layer, with qkv to test defuse)
+        "model.diffusion_model.layers.29.attention.qkv.weight": torch.ones(11520, 3840),
+        # Context refiner keys
+        "model.diffusion_model.context_refiner.0.attention.to_q.weight": torch.ones(3840, 3840),
+        "model.diffusion_model.context_refiner.1.attention.to_q.weight": torch.ones(3840, 3840),
+        # Noise refiner keys
+        "model.diffusion_model.noise_refiner.0.attention.to_q.weight": torch.ones(3840, 3840),
+        # cap_embedder
+        "model.diffusion_model.cap_embedder.0.weight": torch.ones(2560, 768),
+        # final_layer
+        "model.diffusion_model.final_layer.linear.weight": torch.ones(64, 16),
+        "model.diffusion_model.final_layer.adaLN_modulation.1.weight": torch.ones(3840 * 6),
+        # t_embedder
+        "model.diffusion_model.t_embedder.mlp.0.weight": torch.ones(3840, 256),
+        # norm_final (should be removed)
+        "model.diffusion_model.norm_final.weight": torch.ones(3840),
+    }
+
+    remapped = _remap_z_image_keys(checkpoint)
+
+    # --- Key renaming: model.diffusion_model. prefix stripped ---
+    # x_embedder: "model.diffusion_model.x_embedder." → "all_x_embedder.2-1."
+    assert "all_x_embedder.2-1.proj.weight" in remapped
+
+    # Layer 0 attention keys: prefix stripped
+    assert "layers.0.attention.to_out.0.weight" in remapped
+    assert "layers.0.attention.to_out.0.bias" in remapped
+    assert "layers.0.attention.norm_q.weight" in remapped
+    assert "layers.0.attention.norm_k.weight" in remapped
+
+    # Layer 1: to_q/to_k/to_v keys (no qkv, so no change beyond prefix strip)
+    assert "layers.1.attention.to_q.weight" in remapped
+    assert "layers.1.attention.to_k.weight" in remapped
+    assert "layers.1.attention.to_v.weight" in remapped
+
+    # Layer 29: qkv key should be split
+    # After remap, the qkv key is gone (defused)
+    assert "layers.29.attention.qkv.weight" not in remapped
+    assert "layers.29.attention.to_q.weight" in remapped
+    assert "layers.29.attention.to_k.weight" in remapped
+    assert "layers.29.attention.to_v.weight" in remapped
+
+    # Context refiner keys: prefix stripped
+    assert "context_refiner.0.attention.to_q.weight" in remapped
+    assert "context_refiner.1.attention.to_q.weight" in remapped
+
+    # Noise refiner keys: prefix stripped
+    assert "noise_refiner.0.attention.to_q.weight" in remapped
+
+    # cap_embedder: prefix stripped
+    assert "cap_embedder.0.weight" in remapped
+
+    # final_layer: "model.diffusion_model.final_layer." → "all_final_layer.2-1."
+    assert "all_final_layer.2-1.linear.weight" in remapped
+    assert "all_final_layer.2-1.adaLN_modulation.1.weight" in remapped
+
+    # t_embedder: prefix stripped
+    assert "t_embedder.mlp.0.weight" in remapped
+
+    # norm_final.weight should be removed
+    assert "norm_final.weight" not in remapped
+
+    # Verify QKV defuse produces correct tensor shapes.
+    # Original qkv weight shape: [11520, 3840] → each split: [3840, 3840]
+    qkv_key = "model.diffusion_model.layers.0.attention.qkv.weight"
+    assert qkv_key not in remapped  # original key removed
+    assert remapped["layers.0.attention.to_q.weight"].shape == torch.Size([3840, 3840])
+    assert remapped["layers.0.attention.to_k.weight"].shape == torch.Size([3840, 3840])
+    assert remapped["layers.0.attention.to_v.weight"].shape == torch.Size([3840, 3840])
+
+    # Verify the original checkpoint was not mutated (we operate on a copy)
+    assert "model.diffusion_model.layers.29.attention.qkv.weight" in checkpoint
+    assert "model.diffusion_model.norm_final.weight" in checkpoint

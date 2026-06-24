@@ -3555,3 +3555,21 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** ``get_module_by_name("zit")``, ``get_module(_make_model("zit"))``.
 **Expected output:** Both return the same module (``worker.nodes.arch.diffusion.zit``).
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_init.py::test_get_module_by_name_shim_pattern -v` exits 0.
+
+## test_no_diffusers_internal_import (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The ``load_transformer()`` function was rewritten in P904-B1 to remove its dependency on the private, unversioned ``diffusers.loaders.single_file_utils.convert_z_image_transformer_checkpoint_to_diffusers`` function. This test verifies that the import has been removed by reading the source file and asserting the string does not appear.
+**Tests:** Reads the source of ``worker/nodes/arch/diffusion/zit.py`` and asserts that ``convert_z_image_transformer_checkpoint_to_diffusers`` does not appear anywhere in the file.
+**Inputs:** Source file ``worker/nodes/arch/diffusion/zit.py``.
+**Expected output:** Zero matches for ``convert_z_image_transformer_checkpoint_to_diffusers`` in the source file.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_no_diffusers_internal_import -v` exits 0.
+
+## test_remap_key_transformations (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The ``load_transformer()`` function was rewritten in P904-B1 to use a local ``_remap_z_image_keys()`` helper instead of the diffusers internal conversion function. This test verifies that the manual key remap produces the same key transformations as the diffusers source: prefix stripping, prefix renaming, norm_final.weight removal, and QKV defusion.
+**Tests:** Constructs a synthetic checkpoint with every key type present in the ZiT architecture (x_embedder, layers with qkv/out/q_norm/k_norm, final_layer, cap_embedder, context_refiner, noise_refiner, t_embedder, norm_final), calls ``_remap_z_image_keys()``, and asserts all remapped keys match the expected diffusers convention. Also verifies that QKV tensors are split into three equal parts with correct shapes, and that the original checkpoint is not mutated.
+**Inputs:** Synthetic checkpoint with keys like ``model.diffusion_model.layers.0.attn.qkv.weight`` (shape [11520, 3840]), ``model.diffusion_model.final_layer.linear.weight`` (shape [64, 16]), etc.
+**Expected output:** All keys correctly remapped (prefix stripped, renamed, norm_final removed, QKV split into three [3840, 3840] tensors). Original checkpoint unchanged.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_remap_key_transformations -v` exits 0.
