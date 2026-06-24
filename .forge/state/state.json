@@ -137,16 +137,17 @@
     "P904-A13",
     "P904-A14",
     "P904-B1",
-    "P904-B2"
+    "P904-B2",
+    "P904-B3"
   ],
-  "in_progress": "P904-B3",
+  "in_progress": "P904-B4",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-24T15:52:56+0200",
+  "last_updated": "2026-06-24T16:23:51+0200",
   "plan_approved": true,
-  "current_plan": "",
-  "plan_approval_message_id": "1519339409080848384",
+  "current_plan": "1. **Re-read the three files at ACT time.** Open `worker/nodes/arch/clip/qwen3.py`, `clip_l.py`, and `t5.py`. Confirm the following for each file:\n   - No `from_single_file` appears anywhere in the file (grep for `from_single_file`).\n   - No `from_pretrained` is called with a string repo id \u2014 it must be called with a `Path` object (local directory). The pattern is `ClassName.from_pretrained(tokenizer_dir)` where `tokenizer_dir = Path(__file__).parent.parent.parent.parent / \"assets\" / \"<name>\"`.\n   - The model is constructed as `ModelClass(ConfigClass(**config_values))` followed by `model.load_state_dict(safetensors_load_file(model_id))`.\n   - The `config_values` dict contains hardcoded constants (integers, booleans, strings), not any runtime-fetched values.\n   - The model has `.to(device)` called before return.\n   - Mock mode returns early via `RealClip(MockTokenizer(), MockTextEncoder(), device=device)` without importing torch/transformers/safetensors.\n\n2. **Verify no network-capable calls.** Confirm there are no imports or calls to `hf_hub_download`, `snapshot_download`, `from_pretrained` with a string repo id, or any other HuggingFace Hub API call. The only `from_pretrained` calls are on tokenizer classes with a `Path` argument.\n\n3. **Record findings.** If all checks pass, the implementation report states: \"No code changes. Re-confirmed at ACT time that all three files remain fully offline \u2014 no `from_single_file()`, no HF network calls, tokenizer `from_pretrained()` uses local path only.\"\n\n4. **If any check fails.** If a file now contains `from_single_file`, or `from_pretrained` with a string repo id, or any network-capable call, do NOT silently patch. Write `## Blockers` in the implementation report describing the exact failure and why the task's premise is wrong. The ACT agent must escalate \u2014 the premise of Group B (that these files are already offline) would be incorrect.",
+  "plan_approval_message_id": "1519347011101393019",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1519339407197474877",
+  "plan_report_message_id": "1519347008932937821",
   "impl_report_message_id": null
 }
