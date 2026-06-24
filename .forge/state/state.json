@@ -127,16 +127,17 @@
     "P904-A4",
     "P904-A5",
     "P904-A6",
-    "P904-A6b"
+    "P904-A6b",
+    "P904-A7"
   ],
-  "in_progress": "P904-A7",
+  "in_progress": "P904-A8",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-24T08:31:01+0200",
+  "last_updated": "2026-06-24T09:30:12+0200",
   "plan_approved": true,
-  "current_plan": "1. **Modify `worker/nodes/arch/clip/qwen3.py`**:\n   - Change the `load()` signature from `def load(model_id: str, torch_dtype: Any) -> RealClip` to `def load(model_id: str, torch_dtype: Any, device: str = \"cpu\") -> RealClip`.\n   - Update the docstring to document the new `device` argument.\n   - In the mock-mode path (line ~86), change `return RealClip(MockTokenizer(), MockTextEncoder())` to `return RealClip(MockTokenizer(), MockTextEncoder(), device=device)`.\n   - In the real-mode path, after `model.load_state_dict(safetensors_load_file(model_id))` (line ~133), insert `model = model.to(device)` before the return. This assigns the return value because `.to()` returns a new reference for some module types.\n   - Change the final return from `return RealClip(tokenizer, model)` to `return RealClip(tokenizer, model, device=device)`.\n\n2. **Modify `worker/nodes/arch/clip/clip_l.py`**:\n   - Apply the identical four changes as step 1: widen signature with `device: str = \"cpu\"` default, update docstring, pass `device=device` to `RealClip()` in both mock and real return paths, insert `model = model.to(device)` after `load_state_dict()`.\n\n3. **Modify `worker/nodes/arch/clip/t5.py`**:\n   - Apply the identical four changes as step 1.\n\n4. **Modify `worker/nodes/loader.py`** (only `LoadClip.execute()`):\n   - In the real-mode branch of `LoadClip.execute()` (line ~623), change:\n     ```python\n     return module.load(model_id, torch_dtype=torch.bfloat16)\n     ```\n     to:\n     ```python\n     return module.load(model_id, torch_dtype=torch.bfloat16, device=self.ctx.device)\n     ```\n   - This passes the worker's assigned device explicitly so that the text encoder is placed on the correct GPU/CPU.\n\n5. **Verify**: Run the existing mock-mode tests for all three CLIP arch modules and `test_nodes_loader.py` \u2014 they must pass without modification because:\n   - Mock-mode tests call `load(\"/fake/path\", None)` positionally (2 args), which is compatible with the new 3rd parameter having a default.\n   - Mock-mode returns `RealClip(..., device=device)` where `device=\"cpu\"` (the default), which is identical to the current behavior of `RealClip(...)` relying on its own default.\n   - The `test_load_mock_no_torch_import` tests remain unaffected because no top-level imports change.\n\nNo new tests are added because the existing mock-mode test suite already exercises the `load()` function with the positional call pattern that must continue to work. The device-placement fix is a real-mode-only change that is verified by the real-mode test suite (P904-B3) in a later task.",
-  "plan_approval_message_id": "1519223549125066792",
+  "current_plan": "",
+  "plan_approval_message_id": "1519243047307575357",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1519223546918998141",
+  "plan_report_message_id": "1519243045403627641",
   "impl_report_message_id": null
 }

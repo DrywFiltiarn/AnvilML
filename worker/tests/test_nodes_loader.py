@@ -446,3 +446,47 @@ def test_loadclip_metadata_attributes() -> None:
     assert output_spec.name == "clip"
     assert output_spec.slot_type == "CLIP"
     assert output_spec.optional is False
+
+
+def test_loadmodel_hf_directory_accepts_device_param() -> None:
+    """Verify ``_load_model_from_hf_directory`` accepts a ``device`` parameter.
+
+    This test confirms the function signature includes a third positional
+    ``device`` argument (default ``"cpu"``) so that downstream callers
+    can pass ``self.ctx.device`` for GPU placement.
+
+    Preconditions:
+        ``torch``, ``diffusers``, and ``safetensors`` are installed
+        (real mode). When these are absent the test is skipped via
+        ``pytest.importorskip``.
+
+    Tests:
+        Import the function, inspect its signature via
+        ``inspect.signature``, and assert that ``"device"`` is a
+        parameter name with a default value of ``"cpu"``.
+
+    Expected output:
+        The ``device`` parameter exists with default ``"cpu"``.
+    """
+    # Real loading requires torch/diffusers/safetensors which are not
+    # installed in the CI mock-mode venv. Skip when absent.
+    torch = pytest.importorskip("torch")
+    del torch  # we only need the import to succeed, not the object
+
+    import inspect
+
+    import worker.nodes.loader
+
+    importlib.reload(worker.nodes.loader)
+    from worker.nodes.loader import _load_model_from_hf_directory
+
+    sig = inspect.signature(_load_model_from_hf_directory)
+    params = sig.parameters
+
+    assert "device" in params, (
+        "_load_model_from_hf_directory must accept a 'device' parameter "
+        "for GPU placement"
+    )
+    assert params["device"].default == "cpu", (
+        "device parameter must default to 'cpu' for backward compatibility"
+    )

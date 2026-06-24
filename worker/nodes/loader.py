@@ -428,8 +428,13 @@ class LoadModel(BaseNode):
         # Note: self.ctx.pipeline_cache is typed as dict[str, Any] in
         # NodeContext but a PipelineCache instance at runtime
         # (retrofitted by P903-A2), so .get_or_load() is available.
+        # Capture self.ctx.device before passing into the lambda closure
+        # so the transformer is placed on the worker's assigned device
+        # (e.g. "cuda:0") instead of silently defaulting to CPU.
         result = self.ctx.pipeline_cache.get_or_load(
-            model_id, "fp8", lambda: _load_model_from_hf_directory(model_id, model_id)
+            model_id,
+            "fp8",
+            lambda: _load_model_from_hf_directory(model_id, model_id, self.ctx.device),
         )
         return {"model": result}
 
@@ -501,6 +506,11 @@ class LoadVae(BaseNode):
         from diffusers import AutoencoderKL
         import torch
 
+        # Capture self.ctx.device for use in the loader_fn closure below.
+        # Without this, the VAE would be loaded on CPU and never moved
+        # to the worker's assigned GPU device.
+        device = self.ctx.device
+
         # Define the loader closure that constructs the AutoencoderKL.
         # This is passed to pipeline_cache.get_or_load() so the actual
         # model loading only happens on cache miss. The closure captures
@@ -511,10 +521,15 @@ class LoadVae(BaseNode):
         # argument is needed — it works directly on a standalone
         # .safetensors file.
         def loader_fn() -> AutoencoderKL:
-            return AutoencoderKL.from_single_file(
+            vae = AutoencoderKL.from_single_file(
                 model_id,
                 torch_dtype=torch.bfloat16,
             )
+            # Move the VAE to the target device.
+            # .to() may return a new object reference depending on the
+            # diffusers version, so we always assign the return value
+            # rather than assuming in-place mutation.
+            return vae.to(device)
 
         # Get the VAE from cache or load it via loader_fn.
         # The cache key uses "bf16" dtype string — bfloat16 is the
@@ -657,14 +672,17 @@ def _load_from_hf_directory(model_id: str) -> Any:
     )
 
 
-def _load_model_from_hf_directory(model_id: str, arch: str) -> RealModel:
+def _load_model_from_hf_directory(
+    model_id: str, arch: str, device: str = "cpu"
+) -> RealModel:
     """Load a diffusion transformer from a single safetensors file.
 
     This is the active loading path for ``LoadModel`` in real mode.
     It reads the safetensors metadata to detect the architecture,
     normalises the arch string from a path to a bare name, then
     loads the ``ZImageTransformer2DModel`` via
-    ``from_single_file()`` with ``torch.float16`` precision.
+    ``from_single_file()`` with ``torch.float16`` precision, and
+    moves the result to the target *device*.
 
     Args:
         model_id: Path to the safetensors file or directory
@@ -672,6 +690,10 @@ def _load_model_from_hf_directory(model_id: str, arch: str) -> RealModel:
         arch: Architecture identifier (e.g. ``"zit"``). Used as a
             fallback when the safetensors metadata does not contain
             an ``arch`` key.
+        device: Target device string for tensor placement
+            (e.g. ``"cuda:0"``, ``"cpu"``). Defaults to ``"cpu"``
+            for backward compatibility with callers that do not
+            pass a device argument.
 
     Returns:
         A ``RealModel`` wrapping the loaded transformer and arch.
@@ -721,6 +743,13 @@ def _load_model_from_hf_directory(model_id: str, arch: str) -> RealModel:
         model_id,
         torch_dtype=torch.float16,
     )
+
+    # Move the transformer to the target device.
+    # .to() may return a new object reference depending on the
+    # diffusers version, so we always assign the return value
+    # rather than assuming in-place mutation.
+    transformer = transformer.to(device)
+
     return RealModel(transformer, arch=detected_arch)
 
 
