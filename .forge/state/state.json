@@ -138,16 +138,17 @@
     "P904-A14",
     "P904-B1",
     "P904-B2",
-    "P904-B3"
+    "P904-B3",
+    "P904-B4"
   ],
-  "in_progress": "P904-B4",
+  "in_progress": "P904-Z1",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-24T16:23:51+0200",
+  "last_updated": "2026-06-24T17:05:00+0200",
   "plan_approved": true,
-  "current_plan": "1. **Re-read the three files at ACT time.** Open `worker/nodes/arch/clip/qwen3.py`, `clip_l.py`, and `t5.py`. Confirm the following for each file:\n   - No `from_single_file` appears anywhere in the file (grep for `from_single_file`).\n   - No `from_pretrained` is called with a string repo id \u2014 it must be called with a `Path` object (local directory). The pattern is `ClassName.from_pretrained(tokenizer_dir)` where `tokenizer_dir = Path(__file__).parent.parent.parent.parent / \"assets\" / \"<name>\"`.\n   - The model is constructed as `ModelClass(ConfigClass(**config_values))` followed by `model.load_state_dict(safetensors_load_file(model_id))`.\n   - The `config_values` dict contains hardcoded constants (integers, booleans, strings), not any runtime-fetched values.\n   - The model has `.to(device)` called before return.\n   - Mock mode returns early via `RealClip(MockTokenizer(), MockTextEncoder(), device=device)` without importing torch/transformers/safetensors.\n\n2. **Verify no network-capable calls.** Confirm there are no imports or calls to `hf_hub_download`, `snapshot_download`, `from_pretrained` with a string repo id, or any other HuggingFace Hub API call. The only `from_pretrained` calls are on tokenizer classes with a `Path` argument.\n\n3. **Record findings.** If all checks pass, the implementation report states: \"No code changes. Re-confirmed at ACT time that all three files remain fully offline \u2014 no `from_single_file()`, no HF network calls, tokenizer `from_pretrained()` uses local path only.\"\n\n4. **If any check fails.** If a file now contains `from_single_file`, or `from_pretrained` with a string repo id, or any network-capable call, do NOT silently patch. Write `## Blockers` in the implementation report describing the exact failure and why the task's premise is wrong. The ACT agent must escalate \u2014 the premise of Group B (that these files are already offline) would be incorrect.",
-  "plan_approval_message_id": "1519347011101393019",
+  "current_plan": "1. **Create `worker/tests/real_fixtures.py`** with a module-level docstring explaining that these fixtures generate synthetic tiny-config checkpoints for CLIP text encoders (qwen3, clip_l, t5) to avoid downloading multi-GB real weights in tests. Include `from __future__ import annotations`.\n\n2. **Implement `tiny_qwen3_clip(tmp_path)` fixture**:\n   - Import `torch` and `safetensors.torch` lazily inside the fixture body (not at module level, to preserve mock-mode import isolation \u2014 if torch is absent, the fixture raises a clear error)\n   - Import `Qwen3Config, Qwen3ForCausalLM` from `transformers`\n   - Construct config with `hidden_size=32, num_hidden_layers=2` plus all other parameters at their registered defaults (the Config class constructor accepts keyword overrides; unspecified fields use registered defaults)\n   - Instantiate `Qwen3ForCausalLM(config)` and call `.state_dict()` to get the raw tensor dict\n   - Save via `safetensors.torch.save_file(state_dict, str(tmp_path / \"qwen3_clip.safetensors\"))`\n   - Return the Path object\n\n3. **Implement `tiny_clip_l_clip(tmp_path)` fixture** (same pattern):\n   - Import `CLIPTextConfig, CLIPTextModelWithProjection` from `transformers`\n   - Construct with `hidden_size=32, num_hidden_layers=2`\n   - Save state_dict to tmp_path, return Path\n\n4. **Implement `tiny_t5_clip(tmp_path)` fixture** (same pattern):\n   - Import `T5Config, T5EncoderModel` from `transformers`\n   - Construct with `d_model=32, num_layers=2` (T5 uses `d_model`/`num_layers` naming, not `hidden_size`/`num_hidden_layers`)\n   - Save state_dict to tmp_path, return Path\n\n5. **Rationale on lazy torch import**: Each fixture body imports `torch` and `safetensors.torch` inside the function rather than at module level. This matches the established pattern in the CLIP arch modules where `torch`/`transformers`/`safetensors` are never top-level imports (they would break mock-mode tests). If `torch` is not installed when a fixture runs, the import failure will produce a clear error message.",
+  "plan_approval_message_id": "1519354426127552633",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1519347008932937821",
+  "plan_report_message_id": "1519354424349425705",
   "impl_report_message_id": null
 }

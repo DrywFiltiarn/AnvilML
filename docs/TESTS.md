@@ -3609,3 +3609,39 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Inputs:** Source file `worker/nodes/arch/diffusion/zit.py`.
 **Expected output:** Zero matches for both diffusers internal strings in the source file.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_no_diffusers_internal_import -v` exits 0.
+
+## test_fixtures_exist_and_return_path (worker)
+
+**File:** `worker/tests/real_fixtures.py`
+**Context:** The three fixtures (`tiny_qwen3_clip`, `tiny_clip_l_clip`, `tiny_t5_clip`) are importable without requiring `torch` to be installed — lazy imports inside the fixture body preserve mock-mode isolation.
+**Tests:** Imports each fixture function and asserts it is callable. No fixture body is executed (no model construction, no file I/O).
+**Inputs:** None (module-level import only).
+**Expected output:** All three fixtures are importable and callable — confirming lazy imports preserve mock-mode isolation.
+**Acceptance command:** `worker/.venv/bin/python -c "from worker.tests.real_fixtures import tiny_qwen3_clip, tiny_clip_l_clip, tiny_t5_clip; print('import OK')"` exits 0.
+
+## test_qwen3_checkpoint_loadable (worker)
+
+**File:** `worker/tests/real_fixtures.py`
+**Context:** The qwen3 fixture builds a real ``Qwen3ForCausalLM`` with ``hidden_size=32``, ``num_hidden_layers=2``, saves the state dict to a `.safetensors` file, and the checkpoint must be loadable with ``safetensors.torch.load_file``.
+**Tests:** Runs ``tiny_qwen3_clip(tmp_path)``, loads the resulting file, and asserts the embedding weight tensor has shape ``(vocab_size, 32)`` — confirming the checkpoint is valid and the model was built with the correct config.
+**Inputs:** ``tmp_path`` (pytest temp directory).
+**Expected output:** Checkpoint file exists, loads successfully, and ``loaded["model.embed_tokens.weight"].shape[1] == 32``.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/real_fixtures.py::test_qwen3_checkpoint_loadable -v` exits 0.
+
+## test_clip_l_checkpoint_loadable (worker)
+
+**File:** `worker/tests/real_fixtures.py`
+**Context:** The clip_l fixture builds a real ``CLIPTextModelWithProjection`` with ``hidden_size=32``, ``num_hidden_layers=2``, saves the state dict to a `.safetensors` file, and the checkpoint must be loadable.
+**Tests:** Runs ``tiny_clip_l_clip(tmp_path)``, loads the resulting file, and asserts the ``embed_tokens.weight`` tensor has the correct hidden dimension.
+**Inputs:** ``tmp_path`` (pytest temp directory).
+**Expected output:** Checkpoint file exists, loads successfully, and ``loaded["embed_tokens.weight"].shape[1] == 32``.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/real_fixtures.py::test_clip_l_checkpoint_loadable -v` exits 0.
+
+## test_t5_checkpoint_loadable (worker)
+
+**File:** `worker/tests/real_fixtures.py`
+**Context:** The t5 fixture builds a real ``T5EncoderModel`` with ``d_model=32``, ``num_layers=2``, saves the state dict to a `.safetensors` file, and the checkpoint must be loadable.
+**Tests:** Runs ``tiny_t5_clip(tmp_path)``, loads the resulting file, and asserts the encoder embedding weight tensor has the correct hidden dimension.
+**Inputs:** ``tmp_path`` (pytest temp directory).
+**Expected output:** Checkpoint file exists, loads successfully, and ``loaded["encoder.embed_tokens.weight"].shape[1] == 32``.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/real_fixtures.py::test_t5_checkpoint_loadable -v` exits 0.
