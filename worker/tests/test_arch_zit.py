@@ -9,8 +9,8 @@ seed, and import isolation (no torch import at module load time).
 
 from __future__ import annotations
 
-import importlib
 import os
+import subprocess
 import sys
 import threading
 from typing import Any
@@ -465,53 +465,46 @@ def test_sample_mock_no_torch_import() -> None:
         fixture.
 
     Tests:
-        Remove ``torch`` from ``sys.modules`` (if present) and
-        re-import the ``worker.nodes.arch.diffusion.zit`` module. Assert that
-        no ``ImportError`` is raised and that ``torch`` is not in
-        ``sys.modules`` after import — proving no top-level import
-        of torch occurs.
+        Spawn a fresh child Python process (where ``torch`` has never
+        been loaded at all) and import the
+        ``worker.nodes.arch.diffusion.zit`` module in it. Assert the
+        child exits 0 and reports that ``torch`` is still absent from
+        its own ``sys.modules`` after the import — proving no
+        top-level import of torch occurs.
+
+        This runs in a subprocess rather than popping ``torch`` out of
+        the live test process's ``sys.modules`` and calling
+        ``importlib.reload()`` on the project module — that combination
+        is unsafe against an already-natively-initialized ``torch``
+        (OpenMP/MKL thread pools, C-extension static state) and can
+        fault at the native level, outside any Python exception. A
+        confirmed real incident crashed a project owner's WSL2 VM
+        running exactly that pattern.
 
     Expected output:
-        Module imports successfully and ``"torch"`` is absent from
-        ``sys.modules``, confirming mock-mode import isolation.
+        The child process exits 0 and prints ``False`` for
+        ``"torch" in sys.modules``, confirming mock-mode import
+        isolation without touching the parent process's own torch
+        state.
     """
-    # Remove torch from sys.modules to simulate an environment
-    # where torch is not installed. This ensures the import
-    # succeeds even without the package available.
-    torch_was_present = "torch" in sys.modules
-    torch_saved = sys.modules.pop("torch", None)
-
-    # Also remove the module from sys.modules cache so we get a
-    # fresh import that exercises the full module body.
-    sys.modules.pop("worker.nodes.arch.diffusion.zit", None)
-
-    # Also remove the parent arch package from cache.
-    sys.modules.pop("worker.nodes.arch", None)
-
-    try:
-        # Import must succeed — if torch were imported at module level,
-        # this would raise ImportError since we just removed it.
-        import worker.nodes.arch.diffusion.zit as zit_mod
-
-        importlib.reload(zit_mod)
-
-        # Verify torch is still absent from sys.modules after import.
-        assert "torch" not in sys.modules, (
-            "torch was imported at module level — "
-            "this breaks mock-mode isolation"
-        )
-
-        # Verify the module's public API is intact.
-        assert callable(zit_mod.can_handle)
-        assert callable(zit_mod.sample)
-        assert zit_mod.MockLatent is not None
-    finally:
-        # Restore torch if it was present before.
-        if torch_was_present and torch_saved is not None:
-            sys.modules["torch"] = torch_saved
-        # Restore cached modules for other tests.
-        sys.modules.pop("worker.nodes.arch.diffusion.zit", None)
-        sys.modules.pop("worker.nodes.arch", None)
+    script = (
+        "import worker.nodes.arch.diffusion.zit; "
+        "import sys; "
+        "print('torch' in sys.modules)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, (
+        f"child process failed to import the module: {result.stderr}"
+    )
+    assert result.stdout.strip() == "False", (
+        "torch was imported at module level — "
+        "this breaks mock-mode isolation"
+    )
 
 
 # ---------------------------------------------------------------------------
