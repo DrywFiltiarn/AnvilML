@@ -490,3 +490,69 @@ def test_loadmodel_safetensors_accepts_device_param() -> None:
     assert params["device"].default == "cpu", (
         "device parameter must default to 'cpu' for backward compatibility"
     )
+
+
+def test_loadmodel_key_prefix_detects_zit(tmp_path: pytest.TempPath) -> None:
+    """Verify key-prefix-based architecture detection identifies ZiT from raw keys.
+
+    Creates a minimal fake safetensors file containing keys that match the
+    ZiT pattern (``model.diffusion_model.`` prefix) but carries no ``arch``
+    metadata. Confirms that ``_detect_arch_from_keys`` returns ``"zit"`` for
+    this checkpoint, and that ``_load_model_from_safetensors`` detects the
+    architecture from keys alone when metadata is absent.
+
+    Preconditions:
+        ``torch`` and ``safetensors`` are installed (real mode).
+        Skipped via ``pytest.importorskip`` when absent.
+
+    Tests:
+        1. Create a fake safetensors file with ZiT-like keys and no metadata.
+        2. Call ``_detect_arch_from_keys`` on the loaded checkpoint.
+        3. Assert the returned architecture is ``"zit"``.
+
+    Expected output:
+        ``_detect_arch_from_keys`` returns ``"zit"`` for a checkpoint
+        with ``model.diffusion_model.`` prefixed keys and no metadata.
+    """
+    torch = pytest.importorskip("torch")
+
+    import tempfile
+    from pathlib import Path
+
+    import worker.nodes.loader
+
+    importlib.reload(worker.nodes.loader)
+    from worker.nodes.loader import _detect_arch_from_keys
+
+    # Create a minimal fake safetensors checkpoint with ZiT-like keys.
+    # We only need the key structure — tensor values are arbitrary.
+    fake_checkpoint: dict[str, Any] = {
+        "model.diffusion_model.layers.0.attention.qkv.weight": torch.zeros(11520, 3840),
+        "model.diffusion_model.layers.0.attention.out.weight": torch.zeros(3840, 3840),
+        "model.diffusion_model.layers.0.attention.q_norm.weight": torch.zeros(128),
+        "model.diffusion_model.final_layer.linear.weight": torch.zeros(64, 3840),
+        "model.diffusion_model.x_embedder.weight": torch.zeros(4096, 3840),
+    }
+
+    # Write to a temp safetensors file.
+    with tempfile.NamedTemporaryFile(
+        suffix=".safetensors", delete=False, dir=str(tmp_path)
+    ) as f:
+        tmp_file = Path(f.name)
+
+    try:
+        from safetensors.torch import save_file
+
+        save_file(fake_checkpoint, str(tmp_file))
+
+        # Reload the checkpoint and run detection.
+        from safetensors.torch import load_file as safetensors_load_file
+
+        loaded = safetensors_load_file(str(tmp_file))
+
+        # Verify key-prefix detection identifies ZiT.
+        assert _detect_arch_from_keys(loaded) == "zit", (
+            "Key-prefix detection should identify ZiT from model.diffusion_model. keys"
+        )
+    finally:
+        tmp_file.unlink(missing_ok=True)

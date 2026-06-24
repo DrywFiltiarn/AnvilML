@@ -602,23 +602,66 @@ class LoadClip(BaseNode):
         )
 
 
+def _detect_arch_from_keys(checkpoint: dict[str, Any]) -> str | None:
+    """Detect architecture from raw checkpoint key prefixes.
+
+    Inspects the keys in a raw state dict for architecture-specific
+    patterns (the ComfyUI approach). Returns the first matching
+    architecture name, or ``None`` if no known pattern is found.
+
+    Currently supported:
+
+    * ``"zit"`` — keys starting with ``model.diffusion_model.``
+      (Z-Image Turbo FP8 checkpoints).
+
+    Args:
+        checkpoint: Raw state dict from a ``.safetensors`` file,
+            with keys in the original ComfyUI/export format
+            (e.g. ``"model.diffusion_model.layers.0.attention.qkv.weight"``).
+
+    Returns:
+        The detected architecture string (e.g. ``"zit"``), or ``None``
+        if no known key pattern is present.
+
+    .. versionadded:: 0.1.0
+    """
+    # Scan keys for architecture-specific prefixes.
+    # The order matters: more specific patterns first, general ones later.
+    # Currently only ZiT has a dedicated prefix; future architectures
+    # (Flux, etc.) add their own patterns here.
+    #
+    # ZiT checkpoints use "model.diffusion_model." as the top-level
+    # prefix for all transformer weights. This is the canonical
+    # ComfyUI detection signal for Z-Image Turbo models.
+    has_diffusion_model_prefix = any(
+        key.startswith("model.diffusion_model.") for key in checkpoint
+    )
+
+    if has_diffusion_model_prefix:
+        return "zit"
+
+    # No known architecture pattern found.
+    return None
+
+
 def _load_model_from_safetensors(
     model_id: str, arch: str, device: str = "cpu"
 ) -> RealModel:
     """Load a diffusion transformer from a single safetensors file.
 
     This is the active loading path for ``LoadModel`` in real mode.
-    It reads the safetensors metadata to detect the architecture,
-    normalises the arch string from a path to a bare name, then
-    dispatches to the correct arch module's ``load_transformer()``
-    function, and moves the result to the target *device*.
+    It inspects raw checkpoint key prefixes for architecture detection
+    (primary), falls back to safetensors metadata (secondary), then
+    to the path-derived *arch* parameter (tertiary), normalises the
+    arch string from a path to a bare name, and dispatches to the
+    correct arch module's ``load_transformer()`` function before
+    moving the result to the target *device*.
 
     Args:
         model_id: Path to the safetensors file or directory
             containing the model weights.
         arch: Architecture identifier (e.g. ``"zit"``). Used as a
-            fallback when the safetensors metadata does not contain
-            an ``arch`` key.
+            fallback when both key-prefix and metadata detection fail.
         device: Target device string for tensor placement
             (e.g. ``"cuda:0"``, ``"cpu"``). Defaults to ``"cpu"``
             for backward compatibility with callers that do not
@@ -632,23 +675,38 @@ def _load_model_from_safetensors(
         ValueError: If the safetensors file is malformed or the
             detected architecture has no matching arch module.
     """
-    # Lazy imports — these packages are not available in mock mode
-    # (no torch installed), so importing them here keeps the worker
-    # importable when ANVILML_WORKER_MOCK=1.
+    # Load the safetensors file for both metadata and key inspection.
+    # We need the raw state dict keys for architecture detection
+    # (key-prefix pattern matching, the ComfyUI approach) and the
+    # metadata for backward-compatible checkpoint detection.
+    # safetensors.load_file() returns the full state dict;
+    # safe_open().metadata gives us the embedded metadata dict.
+    from safetensors.torch import load_file as safetensors_load_file
     from safetensors.torch import safe_open
 
-    # Open the safetensors file to read metadata before loading.
-    # framework="pt" is used because safetensors supports multiple
-    # backends (pt, np, tf, jax); "pt" selects the PyTorch reader
-    # which is what diffusers expects for model loading.
+    raw_checkpoint = safetensors_load_file(model_id)
+
+    # Primary detection: inspect raw checkpoint key prefixes.
+    # This is the ComfyUI pattern — check for architecture-specific
+    # key prefixes (e.g. "model.diffusion_model." for ZiT) before
+    # any key stripping. This works for checkpoints that don't carry
+    # export-tool metadata, which is the scaling case this task fixes.
+    detected_arch = _detect_arch_from_keys(raw_checkpoint)
+
+    # Open for metadata as fallback.
     with safe_open(model_id, framework="pt") as st:
-        # Read architecture from safetensors file metadata.
-        # The metadata dict is populated by the safetensors writer;
-        # if absent, fall back to the arch argument (which defaults
-        # to model_id in the caller) because not all model exports
-        # embed arch metadata.
-        metadata = st.metadata
-        detected_arch = (metadata.get("arch") if metadata else None) or arch
+        # Fallback 1: if key-prefix detection found nothing, try metadata.
+        # Some checkpoints carry an "arch" key in their safetensors metadata
+        # (written by the export tool). This is a reliable signal when present.
+        if detected_arch is None:
+            metadata = st.metadata
+            detected_arch = (metadata.get("arch") if metadata else None)
+
+        # Fallback 2: if both failed, use the arch parameter (path-derived).
+        # This handles the common case where model_id is a directory path
+        # like "/models/zit-fp8/unet" — we take the last component.
+        if detected_arch is None:
+            detected_arch = arch
 
     # If the arch string still looks like a path (contains "/" or
     # "\\"), extract the directory name as the architecture hint.

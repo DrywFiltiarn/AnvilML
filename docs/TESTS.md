@@ -2899,6 +2899,15 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Expected output:** The `device` parameter exists with default `"cpu"`.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_loadmodel_safetensors_accepts_device_param -v` exits 0.
 
+## test_loadmodel_key_prefix_detects_zit (worker.nodes.loader)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** `_detect_arch_from_keys()` is the key-prefix-based architecture detection helper introduced in P904-B3. It inspects raw checkpoint keys for architecture-specific prefixes (currently `model.diffusion_model.` → `"zit"`). This test verifies that detection works on a real safetensors file with ZiT-like keys and no metadata. `torch` and `safetensors` are installed (real mode) so `pytest.importorskip` succeeds; the test is skipped in the CI mock-mode venv.
+**Tests:** Creates a fake safetensors file with ZiT-like keys (`model.diffusion_model.*`), loads it via `safetensors_load_file`, passes the raw state dict to `_detect_arch_from_keys`, and asserts the returned architecture is `"zit"`.
+**Inputs:** Fake safetensors file with ZiT-like keys, no metadata.
+**Expected output:** `_detect_arch_from_keys(loaded_checkpoint) == "zit"`.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_loadmodel_key_prefix_detects_zit -v` exits 0 (skipped in mock-mode venv without torch).
+
 ## test_cliptextencode_registered_in_registry (worker.nodes.encoder)
 
 **File:** `worker/tests/test_nodes_encoder.py`
