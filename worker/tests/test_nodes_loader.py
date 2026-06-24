@@ -448,8 +448,8 @@ def test_loadclip_metadata_attributes() -> None:
     assert output_spec.optional is False
 
 
-def test_loadmodel_hf_directory_accepts_device_param() -> None:
-    """Verify ``_load_model_from_hf_directory`` accepts a ``device`` parameter.
+def test_loadmodel_safetensors_accepts_device_param() -> None:
+    """Verify ``_load_model_from_safetensors`` accepts a ``device`` parameter.
 
     This test confirms the function signature includes a third positional
     ``device`` argument (default ``"cpu"``) so that downstream callers
@@ -478,13 +478,13 @@ def test_loadmodel_hf_directory_accepts_device_param() -> None:
     import worker.nodes.loader
 
     importlib.reload(worker.nodes.loader)
-    from worker.nodes.loader import _load_model_from_hf_directory
+    from worker.nodes.loader import _load_model_from_safetensors
 
-    sig = inspect.signature(_load_model_from_hf_directory)
+    sig = inspect.signature(_load_model_from_safetensors)
     params = sig.parameters
 
     assert "device" in params, (
-        "_load_model_from_hf_directory must accept a 'device' parameter "
+        "_load_model_from_safetensors must accept a 'device' parameter "
         "for GPU placement"
     )
     assert params["device"].default == "cpu", (

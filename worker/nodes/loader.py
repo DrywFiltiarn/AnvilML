@@ -30,6 +30,7 @@ import os
 from typing import Any
 
 from worker.nodes.arch import clip as arch_clip
+from worker.nodes.arch import diffusion as arch_diffusion
 from worker.nodes.base import BaseNode, NodeContext, SlotSpec, register
 
 __all__ = [
@@ -423,8 +424,9 @@ class LoadModel(BaseNode):
             return {"model": MockModel(arch="zit")}
 
         # Real mode: load actual safetensors weights via single-file
-        # loading. The _load_model_from_hf_directory helper handles
-        # arch detection and the actual diffusers loading.
+        # loading. The _load_model_from_safetensors helper handles
+        # arch detection and dispatches to the correct arch module
+        # for the actual diffusers loading.
         # Note: self.ctx.pipeline_cache is typed as dict[str, Any] in
         # NodeContext but a PipelineCache instance at runtime
         # (retrofitted by P903-A2), so .get_or_load() is available.
@@ -434,7 +436,7 @@ class LoadModel(BaseNode):
         result = self.ctx.pipeline_cache.get_or_load(
             model_id,
             "fp8",
-            lambda: _load_model_from_hf_directory(model_id, model_id, self.ctx.device),
+            lambda: _load_model_from_safetensors(model_id, model_id, self.ctx.device),
         )
         return {"model": result}
 
@@ -499,47 +501,16 @@ class LoadVae(BaseNode):
             # tests fast and avoids requiring GPU hardware or torch.
             return {"vae": MockVae()}
 
-        # Real mode: load actual VAE weights via diffusers.
-        # Lazy imports — these packages are not available in mock mode
-        # (no torch installed), so importing them here keeps the worker
-        # importable when ANVILML_WORKER_MOCK=1.
-        from diffusers import AutoencoderKL
-        import torch
-
-        # Capture self.ctx.device for use in the loader_fn closure below.
-        # Without this, the VAE would be loaded on CPU and never moved
-        # to the worker's assigned GPU device.
-        device = self.ctx.device
-
-        # Define the loader closure that constructs the AutoencoderKL.
-        # This is passed to pipeline_cache.get_or_load() so the actual
-        # model loading only happens on cache miss. The closure captures
-        # model_id and torch_dtype to avoid redundant resolution.
-        # from_single_file() infers the VAE architecture from checkpoint
-        # tensor keys automatically (AutoencoderKL is registered in
-        # SINGLE_FILE_LOADABLE_CLASSES), so no config.json or subfolder
-        # argument is needed — it works directly on a standalone
-        # .safetensors file.
-        def loader_fn() -> AutoencoderKL:
-            vae = AutoencoderKL.from_single_file(
-                model_id,
-                torch_dtype=torch.bfloat16,
-            )
-            # Move the VAE to the target device.
-            # .to() may return a new object reference depending on the
-            # diffusers version, so we always assign the return value
-            # rather than assuming in-place mutation.
-            return vae.to(device)
-
-        # Get the VAE from cache or load it via loader_fn.
-        # The cache key uses "bf16" dtype string — bfloat16 is the
-        # native half-precision format for modern GPUs (A100/H100)
-        # and avoids the overflow issues of fp16 during training.
+        # Real mode: load actual VAE weights via the arch dispatch system.
+        # The _load_vae_from_safetensors wrapper dispatches to the correct
+        # arch module's load_vae() function (e.g. zit.py) which handles
+        # the diffusers loading internally. The arch parameter defaults to
+        # "zit" since that is the only architecture supported right now.
         # Note: self.ctx.pipeline_cache is typed as dict[str, Any] in
         # NodeContext but a PipelineCache instance at runtime
         # (retrofitted by P903-A2), so .get_or_load() is available.
         result = self.ctx.pipeline_cache.get_or_load(
-            model_id, "bf16", loader_fn
+            model_id, "bf16", lambda: _load_vae_from_safetensors(model_id, "zit")
         )
         return {"vae": result}
 
@@ -615,34 +586,17 @@ class LoadClip(BaseNode):
             # and avoids requiring GPU hardware or torch.
             return {"clip": MockClip(clip_type=clip_type)}
 
-        # Real mode: lazy imports — these packages are not available
-        # in mock mode (no torch installed), so importing them here
-        # keeps the worker importable when ANVILML_WORKER_MOCK=1.
-        import torch
-
-        # Dispatch to the correct architecture module via the clip
-        # registry. The arch_clip.get_module() function iterates over
-        # all loaded arch modules and returns the one whose can_handle()
-        # matches the clip_type string. This mirrors the Sampler node's
-        # arch.get_module(model) pattern for diffusion dispatch.
-        module = arch_clip.get_module(clip_type)
-        if module is None:
-            # No arch module claims this clip_type — raise a clear error
-            # so the operator knows which values are valid.
-            raise ValueError(f"unsupported clip_type: {clip_type!r}")
-        # Delegate to the matched module's load() function with the
-        # bfloat16 dtype and the worker's assigned device. This is the
-        # standard precision for text encoders in diffusion pipelines.
-        # Passing device=self.ctx.device ensures the text encoder is
-        # placed on the correct GPU/CPU instead of silently running
-        # on CPU. The module's load() handles mock mode internally,
-        # returning a RealClip sentinel when ANVILML_WORKER_MOCK=1.
-        return module.load(
-            model_id, torch_dtype=torch.bfloat16, device=self.ctx.device
+        # Real mode: dispatch to the correct architecture module via the
+        # clip registry, wrapped by _load_clip_from_safetensors.
+        # The wrapper handles the arch_clip.get_module() lookup and
+        # module.load() call internally, passing self.ctx.device
+        # explicitly since the wrapper is a module-level function.
+        return _load_clip_from_safetensors(
+            model_id, clip_type, self.ctx.device
         )
 
 
-def _load_model_from_hf_directory(
+def _load_model_from_safetensors(
     model_id: str, arch: str, device: str = "cpu"
 ) -> RealModel:
     """Load a diffusion transformer from a single safetensors file.
@@ -650,9 +604,8 @@ def _load_model_from_hf_directory(
     This is the active loading path for ``LoadModel`` in real mode.
     It reads the safetensors metadata to detect the architecture,
     normalises the arch string from a path to a bare name, then
-    loads the ``ZImageTransformer2DModel`` via
-    ``from_single_file()`` with ``torch.float16`` precision, and
-    moves the result to the target *device*.
+    dispatches to the correct arch module's ``load_transformer()``
+    function, and moves the result to the target *device*.
 
     Args:
         model_id: Path to the safetensors file or directory
@@ -670,14 +623,13 @@ def _load_model_from_hf_directory(
 
     Raises:
         OSError: If the model file or directory does not exist.
-        ValueError: If the safetensors file is malformed.
+        ValueError: If the safetensors file is malformed or the
+            detected architecture has no matching arch module.
     """
     # Lazy imports — these packages are not available in mock mode
     # (no torch installed), so importing them here keeps the worker
     # importable when ANVILML_WORKER_MOCK=1.
     from safetensors.torch import safe_open
-    from diffusers import ZImageTransformer2DModel
-    import torch
 
     # Open the safetensors file to read metadata before loading.
     # framework="pt" is used because safetensors supports multiple
@@ -701,18 +653,23 @@ def _load_model_from_hf_directory(
     if "/" in detected_arch or "\\" in detected_arch:
         detected_arch = detected_arch.split("/")[-1].split("\\")[-1]
 
-    # Load the transformer from a single safetensors file using
-    # ``from_single_file()``. This method loads weights directly
-    # from the file without requiring a ``config.json`` or a
-    # directory structure — it is the correct path for models
-    # stored as standalone ``.safetensors`` files.
-    # ``torch_dtype=torch.float16`` is used because FP8 models
-    # load as FP16; the pipeline keeps the transformer at FP8
-    # via InferenceCaps.
-    transformer = ZImageTransformer2DModel.from_single_file(
-        model_id,
-        torch_dtype=torch.float16,
-    )
+    # Dispatch to the correct arch module's load_transformer() function.
+    # get_module_by_name constructs a shim object with arch=detected_arch
+    # and delegates to get_module() which iterates over loaded arch
+    # modules' can_handle() functions. Only one arch module (zit) is
+    # registered at this time.
+    module = arch_diffusion.get_module_by_name(detected_arch)
+    if module is None:
+        # No arch module claims this architecture — raise a clear error
+        # so the operator knows which architectures are supported.
+        raise ValueError(f"unsupported architecture: {detected_arch!r}")
+
+    # Load the transformer through the arch module's load_transformer()
+    # function. This handles all diffusers loading internally, including
+    # the correct torch_dtype and key remapping. The arch module's
+    # load_transformer() performs zero network calls — all weights are
+    # loaded from the local .safetensors file.
+    transformer = module.load_transformer(model_id)
 
     # Move the transformer to the target device.
     # .to() may return a new object reference depending on the
@@ -721,4 +678,96 @@ def _load_model_from_hf_directory(
     transformer = transformer.to(device)
 
     return RealModel(transformer, arch=detected_arch)
+
+
+def _load_vae_from_safetensors(model_id: str, arch: str, device: str) -> Any:
+    """Load a VAE from a single safetensors file via the arch dispatch system.
+
+    Dispatches to the correct arch module's ``load_vae()`` function
+    (e.g. ``zit.py``), which handles the diffusers loading internally.
+    The result is then moved to the target device.
+
+    Only ZiT-compatible VAE checkpoints are supported — the arch
+    module's ``load_vae()`` constructs an ``AutoencoderKL`` with
+    ZiT-specific ``block_out_channels`` config.
+
+    Args:
+        model_id: Path to the safetensors file containing VAE weights.
+        arch: Architecture identifier for dispatch (e.g. ``"zit"``).
+        device: Target device string for tensor placement
+            (e.g. ``"cuda:0"``, ``"cpu"``).
+
+    Returns:
+        A loaded VAE model instance on the target device.
+
+    Raises:
+        OSError: If the model file or directory does not exist.
+        ValueError: If the architecture has no matching arch module.
+    """
+    # Dispatch to the correct arch module's load_vae() function.
+    # get_module_by_name constructs a shim object with arch=arch
+    # and delegates to get_module() which iterates over loaded arch
+    # modules' can_handle() functions.
+    module = arch_diffusion.get_module_by_name(arch)
+    if module is None:
+        # No arch module claims this architecture — raise a clear error.
+        raise ValueError(f"unsupported architecture: {arch!r}")
+
+    # Load the VAE through the arch module's load_vae() function.
+    # This handles all diffusers loading internally, including the
+    # correct checkpoint remapping. The arch module's load_vae()
+    # performs zero network calls — all weights are loaded locally.
+    vae = module.load_vae(model_id)
+
+    # Move the VAE to the target device.
+    # .to() may return a new object reference depending on the
+    # diffusers version, so we always assign the return value
+    # rather than assuming in-place mutation.
+    return vae.to(device)
+
+
+def _load_clip_from_safetensors(
+    model_id: str, clip_type: str, device: str
+) -> Any:
+    """Load a text encoder (CLIP/T5/Qwen3) from a safetensors file.
+
+    Dispatches to the correct architecture module via the clip
+    registry, then delegates to the matched module's ``load()``
+    function with ``torch.bfloat16`` precision and the target device.
+
+    Args:
+        model_id: Path to the safetensors file containing the
+            text encoder weights.
+        clip_type: The tokeniser type identifier (e.g. ``"qwen3"``,
+            ``"clip_l"``, ``"t5"``).
+        device: Target device string for tensor placement
+            (e.g. ``"cuda:0"``, ``"cpu"``).
+
+    Returns:
+        A loaded text-encoder object (e.g. ``RealClip``).
+
+    Raises:
+        ValueError: If no arch module claims the specified clip_type.
+    """
+    # Dispatch to the correct architecture module via the clip
+    # registry. The arch_clip.get_module() function iterates over
+    # all loaded arch modules and returns the one whose can_handle()
+    # matches the clip_type string. This mirrors the Sampler node's
+    # arch.get_module(model) pattern for diffusion dispatch.
+    module = arch_clip.get_module(clip_type)
+    if module is None:
+        # No arch module claims this clip_type — raise a clear error
+        # so the operator knows which values are valid.
+        raise ValueError(f"unsupported clip_type: {clip_type!r}")
+
+    # Delegate to the matched module's load() function with the
+    # bfloat16 dtype and the target device. This is the standard
+    # precision for text encoders in diffusion pipelines. The
+    # module's load() handles mock mode internally, returning a
+    # RealClip sentinel when ANVILML_WORKER_MOCK=1.
+    import torch
+
+    return module.load(
+        model_id, torch_dtype=torch.bfloat16, device=device
+    )
 

@@ -20,7 +20,7 @@ import pkgutil
 from types import ModuleType
 from typing import Any
 
-__all__ = ["can_handle", "get_module"]
+__all__ = ["can_handle", "get_module", "get_module_by_name"]
 
 # Module-level flag for idempotency — ensures _ensure_imported()
 # runs exactly once even if the module is re-imported.
@@ -124,6 +124,31 @@ def get_module(model_obj: Any) -> ModuleType | None:
                 continue
 
     return None
+
+
+def get_module_by_name(arch: str) -> ModuleType | None:
+    """Return the first loaded arch module whose ``can_handle()`` matches *arch*.
+
+    Constructs a shim object carrying ``arch = arch`` and passes it to
+    ``get_module()``.  This lets callers dispatch by a bare architecture
+    string (e.g. ``"zit"``) instead of needing a full model descriptor
+    object.
+
+    Args:
+        arch: The architecture identifier string (e.g. ``"zit"``).
+
+    Returns:
+        The matching architecture module, or ``None`` if no loaded arch
+        module's ``can_handle()`` returns ``True`` for the shim object.
+    """
+    # Build a minimal shim object that only carries the arch string.
+    # The can_handle() dispatcher inspects model_obj.arch; this shim
+    # provides exactly that attribute so get_module() can iterate over
+    # loaded arch modules and find the one whose handler matches.
+    class _Shim:
+        arch: str = arch
+
+    return get_module(_Shim())
 
 
 def can_handle(model_obj: Any) -> bool:

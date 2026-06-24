@@ -2890,6 +2890,15 @@ Process-global `std::env` is non-atomic; concurrent threads can observe `set_var
 **Expected output:** `NODE_TYPE="LoadClip"`, `CATEGORY="Loaders"`, `DISPLAY_NAME="Load CLIP"`, `DESCRIPTION` is a non-empty string, `INPUT_SLOTS` has two `SlotSpec` entries, `OUTPUT_SLOTS` has one `SlotSpec("clip", "CLIP")`.
 **Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_loadclip_metadata_attributes -v` exits 0.
 
+## test_loadmodel_safetensors_accepts_device_param (worker.nodes.loader)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** `_load_model_from_safetensors` is the renamed loader helper that dispatches to the arch system. This test verifies the function signature after the rename — it still accepts a `device` parameter with default `"cpu"`. `torch` is installed (real mode) so `pytest.importorskip` succeeds.
+**Tests:** Imports `_load_model_from_safetensors`, inspects its signature via `inspect.signature`, and asserts that `"device"` is a parameter with default `"cpu"`.
+**Inputs:** None (signature inspection only).
+**Expected output:** The `device` parameter exists with default `"cpu"`.
+**Acceptance command:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_loadmodel_safetensors_accepts_device_param -v` exits 0.
+
 ## test_cliptextencode_registered_in_registry (worker.nodes.encoder)
 
 **File:** `worker/tests/test_nodes_encoder.py`
