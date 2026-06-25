@@ -747,6 +747,7 @@ def load_transformer(model_id: str) -> Any:
 
     # Real mode: lazy-import all heavy dependencies inside the
     # real-mode branch to preserve mock-mode import isolation.
+    import torch
     from diffusers import ZImageTransformer2DModel
     from safetensors.torch import load_file as safetensors_load_file
 
@@ -764,31 +765,83 @@ def load_transformer(model_id: str) -> Any:
 
     # Construct the model with explicitly-inferred parameters.
     # Hardcoded scalar constants that are never stored as weights.
-    model = ZImageTransformer2DModel(
-        dim=config["dim"],
-        in_channels=config["in_channels"],
-        n_layers=config["n_layers"],
-        n_refiner_layers=config["n_refiner_layers"],
-        n_heads=config["n_heads"],
-        n_kv_heads=config["n_kv_heads"],
-        cap_feat_dim=config["cap_feat_dim"],
-        all_patch_size=config["all_patch_size"],
-        all_f_patch_size=config["all_f_patch_size"],
-        norm_eps=1e-5,
-        rope_theta=256.0,
-        t_scale=1000.0,
-        axes_dims=[32, 48, 48],
-        axes_lens=[1024, 512, 512],
-        qk_norm=True,
-    )
+    #
+    # axes_dims must sum to exactly head_dim (ZImageTransformer2DModel's
+    # own __init__ asserts this) — the real model's registered default
+    # [32, 48, 48] only sums to 128, which only matches a real-scale
+    # checkpoint's head_dim by coincidence. For any other head_dim (every
+    # tiny test fixture), the unscaled real-model default raises
+    # AssertionError on construction. Scale proportionally to the real
+    # model's own ratio (32:48:48 == 0.25:0.375:0.375) so the sum always
+    # matches the inferred head_dim. This is a best-effort heuristic, not
+    # a verified derivation — the *ratio* between the three axes may
+    # encode something architecturally meaningful (e.g. separate
+    # temporal/height/width RoPE allocations) that proportional scaling
+    # does not necessarily preserve correctly; this has not been checked
+    # against real multi-axis-RoPE behavior at inference time, only
+    # confirmed to make construction succeed instead of crash. Revisit
+    # if/when this becomes a verified, not heuristic, derivation.
+    # axes_lens is left untouched — it governs maximum sequence length
+    # per axis, not head dimension, so it is not coupled to head_dim and
+    # the real model's hardcoded values remain appropriate regardless.
+    _real_axes_dims = (32, 48, 48)
+    _real_head_dim = sum(_real_axes_dims)
+    axes_dims = [
+        round(d * config["head_dim"] / _real_head_dim) for d in _real_axes_dims
+    ]
+    # Rounding can leave the sum off by one; correct the last entry so
+    # the construction-time assertion (sum(axes_dims) == head_dim) holds
+    # exactly rather than failing on an off-by-one from float rounding.
+    axes_dims[-1] += config["head_dim"] - sum(axes_dims)
+
+    # Memory-safe construction: build on torch.device("meta") with the
+    # default dtype temporarily set to bfloat16, so to_empty() materializes
+    # real storage directly at bf16 — never at fp32 first. The real ZiT
+    # checkpoint is FP8 (e4m3) on disk; CPU PyTorch does not support FP8
+    # compute (confirmed: nn.Linear at float8_e4m3fn raises
+    # NotImplementedError on this platform), so the model itself must be
+    # bf16, with the FP8-stored checkpoint values cast on load — this
+    # preserves the already-quantized values bit-for-bit (FP8 -> bf16 is
+    # a widening cast, not a re-quantization) while making the weights
+    # usable for real CPU compute.
+    original_default_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.bfloat16)
+    try:
+        with torch.device("meta"):
+            model = ZImageTransformer2DModel(
+                dim=config["dim"],
+                in_channels=config["in_channels"],
+                n_layers=config["n_layers"],
+                n_refiner_layers=config["n_refiner_layers"],
+                n_heads=config["n_heads"],
+                n_kv_heads=config["n_kv_heads"],
+                cap_feat_dim=config["cap_feat_dim"],
+                all_patch_size=config["all_patch_size"],
+                all_f_patch_size=config["all_f_patch_size"],
+                norm_eps=1e-5,
+                rope_theta=256.0,
+                t_scale=1000.0,
+                axes_dims=axes_dims,
+                axes_lens=[1024, 512, 512],
+                qk_norm=True,
+            )
+    finally:
+        torch.set_default_dtype(original_default_dtype)
+    model = model.to_empty(device="cpu")
 
     # Remap keys from the raw ComfyUI format to the diffusers convention.
     # This handles prefix renaming, norm_final.weight removal, and QKV
     # defusion — the same transformations that the diffusers source performs.
     remapped = _remap_z_image_keys(checkpoint)
 
-    # Load the remapped state dict into the model.
-    model.load_state_dict(remapped)
+    # Cast every tensor to bf16 before loading. assign=True bypasses
+    # dtype coercion (it adopts the loaded tensor's dtype as-is rather
+    # than copying into the model's existing dtype), so the cast must
+    # happen here, not after load_state_dict().
+    remapped_bf16 = {k: v.to(torch.bfloat16) for k, v in remapped.items()}
+
+    # Load the remapped, bf16-cast state dict into the model.
+    model.load_state_dict(remapped_bf16, assign=True)
 
     return model
 

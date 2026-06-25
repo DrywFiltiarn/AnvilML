@@ -99,6 +99,7 @@ def load(
     # importable when ANVILML_WORKER_MOCK=1.
     from pathlib import Path
 
+    import torch
     from safetensors.torch import load_file as safetensors_load_file
     from transformers import Qwen2Tokenizer, Qwen3Config, Qwen3ForCausalLM
     from worker.nodes.loader import RealClip
@@ -136,8 +137,30 @@ def load(
     # safetensors file. Qwen3ForCausalLM is used as the text
     # encoder — the causal LM head provides contextual embeddings
     # needed for CLIP-like text encoding.
-    model = Qwen3ForCausalLM(Qwen3Config(**config_values))
-    model.load_state_dict(safetensors_load_file(model_id))
+    #
+    # Memory-safe construction: build the model on torch.device("meta")
+    # (zero real memory, skeleton only) with the default dtype temporarily
+    # set to bfloat16, so to_empty() materializes real storage directly at
+    # bf16 — never at fp32 first. Constructing this ~4B-parameter model
+    # directly (no meta) or casting fp32 -> bf16 after the fact both
+    # transiently require far more memory than the final bf16 model needs
+    # (~15GB fp32, or both sizes at once during a post-hoc cast) — this
+    # has been confirmed to OOM a memory-constrained machine. assign=True
+    # bypasses dtype coercion (it adopts the loaded tensor's dtype as-is),
+    # so the checkpoint's tensors must be cast to bf16 explicitly before
+    # the call, not after.
+    original_default_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.bfloat16)
+    try:
+        with torch.device("meta"):
+            model = Qwen3ForCausalLM(Qwen3Config(**config_values))
+    finally:
+        torch.set_default_dtype(original_default_dtype)
+    model = model.to_empty(device="cpu")
+
+    checkpoint = safetensors_load_file(model_id)
+    checkpoint_bf16 = {k: v.to(torch.bfloat16) for k, v in checkpoint.items()}
+    model.load_state_dict(checkpoint_bf16, assign=True)
 
     # Move the model to the target device.
     # .to() returns a new reference for some module types, so we

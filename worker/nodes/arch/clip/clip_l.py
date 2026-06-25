@@ -99,6 +99,7 @@ def load(
     # importable when ANVILML_WORKER_MOCK=1.
     from pathlib import Path
 
+    import torch
     from safetensors.torch import load_file as safetensors_load_file
     from transformers import CLIPTokenizer, CLIPTextConfig, CLIPTextModelWithProjection
     from worker.nodes.loader import RealClip
@@ -132,8 +133,25 @@ def load(
     # Construct the model from config and load weights from the
     # safetensors file. CLIPTextModelWithProjection is the standard
     # CLIP text encoder with a projection head for cross-modal alignment.
-    model = CLIPTextModelWithProjection(CLIPTextConfig(**config_values))
-    model.load_state_dict(safetensors_load_file(model_id))
+    #
+    # Memory-safe construction: build on torch.device("meta") with the
+    # default dtype temporarily set to bfloat16, so to_empty() materializes
+    # real storage directly at bf16 — never at fp32 first. CLIP-L is small
+    # enough that this matters less than for Qwen3/T5, but the pattern is
+    # kept consistent across all three CLIP loaders. assign=True bypasses
+    # dtype coercion, so the checkpoint's tensors are cast to bf16 first.
+    original_default_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.bfloat16)
+    try:
+        with torch.device("meta"):
+            model = CLIPTextModelWithProjection(CLIPTextConfig(**config_values))
+    finally:
+        torch.set_default_dtype(original_default_dtype)
+    model = model.to_empty(device="cpu")
+
+    checkpoint = safetensors_load_file(model_id)
+    checkpoint_bf16 = {k: v.to(torch.bfloat16) for k, v in checkpoint.items()}
+    model.load_state_dict(checkpoint_bf16, assign=True)
 
     # Move the model to the target device.
     # .to() returns a new reference for some module types, so we
