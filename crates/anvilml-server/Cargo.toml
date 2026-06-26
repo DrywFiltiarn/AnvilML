@@ -1,0 +1,17 @@
+[package]
+name = "anvilml-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anvilml-worker = { path = "../anvilml-worker" }
+anvilml-registry = { path = "../anvilml-registry" }
+anvilml-artifacts = { path = "../anvilml-artifacts" }
+anvilml-core = { path = "../anvilml-core" }
+anvilml-ipc = { path = "../anvilml-ipc" }
+anvilml-hardware = { path = "../anvilml-hardware" }
+axum = "0.8.9"
+
+[features]
+mock-hardware = ["anvilml-hardware/mock-hardware"]

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["backend", "crates/anvilml-core", "crates/anvilml-hardware", "crates/anvilml-registry", "crates/anvilml-artifacts", "crates/anvilml-ipc", "crates/anvilml-worker"]
+members = ["backend", "crates/anvilml-core", "crates/anvilml-hardware", "crates/anvilml-registry", "crates/anvilml-artifacts", "crates/anvilml-ipc", "crates/anvilml-worker", "crates/anvilml-scheduler", "crates/anvilml-server"]
 
 [workspace.package]
 version = "0.1.0"
