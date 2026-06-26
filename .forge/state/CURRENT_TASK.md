@@ -1,0 +1,4 @@
+Task: P1-A1
+Step: IMPLEMENT
+Status: COMPLETE
+Updated: 2026-06-26T09:51:00+0200
