@@ -88,6 +88,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "anvilml-openapi"
+version = "0.1.0"
+dependencies = [
+ "anvilml-core",
+ "anvilml-server",
+]
+
+[[package]]
 name = "anvilml-registry"
 version = "0.1.0"
 dependencies = [
