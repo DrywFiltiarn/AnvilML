@@ -3,16 +3,17 @@
     "P1-A1",
     "P1-A2",
     "P1-A3",
-    "P1-B1"
+    "P1-B1",
+    "P1-B2"
   ],
-  "in_progress": "P1-B2",
+  "in_progress": "P1-B3",
   "plan_approved": true,
-  "current_plan": "1. **Create `crates/anvilml-hardware/` directory and `src/` subdirectory.**\n   - These directories do not exist yet; create them as empty containers before writing files.\n\n2. **Write `crates/anvilml-hardware/Cargo.toml`.**\n   - Package name: `anvilml-hardware`\n   - Version: `version.workspace = true` (inherits `0.1.0` from root)\n   - Edition: `edition.workspace = true` (inherits `2024`)\n   - Rust version: `rust-version.workspace = true` (inherits `1.96.0`)\n   - Dependencies: `[dependencies]` section with `anvilml-core = { path = \"../anvilml-core\" }` \u2014 path dependency matching the crate dependency graph in `ANVILML_DESIGN.md \u00a73.2`.\n   - Features: `[features]` section with `mock-hardware = []` \u2014 intentionally empty at this phase, exists purely so later crates can forward it without a forward reference.\n   - This follows the exact pattern established by `crates/anvilml-core/Cargo.toml` plus the dependency/feature additions.\n\n3. **Write `crates/anvilml-hardware/src/lib.rs`.**\n   - Single `//!` crate-level doc comment: `//! GPU/CPU detection. Never panics on missing driver. Always returns >=1 CPU device.`\n   - No `pub mod` declarations, no submodules, no implementation code, no tests.\n   - File will be ~2 lines, well under the 80-line hard cap (`ANVILML_DESIGN.md \u00a74.1` / `FORGE_AGENT_RULES.md \u00a713`).\n\n4. **Modify root `Cargo.toml`** to add `\"crates/anvilml-hardware\"` to the `members` array.\n   - Current members: `[\"backend\", \"crates/anvilml-core\"]`\n   - New members: `[\"backend\", \"crates/anvilml-core\", \"crates/anvilml-hardware\"]`\n   - Append to the existing array line; do not reformat the entire file.\n\n5. **Verify acceptance criteria locally.**\n   - Run `cargo build -p anvilml-hardware` \u2014 must exit 0.\n   - Run `cargo build -p anvilml-hardware --features mock-hardware` \u2014 must exit 0.\n   - Both commands must succeed; if either fails, diagnose and fix before proceeding.",
+  "current_plan": "1. **Create `crates/anvilml-registry/Cargo.toml`**: Write a `[package]` block with `name = \"anvilml-registry\"`, `version.workspace = true`, `edition.workspace = true`, `rust-version.workspace = true`. Add a `[dependencies]` section with `anvilml-core = { path = \"../anvilml-core\" }`. No `[features]` section (no feature flag needed at stub stage; `mock-hardware` is on `anvilml-hardware`, not here).\n\n2. **Create `crates/anvilml-registry/src/lib.rs`**: Write a single `//!` crate-level doc comment: `//! Model scanner + SQLite persistence. Never caches model file contents in memory.` No other content. Total: 1 line, well under 80-line cap.\n\n3. **Create `crates/anvilml-artifacts/Cargo.toml`**: Same structure as step 1 \u2014 `[package]` with `name = \"anvilml-artifacts\"`, workspace-inherited version/edition/rust-version, and `[dependencies]` with `anvilml-core = { path = \"../anvilml-core\" }`. No `[features]` section.\n\n4. **Create `crates/anvilml-artifacts/src/lib.rs`**: Write a single `//!` crate-level doc comment: `//! Content-addressed PNG artifact storage.` No other content. Total: 1 line, well under 80-line cap.\n\n5. **Update root `Cargo.toml`**: Append `\"crates/anvilml-registry\"` and `\"crates/anvilml-artifacts\"` to the existing `members` array. Current value: `[\"backend\", \"crates/anvilml-core\", \"crates/anvilml-hardware\"]`. New value: `[\"backend\", \"crates/anvilml-core\", \"crates/anvilml-hardware\", \"crates/anvilml-registry\", \"crates/anvilml-artifacts\"]`.\n\n6. **Verify build**: Run `cargo build -p anvilml-registry -p anvilml-artifacts` and confirm exit 0. This exercises the full dependency resolution and compilation of both new crates against `anvilml-core`.\n\nNo external API names, version numbers, or feature flags need MCP verification \u2014 both crates depend only on an existing path dependency with no external crates.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-26T12:15:49+0200",
-  "plan_approval_message_id": "1520009456790798338",
+  "last_updated": "2026-06-26T12:41:31+0200",
+  "plan_approval_message_id": "1520015392964083853",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1520009454937178263",
+  "plan_report_message_id": "1520015391022256208",
   "impl_report_message_id": null
 }
