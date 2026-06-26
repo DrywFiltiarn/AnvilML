@@ -241,3 +241,99 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** All 13 `AnvilError` variants.
 **Expected output:** Every `error` field passes the snake-case validation.
 **Acceptance:** `cargo test -p anvilml-core --test error_tests test_error_field_is_snake_case` exits 0.
+
+---
+
+## test_host_default (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive feature) providing `Serialize` and `Deserialize` derives for `ServerConfig`.
+**Tests:** `ServerConfig::default().host` equals `"127.0.0.1"`.
+**Mode:** both
+**Inputs:** `ServerConfig::default()` constructed with compiled-in defaults.
+**Expected output:** `host == "127.0.0.1"`.
+**Acceptance:** `cargo test -p anvilml-core --test config_tests test_host_default` exits 0.
+
+---
+
+## test_port_default (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive feature) providing `Serialize` and `Deserialize` derives for `ServerConfig`.
+**Tests:** `ServerConfig::default().port` equals `8488`.
+**Mode:** both
+**Inputs:** `ServerConfig::default()` constructed with compiled-in defaults.
+**Expected output:** `port == 8488`.
+**Acceptance:** `cargo test -p anvilml-core --test config_tests test_port_default` exits 0.
+
+---
+
+## test_db_path_default (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive feature) providing `Serialize` and `Deserialize` derives for `ServerConfig`.
+**Tests:** `ServerConfig::default().db_path` equals `PathBuf::from("./anvilml.db")`.
+**Mode:** both
+**Inputs:** `ServerConfig::default()` constructed with compiled-in defaults.
+**Expected output:** `db_path == PathBuf::from("./anvilml.db")`.
+**Acceptance:** `cargo test -p anvilml-core --test config_tests test_db_path_default` exits 0.
+
+---
+
+## test_artifact_dir_default (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive feature) providing `Serialize` and `Deserialize` derives for `ServerConfig`.
+**Tests:** `ServerConfig::default().artifact_dir` equals `PathBuf::from("./artifacts")`.
+**Mode:** both
+**Inputs:** `ServerConfig::default()` constructed with compiled-in defaults.
+**Expected output:** `artifact_dir == PathBuf::from("./artifacts")`.
+**Acceptance:** `cargo test -p anvilml-core --test config_tests test_artifact_dir_default` exits 0.
+
+---
+
+## test_venv_path_default (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive feature) providing `Serialize` and `Deserialize` derives for `ServerConfig`.
+**Tests:** `ServerConfig::default().venv_path` equals `PathBuf::from("./worker/.venv")`.
+**Mode:** both
+**Inputs:** `ServerConfig::default()` constructed with compiled-in defaults.
+**Expected output:** `venv_path == PathBuf::from("./worker/.venv")`.
+**Acceptance:** `cargo test -p anvilml-core --test config_tests test_venv_path_default` exits 0.
+
+---
+
+## test_model_scan_depth_default (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive feature) providing `Serialize` and `Deserialize` derives for `ServerConfig`.
+**Tests:** `ServerConfig::default().model_scan_depth` equals `2`.
+**Mode:** both
+**Inputs:** `ServerConfig::default()` constructed with compiled-in defaults.
+**Expected output:** `model_scan_depth == 2`.
+**Acceptance:** `cargo test -p anvilml-core --test config_tests test_model_scan_depth_default` exits 0.
+
+---
+
+## test_max_ipc_payload_mib_default (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive feature) providing `Serialize` and `Deserialize` derives for `ServerConfig`.
+**Tests:** `ServerConfig::default().max_ipc_payload_mib` equals `256`.
+**Mode:** both
+**Inputs:** `ServerConfig::default()` constructed with compiled-in defaults.
+**Expected output:** `max_ipc_payload_mib == 256`.
+**Acceptance:** `cargo test -p anvilml-core --test config_tests test_max_ipc_payload_mib_default` exits 0.
+
+---
+
+## test_num_threads_default (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive feature) providing `Serialize` and `Deserialize` derives for `ServerConfig`.
+**Tests:** `ServerConfig::default().num_threads` is `None` (auto = num_cpus).
+**Mode:** both
+**Inputs:** `ServerConfig::default()` constructed with compiled-in defaults.
+**Expected output:** `num_threads.is_none()` is true.
+**Acceptance:** `cargo test -p anvilml-core --test config_tests test_num_threads_default` exits 0.
