@@ -65,6 +65,13 @@ name = "anvilml-core"
 version = "0.1.0"
 
 [[package]]
+name = "anvilml-hardware"
+version = "0.1.0"
+dependencies = [
+ "anvilml-core",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
