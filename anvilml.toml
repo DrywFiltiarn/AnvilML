@@ -1,0 +1,14 @@
+# anvilml.toml — Canonical config reference for AnvilML.
+#
+# This file is the source of truth for the `config_reference` test
+# (added in a later phase once ServerConfig exists). The test asserts
+# that ServerConfig::default() serialises to exactly the same key set
+# as this file. Fields are added one-at-a-time alongside their
+# ServerConfig struct fields to prevent drift.
+#
+# Phase 1: only host and port exist. db_path, artifact_dir, and all
+# other fields are introduced by Phase 2+ tasks that add the matching
+# ServerConfig fields.
+
+host = "127.0.0.1"
+port = 8488
