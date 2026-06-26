@@ -24,3 +24,39 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace --features mock-hardware
+
+  worker-test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            mode: mock
+          - os: ubuntu-latest
+            mode: real
+          - os: windows-latest
+            mode: mock
+          - os: windows-latest
+            mode: real
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Run worker tests
+        run: |
+          echo "worker tests: no worker/ source yet (mode=${{ matrix.mode }})"
+
+  openapi-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Check openapi drift
+        run: echo "no openapi/config yet"
+
+  config-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Check config drift
+        run: echo "no openapi/config yet"
