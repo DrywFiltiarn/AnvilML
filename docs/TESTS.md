@@ -37,3 +37,15 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** No signal (timeout path only).
 **Expected output:** Timeout wins, handle aborted cleanly, test passes.
 **Acceptance:** `cargo test -p anvilml --test shutdown_tests` exits 0.
+
+---
+
+## test_health_returns_200 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/health_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled (`cargo test -p anvilml-server`).
+**Tests:** `GET /health` returns `200 OK` via in-process router call — constructs a `GET /health` request, sends it through `build_router()`, and asserts the response status is `StatusCode::OK`.
+**Mode:** both
+**Inputs:** `GET /health` with empty body.
+**Expected output:** `StatusCode::OK`.
+**Acceptance:** `cargo test -p anvilml-server --test health_tests` exits 0.

@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-server"
-version.workspace = true
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -12,6 +12,10 @@ anvilml-core = { path = "../anvilml-core" }
 anvilml-ipc = { path = "../anvilml-ipc" }
 anvilml-hardware = { path = "../anvilml-hardware" }
 axum = "0.8.9"
+
+[dev-dependencies]
+tokio = { version = "1.47.0", features = ["full"] }
+tower = "0.5"
 
 [features]
 mock-hardware = ["anvilml-hardware/mock-hardware"]

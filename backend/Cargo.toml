@@ -12,4 +12,6 @@ mock-hardware = ["anvilml-scheduler/mock-hardware"]
 anvilml-scheduler = { path = "../crates/anvilml-scheduler" }
 anvilml-server = { path = "../crates/anvilml-server" }
 clap = { version = "4.6.1", features = ["derive"] }
+axum = "0.8.9"
 tokio = { version = "1.47.0", features = ["full"] }
+tracing = "0.1"
