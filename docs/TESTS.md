@@ -337,3 +337,63 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `ServerConfig::default()` constructed with compiled-in defaults.
 **Expected output:** `num_threads.is_none()` is true.
 **Acceptance:** `cargo test -p anvilml-core --test config_tests test_num_threads_default` exits 0.
+
+---
+
+## test_model_dirs_default (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive feature) providing `Serialize` and `Deserialize` derives for `ServerConfig`.
+**Tests:** `ServerConfig::default().model_dirs` is an empty vec.
+**Mode:** both
+**Inputs:** `ServerConfig::default()` constructed with compiled-in defaults.
+**Expected output:** `model_dirs.is_empty()` is true.
+**Acceptance:** `cargo test -p anvilml-core --test config_tests test_model_dirs_default` exits 0.
+
+---
+
+## test_gpu_selection_default (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive feature) providing `Serialize` and `Deserialize` derives for `ServerConfig`.
+**Tests:** `ServerConfig::default().gpu_selection.default_device` equals `"auto"`.
+**Mode:** both
+**Inputs:** `ServerConfig::default()` constructed with compiled-in defaults.
+**Expected output:** `gpu_selection.default_device == "auto"`.
+**Acceptance:** `cargo test -p anvilml-core --test config_tests test_gpu_selection_default` exits 0.
+
+---
+
+## test_limits_default (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive feature) providing `Serialize` and `Deserialize` derives for `ServerConfig`.
+**Tests:** `ServerConfig::default().limits.max_queued_jobs` equals `100`.
+**Mode:** both
+**Inputs:** `ServerConfig::default()` constructed with compiled-in defaults.
+**Expected output:** `limits.max_queued_jobs == 100`.
+**Acceptance:** `cargo test -p anvilml-core --test config_tests test_limits_default` exits 0.
+
+---
+
+## test_rocm_default (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive feature) providing `Serialize` and `Deserialize` derives for `ServerConfig`.
+**Tests:** `ServerConfig::default().rocm` is `None`.
+**Mode:** both
+**Inputs:** `ServerConfig::default()` constructed with compiled-in defaults.
+**Expected output:** `rocm.is_none()` is true.
+**Acceptance:** `cargo test -p anvilml-core --test config_tests test_rocm_default` exits 0.
+
+---
+
+## test_hardware_override_default (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive feature) providing `Serialize` and `Deserialize` derives for `ServerConfig`.
+**Tests:** `ServerConfig::default().hardware_override` is `None`.
+**Mode:** both
+**Inputs:** `ServerConfig::default()` constructed with compiled-in defaults.
+**Expected output:** `hardware_override.is_none()` is true.
+**Acceptance:** `cargo test -p anvilml-core --test config_tests test_hardware_override_default` exits 0.

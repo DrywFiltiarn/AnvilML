@@ -60,3 +60,38 @@ fn test_num_threads_default() {
     let config = ServerConfig::default();
     assert!(config.num_threads.is_none());
 }
+
+/// `ServerConfig::default().model_dirs` is an empty vec.
+#[test]
+fn test_model_dirs_default() {
+    let config = ServerConfig::default();
+    assert!(config.model_dirs.is_empty());
+}
+
+/// `ServerConfig::default().gpu_selection.default_device` equals `"auto"`.
+#[test]
+fn test_gpu_selection_default() {
+    let config = ServerConfig::default();
+    assert_eq!(config.gpu_selection.default_device, "auto");
+}
+
+/// `ServerConfig::default().limits.max_queued_jobs` equals `100`.
+#[test]
+fn test_limits_default() {
+    let config = ServerConfig::default();
+    assert_eq!(config.limits.max_queued_jobs, 100);
+}
+
+/// `ServerConfig::default().rocm` is `None`.
+#[test]
+fn test_rocm_default() {
+    let config = ServerConfig::default();
+    assert!(config.rocm.is_none());
+}
+
+/// `ServerConfig::default().hardware_override` is `None`.
+#[test]
+fn test_hardware_override_default() {
+    let config = ServerConfig::default();
+    assert!(config.hardware_override.is_none());
+}
