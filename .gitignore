@@ -1,0 +1,29 @@
+# Rust build artifacts
+target/
+
+# SQLite database files
+*.db
+*.db-wal
+*.db-shm
+
+# Python virtual environments
+*.venv
+*venv
+worker/.venv
+worker/venv
+
+# Python caches
+__pycache__
+.pytest_cache
+
+# Model director
+models/
+
+# Generated artifacts
+artifacts/
+
+# Log files
+*.log
+
+# macOS metadata
+.DS_Store
