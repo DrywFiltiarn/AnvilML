@@ -10,16 +10,17 @@
     "P1-B5",
     "P1-B6",
     "P1-C1",
-    "P1-D1"
+    "P1-D1",
+    "P1-D2"
   ],
-  "in_progress": "P1-D2",
+  "in_progress": "P1-E1",
   "plan_approved": true,
-  "current_plan": "1. **Build the release binary.** Run `cargo build --release -p anvilml`. This compiles the full workspace with all feature flags forwarded through the dependency graph. The binary is produced at `target/release/anvilml`.\n\n2. **Launch the binary in the background.** Run `./target/release/anvilml &` to start the server on `127.0.0.1:8488` (the CLI defaults). The `main.rs` code binds the TCP listener, logs the address via `tracing::info!`, and enters the `tokio::select!` loop waiting for HTTP requests or a shutdown signal.\n\n3. **Wait for the server to be ready.** Run `sleep 1` to allow the server to bind the port and start accepting connections.\n\n4. **Send the health check request.** Run `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8488/health`. This sends an HTTP GET to the health endpoint and prints only the HTTP status code. The expected output is `200`.\n\n5. **Record the output.** Capture the literal `200` response. This is the Runnable Proof transcript for Phase 1.\n\n6. **Clean up.** Run `kill %1` to terminate the backgrounded server process.\n\nNo source files are created or modified. No new dependencies are introduced. No test changes are required \u2014 the existing in-process test (`health_tests.rs`) already covers the route logic; this task exercises the same code path through a real TCP connection and real HTTP request.",
+  "current_plan": "1. **Create the directory structure.** Ensure `.github/workflows/` exists. This is a new directory \u2014 no parent files need modification.\n\n2. **Write `.github/workflows/ci.yml`.** The file contains a single job `rust-test` with the following structure:\n   - `name: rust-test`\n   - `on: [push, pull_request]` \u2014 triggers on every push and PR to `main` and other branches.\n   - `jobs:` \u2192 `rust-test:` with:\n     - `runs-on: ${{ matrix.os }}`\n     - `strategy:` \u2192 `matrix:` \u2192 `os: [ubuntu-latest, windows-latest]`\n     - `steps:` (in exact order):\n       - **Step 1:** `actions/checkout@v4` \u2014 standard checkout.\n       - **Step 2:** `rust-actions/rustup@v1` with `default-toolchain: none` (or `dtolnay/rust-toolchain@master`) \u2014 this reads `rust-toolchain.toml` and installs the pinned toolchain (1.96.0) with rustfmt and clippy components. No explicit version pin is needed; the action respects the workspace's `rust-toolchain.toml`.\n       - **Step 3 (Linux-only):** A step with `if: matrix.os == 'ubuntu-latest'` running `run: cargo fmt --all -- --check`. This is placed before clippy as required by the project convention that `fmt --check` is Linux-only (ENVIRONMENT.md \u00a76 Step 11, CI \u00a718.3).\n       - **Step 4:** `run: cargo clippy --workspace --features mock-hardware -- -D warnings`. Runs on both OS entries. The `--features mock-hardware` flag enables `MockDetector` for all crates that depend on `anvilml-hardware`, ensuring CI builds without requiring real GPU hardware.\n       - **Step 5:** `run: cargo test --workspace --features mock-hardware`. Runs on both OS entries. Uses the same feature flag as clippy.\n\n3. **Rationale for action choice.** `actions/checkout@v4` is the current stable version. For Rust installation, `dtolnay/rust-toolchain@master` is preferred because it directly reads `rust-toolchain.toml` and is the most widely used action for this purpose. An alternative `rust-actions/rustup@v1` also works but requires slightly more configuration. Either is acceptable; the plan specifies `dtolnay/rust-toolchain@master` as it is the simplest approach for this use case.\n\n4. **No additional CI jobs.** This task creates only the `rust-test` job. The remaining jobs (`worker-test`, `openapi-drift`, `config-drift`) are placeholders for P1-E2, which completes the CI workflow file.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-26T15:36:49+0200",
-  "plan_approval_message_id": "1520059507319771268",
+  "last_updated": "2026-06-26T16:07:04+0200",
+  "plan_approval_message_id": "1520065925225775144",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1520059505130475521",
+  "plan_report_message_id": "1520065923224961078",
   "impl_report_message_id": null
 }

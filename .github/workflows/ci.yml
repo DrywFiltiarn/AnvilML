@@ -1,0 +1,26 @@
+name: rust-test
+
+on: [push, pull_request]
+
+jobs:
+  rust-test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+
+      - name: Check formatting (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --all -- --check
+
+      - name: Clippy check
+        run: cargo clippy --workspace --features mock-hardware -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --features mock-hardware
