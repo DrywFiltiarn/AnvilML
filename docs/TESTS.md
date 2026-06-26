@@ -397,3 +397,75 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `ServerConfig::default()` constructed with compiled-in defaults.
 **Expected output:** `hardware_override.is_none()` is true.
 **Acceptance:** `cargo test -p anvilml-core --test config_tests test_hardware_override_default` exits 0.
+
+---
+
+## test_load_missing_file_falls_back_to_defaults (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_load_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive feature) and `toml` dependencies providing `ServerConfig::default()` and `config_load::load()`.
+**Tests:** `load(Some(Path::new("/nonexistent.toml")))` returns `Ok(ServerConfig::default())` — every field matches the compiled-in default.
+**Mode:** both
+**Inputs:** `load(Some(Path::new("/nonexistent/path.toml")))` with a nonexistent file path.
+**Expected output:** `Ok(ServerConfig::default())` — all 13 fields match defaults exactly.
+**Acceptance:** `cargo test -p anvilml-core --test config_load_tests test_load_missing_file_falls_back_to_defaults` exits 0.
+
+---
+
+## test_load_partial_toml_overrides_only_specified_fields (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_load_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` and `toml` dependencies. A temporary TOML file is created with only `host` and `port` fields.
+**Tests:** A TOML file with two fields overrides only those two fields; all other fields (including nested structs) retain their default values.
+**Mode:** both
+**Inputs:** Temporary TOML with `host = "0.0.0.0"` and `port = 9999`.
+**Expected output:** `host == "0.0.0.0"`, `port == 9999`, all other fields == defaults.
+**Acceptance:** `cargo test -p anvilml-core --test config_load_tests test_load_partial_toml_overrides_only_specified_fields` exits 0.
+
+---
+
+## test_load_malformed_toml_returns_err (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_load_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` and `toml` dependencies. A temporary TOML file is created with invalid syntax (trailing comma).
+**Tests:** Malformed TOML returns `Err(AnvilError::Serde(_))` — the error variant correctly identifies a deserialization failure.
+**Mode:** both
+**Inputs:** Temporary TOML with trailing comma (`host = "127.0.0.1",`).
+**Expected output:** `Err(AnvilError::Serde(_))`.
+**Acceptance:** `cargo test -p anvilml-core --test config_load_tests test_load_malformed_toml_returns_err` exits 0.
+
+---
+
+## test_load_full_toml_roundtrips_all_fields (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_load_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` and `toml` dependencies. A temporary TOML file is created with every `ServerConfig` field set to a non-default value.
+**Tests:** A TOML file with all fields set produces a `ServerConfig` where every loaded field matches the TOML values exactly — proves the merge covers all fields including nested structs and optional sections.
+**Mode:** both
+**Inputs:** Temporary TOML with all fields at non-default values (host, port, db_path, artifact_dir, venv_path, model_scan_depth, max_ipc_payload_mib, num_threads, model_dirs array, gpu_selection, limits, rocm, hardware_override).
+**Expected output:** Every field matches the TOML values exactly.
+**Acceptance:** `cargo test -p anvilml-core --test config_load_tests test_load_full_toml_roundtrips_all_fields` exits 0.
+
+---
+
+## test_load_default_path_resolves_anvilml_toml (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_load_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` and `toml` dependencies. The checked-in `./anvilml.toml` at the repo root contains only `host` and `port` fields.
+**Tests:** `load(None)` resolves to the default `./anvilml.toml` path and loads the two present fields; all other fields retain defaults.
+**Mode:** both
+**Inputs:** `load(None)` — uses default `./anvilml.toml` relative to CWD.
+**Expected output:** `host == "127.0.0.1"`, `port == 8488`, all other fields == defaults.
+**Acceptance:** `cargo test -p anvilml-core --test config_load_tests test_load_default_path_resolves_anvilml_toml` exits 0.
+
+---
+
+## test_load_nested_struct_partial_override (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_load_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` and `toml` dependencies. A temporary TOML file is created with only a `[gpu_selection]` section.
+**Tests:** A TOML with only `[gpu_selection]` overrides only `gpu_selection.default_device`; all other nested structs retain their default values.
+**Mode:** both
+**Inputs:** Temporary TOML with `[gpu_selection]` section only (`default_device = "cpu"`).
+**Expected output:** `gpu_selection.default_device == "cpu"`, all other nested fields == defaults.
+**Acceptance:** `cargo test -p anvilml-core --test config_load_tests test_load_nested_struct_partial_override` exits 0.
