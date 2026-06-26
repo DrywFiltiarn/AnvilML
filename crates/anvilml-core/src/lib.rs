@@ -6,5 +6,6 @@ pub mod config_load;
 mod error;
 
 pub use config::ServerConfig;
+pub use config_load::CliOverrides;
 pub use config_load::load;
 pub use error::AnvilError;

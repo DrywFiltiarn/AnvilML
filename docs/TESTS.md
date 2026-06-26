@@ -469,3 +469,87 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Temporary TOML with `[gpu_selection]` section only (`default_device = "cpu"`).
 **Expected output:** `gpu_selection.default_device == "cpu"`, all other nested fields == defaults.
 **Acceptance:** `cargo test -p anvilml-core --test config_load_tests test_load_nested_struct_partial_override` exits 0.
+
+---
+
+## test_env_var_overrides_toml_value (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_load_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde`, `toml`, and `serial_test` dev-dependencies. A temporary TOML file is created with `host = "0.0.0.0"`, and `ANVILML_HOST` is set to `"10.0.0.1"`.
+**Tests:** The `ANVILML_HOST` environment variable overrides a TOML-set `host` value, proving env vars (layer 3) beat TOML (layer 2).
+**Mode:** both
+**Inputs:** Temporary TOML with `host = "0.0.0.0"`, env var `ANVILML_HOST = "10.0.0.1"`.
+**Expected output:** `config.host == "10.0.0.1"` (env var overrides TOML).
+**Acceptance:** `cargo test -p anvilml-core --test config_load_tests test_env_var_overrides_toml_value` exits 0.
+
+---
+
+## test_env_var_overrides_default_no_toml (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_load_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serial_test` dev-dependency. `ANVILML_PORT` is set to `"9999"`, and a nonexistent TOML path is passed.
+**Tests:** The `ANVILML_PORT` environment variable overrides the compiled-in default when no TOML file is present.
+**Mode:** both
+**Inputs:** Nonexistent TOML path, env var `ANVILML_PORT = "9999"`.
+**Expected output:** `config.port == 9999` (env var overrides default).
+**Acceptance:** `cargo test -p anvilml-core --test config_load_tests test_env_var_overrides_default_no_toml` exits 0.
+
+---
+
+## test_cli_override_beats_env_var (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_load_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serial_test` dev-dependency. `ANVILML_HOST` is set to `"10.0.0.1"`, and `CliOverrides { host: Some("127.0.0.2") }` is passed.
+**Tests:** CLI flag overrides beat environment variable overrides, proving CLI (layer 4) beats env vars (layer 3).
+**Mode:** both
+**Inputs:** Nonexistent TOML path, env var `ANVILML_HOST = "10.0.0.1"`, `CliOverrides { host: Some("127.0.0.2"), port: None }`.
+**Expected output:** `config.host == "127.0.0.2"` (CLI override beats env var).
+**Acceptance:** `cargo test -p anvilml-core --test config_load_tests test_cli_override_beats_env_var` exits 0.
+
+---
+
+## test_nested_env_var_gpu_selection (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_load_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serial_test` dev-dependency. `ANVILML_GPU_SELECTION__DEFAULT_DEVICE` is set to `"cuda"`.
+**Tests:** The `__` nested-field convention correctly parses `ANVILML_GPU_SELECTION__DEFAULT_DEVICE` into `gpu_selection.default_device`.
+**Mode:** both
+**Inputs:** Nonexistent TOML path, env var `ANVILML_GPU_SELECTION__DEFAULT_DEVICE = "cuda"`.
+**Expected output:** `config.gpu_selection.default_device == "cuda"`.
+**Acceptance:** `cargo test -p anvilml-core --test config_load_tests test_nested_env_var_gpu_selection` exits 0.
+
+---
+
+## test_unset_env_vars_leave_prior_layer_value (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_load_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serial_test` dev-dependency. A temporary TOML file has `host = "0.0.0.0"`, and `ANVILML_HOST` is explicitly unset.
+**Tests:** Unset `ANVILML_HOST` preserves the TOML-set value, proving unset env vars leave the prior layer intact.
+**Mode:** both
+**Inputs:** Temporary TOML with `host = "0.0.0.0"`, `ANVILML_HOST` unset.
+**Expected output:** `config.host == "0.0.0.0"` (TOML value preserved).
+**Acceptance:** `cargo test -p anvilml-core --test config_load_tests test_unset_env_vars_leave_prior_layer_value` exits 0.
+
+---
+
+## test_env_var_port_override (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_load_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serial_test` dev-dependency. `ANVILML_PORT` is set to `"7777"`.
+**Tests:** `ANVILML_PORT` env var parses as `u16` correctly and overrides the default port.
+**Mode:** both
+**Inputs:** Nonexistent TOML path, env var `ANVILML_PORT = "7777"`.
+**Expected output:** `config.port == 7777`.
+**Acceptance:** `cargo test -p anvilml-core --test config_load_tests test_env_var_port_override` exits 0.
+
+---
+
+## test_num_threads_env_var (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/config_load_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serial_test` dev-dependency. `ANVILML_NUM_THREADS` is set to `"4"`.
+**Tests:** `ANVILML_NUM_THREADS` env var parses as `Option<u32>` correctly and overrides the default.
+**Mode:** both
+**Inputs:** Nonexistent TOML path, env var `ANVILML_NUM_THREADS = "4"`.
+**Expected output:** `config.num_threads == Some(4)`.
+**Acceptance:** `cargo test -p anvilml-core --test config_load_tests test_num_threads_env_var` exits 0.

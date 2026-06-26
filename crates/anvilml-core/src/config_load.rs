@@ -1,34 +1,66 @@
 //! Config loading — layered precedence for `ServerConfig`.
 //!
-//! Implements the first two layers of the four-layer config precedence chain
+//! Implements all four layers of the four-layer config precedence chain
 //! defined in `ANVILML_DESIGN.md §15`:
 //! 1. Compiled-in defaults (`ServerConfig::default()`)
 //! 2. `anvilml.toml` file (optional, field-by-field override)
-//!
-//! Layers 3–4 (environment variables and CLI flags) are added by subsequent tasks.
+//! 3. `ANVILML_*` environment variables (with `__` nested-field convention)
+//! 4. CLI flags (`CliOverrides` struct, highest precedence)
 
 use std::path::{Path, PathBuf};
 
 use crate::config::{HardwareOverrideConfig, ModelDirConfig, RocmConfig};
 use crate::{AnvilError, ServerConfig};
 
-/// Load `ServerConfig` by merging compiled-in defaults with an optional TOML file.
+/// CLI flag overrides for config loading.
 ///
-/// This implements the first two layers of the four-layer config precedence chain:
-/// defaults → TOML → environment variables → CLI flags. Missing fields in the TOML
-/// file retain their compiled-in default values — the merge is field-by-field, not
-/// structural replacement.
+/// Applied as the final (highest-precedence) layer after environment variables.
+/// Only `host` and `port` are exposed here — other fields are overridden via env vars.
 ///
-/// If `toml_path` is `None`, the function resolves to `./anvilml.toml` relative to
-/// the process working directory. If that file does not exist, the function returns
-/// the defaults without error.
+/// Constructed by the binary's CLI parser (P2-A6) and passed to `load()` as the
+/// fourth layer of the config precedence chain.
+#[derive(Debug, Clone)]
+pub struct CliOverrides {
+    /// HTTP bind address override. `None` means no override.
+    pub host: Option<String>,
+    /// HTTP port override. `None` means no override.
+    pub port: Option<u16>,
+}
+
+/// Load `ServerConfig` by merging compiled-in defaults with an optional TOML file,
+/// then applying environment variable overrides, and finally CLI flag overrides.
+///
+/// This implements the complete four-layer config precedence chain:
+/// defaults → TOML → environment variables → CLI flags. Missing fields in each
+/// layer retain their value from the prior layer — the merge is field-by-field,
+/// not structural replacement.
+///
+/// # Arguments
+///
+/// * `toml_path` — Optional path to a TOML config file. If `None`, resolves to
+///   `./anvilml.toml` relative to the process working directory. If that file
+///   does not exist, the function returns the defaults without error.
+/// * `cli_overrides` — Optional CLI flag overrides applied as the final layer.
+///   Only `host` and `port` fields are applied; all other fields are overridden
+///   via environment variables.
+///
+/// # Environment Variables
+///
+/// Each `ANVILML_*` variable overrides the matching config field. Nested fields
+/// use double underscores (`__`) to separate struct and field names (e.g.
+/// `ANVILML_GPU_SELECTION__DEFAULT_DEVICE` → `gpu_selection.default_device`).
+/// Unset variables leave the prior layer's value intact.
 ///
 /// # Errors
 ///
-/// Returns `AnvilError::Io` if the file cannot be read, or `AnvilError::Serde` if
-/// the TOML is syntactically invalid or contains fields that cannot be deserialized
-/// into the matching `ServerConfig` type.
-pub fn load(toml_path: Option<&Path>) -> Result<ServerConfig, AnvilError> {
+/// Returns `AnvilError::Io` if the TOML file cannot be read, or `AnvilError::Serde`
+/// if the TOML is syntactically invalid or contains fields that cannot be deserialized
+/// into the matching `ServerConfig` type. Env var parse failures are silently skipped
+/// (the prior layer's value is retained).
+pub fn load(
+    toml_path: Option<&Path>,
+    cli_overrides: Option<CliOverrides>,
+) -> Result<ServerConfig, AnvilError> {
     // Start with compiled-in defaults as the base layer.
     let mut config = ServerConfig::default();
 
@@ -37,62 +69,153 @@ pub fn load(toml_path: Option<&Path>) -> Result<ServerConfig, AnvilError> {
         .map(PathBuf::from)
         .unwrap_or(PathBuf::from("./anvilml.toml"));
 
-    // If the TOML file does not exist, defaults are the correct result — no error.
-    if !path.exists() {
-        return Ok(config);
+    // If the TOML file exists, read and apply it. If not, skip to env var overrides.
+    if path.exists() {
+        // Read the file contents; I/O errors propagate via `?` into `AnvilError::Io`.
+        let contents = std::fs::read_to_string(&path)?;
+
+        // Parse into an untyped `toml::Value` first so we can inspect which fields
+        // were explicitly present in the TOML. This avoids the pitfall of `toml`
+        // deserializing missing fields to their type defaults (e.g. `""` for String,
+        // `0` for integers), which would overwrite the compiled-in defaults.
+        let value: toml::Value =
+            toml::from_str(&contents).map_err(|e| AnvilError::Serde(e.to_string()))?;
+
+        let table = value
+            .as_table()
+            .expect("root of a TOML file must be a table");
+
+        // Override scalar fields only if explicitly present in the TOML file.
+        if let Some(host) = table.get("host").and_then(|v| v.as_str()) {
+            config.host = host.to_string();
+        }
+        if let Some(port) = table.get("port").and_then(|v| v.as_integer()) {
+            config.port = port as u16;
+        }
+        if let Some(db_path) = table.get("db_path").and_then(|v| v.as_str()) {
+            config.db_path = PathBuf::from(db_path);
+        }
+        if let Some(artifact_dir) = table.get("artifact_dir").and_then(|v| v.as_str()) {
+            config.artifact_dir = PathBuf::from(artifact_dir);
+        }
+        if let Some(venv_path) = table.get("venv_path").and_then(|v| v.as_str()) {
+            config.venv_path = PathBuf::from(venv_path);
+        }
+        if let Some(model_scan_depth) = table.get("model_scan_depth").and_then(|v| v.as_integer()) {
+            config.model_scan_depth = model_scan_depth as u32;
+        }
+        if let Some(max_ipc_payload_mib) = table
+            .get("max_ipc_payload_mib")
+            .and_then(|v| v.as_integer())
+        {
+            config.max_ipc_payload_mib = max_ipc_payload_mib as u32;
+        }
+        if let Some(num_threads) = table.get("num_threads").and_then(|v| v.as_integer()) {
+            config.num_threads = Some(num_threads as u32);
+        }
+
+        // Override nested structs only if present in the TOML.
+        apply_model_dirs(table, &mut config);
+        apply_gpu_selection(table, &mut config);
+        apply_limits(table, &mut config);
+        apply_rocm(table, &mut config);
+        apply_hardware_override(table, &mut config);
     }
 
-    // Read the file contents; I/O errors propagate via `?` into `AnvilError::Io`.
-    let contents = std::fs::read_to_string(&path)?;
+    // Layer 3: Apply `ANVILML_*` environment variable overrides.
+    // Unset variables silently leave the prior layer's value (defaults or TOML).
+    apply_env_vars(&mut config);
 
-    // Parse into an untyped `toml::Value` first so we can inspect which fields
-    // were explicitly present in the TOML. This avoids the pitfall of `toml`
-    // deserializing missing fields to their type defaults (e.g. `""` for String,
-    // `0` for integers), which would overwrite the compiled-in defaults.
-    let value: toml::Value =
-        toml::from_str(&contents).map_err(|e| AnvilError::Serde(e.to_string()))?;
-
-    let table = value
-        .as_table()
-        .expect("root of a TOML file must be a table");
-
-    // Override scalar fields only if explicitly present in the TOML file.
-    if let Some(host) = table.get("host").and_then(|v| v.as_str()) {
-        config.host = host.to_string();
-    }
-    if let Some(port) = table.get("port").and_then(|v| v.as_integer()) {
-        config.port = port as u16;
-    }
-    if let Some(db_path) = table.get("db_path").and_then(|v| v.as_str()) {
-        config.db_path = PathBuf::from(db_path);
-    }
-    if let Some(artifact_dir) = table.get("artifact_dir").and_then(|v| v.as_str()) {
-        config.artifact_dir = PathBuf::from(artifact_dir);
-    }
-    if let Some(venv_path) = table.get("venv_path").and_then(|v| v.as_str()) {
-        config.venv_path = PathBuf::from(venv_path);
-    }
-    if let Some(model_scan_depth) = table.get("model_scan_depth").and_then(|v| v.as_integer()) {
-        config.model_scan_depth = model_scan_depth as u32;
-    }
-    if let Some(max_ipc_payload_mib) = table
-        .get("max_ipc_payload_mib")
-        .and_then(|v| v.as_integer())
-    {
-        config.max_ipc_payload_mib = max_ipc_payload_mib as u32;
-    }
-    if let Some(num_threads) = table.get("num_threads").and_then(|v| v.as_integer()) {
-        config.num_threads = Some(num_threads as u32);
-    }
-
-    // Override nested structs only if present in the TOML.
-    apply_model_dirs(table, &mut config);
-    apply_gpu_selection(table, &mut config);
-    apply_limits(table, &mut config);
-    apply_rocm(table, &mut config);
-    apply_hardware_override(table, &mut config);
+    // Layer 4: Apply CLI flag overrides as the highest-precedence layer.
+    apply_cli_overrides(&mut config, cli_overrides);
 
     Ok(config)
+}
+
+/// Apply `ANVILML_*` environment variable overrides to `config`.
+///
+/// Reads each variable from `std::env::var()`, parses `__`-separated nested keys,
+/// and overrides the matching `ServerConfig` field. Only the env vars listed in
+/// `ENVIRONMENT.md §3` are recognized; all others are silently ignored.
+///
+/// Parse failures (e.g. `ANVILML_PORT = "abc"`) are silently skipped — the prior
+/// layer's value is retained. This is intentional: a misconfigured env var should
+/// not crash the server; it should fall back to the TOML or default value.
+fn apply_env_vars(config: &mut ServerConfig) {
+    // Read `ANVILML_HOST` — string field, no parse needed.
+    if let Ok(value) = std::env::var("ANVILML_HOST") {
+        config.host = value;
+    }
+
+    // Read `ANVILML_PORT` — u16 parse; skip on failure (retain prior layer).
+    if let Ok(value) = std::env::var("ANVILML_PORT")
+        && let Ok(port) = value.parse::<u16>()
+    {
+        config.port = port;
+    }
+
+    // Read `ANVILML_DB_PATH` — path from string.
+    if let Ok(value) = std::env::var("ANVILML_DB_PATH") {
+        config.db_path = PathBuf::from(value);
+    }
+
+    // Read `ANVILML_ARTIFACT_DIR` — path from string.
+    if let Ok(value) = std::env::var("ANVILML_ARTIFACT_DIR") {
+        config.artifact_dir = PathBuf::from(value);
+    }
+
+    // Read `ANVILML_VENV_PATH` — path from string.
+    if let Ok(value) = std::env::var("ANVILML_VENV_PATH") {
+        config.venv_path = PathBuf::from(value);
+    }
+
+    // Read `ANVILML_MODEL_SCAN_DEPTH` — u32 parse; skip on failure.
+    if let Ok(value) = std::env::var("ANVILML_MODEL_SCAN_DEPTH")
+        && let Ok(depth) = value.parse::<u32>()
+    {
+        config.model_scan_depth = depth;
+    }
+
+    // Read `ANVILML_MAX_IPC_PAYLOAD_MIB` — u32 parse; skip on failure.
+    if let Ok(value) = std::env::var("ANVILML_MAX_IPC_PAYLOAD_MIB")
+        && let Ok(mib) = value.parse::<u32>()
+    {
+        config.max_ipc_payload_mib = mib;
+    }
+
+    // Read `ANVILML_NUM_THREADS` — Option<u32> parse; skip on failure.
+    if let Ok(value) = std::env::var("ANVILML_NUM_THREADS")
+        && let Ok(threads) = value.parse::<u32>()
+    {
+        config.num_threads = Some(threads);
+    }
+
+    // Read `ANVILML_GPU_SELECTION__DEFAULT_DEVICE` — nested field via `__` separator.
+    // The `__` convention: first part is the uppercase struct name, second is the
+    // uppercase field name. We check explicitly to avoid false positives from
+    // unrelated `ANVILML_*` env vars containing `__`.
+    if let Ok(value) = std::env::var("ANVILML_GPU_SELECTION__DEFAULT_DEVICE") {
+        config.gpu_selection.default_device = value;
+    }
+}
+
+/// Apply CLI flag overrides as the highest-precedence config layer.
+///
+/// Only `host` and `port` fields are overridden from `CliOverrides`. All other
+/// fields are already set by the prior layers (defaults, TOML, env vars).
+fn apply_cli_overrides(config: &mut ServerConfig, cli_overrides: Option<CliOverrides>) {
+    // Apply CLI overrides only if provided — `None` means no CLI flags were set,
+    // so the env var / TOML / default value is the correct final value.
+    if let Some(overrides) = cli_overrides {
+        // Override host if the caller explicitly set a CLI --host flag.
+        if let Some(host) = overrides.host {
+            config.host = host;
+        }
+        // Override port if the caller explicitly set a CLI --port flag.
+        if let Some(port) = overrides.port {
+            config.port = port;
+        }
+    }
 }
 
 /// Apply `[[model_dirs]]` array entries from the TOML table into `config`.
@@ -197,10 +320,10 @@ fn apply_hardware_override(table: &toml::Table, config: &mut ServerConfig) {
 mod tests {
     use super::*;
 
-    /// `load(None)` with a nonexistent default path returns `Ok(defaults)`.
+    /// `load(None, None)` with a nonexistent default path returns `Ok(defaults)`.
     #[test]
     fn test_load_none_path_missing_file_returns_defaults() {
-        let result = load(None);
+        let result = load(None, None);
         assert!(result.is_ok());
         let config = result.unwrap();
         assert_eq!(config.host, "127.0.0.1");
