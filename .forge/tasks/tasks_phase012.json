@@ -1,0 +1,72 @@
+[
+  {
+    "id": "P12-A1",
+    "description": "anvilml-scheduler: ValidatedGraph newtype (construction-gated)",
+    "phase": "12",
+    "project": "anvilml",
+    "prereqs": ["P11-E1"],
+    "context": "Create crates/anvilml-scheduler/src/types.rs per ANVILML_DESIGN.md §12.1/§12.3. pub struct ValidatedGraph(pub(crate) serde_json::Value) - a newtype wrapper, no fields beyond the wrapped Value. The inner field is pub(crate), not pub, and NO From<serde_json::Value> or other public bypass constructor exists - the only way to obtain a ValidatedGraph from outside this crate is a successful validate_graph() call (the next task). GraphError is the next task's scope - do not define it here. Declare mod types; pub use types::ValidatedGraph; in lib.rs. Acceptance: >=2 tests in crates/anvilml-scheduler/tests/dag_tests.rs: ValidatedGraph's inner field is not constructible from outside the crate (a same-crate test confirms the pub(crate) visibility compiles as expected within the crate, demonstrating no external bypass exists); `cargo test -p anvilml-scheduler --test dag_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P12-A2",
+    "description": "anvilml-scheduler: GraphError enum, all 7 variants",
+    "phase": "12",
+    "project": "anvilml",
+    "prereqs": ["P12-A1"],
+    "context": "Extend crates/anvilml-scheduler/src/types.rs with GraphError per ANVILML_DESIGN.md §12.3, covering: NotAnObject, MissingNodesArray, DuplicateNodeId(String), UnknownNodeType{node_id: String, type_name: String}, DanglingEdge{node_id: String, slot_name: String}, SlotTypeMismatch{node_id: String, slot_name: String, expected: String, found: String}, CycleDetected(Vec<String>). Derive Debug, Clone, thiserror::Error (add thiserror to Cargo.toml if absent) with a Display impl per variant via #[error(\"...\")] attributes. Add pub use types::GraphError; to lib.rs alongside ValidatedGraph. Acceptance: >=4 tests in dag_tests.rs: each of the 7 variants produces a non-empty, distinct Display string; `cargo test -p anvilml-scheduler --test dag_tests` exits 0 (>=6 tests total in file).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P12-A3",
+    "description": "anvilml-scheduler: validate_graph structural checks (1-2)",
+    "phase": "12",
+    "project": "anvilml",
+    "prereqs": ["P12-A2"],
+    "context": "Create crates/anvilml-scheduler/src/dag.rs. Implement pub fn validate_graph(graph: serde_json::Value, registry: &NodeTypeRegistry) -> Result<ValidatedGraph, Vec<GraphError>> (collect-all-errors mode per §12.3 - return Err with ALL violations found, never short-circuit on the first one). This task implements ONLY checks 1-2 of §12.3's six: (1) root JSON is an object with a \"nodes\" array - else push NotAnObject or MissingNodesArray and return early (a non-object root has nothing further to check); (2) no duplicate node id values - push DuplicateNodeId(id) per duplicate found, continue checking. Checks 3-6 are later tasks. Acceptance: >=5 tests in dag_tests.rs: non-object root returns NotAnObject, missing nodes array returns MissingNodesArray, duplicate ids are all reported (not just the first), no duplicates passes cleanly, multiple violations of check 2 alone are all collected in one Err; `cargo test -p anvilml-scheduler --test dag_tests` exits 0.",
+    "tags": [],
+    "defers_to": ["P12-A4"]
+  },
+  {
+    "id": "P12-A4",
+    "description": "anvilml-scheduler: validate_graph node-type + edge checks (3-4)",
+    "phase": "12",
+    "project": "anvilml",
+    "prereqs": ["P12-A3"],
+    "context": "Extend validate_graph() (crates/anvilml-scheduler/src/dag.rs) with checks 3-4 deferred by P12-A3, per ANVILML_DESIGN.md §12.3: (3) every node's type exists in registry.get(type_name) (synchronous, registry already populated by the time validation runs) - push UnknownNodeType per violation; (4) every edge reference resolves to a node that exists AND declares that output slot in its NodeTypeDescriptor.outputs - push DanglingEdge per violation. Both checks continue collecting errors rather than stopping at the first, consistent with the collect-all-errors mode. This receives the scope P12-A3 explicitly deferred. Acceptance: >=6 new tests in dag_tests.rs: unknown node type reported with correct node_id, edge to a nonexistent node is reported, edge to an undeclared output slot is reported, valid type+edges pass cleanly, multiple violations across both checks are all collected together; `cargo test -p anvilml-scheduler --test dag_tests` exits 0 (>=11 tests total in file).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P12-A5",
+    "description": "anvilml-scheduler: validate_graph slot-type-compat check (5)",
+    "phase": "12",
+    "project": "anvilml",
+    "prereqs": ["P12-A4"],
+    "context": "Extend validate_graph() with check 5 per ANVILML_DESIGN.md §12.3: every edge's slot_type is compatible with the receiving input - exact SlotType match, OR either side is SlotType::Any (from anvilml-core, Phase 3's P3-A7/SlotType enum). Push SlotTypeMismatch{node_id, slot_name, expected, found} per violation, continuing to collect. This check only runs on edges that already passed check 4 (dangling edges have no resolved slot to compare types against - skip type-checking an edge already flagged as dangling, do not double-report). Acceptance: >=5 new tests in dag_tests.rs: mismatched slot types reported with correct expected/found strings, exact-match slot types pass, Any on either side passes regardless of the other side, a dangling edge from check 4 is not also reported as a type mismatch; `cargo test -p anvilml-scheduler --test dag_tests` exits 0 (>=16 tests total in file).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P12-A6",
+    "description": "anvilml-scheduler: validate_graph cycle detection (6), Kahn's algorithm",
+    "phase": "12",
+    "project": "anvilml",
+    "prereqs": ["P12-A5"],
+    "context": "Extend validate_graph() with check 6, the final check per ANVILML_DESIGN.md §12.3: the graph is acyclic, verified via Kahn's algorithm (compute in-degree per node from the edge list, repeatedly remove zero-in-degree nodes; any nodes remaining after the process terminates form a cycle - push CycleDetected(Vec<node_id>) naming every node still remaining, not just one). If ALL six checks pass with zero errors collected, construct and return Ok(ValidatedGraph(graph)) - the ONLY place in the crate where ValidatedGraph is ever constructed, closing the loop P12-A1 set up. Acceptance: >=5 new tests in dag_tests.rs: a simple 2-cycle names both node ids, a 3+ node cycle names all involved nodes, an acyclic graph with everything else passing returns Ok(ValidatedGraph), a cycle combined with another violation reports both together in one Err; `cargo test -p anvilml-scheduler --test dag_tests` exits 0 (>=21 tests total in file).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P12-B1",
+    "description": "anvilml-scheduler: lib.rs re-export pass, 80-line check",
+    "phase": "12",
+    "project": "anvilml",
+    "prereqs": ["P12-A6"],
+    "context": "Update crates/anvilml-scheduler/src/lib.rs: confirm pub use re-exports for ValidatedGraph/GraphError (types) and validate_graph (dag) are present per ANVILML_DESIGN.md §12.1's module layout. No implementation logic added - re-export and 80-line cap verification only, same pattern as every prior crate's closing lib.rs task. Acceptance: `wc -l crates/anvilml-scheduler/src/lib.rs` reports <=80; `cargo test -p anvilml-scheduler` (full crate suite) exits 0.",
+    "tags": ["refactor"],
+    "defers_to": []
+  }
+]

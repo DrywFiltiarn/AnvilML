@@ -1,0 +1,72 @@
+[
+  {
+    "id": "P19-A1",
+    "description": "anvilml-scheduler: resolve model_id hashes to filesystem paths at dispatch",
+    "phase": "19",
+    "project": "anvilml",
+    "prereqs": ["P14-A4"],
+    "context": "Extend JobScheduler's dispatch_one() (crates/anvilml-scheduler/src/scheduler.rs, Phase 14's P14-A4) per ANVILML_DESIGN.md Appendix B.2: before sending WorkerMessage::Execute, walk the job's graph JSON and for every LoadModel/LoadVae/LoadClip node's inputs.model_id, resolve the SHA256 hash via ModelStore::get() (Phase 6's P6-A3) to its filesystem path, rewriting the field in the dispatched copy only (the persisted Job.graph in job_store keeps the original hash). An unknown hash fails the job (status=Failed, error=\"unknown_model_id: <hash>\") before sending Execute at all. Acceptance: >=5 tests in tests/scheduler_tests.rs: valid hashes for all three loader types are correctly rewritten to paths, an unknown hash fails the job before any IPC send (spy transport receives zero calls), persisted Job.graph keeps the original hash; `cargo test -p anvilml-scheduler --test scheduler_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P19-B1",
+    "description": "worker/pipeline_cache.py: get_or_load() LRU component cache",
+    "phase": "19",
+    "project": "anvilml",
+    "prereqs": ["P9-D3"],
+    "context": "Create worker/pipeline_cache.py per ANVILML_DESIGN.md §11.6: class PipelineCache with get_or_load(key: str, loader_fn: Callable[[], Any]) -> Any: returns the cached value for key if present, else calls loader_fn() once, caches the result, returns it. LRU eviction with a configurable max_entries (default small, e.g. 4 - a per-worker component/pipeline cache holding one device's models, not a large general cache). On eviction, the evicted entry's resources are not explicitly freed (no del/gc.collect()) - left to Python refcounting/torch's own memory management; this module manages dict keying only, not GPU memory lifecycle. Acceptance: >=6 tests in worker/tests/test_pipeline_cache.py: repeated calls with the same key call loader_fn once, different keys each get their own call, LRU eviction removes the least-recently-used entry past max_entries, access refreshes recency; `python -m pytest worker/tests/test_pipeline_cache.py -v` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P19-C1",
+    "description": "worker/nodes/loader.py: LoadModel node, mock branch only",
+    "phase": "19",
+    "project": "anvilml",
+    "prereqs": ["P19-B1"],
+    "context": "Create worker/nodes/loader.py with LoadModel per ANVILML_DESIGN.md §10.3 EXACTLY: NODE_TYPE=\"LoadModel\", CATEGORY=\"Loaders\", INPUT_SLOTS=[SlotSpec(\"model_id\",\"STRING\")], OUTPUT_SLOTS=[SlotSpec(\"model\",\"MODEL\")]. execute(self, ctx, **inputs) -> dict: branches on ctx.mock at the top per §14.6. Mock branch returns {\"model\": {\"mock\": True, \"model_id\": inputs[\"model_id\"]}} - no real loading. Real branch is a bare `raise NotImplementedError` placeholder for THIS task only, completed by the next task - do not write the real pipeline_cache call here. @register decorated. Acceptance: >=2 tests in worker/tests/test_nodes_loader.py: mock execute returns the sentinel shape, node is present in NODE_REGISTRY after import; `python -m pytest worker/tests/test_nodes_loader.py -v` exits 0.",
+    "tags": [],
+    "defers_to": ["P19-C2"]
+  },
+  {
+    "id": "P19-C2",
+    "description": "worker/nodes/loader.py: LoadModel real branch, deferred-raise + markers",
+    "phase": "19",
+    "project": "anvilml",
+    "prereqs": ["P19-C1"],
+    "context": "Complete LoadModel's real branch (worker/nodes/loader.py), the scope P19-C1 deferred: replace the bare raise with pipeline_cache.get_or_load(inputs[\"model_id\"], loader_fn) where loader_fn raises NotImplementedError(\"no diffusion arch module registered yet\") - deliberately raises until Phase 20 registers a real arch module; this is intentional groundwork-phase behavior, record it as a finding in the report, not a bug. Add both REAL_PATH_VERIFIED/MOCK_PATH_VERIFIED markers per §10.6 even though the real path currently raises - a test asserting the expected NotImplementedError is itself a valid, collectible real-mode test satisfying the marker requirement. Acceptance: >=2 new tests in test_nodes_loader.py: real-mode execute raises the expected NotImplementedError (marked @pytest.mark.real_mode), both markers name collectible tests; `python -m pytest worker/tests/test_nodes_loader.py -v` exits 0 (>=4 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P19-C3",
+    "description": "worker/nodes/loader.py: LoadVae, LoadClip node skeletons (mock-mode only)",
+    "phase": "19",
+    "project": "anvilml",
+    "prereqs": ["P19-C2"],
+    "context": "Extend worker/nodes/loader.py with LoadVae and LoadClip per §10.3 EXACTLY: LoadVae{NODE_TYPE=\"LoadVae\", INPUT_SLOTS=[SlotSpec(\"model_id\",\"STRING\")], OUTPUT_SLOTS=[SlotSpec(\"vae\",\"VAE\")]}; LoadClip{NODE_TYPE=\"LoadClip\", INPUT_SLOTS=[SlotSpec(\"model_id\",\"STRING\"), SlotSpec(\"clip_type\",\"STRING\",optional=True)], OUTPUT_SLOTS=[SlotSpec(\"clip\",\"CLIP\")]}. Same mock-sentinel/real-raises-NotImplementedError pattern as LoadModel (P19-C1/P19-C2) - identical structure, different SlotType/cache-key namespace per loader. Both @register decorated with both required markers per §10.6. Acceptance: >=8 new tests in worker/tests/test_nodes_loader.py covering both nodes' mock and real-mode (NotImplementedError) paths, both present in NODE_REGISTRY; `python -m pytest worker/tests/test_nodes_loader.py -v` exits 0 (>=12 tests total in file).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P19-D1",
+    "description": "worker/tests/fixtures/: fixture-checkpoint builder conventions doc",
+    "phase": "19",
+    "project": "anvilml",
+    "prereqs": ["P19-C3"],
+    "context": "Create worker/tests/fixtures/README.md per ANVILML_DESIGN.md §17.5: documents the fixture-checkpoint convention future arch-module tasks (Phase 20+) must follow - tiny synthetic .safetensors files, never real downloaded weights, shapes chosen to be structurally valid for the architecture's shape-inference formula while staying well under 1GB peak RAM to construct, NOT a miniaturized copy of real model shapes verbatim. Mandatory regression case: at least one fixture per diffusion/CLIP/VAE family must have a non-recognizable key prefix and no arch metadata key, exercising the metadata-fallback path (the exact v3 st.metadata-vs-st.metadata() bug class this rule exists to catch). No actual fixture files are created by this task - it is documentation only, preparing the convention for the arch-module phases that build real fixtures alongside their load() implementations. Acceptance: `test -s worker/tests/fixtures/README.md` confirms the file exists and is non-empty.",
+    "tags": ["docs"],
+    "defers_to": []
+  },
+  {
+    "id": "P19-E1",
+    "description": "CI: worker-test job collects loader.py + pipeline_cache.py tests",
+    "phase": "19",
+    "project": "anvilml",
+    "prereqs": ["P19-D1"],
+    "context": "No CI workflow structural change needed - Phase 9's P9-F1 already wired worker-test to run the full worker/tests suite for both mock and real_mode markers, and this phase's new test files (test_pipeline_cache.py, test_nodes_loader.py) are automatically picked up by that existing `python -m pytest worker/tests -v` / `-m real_mode` invocation with no config change required. This task is a verification-only confirmation, not a CI file edit. Acceptance: `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests -v` exits 0 and its output includes test_pipeline_cache.py and test_nodes_loader.py; `python -m pytest worker/tests -v -m real_mode` exits 0 and includes the LoadModel/LoadVae/LoadClip NotImplementedError real-mode tests.",
+    "tags": ["manual"],
+    "defers_to": []
+  }
+]

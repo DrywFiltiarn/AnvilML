@@ -1,0 +1,52 @@
+[
+  {
+    "id": "P28-A1",
+    "description": "backend: startup auto-provisioning check + auto-invoke install scripts",
+    "phase": "28",
+    "project": "anvilml",
+    "prereqs": ["P18-A1"],
+    "context": "Update backend/src/main.rs's normal startup path per ANVILML_DESIGN.md §19.1's auto-provision-on-startup option: before EnvReport's preflight checks (Phase 18's P18-A1), if the venv at cfg.venv_path doesn't exist, automatically invoke scripts/install_worker_deps.sh (Linux/macOS) or .ps1 (Windows) as a subprocess, capturing+logging output at INFO per §16.2. If the venv exists, skip provisioning entirely - missing-venv bootstrap only, not re-provision-every-startup. If provisioning fails, log ERROR with the output and continue startup anyway (workers report Dead per ENVIRONMENT.md §5's existing preflight-failure handling, not a new failure mode). Acceptance: >=5 tests in backend/tests/auto_provision_tests.rs: missing venv triggers the install subprocess (via a test double), existing venv skips it, failure logs ERROR and startup continues; `cargo test -p anvilml --test auto_provision_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P28-B1",
+    "description": "anvilml-server: GET /v1/system/versions EnvReport population at startup",
+    "phase": "28",
+    "project": "anvilml",
+    "prereqs": ["P28-A1"],
+    "context": "Extend backend/src/main.rs's startup EnvReport population (Phase 18's P18-A1, currently best-effort/placeholder) with REAL preflight checks per ENVIRONMENT.md §5: (1) interpreter path exists and is executable, (2) python version is 3.12.x (WARN if not, doesn't abort, per the doc's non-fatal handling), (3) when ANVILML_WORKER_MOCK is unset, import torch succeeds via a quick subprocess probe (NOT a full worker spawn - a lightweight `python -c \"import torch; print(torch.__version__)\"` check, distinct from full worker startup). Populate EnvReport's python_version/torch_version/preflight_ok/reason (Phase 3's P3-A6 struct) from these checks, replacing the prior placeholder. Acceptance: >=6 tests in auto_provision_tests.rs: interpreter-exists check populates correctly, wrong python version sets preflight_ok=true with a WARN reason, torch import failure sets preflight_ok=false with a reason; `cargo test -p anvilml --test auto_provision_tests` exits 0 (>=11 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P28-C1",
+    "description": "crates/anvilml-openapi or backend: --version CLI flag prints full versions",
+    "phase": "28",
+    "project": "anvilml",
+    "prereqs": ["P28-B1"],
+    "context": "Add a --version flag to backend/src/cli.rs (alongside the existing hw-probe subcommand from Phase 5's P5-A5 - this is a flag, not a new subcommand, following clap's standard --version convention) that prints ComponentVersions (Phase 18's P18-B2 struct: anvilml_version, rust_version, python_version, torch_version) as either plain text or JSON (support a --version --json combination, plain text by default) to stdout and exits 0 immediately, without binding any port or constructing AppState - this must work even when the venv is missing or torch is not installed, gracefully showing None/unavailable for python_version/torch_version in that case rather than erroring. Acceptance: >=4 tests in backend/tests/version_tests.rs: --version exits 0 and prints a non-empty anvilml_version, --version --json produces valid parseable JSON, --version works correctly even with no venv present (python_version shows unavailable, not an error); `cargo test -p anvilml --test version_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P28-D1",
+    "description": "scripts/: release build verification + packaging checklist doc",
+    "phase": "28",
+    "project": "anvilml",
+    "prereqs": ["P28-C1"],
+    "context": "Create docs/RELEASE.md per ANVILML_DESIGN.md §18.7: documents the release build procedure (cargo build --release, producing the single statically-linked anvilml/anvilml.exe - the binary does NOT embed Python source, worker/ ships as a sibling directory, the venv is created by provisioning scripts or auto-provisioning at first run per P28-A1). Documents the exact files/directories in a release package: the binary, worker/ (source only, no venv), scripts/, database/migrations + database/seeds, anvilml.toml (as a template, not the user's runtime config), api/openapi.json. Explicitly excludes: any .venv, target/, local anvilml.db, artifacts/ contents - runtime-generated, never shipped. Acceptance: `test -s docs/RELEASE.md` confirms the file exists; `cargo build --release -p anvilml` exits 0, produces a single binary; manually confirm (per the doc's checklist) the binary runs standalone from a clean directory plus a freshly-provisioned venv.",
+    "tags": ["docs"],
+    "defers_to": []
+  },
+  {
+    "id": "P28-E1",
+    "description": "Runnable Proof: fresh clone auto-provisions and reports versions correctly",
+    "phase": "28",
+    "project": "anvilml",
+    "prereqs": ["P28-D1"],
+    "context": "No new source files. Simulate a fresh-clone scenario: remove worker/.venv if present, run the built binary (real mode, not mock-hardware) and confirm it auto-provisions the venv per P28-A1's logic before completing startup, then separately run `anvilml --version` and confirm it correctly reports the now-installed python_version/torch_version - demonstrating the full distribution story (auto-provision on missing venv, accurate version introspection afterward) works end to end on a real (if minimal) environment. Record the literal terminal output in the implementation report. Acceptance: `rm -rf worker/.venv && cargo build --release -p anvilml && timeout 120 ./target/release/anvilml & sleep 90 && kill %1` completes without the process crashing (auto-provisioning may take time, hence the generous timeout); `./target/release/anvilml --version` afterward shows a real (non-None) python_version and torch_version.",
+    "tags": ["manual"],
+    "defers_to": []
+  }
+]

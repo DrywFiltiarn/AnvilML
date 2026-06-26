@@ -1,0 +1,112 @@
+[
+  {
+    "id": "P24-A1",
+    "description": "worker/nodes/encoder.py: ClipTextEncode node, mock branch only",
+    "phase": "24",
+    "project": "anvilml",
+    "prereqs": ["P22-D1"],
+    "context": "Create worker/nodes/encoder.py with ClipTextEncode per ANVILML_DESIGN.md §10.3 EXACTLY: NODE_TYPE=\"ClipTextEncode\", CATEGORY=\"Conditioning\", INPUT_SLOTS=[SlotSpec(\"clip\",\"CLIP\"), SlotSpec(\"positive_text\",\"STRING\"), SlotSpec(\"negative_text\",\"STRING\",optional=True)], OUTPUT_SLOTS=[SlotSpec(\"conditioning\",\"CONDITIONING\")]. Architecture-agnostic - works with any loaded CLIP-compatible encoder, no per-arch dispatch in this node (the encoder already carries its own tokenizer/model from LoadClip). execute() branches on ctx.mock per §14.6: mock returns {\"conditioning\": {\"mock\": True, \"positive_text\": inputs[\"positive_text\"]}}. Real branch is a bare placeholder raise for THIS task - completed next task. @register decorated. Acceptance: >=3 tests in worker/tests/test_nodes_encoder.py: mock returns the expected sentinel, missing optional negative_text doesn't error, node is in NODE_REGISTRY; `python -m pytest worker/tests/test_nodes_encoder.py -v` exits 0.",
+    "tags": [],
+    "defers_to": ["P24-A2"]
+  },
+  {
+    "id": "P24-A2",
+    "description": "worker/nodes/encoder.py: ClipTextEncode real branch tokenizes + encodes",
+    "phase": "24",
+    "project": "anvilml",
+    "prereqs": ["P24-A1"],
+    "context": "Complete ClipTextEncode's real branch (worker/nodes/encoder.py), the scope P24-A1 deferred: calls inputs[\"clip\"]'s tokenizer (loaded by Qwen3's load(), Phase 22) on positive_text (and negative_text if provided), then the encoder's forward pass to produce a conditioning object. This node calls the encoder object directly - it does NOT dispatch through arch.clip.get_module() again, since the clip input already IS the fully-loaded module from LoadClip's real branch (Phase 22's P22-D1). Both markers required and passing from this task - no deferred-raise needed, the encoder is already loaded by the time this node runs. Acceptance: >=5 tests in worker/tests/test_nodes_encoder.py: real-mode execute against the Qwen3 fixture's loaded encoder produces a real conditioning output, negative_text omitted still succeeds, both markers name passing tests; `python -m pytest worker/tests/test_nodes_encoder.py -v -m real_mode` exits 0 (>=8 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P24-B1",
+    "description": "worker/nodes/decode.py: VaeDecode node, mock branch only",
+    "phase": "24",
+    "project": "anvilml",
+    "prereqs": ["P23-E1"],
+    "context": "Create worker/nodes/decode.py with VaeDecode per ANVILML_DESIGN.md §10.3 EXACTLY: NODE_TYPE=\"VaeDecode\", CATEGORY=\"Decoding\", INPUT_SLOTS=[SlotSpec(\"vae\",\"VAE\"), SlotSpec(\"latent\",\"LATENT\")], OUTPUT_SLOTS=[SlotSpec(\"image\",\"IMAGE\")]. execute() branches on ctx.mock per §14.6: mock returns {\"image\": {\"mock\": True, \"shape\": inputs[\"latent\"].get(\"shape\")}}. Real branch is a bare placeholder raise for THIS task - completed next task (unlike Sampler/decode() in Phases 21/23 which had no groundwork gap, this node's mock and real are split across two tasks purely for context-size reasons, not a design distinction). @register decorated. Acceptance: >=3 tests in worker/tests/test_nodes_decode.py: mock returns the sentinel, node is in NODE_REGISTRY; `python -m pytest worker/tests/test_nodes_decode.py -v` exits 0.",
+    "tags": [],
+    "defers_to": ["P24-B2"]
+  },
+  {
+    "id": "P24-B2",
+    "description": "worker/nodes/decode.py: VaeDecode real branch dispatches to vae module",
+    "phase": "24",
+    "project": "anvilml",
+    "prereqs": ["P24-B1"],
+    "context": "Complete VaeDecode's real branch (worker/nodes/decode.py), the scope P24-B1 deferred: calls arch.vae.get_module(inputs[\"vae\"].arch).decode(inputs[\"vae\"], inputs[\"latent\"]) (Phase 23's zit_vae.py decode(), via dispatch - the vae input already IS the fully-loaded module from LoadVae's real branch). Both REAL_PATH_VERIFIED/MOCK_PATH_VERIFIED markers required, both passing from this task. Acceptance: >=5 new tests in test_nodes_decode.py: real-mode execute against the Phase 23 fixture's loaded VAE+latent produces a real PIL Image, both markers name passing tests; `python -m pytest worker/tests/test_nodes_decode.py -v -m real_mode` exits 0 (>=8 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P24-C1",
+    "description": "worker/nodes/loader.py: EmptyLatent node, mock branch only",
+    "phase": "24",
+    "project": "anvilml",
+    "prereqs": ["P21-A1"],
+    "context": "Create EmptyLatent in worker/nodes/loader.py (co-located with the loader nodes per §10.3's Loaders category grouping, even though it creates rather than loads) per ANVILML_DESIGN.md §10.3 EXACTLY: NODE_TYPE=\"EmptyLatent\", CATEGORY=\"Latents\", INPUT_SLOTS=[SlotSpec(\"width\",\"INT\"), SlotSpec(\"height\",\"INT\"), SlotSpec(\"batch_size\",\"INT\",optional=True), SlotSpec(\"model\",\"MODEL\",optional=True)], OUTPUT_SLOTS=[SlotSpec(\"latent\",\"LATENT\")]. Mock branch ignores the model input entirely per §10.3's note, returns a generic placeholder-shaped latent. Real branch is a bare placeholder raise for THIS task - completed next task. @register decorated. Acceptance: >=3 tests in worker/tests/test_nodes_loader.py: mock ignores a provided model input and returns the placeholder shape, node is in NODE_REGISTRY under EmptyLatent; `python -m pytest worker/tests/test_nodes_loader.py -v` exits 0.",
+    "tags": [],
+    "defers_to": ["P24-C2"]
+  },
+  {
+    "id": "P24-C2",
+    "description": "worker/nodes/loader.py: EmptyLatent real branch via compute_latent_shape",
+    "phase": "24",
+    "project": "anvilml",
+    "prereqs": ["P24-C1"],
+    "context": "Complete EmptyLatent's real branch (worker/nodes/loader.py), the scope P24-C1 deferred: model input is REQUIRED in real mode (raise a clear error if absent, per §10.3's 'required in real mode' note) - dispatches to arch.diffusion.get_module(model.arch).compute_latent_shape(width, height, batch_size) (Phase 21's P21-A1) for the actual architecture-specific shape, then allocates a zero/random-noise tensor of that shape. Both markers required and passing from this task. Acceptance: >=5 new tests in test_nodes_loader.py: real mode without a model input raises a clear error, real mode with the ZiT fixture's loaded model produces a latent matching compute_latent_shape()'s output, both markers name passing tests; `python -m pytest worker/tests/test_nodes_loader.py -v -m real_mode` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P24-D1",
+    "description": "worker/nodes/image.py: SaveImage node, mock branch only",
+    "phase": "24",
+    "project": "anvilml",
+    "prereqs": ["P24-B2"],
+    "context": "Create worker/nodes/image.py with SaveImage per ANVILML_DESIGN.md §10.3 EXACTLY: NODE_TYPE=\"SaveImage\", CATEGORY=\"Output\", INPUT_SLOTS=[SlotSpec(\"image\",\"IMAGE\"), SlotSpec(\"seed\",\"INT\",optional=True), SlotSpec(\"steps\",\"INT\",optional=True)], OUTPUT_SLOTS=[] (no outputs - it emits an event instead). Mock branch per §14.6's example: emits ImageReady with a 64x64 black PNG via ctx.emit. Real branch is a bare placeholder raise for THIS task - completed next task. @register decorated. Acceptance: >=3 tests in worker/tests/test_nodes_image.py: mock emits ImageReady with a 64x64 black PNG, node is in NODE_REGISTRY under SaveImage; `python -m pytest worker/tests/test_nodes_image.py -v` exits 0.",
+    "tags": [],
+    "defers_to": ["P24-D2"]
+  },
+  {
+    "id": "P24-D2",
+    "description": "worker/nodes/image.py: SaveImage real branch encodes PNG, emits ImageReady",
+    "phase": "24",
+    "project": "anvilml",
+    "prereqs": ["P24-D1"],
+    "context": "Complete SaveImage's real branch (worker/nodes/image.py), the scope P24-D1 deferred: encodes the real PIL.Image input to PNG bytes, base64-encodes for the IPC payload, calls ctx.emit(WorkerEvent.ImageReady{...}) with the real image_b64/width/height/seed/steps - artifact_store writing happens Rust-side on receipt (Phase 15's event_loop.rs), this node only emits the event. Both markers required, both passing. Acceptance: >=5 new tests in test_nodes_image.py: real mode against a real PIL Image emits ImageReady with correctly base64-encoded real PNG bytes matching the input, seed/steps pass through unchanged, both markers name passing tests; `python -m pytest worker/tests/test_nodes_image.py -v -m real_mode` exits 0 (>=8 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P24-D3",
+    "description": "worker/nodes/image.py: ImageResize node, mock + real (lanczos default)",
+    "phase": "24",
+    "project": "anvilml",
+    "prereqs": ["P24-D2"],
+    "context": "Extend worker/nodes/image.py with ImageResize per ANVILML_DESIGN.md §10.3 EXACTLY: NODE_TYPE=\"ImageResize\", CATEGORY=\"Images\", INPUT_SLOTS=[SlotSpec(\"image\",\"IMAGE\"), SlotSpec(\"width\",\"INT\"), SlotSpec(\"height\",\"INT\"), SlotSpec(\"method\",\"STRING\",optional=True)], OUTPUT_SLOTS=[SlotSpec(\"image\",\"IMAGE\")]. method defaults to \"lanczos\" per the design doc's wording - implement via PIL.Image.resize with the PIL.Image.LANCZOS filter when method is unset or \"lanczos\"; other strings map to their PIL filter or raise a clear error if unrecognized. Both branches can call the same real PIL resize - resizing has no GPU/model dependency to mock around, only the ctx.mock branch structure per §14.6 is required. Both markers required. Acceptance: >=5 tests in test_nodes_image.py: resize produces the requested dimensions, default method is lanczos, an explicit method is honored, an unrecognized method errors clearly; `python -m pytest worker/tests/test_nodes_image.py -v -m real_mode` exits 0 (>=13 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P24-E1",
+    "description": "anvilml-server: real end-to-end ZiT generation graph via POST /v1/jobs",
+    "phase": "24",
+    "project": "anvilml",
+    "prereqs": ["P24-A2", "P24-C2", "P24-D3"],
+    "context": "No new production source files - wires together everything built across Phases 19-24 to verify the FULL generic-node graph (LoadModel+LoadVae+LoadClip+EmptyLatent+ClipTextEncode+Sampler+VaeDecode+SaveImage, per ANVILML_DESIGN.md Appendix B.2's exact example graph) executes end to end through real dispatch when submitted via POST /v1/jobs against the Phase 20/22/23 fixtures. Closes \"ZiT Diffusion + Qwen3 CLIP + ZiT VAE\" as a fully completed roadmap group - the first time the GENERIC node layer (not Phase 23's direct arch-module test) produces a real image through the actual dispatch pipeline. Acceptance: >=3 integration tests (Rust or Python, whichever the project owner confirms is more natural for this cross-language proof) asserting the full graph reaches Completed with a real, retrievable artifact; suite exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P24-F1",
+    "description": "Runnable Proof: full graph submitted via POST /v1/jobs produces a real artifact",
+    "phase": "24",
+    "project": "anvilml",
+    "prereqs": ["P24-E1"],
+    "context": "No new source files. Run the built binary in real (non-mock-hardware) mode against fixture checkpoints registered in the model registry, submit Appendix B.2's example graph (model_id values pointing at the Phase 20/22/23 fixtures) via POST /v1/jobs, poll until Completed, retrieve the artifact via GET /v1/artifacts/:hash, confirm it is a real, valid PNG with the requested dimensions - the first end-to-end real generation proof, closing the gap Phase 14's PassThrough-only proof deliberately left open. Record the literal terminal output in the implementation report. Acceptance: the full submit->poll->retrieve sequence succeeds against a live server in real mode, producing a retrievable, valid PNG matching the requested dimensions.",
+    "tags": ["manual"],
+    "defers_to": []
+  }
+]

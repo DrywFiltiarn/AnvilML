@@ -1,0 +1,82 @@
+[
+  {
+    "id": "P25-A1",
+    "description": "worker/tests/fixtures/: Flux 2 Klein 4B + Flux 2 VAE fixture builders",
+    "phase": "25",
+    "project": "anvilml",
+    "prereqs": ["P24-F1"],
+    "context": "Create worker/tests/fixtures/build_flux2klein_fixture.py and build_flux2_vae_fixture.py per worker/tests/fixtures/README.md's conventions (Phase 19's P19-D1) - same discipline as Phases 20/23's ZiT fixtures: tiny synthetic .safetensors files with Flux-2-Klein-4B-shaped and Flux-2-VAE-shaped tensor keys respectively, structurally valid for their own shape-inference formulas, NOT miniaturized copies of real shapes. Each gets a no-metadata variant too, per §17.5's mandatory per-family regression case. Produce flux2klein_4b_tiny.safetensors (+no_metadata variant) and flux2_vae_tiny.safetensors (+no_metadata variant), committing all four small files. Acceptance: both build scripts exit 0, all 4 files under 10MB combined; all load successfully via safetensors.safe_open.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P25-B1",
+    "description": "worker/nodes/arch/diffusion/flux2klein.py: shape inference from header (4B)",
+    "phase": "25",
+    "project": "anvilml",
+    "prereqs": ["P25-A1"],
+    "context": "Create worker/nodes/arch/diffusion/flux2klein.py. Implement _infer_hyperparams(path: str) -> dict per ANVILML_DESIGN.md §11.3 step 1, same discipline as zit.py (read ALL keys, never truncated) against the P25-A1 4B fixture. can_handle() and dispatch registration are the next task's scope - do not add them here. Acceptance: >=3 tests in worker/tests/test_arch_flux2klein.py: _infer_hyperparams against the P25-A1 4B fixture returns the expected dict, malformed/truncated input raises a clear error; `python -m pytest worker/tests/test_arch_flux2klein.py -v` exits 0.",
+    "tags": [],
+    "defers_to": ["P25-B2"]
+  },
+  {
+    "id": "P25-B2",
+    "description": "worker/nodes/arch/diffusion/flux2klein.py: can_handle() + dispatch (4B)",
+    "phase": "25",
+    "project": "anvilml",
+    "prereqs": ["P25-B1"],
+    "context": "Extend flux2klein.py with can_handle(key) -> bool, the scope P25-B1 deferred: matches this architecture's metadata/path-fallback key. Register into arch/diffusion/__init__.py's dispatcher (Phase 10's P10-B1), gaining its SECOND real entry alongside zit.py - this is ANVILML_DESIGN.md §20's explicit confirmation point: adding a second diffusion architecture must require ZERO changes to the generic node layer (loader.py, sampler.py, encoder.py, decode.py, image.py); any needed change is a design defect to report, not silently patch. Acceptance: >=4 new tests in test_arch_flux2klein.py: can_handle matches its own fixture and rejects zit.py's fixture (cross-checked in test_arch_zit.py too), get_module() disambiguates correctly between zit.py and flux2klein.py; `python -m pytest worker/tests/test_arch_flux2klein.py -v` exits 0 (>=7 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P25-C1",
+    "description": "worker/nodes/arch/diffusion/flux2klein.py: meta construction + dtype (4B)",
+    "phase": "25",
+    "project": "anvilml",
+    "prereqs": ["P25-B2"],
+    "context": "Extend flux2klein.py with load()'s step 2 per ANVILML_DESIGN.md §11.3, identical discipline to zit.py (Phase 20): construct on torch.device(\"meta\") using ONLY P25-B1's inferred hyperparameters, dtype chosen per §11.5's precedence reading ctx.caps. Uses diffusers'/transformers' layer/block classes per §11.2 (never a hub-aware loader). Step 3 (materialize+remap+load) is the next task's scope. Acceptance: >=4 tests in test_arch_flux2klein.py: meta construction succeeds against the P25-A1 4B fixture, dtype selection follows §11.5's precedence for each of 4 caps combinations, construction against the no-metadata variant also succeeds; `python -m pytest worker/tests/test_arch_flux2klein.py -v` exits 0 (>=11 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P25-C2",
+    "description": "worker/nodes/arch/diffusion/flux2klein.py: key remap, load, .arch (4B)",
+    "phase": "25",
+    "project": "anvilml",
+    "prereqs": ["P25-C1"],
+    "context": "Complete flux2klein.py's load() with steps 3-4 per §11.3, the scope P25-C1 deferred: build the checkpoint-key to constructed-module-key mapping by hand against the P25-A1 4B fixture (never assumed from zit.py's mapping - this is a genuinely different model family). Cast tensors to the selected dtype BEFORE load_state_dict(..., assign=True) - the same mandatory ordering restated per-module as every prior arch module. Return the module with .arch matching can_handle()'s key (P25-B2). Acceptance: >=6 new tests in test_arch_flux2klein.py: load() against the 4B fixture succeeds with correctly-loaded weights, .arch is set correctly, tensors confirmed at the selected dtype, load() against the no-metadata variant succeeds via fallback; `python -m pytest worker/tests/test_arch_flux2klein.py -v` exits 0 (>=17 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P25-D1",
+    "description": "worker/nodes/arch/diffusion/flux2klein.py: sample() + compute_latent_shape (4B)",
+    "phase": "25",
+    "project": "anvilml",
+    "prereqs": ["P25-C2"],
+    "context": "Extend flux2klein.py with compute_latent_shape() and sample() per ANVILML_DESIGN.md §10.3/§11.6, identical contract shape to zit.py (Phase 21's compute_latent_shape/sample steps combined into one task here since flux2klein's own formula and pipeline assembly are each smaller in scope than zit.py's were as the FIRST arch module written): compute_latent_shape() implements Flux 2 Klein's own patch-packing formula (architecture-specific, not reused from zit.py); sample() assembles+caches a pipeline via pipeline_cache.get_or_load() and runs denoising with -1 seed resolved via secrets before the run. Acceptance: >=8 tests in test_arch_flux2klein.py: compute_latent_shape produces the expected tuple for several inputs, sample() pipeline assembly/caching matches zit.py's pattern, seed=-1 resolves to a random value, denoising runs against the 4B fixture; `python -m pytest worker/tests/test_arch_flux2klein.py -v` exits 0 (>=25 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P25-E1",
+    "description": "worker/nodes/arch/vae/flux2_vae.py: full load() + decode() (single task)",
+    "phase": "25",
+    "project": "anvilml",
+    "prereqs": ["P25-A1"],
+    "context": "Create worker/nodes/arch/vae/flux2_vae.py implementing the FULL contract in one task (unlike zit_vae.py's Phase 23 multi-task split - this is the SECOND VAE module, the pattern is established and the per-step granularity that mattered for the first module's careful introduction isn't needed for the second): _infer_hyperparams() (read all keys), can_handle()+registration into arch/vae/__init__.py (second real entry alongside zit_vae.py), meta construction+dtype selection, key remap+load_state_dict (cast-before-assign=True, same mandatory ordering), .arch attribute, decode() against the P25-A1 Flux 2 VAE fixture. Confirm can_handle() disambiguates from zit_vae.py's fixture. Acceptance: >=15 tests in worker/tests/test_arch_vae_flux2.py covering every contract step plus decode() against a fixture-shaped latent, mirroring zit_vae.py's Phase 23 coverage in one file; `python -m pytest worker/tests/test_arch_vae_flux2.py -v` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P25-F1",
+    "description": "Runnable Proof: Flux 2 Klein 4B graph via generic nodes produces a real artifact",
+    "phase": "25",
+    "project": "anvilml",
+    "prereqs": ["P25-D1", "P25-E1"],
+    "context": "No new source files. Submit Appendix B.2's example graph (architecture-agnostic per its own header) with model_id values pointing at the Flux 2 Klein 4B + Flux 2 VAE fixtures (P25-A1) via POST /v1/jobs against a live real-mode server, reusing the already-built qwen3.py for the text encoder (Flux 2 Klein's row in the model matrix reuses Qwen3 4B from Phase 22 - no new CLIP module, confirming this too). Poll until Completed, retrieve via GET /v1/artifacts/:hash, confirm a real valid PNG with correct dimensions - the SAME generic node code path from Phase 24 (zero changes), now serving a second diffusion architecture. Record the literal output, explicitly noting zero generic-node-layer changes were needed (or flagging a design defect if any were). Acceptance: the full submit->poll->retrieve sequence succeeds in real mode using the Flux 2 Klein 4B graph, producing a retrievable, valid PNG matching the requested dimensions.",
+    "tags": ["manual"],
+    "defers_to": []
+  }
+]

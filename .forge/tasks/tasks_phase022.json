@@ -1,0 +1,82 @@
+[
+  {
+    "id": "P22-A1",
+    "description": "worker/assets/qwen3_tokenizer/: vendored tokenizer + seeding script",
+    "phase": "22",
+    "project": "anvilml",
+    "prereqs": ["P19-D1"],
+    "context": "Create worker/assets/qwen3_tokenizer/ per ANVILML_DESIGN.md §10.5: vendor the Qwen3 tokenizer's vocab/merges/config files, committed to git, never downloaded from a model hub at worker runtime. Create worker/tools/seed_tokenizers.sh and seed_tokenizers.ps1: re-seed this directory from a stated upstream source, with the provenance reasoning for that source choice recorded as a comment in the script (which repo/release, why this is the correct canonical source - not just a URL with no justification). Acceptance: `test -d worker/assets/qwen3_tokenizer && ls worker/assets/qwen3_tokenizer | wc -l` shows >=1 file; `bash worker/tools/seed_tokenizers.sh --dry-run` (or equivalent no-op flag) exits 0 without network calls, or the script is reviewed and confirmed idempotent against an already-seeded directory.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P22-B1",
+    "description": "worker/tests/fixtures/: Qwen3 CLIP fixture safetensors builder",
+    "phase": "22",
+    "project": "anvilml",
+    "prereqs": ["P22-A1"],
+    "context": "Create worker/tests/fixtures/build_qwen3_fixture.py per worker/tests/fixtures/README.md's conventions (Phase 19's P19-D1): a script generating a tiny synthetic .safetensors file with Qwen3-text-encoder-shaped tensor keys (small hidden dim, small layer count, small vocab - structurally valid for whatever shape-inference formula qwen3.py's load() will read, NOT a miniaturized copy of the real model's actual shapes). Run the script to produce worker/tests/fixtures/qwen3_tiny.safetensors, committing the small file. Acceptance: `python worker/tests/fixtures/build_qwen3_fixture.py` exits 0, produces a file under 10MB; the file loads successfully via safetensors.safe_open.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P22-B2",
+    "description": "worker/nodes/arch/clip/qwen3.py: shape inference from safetensors header",
+    "phase": "22",
+    "project": "anvilml",
+    "prereqs": ["P22-B1"],
+    "context": "Create worker/nodes/arch/clip/qwen3.py. Implement _infer_hyperparams(path: str) -> dict per ANVILML_DESIGN.md §11.3 step 1 (same discipline as Phase 20's zit.py - read ALL keys via f.keys(), never a truncated sample) to infer Qwen3's hidden dim, layer count, vocab size etc from the P22-B1 fixture's safetensors header. can_handle() and dispatch registration are the next task's scope - do not add them here. Acceptance: >=3 tests in worker/tests/test_arch_clip_qwen3.py: _infer_hyperparams against the P22-B1 fixture returns the expected hyperparameter dict, malformed/truncated input raises a clear error rather than silently returning wrong values; `python -m pytest worker/tests/test_arch_clip_qwen3.py -v` exits 0.",
+    "tags": [],
+    "defers_to": ["P22-B3"]
+  },
+  {
+    "id": "P22-B3",
+    "description": "worker/nodes/arch/clip/qwen3.py: can_handle() + dispatch registration",
+    "phase": "22",
+    "project": "anvilml",
+    "prereqs": ["P22-B2"],
+    "context": "Extend qwen3.py with can_handle(key) -> bool, the scope P22-B2 deferred: matches on the clip_type string (\"qwen3\" per §10.3's LoadClip row - this family's dispatch key is a string, not an arch-metadata lookup, distinct from diffusion/vae's metadata-or-path-fallback pattern). Register qwen3.py into arch/clip/__init__.py's dispatcher (Phase 10's P10-B2, gaining its first real entry). No sample()/decode() for clip family per §10.4's table - CLIP modules implement load() only. Acceptance: >=3 new tests in test_arch_clip_qwen3.py: can_handle matches \"qwen3\" and rejects other strings, get_module() now returns qwen3.py for a matching key; `python -m pytest worker/tests/test_arch_clip_qwen3.py -v` exits 0 (>=6 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P22-C1",
+    "description": "worker/nodes/arch/clip/qwen3.py: meta construction + dtype selection",
+    "phase": "22",
+    "project": "anvilml",
+    "prereqs": ["P22-B3"],
+    "context": "Extend qwen3.py with load()'s step 2 per ANVILML_DESIGN.md §11.3, identical discipline to Phase 20's zit.py: construct the target nn.Module on torch.device(\"meta\") using ONLY P22-B2's inferred hyperparameters, dtype chosen per §11.5's precedence reading ctx.caps. Uses transformers' layer/block classes per §11.2 (never AutoModel.from_pretrained or any hub-aware loader). Tokenizer loading (from the vendored worker/assets/qwen3_tokenizer/, P22-A1) happens here too, via transformers' tokenizer class pointed at the local vendored path - never a hub lookup, even gated by a flag. Step 3 (materialize+remap+load) is the next task's scope. Acceptance: >=4 tests in test_arch_clip_qwen3.py: meta construction succeeds against the fixture, dtype follows §11.5's precedence for 4 caps combos, tokenizer loads from the vendored path with zero network calls (network-blocking fixture/monkeypatch); `python -m pytest worker/tests/test_arch_clip_qwen3.py -v` exits 0 (>=10 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P22-C2",
+    "description": "worker/nodes/arch/clip/qwen3.py: key remap, load_state_dict, .arch attribute",
+    "phase": "22",
+    "project": "anvilml",
+    "prereqs": ["P22-C1"],
+    "context": "Complete qwen3.py's load() with step 3 per §11.3, the scope P22-C1 deferred: build the checkpoint-key to constructed-module-key mapping by hand against the P22-B1 fixture (never assumed from zit.py's mapping or any other model's). Materialize via to_empty(), cast tensors to the selected dtype BEFORE load_state_dict(..., assign=True) - same mandatory ordering as Phase 20's P20-C3, restated here since every arch module independently must get this right. Return the constructed module (text encoder + loaded tokenizer together, per §11.3 step 4's single-object-return) with .arch set to \"qwen3\". Acceptance: >=6 new tests in test_arch_clip_qwen3.py: load() against the fixture succeeds with correctly-loaded weights, .arch is \"qwen3\", tensors confirmed at the selected dtype, the returned tokenizer encodes a test string to token ids; `python -m pytest worker/tests/test_arch_clip_qwen3.py -v` exits 0 (>=16 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P22-D1",
+    "description": "worker/nodes/loader.py: LoadClip real branch calls qwen3.py via dispatch",
+    "phase": "22",
+    "project": "anvilml",
+    "prereqs": ["P22-C2"],
+    "context": "Update LoadClip's real branch (worker/nodes/loader.py, Phase 19's P19-C3 - a deliberate NotImplementedError placeholder) to call arch.clip.get_module(inputs.get(\"clip_type\",\"qwen3\")).load(path, ctx.caps) via pipeline_cache.get_or_load(). Update the REAL_PATH_VERIFIED marker to point at the new passing test, removing the old NotImplementedError-asserting test rather than leaving it alongside the new one - the same stale-marker discipline as Phase 20's P20-D1. This is the second loader (after LoadModel, Phase 20) to gain a real branch; LoadVae remains real-raising until a later phase builds its arch module. Acceptance: >=4 tests in worker/tests/test_nodes_loader.py (real_mode): LoadClip.execute() against the P22-B1 fixture path succeeds and returns a loaded encoder per the CLIP slot contract, the stale NotImplementedError test for LoadClip specifically is removed; `python -m pytest worker/tests/test_nodes_loader.py -v -m real_mode` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P22-E1",
+    "description": "Runnable Proof: LoadClip node loads the Qwen3 fixture checkpoint for real",
+    "phase": "22",
+    "project": "anvilml",
+    "prereqs": ["P22-D1"],
+    "context": "No new source files. Run worker/tests/test_arch_clip_qwen3.py and worker/tests/test_nodes_loader.py's real-mode suites directly - same pytest-invocation proof pattern as Phases 20-21, since no ClipTextEncode exists yet to actually use the loaded encoder for conditioning (a later phase). Confirm the full real-mode chain succeeds: shape inference -> meta construction -> tokenizer load -> key remap -> load -> LoadClip's real branch, all against the P22-B1 fixture, zero NotImplementedError anywhere in this chain, zero network calls anywhere in the tokenizer path. Record the literal pytest output in the implementation report. Acceptance: `python -m pytest worker/tests/test_arch_clip_qwen3.py worker/tests/test_nodes_loader.py -v -m real_mode` exits 0 with zero skips and zero xfails in this specific invocation.",
+    "tags": ["manual"],
+    "defers_to": []
+  }
+]

@@ -1,0 +1,62 @@
+[
+  {
+    "id": "P13-A1",
+    "description": "database/: jobs table migration",
+    "phase": "13",
+    "project": "anvilml",
+    "prereqs": ["P12-B1"],
+    "context": "Create database/migrations/003_jobs.sql per ANVILML_DESIGN.md §5.3/§12: CREATE TABLE jobs (id TEXT PRIMARY KEY, status TEXT NOT NULL, graph TEXT NOT NULL, settings TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, worker_id TEXT, error TEXT, queue_position INTEGER); CREATE INDEX idx_jobs_status ON jobs(status); CREATE INDEX idx_jobs_created_at ON jobs(created_at). graph and settings are stored as TEXT (serialized JSON via serde_json::to_string), not normalized columns - Job's own struct (anvilml-core, Phase 3 P3-A1) already owns the canonical shape, this table is purely a persistence mirror of it. Acceptance: `sqlite3 :memory: < database/migrations/003_jobs.sql` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P13-A2",
+    "description": "anvilml-scheduler: JobQueue in-memory FIFO with O(1) cancel",
+    "phase": "13",
+    "project": "anvilml",
+    "prereqs": ["P13-A1"],
+    "context": "Create crates/anvilml-scheduler/src/queue.rs per ANVILML_DESIGN.md §12.1. JobQueue: VecDeque<Job> (Job from anvilml-core, Phase 3 P3-A1) plus a HashSet<Uuid> of cancelled ids for O(1) cancel marking (cancel() does not remove from the VecDeque immediately - it marks, and pop_front lazily skips marked entries, which is what makes cancel O(1) rather than O(n)). Methods: push(&mut self, job: Job), pop_front(&mut self) -> Option<Job> (skips+discards cancelled entries it encounters), cancel(&mut self, id: Uuid) -> bool (true if found and marked), get(&self, id: Uuid) -> Option<&Job>, list(&self) -> Vec<&Job>, len(&self) -> usize. Pure in-memory, no async/IO - DB persistence is a separate task. Declare mod queue; pub use queue::JobQueue; in lib.rs. Acceptance: >=7 tests in tests/queue_tests.rs: FIFO order, cancel-then-pop_front skips it, cancel on unknown id returns false, get/list/len correct after mixed ops; `cargo test -p anvilml-scheduler --test queue_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P13-A3",
+    "description": "anvilml-scheduler: VramLedger per-device reservation tracking",
+    "phase": "13",
+    "project": "anvilml",
+    "prereqs": ["P13-A1"],
+    "context": "Create crates/anvilml-scheduler/src/ledger.rs per ANVILML_DESIGN.md §12.4: VramLedger{reservations: HashMap<u32, u32>} (device_index -> reserved_mib). reserve(&mut self, device_index: u32, vram_mib: u32). release(&mut self, device_index: u32, vram_mib: u32) (saturating_sub - never panics/underflows on a release exceeding the current reservation, which can legitimately happen with imprecise estimates). free_mib(&self, device_index: u32, total_mib: u32) -> u32 (total_mib minus reservation, saturating). Advisory only per §12.4 - prevents over-scheduling, not VRAM sufficiency; a real OOM is still possible, worker emits Failed, scheduler calls release(). Declare mod ledger; pub use ledger::VramLedger; in lib.rs. Acceptance: >=6 tests: reserve reduces free_mib, release restores capacity, over-release doesn't panic, unknown device returns total_mib; `cargo test -p anvilml-scheduler --test ledger_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P13-B1",
+    "description": "anvilml-registry: JobStore CRUD, ghost-job reset on startup",
+    "phase": "13",
+    "project": "anvilml",
+    "prereqs": ["P13-A1", "P6-A8"],
+    "context": "Create crates/anvilml-registry/src/job_store.rs (placed in anvilml-registry, not anvilml-scheduler, since job PERSISTENCE is a registry concern while in-memory queue/ledger logic is the scheduler's - same split as ModelStore vs ModelScanner in Phase 6). JobStore{pool: SqlitePool}. upsert(&self, job: &Job) -> Result<(), AnvilError> (serializes graph/settings to JSON text columns). get(&self, id: Uuid) -> Result<Option<Job>, AnvilError>. list(&self, status: Option<JobStatus>, limit: Option<u32>) -> Result<Vec<Job>, AnvilError>. reset_ghost_jobs(&self) -> Result<u32, AnvilError> (per §19.2: Queued/Running -> Failed with error=\"server_restart\"; returns affected count). Declare mod job_store; pub use job_store::JobStore; in lib.rs. Acceptance: >=6 tests: upsert+get roundtrips JSON correctly, list with status filter, reset_ghost_jobs only affects Queued/Running, empty table returns 0; `cargo test -p anvilml-registry --test job_store_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P13-C1",
+    "description": "backend: wire reset_ghost_jobs() into server startup sequence",
+    "phase": "13",
+    "project": "anvilml",
+    "prereqs": ["P13-B1"],
+    "context": "Update backend/src/main.rs's normal (non-hw-probe) startup path: after config_load::load() and before the server starts accepting connections, construct a SqlitePool via anvilml_registry::create_pool (Phase 6's P6-A2) using cfg.db_path, construct a JobStore, call reset_ghost_jobs() and log the count at INFO level if nonzero, per ANVILML_DESIGN.md §19.2. This is the first task where main.rs actually creates a SqlitePool in its normal run path (Phase 6 only built the capability, Phase 11's AppState doesn't yet hold a db field - that field is added by a later task once more of AppState needs the pool, not speculatively here). Acceptance: `cargo build -p anvilml` exits 0; `cargo test --workspace --features mock-hardware` exits 0 (no regression to existing health/nodes/hw-probe tests).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P13-D1",
+    "description": "anvilml-scheduler: lib.rs re-export pass, 80-line check",
+    "phase": "13",
+    "project": "anvilml",
+    "prereqs": ["P13-A2", "P13-A3"],
+    "context": "Update crates/anvilml-scheduler/src/lib.rs: confirm pub use re-exports for ValidatedGraph/GraphError (types, Phase 12), validate_graph (dag, Phase 12), JobQueue (queue), VramLedger (ledger) are all present per ANVILML_DESIGN.md §12.1's module layout. No implementation logic added - re-export and 80-line cap verification only. Acceptance: `wc -l crates/anvilml-scheduler/src/lib.rs` reports <=80; `cargo test -p anvilml-scheduler` (full crate suite) exits 0.",
+    "tags": ["refactor"],
+    "defers_to": []
+  }
+]

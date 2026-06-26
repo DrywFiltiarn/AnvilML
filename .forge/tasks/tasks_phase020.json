@@ -1,0 +1,82 @@
+[
+  {
+    "id": "P20-A1",
+    "description": "worker/tests/fixtures/: ZiT diffusion fixture safetensors builder",
+    "phase": "20",
+    "project": "anvilml",
+    "prereqs": ["P19-D1"],
+    "context": "Create worker/tests/fixtures/build_zit_fixture.py per worker/tests/fixtures/README.md's conventions (Phase 19's P19-D1): a script generating a tiny synthetic .safetensors file with ZiT-diffusion-shaped tensor keys (a small number of transformer layers, small hidden dim, small patch size - structurally valid for whatever shape-inference formula zit.py's load() will read, NOT a miniaturized copy of the real model's actual shapes) and a second variant with a non-recognizable key prefix and no arch metadata key, for the mandatory metadata-fallback regression case per §17.5. Run the script to produce worker/tests/fixtures/zit_tiny.safetensors and zit_tiny_no_metadata.safetensors, committing both small files. Acceptance: `python worker/tests/fixtures/build_zit_fixture.py` exits 0, produces both files under 10MB combined; both load successfully via safetensors.safe_open.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P20-B1",
+    "description": "worker/nodes/arch/diffusion/zit.py: shape inference from safetensors header",
+    "phase": "20",
+    "project": "anvilml",
+    "prereqs": ["P20-A1"],
+    "context": "Create worker/nodes/arch/diffusion/zit.py. Implement _infer_hyperparams(path: str) -> dict per ANVILML_DESIGN.md §11.3 step 1 EXACTLY: safe_open(path, framework=\"pt\"), read ALL keys via f.keys() (never a truncated/sliced sample - P904's exact regression), inspect get_slice(key).get_shape() for every key to infer layer count, hidden dim, patch size, head count etc - the key-naming pattern and inference formula are worked out against the P20-A1 fixture, not assumed from any prior model version. can_handle() and dispatch registration are the next task's scope - do not add them here. Acceptance: >=4 tests in worker/tests/test_arch_zit.py: _infer_hyperparams against the P20-A1 fixture returns the expected hyperparameter dict, the same function against the no-metadata fixture variant still succeeds via the fallback path, malformed/truncated input raises a clear error rather than silently returning wrong values; `python -m pytest worker/tests/test_arch_zit.py -v` exits 0.",
+    "tags": [],
+    "defers_to": ["P20-B2"]
+  },
+  {
+    "id": "P20-B2",
+    "description": "worker/nodes/arch/diffusion/zit.py: can_handle() + dispatch registration",
+    "phase": "20",
+    "project": "anvilml",
+    "prereqs": ["P20-B1"],
+    "context": "Extend zit.py with can_handle(key) -> bool, the scope P20-B1 deferred: matches the architecture string read from safetensors metadata, or the path-derived fallback when metadata is absent (consistent with P20-B1's fallback handling). Register zit.py into arch/diffusion/__init__.py's _REGISTERED_MODULES list (Phase 10's P10-B1 dispatcher, gaining its first real entry). load()/sample()/compute_latent_shape() remain unimplemented - shape inference and dispatch registration only, in this and the prior task together. Acceptance: >=3 new tests in test_arch_zit.py: can_handle correctly matches the P20-A1 fixture's arch key, can_handle rejects an unrelated key, get_module() (Phase 10's P10-B1 dispatcher) now returns zit.py's module for a matching key; `python -m pytest worker/tests/test_arch_zit.py -v` exits 0 (>=7 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P20-C1",
+    "description": "worker/nodes/arch/diffusion/zit.py: meta-device construction",
+    "phase": "20",
+    "project": "anvilml",
+    "prereqs": ["P20-B2"],
+    "context": "Extend zit.py with load()'s step 2 per ANVILML_DESIGN.md §11.3: construct the target nn.Module on torch.device(\"meta\") using ONLY the hyperparameters P20-B1's _infer_hyperparams() returned (no config.json, local or remote). Use diffusers'/transformers' layer/block classes as building blocks per §11.2's library boundary (attention, norm, conv - never DiffusionPipeline.from_pretrained or convert_*_checkpoint_to_diffusers). Dtype selection (the next task), materialize+remap+load (the task after that), and the .arch attribute are NOT in this task's scope - meta-device construction only. Acceptance: >=3 tests in test_arch_zit.py: meta-device construction succeeds against the P20-A1 fixture's inferred hyperparameters, constructed parameters are confirmed on torch.device(\"meta\") (zero real memory allocated), construction against the no-metadata fixture variant also succeeds; `python -m pytest worker/tests/test_arch_zit.py -v` exits 0 (>=10 total).",
+    "tags": [],
+    "defers_to": ["P20-C2"]
+  },
+  {
+    "id": "P20-C2",
+    "description": "worker/nodes/arch/diffusion/zit.py: dtype selection per InferenceCaps",
+    "phase": "20",
+    "project": "anvilml",
+    "prereqs": ["P20-C1"],
+    "context": "Extend zit.py's load() with dtype selection, the scope P20-C1 deferred, per §11.5's fixed precedence: fp8 (if caps.fp8 AND checkpoint native dtype is fp8) -> bf16 (if caps.bf16) -> fp16 (if caps.fp16) -> fp32 fallback. ctx.caps is InferenceCaps from Phase 10's NodeContext. Apply the selected dtype to the meta-device construction from P20-C1 (the construction call itself, not yet materialization - that's the next task). Acceptance: >=4 new tests in test_arch_zit.py: each of the 4 precedence branches is exercised with the correct caps combination (fp8-capable, bf16-only, fp16-only, none/fp32-fallback) and produces a module at the expected dtype; `python -m pytest worker/tests/test_arch_zit.py -v` exits 0 (>=14 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P20-C3",
+    "description": "worker/nodes/arch/diffusion/zit.py: key remap, load_state_dict, .arch attribute",
+    "phase": "20",
+    "project": "anvilml",
+    "prereqs": ["P20-C2"],
+    "context": "Complete zit.py's load() with steps 3-4 per §11.3, the scope P20-C1/C2 deferred: build the checkpoint-key to constructed-module-key mapping by hand, informed by inspecting both key sets directly against the P20-A1 fixture (never assumed from a prior model version). Materialize via to_empty(), cast tensors to the already-selected dtype (P20-C2) BEFORE calling load_state_dict(..., assign=True) - this ordering is mandatory, assign=True bypasses dtype coercion so casting after the call silently fails (P904's exact dtype-safety incident). Return the constructed module with .arch set to the architecture string can_handle() (P20-B2) matches. Acceptance: >=6 new tests in test_arch_zit.py: load() against the fixture succeeds end to end with correctly-loaded weights (spot-check values), .arch is set correctly, tensors confirmed at the selected dtype post-load, load() against the no-metadata fixture succeeds via fallback; `python -m pytest worker/tests/test_arch_zit.py -v` exits 0 (>=20 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P20-D1",
+    "description": "worker/nodes/loader.py: LoadModel real branch calls zit.py via dispatch",
+    "phase": "20",
+    "project": "anvilml",
+    "prereqs": ["P20-C3"],
+    "context": "Update LoadModel's real branch (worker/nodes/loader.py, Phase 19's P19-C2 - a deliberate NotImplementedError placeholder) to call arch.diffusion.get_module(arch_key).load(path, ctx.caps) via pipeline_cache.get_or_load(), where arch_key matches zit.py's can_handle() contract (P20-B2). This closes the gap Phase 19 deliberately left open - the first real, non-raising LoadModel execution end to end. Update the REAL_PATH_VERIFIED marker to point at the new passing test (the old marker pointed at a NotImplementedError-asserting test that no longer exists - a stale marker is the exact P902 false-mechanical-guarantee failure mode, do not leave one). Acceptance: >=4 tests in worker/tests/test_nodes_loader.py (real_mode): LoadModel.execute() against the P20-A1 fixture path succeeds and returns a loaded module per the MODEL slot contract, the stale NotImplementedError test is removed, not left alongside the new one; `python -m pytest worker/tests/test_nodes_loader.py -v -m real_mode` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P20-E1",
+    "description": "Runnable Proof: LoadModel node loads the ZiT fixture checkpoint for real",
+    "phase": "20",
+    "project": "anvilml",
+    "prereqs": ["P20-D1"],
+    "context": "No new source files. Run worker/tests/test_arch_zit.py and worker/tests/test_nodes_loader.py's real-mode suites directly (this phase's Runnable Proof is a real-mode pytest invocation, not a live-server HTTP proof, since no Sampler/VaeDecode exists yet to complete an end-to-end job - that requires a later counterpart phase, out of this phase's scope). Confirm the full real-mode chain succeeds: shape inference -> meta construction -> dtype selection -> key remap -> load -> LoadModel's real branch, all against the P20-A1 fixture, zero NotImplementedError anywhere in the chain. Record the literal pytest output in the implementation report. Acceptance: `python -m pytest worker/tests/test_arch_zit.py worker/tests/test_nodes_loader.py -v -m real_mode` exits 0 with zero skips and zero xfails in this specific invocation.",
+    "tags": ["manual"],
+    "defers_to": []
+  }
+]

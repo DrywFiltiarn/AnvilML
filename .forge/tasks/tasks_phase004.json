@@ -1,0 +1,62 @@
+[
+  {
+    "id": "P4-A1",
+    "description": "anvilml-hardware: DeviceDetector trait + crate scaffolding",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": ["P3-A5"],
+    "context": "In crates/anvilml-hardware/src/, create detect.rs declaring the DeviceDetector trait per ANVILML_DESIGN.md §6.5 exactly: pub trait DeviceDetector: Send + Sync { fn detect(&self) -> Result<Vec<GpuDevice>, AnvilError>; fn refresh_vram(&self, index: u32) -> Result<(u32, u32), AnvilError>; } (refresh_vram returns (total_mib, free_mib)). Add anvilml-core as dep (already present from Phase 1 stub). No concrete implementations yet - those are separate tasks. Declare mod detect; pub use detect::DeviceDetector; in lib.rs. Acceptance: `cargo build -p anvilml-hardware` exits 0 with the trait defined and zero implementors (compiles as dead code is fine - trait alone has no warning).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P4-A2",
+    "description": "anvilml-hardware: CpuDetector always returns one CPU device",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": ["P4-A1"],
+    "context": "Create crates/anvilml-hardware/src/cpu.rs. Implement CpuDetector: DeviceDetector. detect() always returns Ok(vec![GpuDevice{index:0, name:\"CPU\".into(), device_type:DeviceType::Cpu, vram_total_mib:0, vram_free_mib:0, driver_version:\"n/a\".into(), pci_vendor_id:0, pci_device_id:0, arch:None, caps:InferenceCaps::default(), enumeration_source:EnumerationSource::Cpu, capabilities_source:CapabilitySource::Fallback}]) - never errors, never panics. EnumerationSource::Cpu (amended 7th variant per ANVILML_DESIGN.md §5.5, see docs/ADDENDUM_ENUMERATION_SOURCE_CPU.md) marks this device as synthesized, distinct from EnumerationSource::Mock (MockDetector's env-var-driven device, P4-A3). refresh_vram always returns Ok((0,0)). Declare mod cpu; in lib.rs. Acceptance: crates/anvilml-hardware/tests/cpu_tests.rs, >=4 tests (1 device, device_type Cpu, enumeration_source Cpu, refresh_vram (0,0)); `cargo test -p anvilml-hardware --test cpu_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P4-A3",
+    "description": "anvilml-hardware: MockDetector env-var driven stub",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": ["P4-A2"],
+    "context": "Create crates/anvilml-hardware/src/mock.rs, gated #[cfg(feature=\"mock-hardware\")]. Implement MockDetector: DeviceDetector reading ANVILML_MOCK_DEVICE_TYPE (default \"cpu\"), ANVILML_MOCK_VRAM_MIB (default 8192), ANVILML_MOCK_DEVICE_NAME (default \"Mock GPU\") per ANVILML_DESIGN.md §6.7. detect() returns one synthetic GpuDevice: device_type parsed from env (\"cuda\"->Cuda,\"rocm\"->Rocm,else Cpu), vram_total_mib/vram_free_mib = the VRAM env value, enumeration_source=Mock, capabilities_source=Fallback. refresh_vram returns Ok((vram_mib,vram_mib)). Declare mod mock; same feature gate, in lib.rs. Acceptance: crates/anvilml-hardware/tests/mock_tests.rs, >=4 tests (defaults, each of 3 env var overrides, restore prior env value on exit per §17.4 rule 2); `cargo test -p anvilml-hardware --features mock-hardware --test mock_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P4-A4",
+    "description": "anvilml-hardware: VulkanDetector headless enumeration",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": ["P4-A3"],
+    "context": "Create crates/anvilml-hardware/src/vulkan.rs. Implement VulkanDetector: DeviceDetector using the ash crate (resolve version live via registry) for headless Vulkan instance creation + physical device enumeration, per ANVILML_DESIGN.md §6.2: SDK-free, no nvidia-smi/rocm-smi/lspci. detect() never panics - loader-absent or vkCreateInstance failure returns Ok(vec![]), never Err. Map each VkPhysicalDevice to GpuDevice via vendor ID (0x10de=Nvidia->Cuda, 0x1002=AMD->Rocm, else skip). refresh_vram queries the memory heap via VK_EXT_memory_budget if available, else returns (total,total). Acceptance: crates/anvilml-hardware/tests/vulkan_tests.rs, >=4 tests (loader-absent returns Ok(vec![]) not Err, Nvidia vendor ID maps to Cuda, AMD vendor ID maps to Rocm, unknown vendor ID is skipped); `cargo test -p anvilml-hardware --test vulkan_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P4-A5",
+    "description": "anvilml-hardware: DxgiDetector Windows fallback (cfg-gated)",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": ["P4-A4"],
+    "context": "Create crates/anvilml-hardware/src/dxgi.rs, gated #[cfg(target_os=\"windows\")] at the module declaration in lib.rs (file itself has no cfg gate, the mod statement does). Implement DxgiDetector: DeviceDetector using IDXGIFactory1::EnumAdapters1 (windows crate, resolve version live via registry) per ANVILML_DESIGN.md §6.4 step 4 - used only as a fallback when Vulkan returns empty on Windows. Map adapter description + VendorId to GpuDevice the same way as VulkanDetector (P4-A4) for consistency. Never panics - EnumAdapters1 failure returns Ok(vec![]). Create crates/anvilml-hardware/tests/dxgi_tests.rs, gated #[cfg(target_os=\"windows\")] at the test-file level too (compiles to a no-op test binary on Linux CI, runs for real on the windows-latest CI runner). Acceptance: >=3 tests; `cargo test -p anvilml-hardware --test dxgi_tests` exits 0 on Windows.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P4-A6",
+    "description": "anvilml-hardware: SysfsPciDetector Linux fallback (cfg-gated)",
+    "phase": "4",
+    "project": "anvilml",
+    "prereqs": ["P4-A4"],
+    "context": "Create crates/anvilml-hardware/src/sysfs.rs, gated #[cfg(target_os=\"linux\")] via the mod statement in lib.rs. Implement SysfsPciDetector: DeviceDetector reading /sys/bus/pci/devices/*/{vendor,device,class} per ANVILML_DESIGN.md §6.4 step 5 - fallback when Vulkan returns empty on Linux. Filter by class prefix 0x03 (display controller) per PCI class code spec. Map vendor hex (0x10de->Cuda, 0x1002->Rocm) to GpuDevice, consistent with VulkanDetector's mapping (P4-A4). Never panics - missing /sys path or permission error returns Ok(vec![]), not Err. Acceptance: >=3 tests in crates/anvilml-hardware/tests/sysfs_tests.rs (gated #[cfg(target_os=\"linux\")] at file level): missing sysfs path returns Ok(vec![]), a temp-dir-mocked sysfs tree with one synthetic display-class device parses correctly, non-display-class device is filtered out; `cargo test -p anvilml-hardware --test sysfs_tests` exits 0 on Linux.",
+    "tags": [],
+    "defers_to": []
+  }
+]

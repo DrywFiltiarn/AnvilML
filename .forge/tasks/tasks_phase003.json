@@ -1,0 +1,112 @@
+[
+  {
+    "id": "P3-A1",
+    "description": "anvilml-core: Job, JobStatus, JobSettings types",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": ["P2-A7"],
+    "context": "Create crates/anvilml-core/src/types/mod.rs (declares submodules) and crates/anvilml-core/src/types/job.rs. Define per ANVILML_DESIGN.md §5.3 exactly: Job {id: Uuid, status: JobStatus, graph: serde_json::Value, settings: JobSettings, created_at: DateTime<Utc>, started_at: Option<DateTime<Utc>>, completed_at: Option<DateTime<Utc>>, worker_id: Option<String>, error: Option<String>, queue_position: Option<u32>}; JobStatus enum {Queued, Running, Completed, Failed, Cancelled}; JobSettings {device_preference: Option<String>}. All derive Debug, Clone, Serialize, Deserialize; JobStatus also Copy, PartialEq, Eq. Add uuid, chrono, serde_json deps if not already present. Declare mod types; pub use types::*; in lib.rs. Acceptance: >=4 tests in crates/anvilml-core/tests/job_tests.rs covering serde roundtrip for Job and each JobStatus variant; `cargo test -p anvilml-core --test job_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P3-A2",
+    "description": "anvilml-core: ModelMeta, ModelKind, ModelDtype, ModelFormat",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": ["P3-A1"],
+    "context": "Create crates/anvilml-core/src/types/model.rs per ANVILML_DESIGN.md §5.4 exactly: ModelMeta {id: String, name: String, path: PathBuf, kind: ModelKind, dtype: ModelDtype, format: ModelFormat, size_bytes: u64, scanned_at: DateTime<Utc>}; ModelKind enum {Diffusion, TextEncoder, Vae, Lora, ControlNet, Upscale, Unknown} with #[serde(rename_all=\"snake_case\")]; ModelDtype enum {Fp32, Fp16, Bf16, Fp8, Fp4, Unknown} snake_case; ModelFormat enum {Safetensors, Ckpt, Pt, Bin, Unknown} snake_case. All derive Debug, Clone, Copy (enums only, not ModelMeta), PartialEq, Eq, Serialize, Deserialize. Declare mod model; in types/mod.rs. Acceptance: >=4 tests in crates/anvilml-core/tests/model_tests.rs covering snake_case serde output for each enum (e.g. ModelKind::TextEncoder serializes to \"text_encoder\"); `cargo test -p anvilml-core --test model_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P3-A3",
+    "description": "anvilml-core: ArtifactMeta type",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": ["P3-A2"],
+    "context": "Create crates/anvilml-core/src/types/artifact.rs. Define ArtifactMeta: hash: String (SHA-256 hex content address), job_id: Uuid, width: u32, height: u32, seed: i64, steps: u32, created_at: DateTime<Utc>, file_path: PathBuf. Derive Debug, Clone, Serialize, Deserialize, ToSchema (utoipa, for future OpenAPI annotation - add utoipa dep, version resolved live via registry). Declare mod artifact; in types/mod.rs. Acceptance: >=3 tests in crates/anvilml-core/tests/artifact_tests.rs covering construction and serde roundtrip; `cargo test -p anvilml-core --test artifact_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P3-A4",
+    "description": "anvilml-core: HardwareInfo, GpuDevice, DeviceType types",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": ["P3-A3"],
+    "context": "Create crates/anvilml-core/src/types/hardware.rs per ANVILML_DESIGN.md §5.5 (first half): HostInfo (minimal: hostname: String, os: String); HardwareInfo {host: HostInfo, gpus: Vec<GpuDevice>, inference_caps: InferenceCaps}; GpuDevice {index: u32, name: String, device_type: DeviceType, vram_total_mib: u32, vram_free_mib: u32, driver_version: String, pci_vendor_id: u16, pci_device_id: u16, arch: Option<String>, caps: InferenceCaps, enumeration_source: EnumerationSource, capabilities_source: CapabilitySource}; DeviceType enum {Cuda, Rocm, Cpu}. All ToSchema+Serialize+Deserialize+Debug+Clone; DeviceType also Copy+PartialEq+Eq. Declare mod hardware; in types/mod.rs. Acceptance: >=4 tests in crates/anvilml-core/tests/hardware_tests.rs covering GpuDevice construction and serde roundtrip; `cargo test -p anvilml-core --test hardware_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P3-A5",
+    "description": "anvilml-core: InferenceCaps, EnumerationSource, CapabilitySource",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": ["P3-A4"],
+    "context": "Extend crates/anvilml-core/src/types/hardware.rs per ANVILML_DESIGN.md §5.5 (second half, amended): InferenceCaps {fp32,fp16,bf16,fp8,fp4,flash_attention: bool}, derives Default in addition to Debug/Clone/Serialize/Deserialize/ToSchema (all false by default); EnumerationSource enum {Vulkan, Dxgi, Sysfs, Nvml, Mock, Override, Cpu} - Cpu is the amended 7th variant, marking the unconditional CPU fallback device as synthesized, not enumerated; CapabilitySource enum {PyTorch, DeviceTable, Fallback}. Both enums Copy+PartialEq+Eq+Debug+Clone+Serialize+Deserialize+ToSchema. Add doc comments: InferenceCaps pre-spawn values are hints only; CapabilitySource::PyTorch is the only source an arch loader may use for runtime dtype decisions; EnumerationSource::Cpu marks a synthesized device. Acceptance: >=5 tests in hardware_tests.rs covering InferenceCaps::default() and each enum variant's serde roundtrip; `cargo test -p anvilml-core --test hardware_tests` exits 0 (>=9 tests total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P3-A6",
+    "description": "anvilml-core: WorkerInfo, WorkerStatus, EnvReport, ProvisioningState",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": ["P3-A5"],
+    "context": "Create crates/anvilml-core/src/types/worker.rs. Define WorkerStatus enum {Spawning, Idle, Busy, Dying, Dead} Copy+PartialEq+Eq; WorkerInfo {worker_id: String, status: WorkerStatus, device_index: u32, device_type: DeviceType, pid: Option<u32>, current_job_id: Option<Uuid>}; EnvReport {python_version: String, torch_version: Option<String>, torch_importable: bool}; ProvisioningState enum {NotStarted, InProgress, Complete, Failed} Copy+PartialEq+Eq. All Debug+Clone+Serialize+Deserialize+ToSchema. Declare mod worker; in types/mod.rs. Acceptance: >=4 tests in crates/anvilml-core/tests/worker_tests.rs covering WorkerInfo construction and each enum's serde roundtrip; `cargo test -p anvilml-core --test worker_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P3-A7",
+    "description": "anvilml-core: NodeTypeDescriptor, SlotDescriptor, SlotType",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": ["P3-A6"],
+    "context": "Create crates/anvilml-core/src/types/node.rs per ANVILML_DESIGN.md §5.6 EXACTLY: NodeTypeDescriptor {type_name: String, display_name: String, category: String, description: String, inputs: Vec<SlotDescriptor>, outputs: Vec<SlotDescriptor>}; SlotDescriptor {name: String, slot_type: SlotType, optional: bool}; SlotType is a FIXED, CLOSED enum with exactly these 11 variants, no more, no fewer, no Other/fallback variant: Model, Clip, Vae, Conditioning, Latent, Image, String, Int, Float, Bool, Any. #[serde(rename_all=\"SCREAMING_SNAKE_CASE\")] on SlotType (Any serializes as \"ANY\", Model as \"MODEL\", etc). All Debug+Clone+Serialize+Deserialize+ToSchema; SlotType also Copy+PartialEq+Eq+Hash. Declare mod node; in types/mod.rs. Acceptance: >=4 tests in crates/anvilml-core/tests/node_tests.rs covering NodeTypeDescriptor construction with mixed required/optional slots and SCREAMING_SNAKE_CASE serde for each of the 11 SlotType variants; `cargo test -p anvilml-core --test node_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P3-A8",
+    "description": "anvilml-core: WsEvent job-lifecycle variants",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": ["P3-A7"],
+    "context": "Create crates/anvilml-core/src/types/events.rs. Define WsEvent enum with #[serde(tag=\"type\", rename_all=\"snake_case\")], populated with only the job-lifecycle variants per ANVILML_DESIGN.md events table: JobQueued{job_id:Uuid, queue_position:u32}, JobStarted{job_id:Uuid, worker_id:String}, JobProgress{job_id:Uuid, step:u32, total_steps:u32, preview_b64:Option<String>}, JobImageReady{job_id:Uuid, artifact_hash:String, width:u32, height:u32, seed:i64, steps:u32}, JobCompleted{job_id:Uuid, elapsed_ms:u64}, JobFailed{job_id:Uuid, error:String}, JobCancelled{job_id:Uuid}. Derive Debug+Clone+Serialize+Deserialize+ToSchema. Worker/System/Provisioning variants are added by the next task - do not stub them here. Declare mod events; in types/mod.rs. Acceptance: >=7 tests in crates/anvilml-core/tests/events_tests.rs, one per variant, asserting snake_case serde tag (e.g. JobQueued -> \"job_queued\"); `cargo test -p anvilml-core --test events_tests` exits 0.",
+    "tags": [],
+    "defers_to": ["P3-A9"]
+  },
+  {
+    "id": "P3-A9",
+    "description": "anvilml-core: WsEvent worker/system/provisioning variants",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": ["P3-A8"],
+    "context": "Extend the WsEvent enum in crates/anvilml-core/src/types/events.rs with the variants deferred by P3-A8: WorkerStatusChanged{worker_id:String, status:WorkerStatus, device_index:u32}, SystemStats{cpu_pct:f32, ram_used_mib:u64, workers:Vec<WorkerInfo>}, ProvisioningProgress{message:String, pct:u8}. WorkerStatus and WorkerInfo come from types::worker (P3-A6) - import them, do not redefine. This receives the scope P3-A8 explicitly deferred. Acceptance: >=3 new tests in events_tests.rs covering these 3 variants' snake_case serde tags (worker_status_changed, system_stats, provisioning_progress); `cargo test -p anvilml-core --test events_tests` exits 0 (>=10 tests total in file).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P3-A10",
+    "description": "anvilml-core: NodeTypeRegistry dynamic registry",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": ["P3-A9"],
+    "context": "Create crates/anvilml-core/src/node_registry.rs. Define NodeTypeRegistry: RwLock<HashMap<String, NodeTypeDescriptor>> keyed by type_name. Methods: new() (empty), register_all(descs: Vec<NodeTypeDescriptor>) (replaces entire contents - called once per worker Ready event), get(type_name: &str) -> Option<NodeTypeDescriptor>, list() -> Vec<NodeTypeDescriptor>, len() -> usize. Dynamic and populated only from worker Ready events at runtime - no hardcoded node list, per ANVILML_DESIGN.md §10. Declare mod node_registry; pub use node_registry::NodeTypeRegistry; in lib.rs. Acceptance: >=5 tests in crates/anvilml-core/tests/node_registry_tests.rs: empty returns None/0, register_all populates, register_all replaces (not merges) prior contents, list() returns all, concurrent get() during a write does not deadlock; `cargo test -p anvilml-core --test node_registry_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P3-A11",
+    "description": "anvilml-core: lib.rs final re-export pass, 80-line check",
+    "phase": "3",
+    "project": "anvilml",
+    "prereqs": ["P3-A10"],
+    "context": "Review crates/anvilml-core/src/lib.rs: confirm it contains only pub mod/pub use declarations and the crate-level //! doc comment accumulated across all prior Phase 2/3 tasks, with no implementation code. Reorder re-exports alphabetically by module (config, config_load, error, node_registry, types). Confirm line count is <=80 per ANVILML_DESIGN.md §4.1 hard cap; exceeding it is a defect signal to investigate, not split arbitrarily. No new types or logic added here. Acceptance: `wc -l crates/anvilml-core/src/lib.rs` reports <=80; `cargo test -p anvilml-core` exits 0 with no regressions.",
+    "tags": ["refactor"],
+    "defers_to": []
+  }
+]

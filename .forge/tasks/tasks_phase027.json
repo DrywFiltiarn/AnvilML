@@ -1,0 +1,22 @@
+[
+  {
+    "id": "P27-A1",
+    "description": "docs/E2E_VALIDATION.md: manual real-GPU checklist for all 3 model rows",
+    "phase": "27",
+    "project": "anvilml",
+    "prereqs": ["P26-D1"],
+    "context": "Create docs/E2E_VALIDATION.md per ANVILML_DESIGN.md §2.2/§20: a manual checklist for the project owner to run on real GPU hardware (their AMD RX 9070, ROCm >=7.2, per §2.2's table) - NOT an automated test, NOT a CI job, NOT something any agent task may execute. Document, per model matrix row (§2.3): (1) place real production-size checkpoints in the configured model directories, (2) start the server in real mode, (3) submit Appendix B.2's example graph via POST /v1/jobs with the real model's actual SHA256 hash as model_id, (4) confirm a real PNG is produced and looks visually correct (a human visual check no automated test can perform). State at the top: this checklist is never run by the Forge agent, is excluded from CI per §2.2, and no task is ever blocked on it - if real-GPU verification is needed, the report says so under Blockers and the owner runs this manually. Acceptance: `test -s docs/E2E_VALIDATION.md` confirms the file exists and contains the disclaimer near its top.",
+    "tags": ["docs"],
+    "defers_to": []
+  },
+  {
+    "id": "P27-B1",
+    "description": "CI: confirm no workflow job attempts real-GPU execution",
+    "phase": "27",
+    "project": "anvilml",
+    "prereqs": ["P27-A1"],
+    "context": "Audit .github/workflows/ci.yml (all jobs from every prior phase) to confirm no job requests a GPU runner, sets ANVILML_FORCE_WORKER_MOCK=0 with a real GPU expectation, or otherwise assumes real GPU silicon - per §2.2's table, both github-hosted runners (ubuntu-latest, windows-latest) have no GPU, and every real-mode job already uses torch CPU + fixture checkpoints (Phases 9/19-26's worker-test jobs). Verification-only - no CI file change expected; if a violation is found, fix it here and document it as a finding, since a job requiring real GPU would be a defect from an earlier phase, not new here. Acceptance: written confirmation in the report that every job runs on a GPU-less runner; any violation found is fixed and documented; `grep -i 'gpu\\|cuda\\|rocm' .github/workflows/ci.yml` output reviewed line by line, each match confirmed to be a comment, a torch-CPU-wheel step, or a mock env var - never an actual GPU requirement.",
+    "tags": ["manual"],
+    "defers_to": []
+  }
+]

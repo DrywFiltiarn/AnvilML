@@ -1,0 +1,62 @@
+[
+  {
+    "id": "P26-A1",
+    "description": "worker/tests/fixtures/: Flux 2 Klein 9B + Qwen3-8B fixture builders",
+    "phase": "26",
+    "project": "anvilml",
+    "prereqs": ["P25-F1"],
+    "context": "Create worker/tests/fixtures/build_flux2klein_9b_fixture.py and build_qwen3_8b_fixture.py per worker/tests/fixtures/README.md's conventions (Phase 19's P19-D1): tiny synthetic .safetensors files shaped to look like the 9B diffusion variant and the 8B FP8-mixed text encoder respectively - structurally valid for the SAME shape-inference formulas flux2klein.py (Phase 25) and qwen3.py (Phase 22) already implement, just with hyperparameter VALUES large enough to be distinguishable from the 4B/4B fixtures (the formula code does not change, only which hyperparameters the fixture's shapes imply). No no-metadata variant needed for these two - that regression case was already covered by the 4B/4B fixtures per §17.5's per-family (not per-size) requirement. Acceptance: both build scripts exit 0, both files under 10MB; both load via safetensors.safe_open.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P26-B1",
+    "description": "worker/nodes/arch/diffusion/flux2klein.py: 9B variant via shape inference",
+    "phase": "26",
+    "project": "anvilml",
+    "prereqs": ["P26-A1"],
+    "context": "Extend flux2klein.py's EXISTING _infer_hyperparams() (Phase 25's P25-B1) - do NOT create a second function or code path for the 9B size. Confirm the same shape-inference logic, run against the P26-A1 9B fixture, correctly derives the larger hyperparameter values (more layers, larger hidden dim) without any size-specific branching in the function itself - per ANVILML_DESIGN.md §20's roadmap note, this confirms the same arch module serves two sizes via shape inference alone (§11.3 step 1), never a second file or a hardcoded size enum. Any needed change must remain entirely shape-driven, never a branch like `if num_layers > X: ...9b-specific...`. Acceptance: >=4 tests in test_arch_flux2klein.py: _infer_hyperparams against the 9B fixture returns correctly-scaled hyperparameters via the SAME function as the 4B case, can_handle/get_module route both fixture sizes to this one module; `python -m pytest worker/tests/test_arch_flux2klein.py -v` exits 0 (>=29 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P26-B2",
+    "description": "worker/nodes/arch/diffusion/flux2klein.py: 9B load/sample end-to-end",
+    "phase": "26",
+    "project": "anvilml",
+    "prereqs": ["P26-B1"],
+    "context": "Confirm flux2klein.py's EXISTING load()/sample()/compute_latent_shape() (Phase 25's P25-C1/C2/D1) work correctly against the P26-A1 9B fixture with zero code changes beyond what P26-B1 already made (if any) - this task is primarily verification, not new implementation, unless the verification surfaces a genuine defect to fix (in which case fix it and document why, per the same shape-driven-only constraint as P26-B1). dtype selection (§11.5) is unaffected by model size - the same fp8/bf16/fp16/fp32 precedence applies regardless of 4B or 9B. Acceptance: >=6 tests in test_arch_flux2klein.py: load() against the 9B fixture succeeds with correctly-loaded weights at a larger scale than the 4B case, .arch is set correctly, compute_latent_shape/sample produce correctly-shaped output for the 9B model's own dimensions, dtype precedence is identical to the 4B case; `python -m pytest worker/tests/test_arch_flux2klein.py -v` exits 0 (>=35 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P26-C1",
+    "description": "worker/nodes/arch/clip/qwen3.py: 8B FP8-mixed variant via shape inference",
+    "phase": "26",
+    "project": "anvilml",
+    "prereqs": ["P26-A1"],
+    "context": "Extend qwen3.py's EXISTING _infer_hyperparams() (Phase 22's P22-B2) - do NOT create a second function. Confirm the same logic, run against the P26-A1 8B fixture, correctly derives the larger hyperparameters AND correctly detects the FP8-mixed dtype hint from the fixture's tensor dtypes/metadata (mixed precision in one checkpoint - some tensors fp8, some not - is a genuinely new wrinkle the 4B fixture didn't exercise, per §20's roadmap note). can_handle()'s existing \"qwen3\" string dispatch (P22-B3) is unaffected by size - both sizes route through the same match; size is determined entirely by shape inference, never a second clip_type string like \"qwen3-8b\". Acceptance: >=5 tests in test_arch_clip_qwen3.py: _infer_hyperparams against the 8B fixture returns correctly-scaled values via the SAME function, mixed-fp8 detection works, can_handle(\"qwen3\") routes both sizes here; `python -m pytest worker/tests/test_arch_clip_qwen3.py -v` exits 0 (>=21 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P26-C2",
+    "description": "worker/nodes/arch/clip/qwen3.py: 8B load end-to-end + FP8-mixed handling",
+    "phase": "26",
+    "project": "anvilml",
+    "prereqs": ["P26-C1"],
+    "context": "Confirm qwen3.py's EXISTING load() (Phase 22's P22-C1/C2) works correctly against the P26-A1 8B fixture, with the FP8-mixed tensors loaded at their native fp8 dtype (no upcast) while non-fp8 tensors follow the normal §11.5 precedence - this is the one genuinely new per-tensor dtype-handling wrinkle the 8B variant introduces, since §11.5's precedence as written assumes a single dtype decision for the WHOLE module; document explicitly in a code comment how per-tensor mixed dtype interacts with that precedence (each tensor's OWN native dtype vs the module-level fallback chain). Acceptance: >=6 tests in test_arch_clip_qwen3.py: load() against the 8B fixture succeeds with correctly-loaded weights, fp8-native tensors remain at fp8 post-load (not upcast), non-fp8 tensors in the same checkpoint follow the normal precedence, .arch is \"qwen3\" for both sizes; `python -m pytest worker/tests/test_arch_clip_qwen3.py -v` exits 0 (>=27 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P26-D1",
+    "description": "Runnable Proof: Flux 2 Klein 9B + Qwen3-8B graph produces a real artifact",
+    "phase": "26",
+    "project": "anvilml",
+    "prereqs": ["P26-B2", "P26-C2"],
+    "context": "No new source files. Submit Appendix B.2's example graph with model_id values pointing at the Flux 2 Klein 9B + Qwen3-8B + Flux 2 VAE fixtures (P26-A1, plus Phase 25's existing Flux 2 VAE fixture - reused unchanged, VAE has no size variant per the model matrix) via POST /v1/jobs against a live real-mode server. Poll until Completed, retrieve via GET /v1/artifacts/:hash, confirm a real valid PNG - the SAME generic node code path from Phases 24-25 (zero changes), now serving the 9B/8B size variant of an already-registered architecture pair. This closes the full MVP model matrix per ANVILML_DESIGN.md §2.3's table - all three rows (ZiT+Qwen3-4B, Flux2Klein-4B+Qwen3-4B, Flux2Klein-9B+Qwen3-8B) now produce real artifacts through the real pipeline. Record the literal terminal output. Acceptance: the full submit->poll->retrieve sequence succeeds in real mode using the 9B/8B graph, producing a retrievable, valid PNG.",
+    "tags": ["manual"],
+    "defers_to": []
+  }
+]

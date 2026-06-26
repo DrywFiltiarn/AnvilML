@@ -480,6 +480,8 @@ pub enum AnvilError {
     CycleDetected(Vec<String>),
     #[error("model not found: {0}")]
     ModelNotFound(String),
+    #[error("artifact not found: {0}")]
+    ArtifactNotFound(String),
     #[error("workers unavailable: {0}")]
     WorkersUnavailable(String),
     #[error("internal error: {0}")]
@@ -622,7 +624,7 @@ pub struct InferenceCaps {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub enum EnumerationSource { Vulkan, Dxgi, Sysfs, Nvml, Mock, Override }
+pub enum EnumerationSource { Vulkan, Dxgi, Sysfs, Nvml, Cpu, Mock, Override }
 
 /// Where an `InferenceCaps` value came from. `PyTorch` is the only source an arch
 /// module's loader is permitted to make a compute-dtype decision from at runtime.

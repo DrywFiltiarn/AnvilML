@@ -1,0 +1,102 @@
+[
+  {
+    "id": "P14-A1",
+    "description": "anvilml-scheduler: JobScheduler struct + submit()",
+    "phase": "14",
+    "project": "anvilml",
+    "prereqs": ["P13-D1"],
+    "context": "Create crates/anvilml-scheduler/src/scheduler.rs per ANVILML_DESIGN.md §12.1. JobScheduler{queue: Mutex<JobQueue>, ledger: Mutex<VramLedger>, job_store: Arc<JobStore>, node_registry: Arc<NodeTypeRegistry>, dispatch_notify: Arc<Notify>} - Mutex here is tokio::sync::Mutex (held across awaits persisting to job_store, a hard requirement, not style). submit(&self, graph: serde_json::Value, settings: JobSettings) -> Result<Uuid, AnvilError>: empty node_registry -> WorkersUnavailable (503 per §12.2) before validating; else validate_graph() (Phase 12), construct a Queued Job, persist via job_store.upsert(), push to queue, notify_one(), return the id. cancel()/get_job() are the next task. Acceptance: >=4 tests in tests/scheduler_tests.rs: empty registry returns WorkersUnavailable, invalid graph returns the error not a panic, success persists+queues+notifies, two submits get distinct ids; `cargo test -p anvilml-scheduler --test scheduler_tests` exits 0.",
+    "tags": [],
+    "defers_to": ["P14-A2"]
+  },
+  {
+    "id": "P14-A2",
+    "description": "anvilml-scheduler: JobScheduler cancel()/get_job()",
+    "phase": "14",
+    "project": "anvilml",
+    "prereqs": ["P14-A1"],
+    "context": "Extend JobScheduler (crates/anvilml-scheduler/src/scheduler.rs) with the methods P14-A1 deferred: cancel(&self, id: Uuid) -> Result<bool, AnvilError> delegates to queue.cancel(). get_job(&self, id: Uuid) -> Result<Option<Job>, AnvilError> delegates to job_store.get() - the DB, not the in-memory queue, is authoritative here since a Completed/Failed job has already left the queue but must still be queryable. This receives the scope P14-A1 explicitly deferred. Acceptance: >=4 new tests in scheduler_tests.rs: cancel a queued job returns Ok(true), cancel an unknown id returns Ok(false), get_job on a persisted job returns it correctly, get_job on an unknown id returns Ok(None); `cargo test -p anvilml-scheduler --test scheduler_tests` exits 0 (>=8 tests total in file).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P14-A3",
+    "description": "anvilml-scheduler: dispatch loop skeleton, notify-driven wake",
+    "phase": "14",
+    "project": "anvilml",
+    "prereqs": ["P14-A2"],
+    "context": "Add pub fn start_dispatch_loop(self: Arc<Self>, workers: Arc<WorkerPool>) -> tokio::task::JoinHandle<()> to JobScheduler per ANVILML_DESIGN.md §12.5: spawns a tokio task looping on dispatch_notify (woken by submit() per P14-A1; a worker-idle-triggered wake is a later task's wiring, not this one), and on each wake iterates the queue front-to-back calling a per-job dispatch_one(&self, job: &Job, workers: &WorkerPool) -> bool stub that for THIS task always returns false (no selection logic yet - next task's scope) without erroring. Must not block the async runtime - no sync I/O in the loop body. Acceptance: >=3 tests in tests/scheduler_tests.rs: start_dispatch_loop returns a JoinHandle that doesn't immediately finish, submit() wakes the loop (observable via a test hook), the loop survives multiple wakes without panicking; `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests` exits 0 (>=11 total).",
+    "tags": [],
+    "defers_to": ["P14-A4"]
+  },
+  {
+    "id": "P14-A4",
+    "description": "anvilml-scheduler: worker selection algorithm, real dispatch",
+    "phase": "14",
+    "project": "anvilml",
+    "prereqs": ["P14-A3"],
+    "context": "Replace dispatch_one()'s always-false stub (P14-A3) with the real 2-step selection algorithm per ANVILML_DESIGN.md §12.5 EXACTLY: (1) if job.settings.device_preference matches an Idle worker, use it; (2) else rank Idle workers by vram_free_mib descending, pick the top; if none Idle, return false (leave queued, stop this iteration). On a match: reserve VRAM via ledger, transition Job to Running, persist via job_store, send WorkerMessage::Execute, return true. This receives the scope P14-A3 explicitly deferred. Acceptance: >=6 new tests in scheduler_tests.rs: device_preference match wins over vram ranking, vram ranking picks the highest-free Idle worker when no preference matches, no Idle workers leaves the job Queued without erroring, multiple queued jobs each get dispatched to a distinct worker in one wake cycle; `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests` exits 0 (>=17 tests total in file).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P14-B1",
+    "description": "worker/nodes/passthrough.py: trivial real node (no-op)",
+    "phase": "14",
+    "project": "anvilml",
+    "prereqs": ["P10-A4"],
+    "context": "Create worker/nodes/passthrough.py: PassThrough, the FIRST concrete node file in this project, deliberately trivial. NODE_TYPE=\"PassThrough\", CATEGORY=\"Debug\", INPUT_SLOTS=[SlotSpec(\"value\",\"ANY\")], OUTPUT_SLOTS=[SlotSpec(\"value\",\"ANY\")]. execute(self, ctx: NodeContext, **inputs) -> dict: branches once at the top on ctx.mock per §14.6's pattern - both branches return {\"value\": inputs[\"value\"]} unchanged (no meaningfully different mock/real behavior here), but the branch and the REAL_PATH_VERIFIED/MOCK_PATH_VERIFIED marker pair (§10.6, see MARKER_CONVENTION.md from P10-E1) are still required - this node proves the dispatch pipeline end-to-end and that the marker convention works on a real file. @register decorated. Acceptance: >=5 tests in worker/tests/test_passthrough.py: mock and real execute both return input unchanged, node is in NODE_REGISTRY after import, both markers name collectible tests; `python -m pytest worker/tests/test_passthrough.py -v` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P14-C1",
+    "description": "anvilml-server: AppState gains scheduler/workers/db fields",
+    "phase": "14",
+    "project": "anvilml",
+    "prereqs": ["P14-A4", "P14-B1"],
+    "context": "Extend AppState (crates/anvilml-server/src/state.rs, P11-B1) with: scheduler: Arc<JobScheduler>, workers: Arc<WorkerPool>, db: SqlitePool. node_registry already present from Phase 11 - do not duplicate. Remaining §13.2 fields (hardware, broadcaster, artifact_store, env_report) stay absent until a task actually needs them, per Phase 11's no-speculative-fields convention. Wiring backend/main.rs to construct and spawn a real WorkerPool is the next task's scope - this task is the struct shape only. Acceptance: >=3 tests in crates/anvilml-server/tests/state_tests.rs covering the new fields' construction and cloning; `cargo test -p anvilml-server --test state_tests` exits 0 (>=5 total in file).",
+    "tags": [],
+    "defers_to": ["P14-C2"]
+  },
+  {
+    "id": "P14-C2",
+    "description": "backend: main.rs spawns real WorkerPool + JobScheduler at startup",
+    "phase": "14",
+    "project": "anvilml",
+    "prereqs": ["P14-C1"],
+    "context": "Update backend/src/main.rs's normal (non-hw-probe) startup path: construct WorkerPool, call spawn_all() against detect_all_devices()'s result (Phase 5), construct JobScheduler (using the SqlitePool and JobStore already built for ghost-job reset, Phase 13's P13-C1), call start_dispatch_loop(), construct the now-larger AppState (P14-C1) with all of it, pass to build_router(). This receives the wiring scope P14-C1 explicitly deferred and is the first task where main.rs's normal server-start path actually spawns real worker subprocesses. Acceptance: `cargo build -p anvilml` exits 0; `cargo test --workspace --features mock-hardware` exits 0 (no regression to existing health/nodes/hw-probe tests).",
+    "tags": ["breaking"],
+    "defers_to": []
+  },
+  {
+    "id": "P14-D1",
+    "description": "anvilml-server: POST /v1/jobs handler",
+    "phase": "14",
+    "project": "anvilml",
+    "prereqs": ["P14-C2"],
+    "context": "Create crates/anvilml-server/src/handlers/jobs.rs per ANVILML_DESIGN.md §13.4: async fn submit_job(State(state): State<AppState>, Json(body): Json<SubmitJobRequest>) -> Result<(StatusCode, Json<SubmitJobResponse>), AnvilError> where SubmitJobRequest{graph: serde_json::Value, settings: JobSettings} and SubmitJobResponse{job_id: Uuid, queue_position: u32} (new small HTTP-layer structs in this file, not anvilml-core - distinct from the domain Job type). Delegates entirely to state.scheduler.submit() - no business logic in the handler, per §3.3. Returns 202 on success; AnvilError's existing IntoResponse (Phase 2) handles 503/422 mapping automatically. Update handlers/mod.rs and build_router() to register POST /v1/jobs. Acceptance: >=4 tests in crates/anvilml-server/tests/jobs_tests.rs: valid submission returns 202 with a job_id, malformed body returns 400, empty registry returns 503, invalid graph returns 422; `cargo test -p anvilml-server --test jobs_tests` exits 0.",
+    "tags": [],
+    "defers_to": ["P14-D2"]
+  },
+  {
+    "id": "P14-D2",
+    "description": "anvilml-server: GET /v1/jobs and GET /v1/jobs/:id handlers",
+    "phase": "14",
+    "project": "anvilml",
+    "prereqs": ["P14-D1"],
+    "context": "Extend crates/anvilml-server/src/handlers/jobs.rs with the read handlers P14-D1 deferred, per §13.4: list_jobs(State, Query<ListJobsParams>) -> Result<Json<Vec<Job>>, AnvilError> where ListJobsParams{status: Option<JobStatus>, limit: Option<u32>, before: Option<DateTime<Utc>>} (before is kept in the struct for forward-compat with §13.4's documented param even if job_store.list() from Phase 13 doesn't yet support a before-cursor - flag as a Deviation if so, don't silently drop the field). get_job(State, Path<Uuid>) -> Result<Json<Job>, AnvilError>: 404 via AnvilError::JobNotFound if absent. Update build_router() for both GET routes. Acceptance: >=5 new tests in jobs_tests.rs: list with no filter returns all, list with status filter works, get on existing id returns 200, get on unknown id returns 404; `cargo test -p anvilml-server --test jobs_tests` exits 0 (>=9 tests total in file).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P14-E1",
+    "description": "Runnable Proof: submitted job with PassThrough node reaches Completed",
+    "phase": "14",
+    "project": "anvilml",
+    "prereqs": ["P14-D2"],
+    "context": "No new source files. Run the built binary under mock-hardware, submit a single-node graph using the real PassThrough node (P14-B1) via POST /v1/jobs, poll GET /v1/jobs/:id until status leaves Queued/Running, assert it reaches Completed - the first phase where a job genuinely executes end-to-end through real (not stubbed) dispatch against a real (if trivial) node. Record the literal terminal output in the implementation report. Acceptance: `cargo build --release -p anvilml --features mock-hardware && ./target/release/anvilml & sleep 2 && JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' -d '{\"graph\":{\"nodes\":[{\"id\":\"n0\",\"type\":\"PassThrough\",\"inputs\":{\"value\":1}}]},\"settings\":{}}' | python3 -c \"import sys,json;print(json.load(sys.stdin)['job_id'])\") && sleep 3 && curl -s http://127.0.0.1:8488/v1/jobs/$JOB_ID | python3 -c \"import sys,json; assert json.load(sys.stdin)['status']=='Completed'\"` exits 0; kill background process after.",
+    "tags": ["manual"],
+    "defers_to": []
+  }
+]

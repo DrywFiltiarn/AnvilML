@@ -1,0 +1,62 @@
+[
+  {
+    "id": "P21-A1",
+    "description": "worker/nodes/arch/diffusion/zit.py: compute_latent_shape() formula",
+    "phase": "21",
+    "project": "anvilml",
+    "prereqs": ["P20-C3"],
+    "context": "Extend zit.py with compute_latent_shape(width: int, height: int, batch_size: int) -> tuple per ANVILML_DESIGN.md §10.3's EmptyLatent row: implements ZiT's specific patch-packing formula (the shape formula, not just a scale factor, is architecture-specific per §10.3 - derive it from the same hyperparameters _infer_hyperparams() (Phase 20's P20-B1) already extracts, e.g. patch size and channel count, not a hardcoded /8 downscale assumed from a different architecture). Method name fixed per §10.4 - compute_latent_shape exactly, never latent_shape() or get_latent_dims(). Acceptance: >=5 tests in test_arch_zit.py: formula produces the expected tuple for several width/height/batch_size combos, shape scales correctly with batch_size, non-multiple-of-patch-size dims handled per a documented rounding rule (comment it, don't silently truncate); `python -m pytest worker/tests/test_arch_zit.py -v` exits 0 (>=25 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P21-B1",
+    "description": "worker/nodes/arch/diffusion/zit.py: sample() pipeline assembly + caching",
+    "phase": "21",
+    "project": "anvilml",
+    "prereqs": ["P21-A1"],
+    "context": "Extend zit.py with sample()'s pipeline-assembly half per ANVILML_DESIGN.md §11.6: on first call for a given model_id, assemble a runnable pipeline from the already-cached raw components (the loaded transformer from load(), Phase 20), cache the assembled pipeline itself under f\"{model_id}:pipeline\" via pipeline_cache.get_or_load() (Phase 19's P19-B1) - NOT a diffusers.DiffusionPipeline.from_pretrained() call, assembled directly from the already-loaded nn.Module per §11.2's boundary. Subsequent sample() calls for the same model_id reuse the cached pipeline. The denoising loop call itself is the next task's scope - this task is cache-assembly only. Acceptance: >=4 tests in test_arch_zit.py: first call assembles+caches the pipeline (assert via a call-count spy), second call reuses it without reassembling, a different model_id gets its own entry; `python -m pytest worker/tests/test_arch_zit.py -v` exits 0 (>=29 total).",
+    "tags": [],
+    "defers_to": ["P21-B2"]
+  },
+  {
+    "id": "P21-B2",
+    "description": "worker/nodes/arch/diffusion/zit.py: sample() denoising loop + seed resolution",
+    "phase": "21",
+    "project": "anvilml",
+    "prereqs": ["P21-B1"],
+    "context": "Complete sample() with the denoising call itself, the scope P21-B1 deferred, per ANVILML_DESIGN.md's Sampler row and seed note: sample(pipeline, conditioning, latent, steps: int, cfg: float, seed: int) -> tuple[latent, int] - if seed == -1, resolve to a cryptographically random integer (use secrets, not random.random) BEFORE denoising, so the resolved seed is reproducible if logged; run denoising for the given steps/cfg via the cached pipeline (P21-B1); return the denoised latent and the resolved seed (never -1 in the return). Acceptance: >=5 new tests in test_arch_zit.py: seed=-1 returns a resolved seed != -1 in [0, 2^63), an explicit seed is used as-is and returned unchanged, denoising actually runs for the specified step count (verify via a step-callback spy or output shape/dtype matching the input latent); `python -m pytest worker/tests/test_arch_zit.py -v` exits 0 (>=34 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P21-C1",
+    "description": "worker/nodes/sampler.py: Sampler generic node, mock branch only",
+    "phase": "21",
+    "project": "anvilml",
+    "prereqs": ["P21-B2"],
+    "context": "Create worker/nodes/sampler.py with Sampler per ANVILML_DESIGN.md §10.3 EXACTLY: NODE_TYPE=\"Sampler\", CATEGORY=\"Sampling\", INPUT_SLOTS=[SlotSpec(\"model\",\"MODEL\"), SlotSpec(\"conditioning\",\"CONDITIONING\"), SlotSpec(\"clip\",\"CLIP\"), SlotSpec(\"latent\",\"LATENT\"), SlotSpec(\"steps\",\"INT\"), SlotSpec(\"cfg\",\"FLOAT\"), SlotSpec(\"seed\",\"INT\")], OUTPUT_SLOTS=[SlotSpec(\"latent\",\"LATENT\"), SlotSpec(\"seed\",\"INT\")]. execute() branches on ctx.mock per §14.6: mock returns {\"latent\": {\"mock\": True, \"shape\": inputs[\"latent\"].get(\"shape\")}, \"seed\": inputs[\"seed\"] if inputs[\"seed\"]!=-1 else 0} (deterministic mock seed, not random). Real branch is a bare placeholder raise for THIS task - completed next task. @register decorated. Acceptance: >=3 tests in test_nodes_sampler.py: mock returns the expected shape, mock seed=-1 resolves to 0 deterministically, node is in NODE_REGISTRY; `python -m pytest worker/tests/test_nodes_sampler.py -v` exits 0.",
+    "tags": [],
+    "defers_to": ["P21-C2"]
+  },
+  {
+    "id": "P21-C2",
+    "description": "worker/nodes/sampler.py: Sampler real branch dispatches to arch module",
+    "phase": "21",
+    "project": "anvilml",
+    "prereqs": ["P21-C1"],
+    "context": "Complete Sampler's real branch (worker/nodes/sampler.py), the scope P21-C1 deferred: calls arch.diffusion.get_module(inputs[\"model\"].arch).sample(...) per §10.4's dispatch table, passing the cached pipeline/conditioning/latent/steps/cfg/seed through to zit.py's sample() (Phase 21's P21-B2). Add both REAL_PATH_VERIFIED/MOCK_PATH_VERIFIED markers per §10.6 - this is the FIRST task where both markers point at genuinely passing tests for the same function from the same task (Phase 19/20's loader nodes had a real-raises marker first, replaced later; Sampler's real path is correct from the start since zit.py's sample() already exists by this point). Acceptance: >=5 tests in worker/tests/test_nodes_sampler.py: real-mode execute against the Phase 20 ZiT fixture's loaded model produces a denoised latent and a resolved seed, both markers name collectible, passing tests; `python -m pytest worker/tests/test_nodes_sampler.py -v -m real_mode` exits 0 (>=8 tests total in file).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P21-D1",
+    "description": "Runnable Proof: Sampler node denoises the ZiT fixture latent for real",
+    "phase": "21",
+    "project": "anvilml",
+    "prereqs": ["P21-C2"],
+    "context": "No new source files. Run worker/tests/test_arch_zit.py and worker/tests/test_nodes_sampler.py's real-mode suites directly - this phase's Runnable Proof is a real-mode pytest invocation, not a live-server HTTP proof, since no VaeDecode/ClipTextEncode exists yet to turn the denoised latent into a viewable image (a later phase). Confirm the full real-mode chain succeeds: load (Phase 20) -> pipeline assembly -> denoising -> seed resolution -> Sampler node's real branch, all against the ZiT fixture, with zero NotImplementedError anywhere in this specific chain. Record the literal pytest output in the implementation report. Acceptance: `python -m pytest worker/tests/test_arch_zit.py worker/tests/test_nodes_sampler.py -v -m real_mode` exits 0 with zero skips and zero xfails in this specific invocation.",
+    "tags": ["manual"],
+    "defers_to": []
+  }
+]

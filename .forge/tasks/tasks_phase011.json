@@ -1,0 +1,52 @@
+[
+  {
+    "id": "P11-A1",
+    "description": "anvilml-worker: ManagedWorker calls node_registry.register_all() on Ready",
+    "phase": "11",
+    "project": "anvilml",
+    "prereqs": ["P10-D1"],
+    "context": "Extend ManagedWorker::run() (crates/anvilml-worker/src/managed.rs, Phase 8's P8-E2) to take an additional Arc<NodeTypeRegistry> constructor param (NodeTypeRegistry from anvilml-core, Phase 3's P3-A10). On receiving a WorkerEvent::Ready event, call node_registry.register_all(event.node_types) before transitioning status to Idle - this is the one and only call site that populates the registry, per ANVILML_DESIGN.md §10.2's 'no compile-time node type list' rule. On respawn, the worker re-reports its node types and register_all() is called again (replacing, not merging, per the registry's own documented semantics from Phase 3). Acceptance: >=4 new tests in crates/anvilml-worker/tests/managed_tests.rs: Ready event populates the registry, a Ready event with an empty node_types list correctly results in an empty registry (matches Phase 10's actual state), respawn's second Ready call replaces rather than merges; `cargo test -p anvilml-worker --test managed_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P11-B1",
+    "description": "anvilml-server: AppState struct (initial fields only)",
+    "phase": "11",
+    "project": "anvilml",
+    "prereqs": ["P11-A1"],
+    "context": "Create crates/anvilml-server/src/state.rs per ANVILML_DESIGN.md §13.2, populated with ONLY the fields this phase's handler needs: AppState{config: Arc<ServerConfig>, node_registry: Arc<NodeTypeRegistry>}, #[derive(Clone)]. The remaining §13.2 fields (scheduler, workers, registry, hardware, db, broadcaster, artifact_store, env_report) are added incrementally by the later tasks/phases that actually need them - adding them now as unused fields would fail clippy's dead-code lint and contradicts the project's no-speculative-scope convention. Declare mod state; pub use state::AppState; in lib.rs. Acceptance: >=2 tests in crates/anvilml-server/tests/state_tests.rs: AppState constructs and clones correctly, cloned instances share the same Arc-wrapped node_registry (mutate via one clone, read via another); `cargo test -p anvilml-server --test state_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P11-C1",
+    "description": "anvilml-server: GET /v1/nodes handler",
+    "phase": "11",
+    "project": "anvilml",
+    "prereqs": ["P11-B1"],
+    "context": "Create crates/anvilml-server/src/handlers/nodes.rs per ANVILML_DESIGN.md §13.4: async fn list_nodes(State(state): State<AppState>) -> Json<Vec<NodeTypeDescriptor>>, calling state.node_registry.list() (Phase 3's P3-A10) and returning it directly as 200 JSON - no business logic in the handler, per §3.3's 'no business logic in handler functions' constraint; this one-line delegation is the correct shape. Update handlers/mod.rs to declare mod nodes;. Update build_router() in lib.rs to register GET /v1/nodes -> list_nodes, constructing an AppState and calling .with_state() on the router (first use of with_state in this crate). Acceptance: >=4 tests in crates/anvilml-server/tests/nodes_tests.rs: empty registry returns 200 with an empty array (not 404/500), populated registry returns the correct NodeTypeDescriptor JSON shape; `cargo test -p anvilml-server --test nodes_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P11-D1",
+    "description": "backend: wire AppState construction + build_router into main.rs",
+    "phase": "11",
+    "project": "anvilml",
+    "prereqs": ["P11-C1"],
+    "context": "Update backend/src/main.rs: after config_load::load() (Phase 2) and before detect_all_devices()/hw-probe handling (Phase 5), construct an Arc<NodeTypeRegistry> (Phase 3's P3-A10, ::new() - empty until a worker reaches Ready), construct AppState{config: Arc::new(cfg), node_registry}, pass it to anvilml_server::build_router(app_state) for the normal (non-hw-probe) run path. This is the first task where backend/main.rs's server-start path actually has node-related state wired through, though no worker is spawned yet in this phase - the registry simply stays empty for now, matching Phase 10's correct empty-NODE_REGISTRY state. Acceptance: `cargo build -p anvilml` exits 0; `cargo test --workspace --features mock-hardware` exits 0 (existing health/hw-probe tests unaffected).",
+    "tags": ["breaking"],
+    "defers_to": []
+  },
+  {
+    "id": "P11-E1",
+    "description": "Runnable Proof: live binary serves GET /v1/nodes with real data",
+    "phase": "11",
+    "project": "anvilml",
+    "prereqs": ["P11-D1"],
+    "context": "No new source files. Run the built binary and confirm GET /v1/nodes returns 200 with a JSON array - this is the first phase where node_types becomes wirable end-to-end through a live HTTP server, even though the array is empty at this point in the project (no worker is spawned by backend/main.rs yet - WorkerPool integration into the normal server-start path is a later phase's scope). Record the literal terminal output in the implementation report. Acceptance: `cargo build --release -p anvilml --features mock-hardware && ./target/release/anvilml & sleep 1 && curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8488/v1/nodes` prints 200; `curl -s http://127.0.0.1:8488/v1/nodes` prints `[]`; kill the background process after.",
+    "tags": ["manual"],
+    "defers_to": []
+  }
+]

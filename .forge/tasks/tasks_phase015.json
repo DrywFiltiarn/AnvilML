@@ -1,0 +1,52 @@
+[
+  {
+    "id": "P15-A1",
+    "description": "anvilml-server: AppState gains artifact_store field",
+    "phase": "15",
+    "project": "anvilml",
+    "prereqs": ["P14-D2"],
+    "context": "Extend AppState (crates/anvilml-server/src/state.rs, Phase 14's P14-C1) with artifact_store: Arc<ArtifactStore> (ArtifactStore from anvilml-artifacts, Phase 6's P6-B3 - fully implemented with save/get/list). Update backend/main.rs's normal startup path to construct an ArtifactStore (artifact_dir from cfg.artifact_dir, sharing the same SqlitePool already constructed for JobStore/ghost-job-reset in Phase 13's P13-C1) and pass it into AppState. Remaining §13.2 fields (hardware, broadcaster, env_report) stay absent until a task needs them, per the established no-speculative-fields convention. Acceptance: >=2 new tests in crates/anvilml-server/tests/state_tests.rs covering artifact_store's construction and cloning; `cargo test -p anvilml-server --test state_tests` exits 0; `cargo build -p anvilml` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P15-B1",
+    "description": "anvilml-server: GET /v1/artifacts list handler",
+    "phase": "15",
+    "project": "anvilml",
+    "prereqs": ["P15-A1"],
+    "context": "Create crates/anvilml-server/src/handlers/artifacts.rs per ANVILML_DESIGN.md §13.4: async fn list_artifacts(State(state): State<AppState>, Query(params): Query<ListArtifactsParams>) -> Result<Json<Vec<ArtifactMeta>>, AnvilError> where ListArtifactsParams{job_id: Option<Uuid>} (new small HTTP-layer struct in this file). Delegates entirely to state.artifact_store.list(params.job_id) - no business logic in the handler per §3.3. Update handlers/mod.rs to declare mod artifacts; and build_router() to register GET /v1/artifacts. Acceptance: >=4 tests in crates/anvilml-server/tests/artifacts_tests.rs: empty store returns 200 with an empty array, populated store with no job_id filter returns all, job_id filter returns only matching rows, correct ArtifactMeta JSON shape; `cargo test -p anvilml-server --test artifacts_tests` exits 0.",
+    "tags": [],
+    "defers_to": ["P15-B2"]
+  },
+  {
+    "id": "P15-B2",
+    "description": "anvilml-server: GET /v1/artifacts/:hash serve PNG bytes",
+    "phase": "15",
+    "project": "anvilml",
+    "prereqs": ["P15-B1"],
+    "context": "Extend crates/anvilml-server/src/handlers/artifacts.rs with get_artifact(State(state): State<AppState>, Path(hash): Path<String>) -> Result<Response, AnvilError> deferred by P15-B1, per §13.4: calls state.artifact_store.get(&hash) (Phase 6's P6-B2), on Some(bytes) returns 200 with Content-Type: image/png and the raw bytes, on None returns 404 via AnvilError::ArtifactNotFound(hash) (the dedicated variant added in Phase 2's P2-A1 per docs/ADDENDUM_ARTIFACT_NOT_FOUND.md - use it directly, do not use Internal as a placeholder). Update build_router() for GET /v1/artifacts/:hash. Acceptance: >=4 new tests: existing hash returns 200 image/png with correct bytes, unknown hash returns 404 via ArtifactNotFound, body byte-for-byte matches what was saved; `cargo test -p anvilml-server --test artifacts_tests` exits 0 (>=8 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P15-C1",
+    "description": "anvilml-scheduler: dispatch_one persists ArtifactMeta on ImageReady",
+    "phase": "15",
+    "project": "anvilml",
+    "prereqs": ["P15-B2"],
+    "context": "Create crates/anvilml-scheduler/src/event_loop.rs (named in ANVILML_DESIGN.md §12.1's layout but not yet created by any prior phase). Handle WorkerEvent::ImageReady{job_id, image_b64, width, height, format, seed, steps} (from anvilml-ipc, Phase 7): base64-decode image_b64, call artifact_store.save() (Phase 6's P6-B1/P6-B2/P6-B3) with the decoded PNG bytes and a constructed ArtifactMeta, persisting under its content hash. First task wiring ImageReady to any consumer - prior phases only defined the variant (Phase 7) without one. JobScheduler (Phase 14's P14-A4) needs an Arc<ArtifactStore> constructor field added for this. Declare mod event_loop; in lib.rs. Acceptance: >=4 tests in tests/event_loop_tests.rs: a simulated ImageReady results in a saved artifact retrievable by hash, ArtifactMeta fields match the event, malformed base64 errors rather than panics; `cargo test -p anvilml-scheduler --test event_loop_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P15-D1",
+    "description": "Runnable Proof: PassThrough-derived job artifact retrievable via HTTP",
+    "phase": "15",
+    "project": "anvilml",
+    "prereqs": ["P15-C1"],
+    "context": "No new source files. NOTE: PassThrough (Phase 14's P14-B1) does not emit ImageReady - it is a debug pass-through node with no image output. For this proof, confirm GET /v1/artifacts returns 200 with an empty array against the current PassThrough-only graph (correct, since no artifact-producing node exists yet), demonstrating the endpoint itself works correctly end-to-end even with nothing to return - the first job that actually produces a retrievable artifact requires a real image-producing node (LoadModel+Sampler+VaeDecode+SaveImage), which is out of this phase's scope and arrives with the architecture-loading phases. Record the literal terminal output in the implementation report. Acceptance: `cargo build --release -p anvilml --features mock-hardware && ./target/release/anvilml & sleep 1 && curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8488/v1/artifacts` prints 200; `curl -s http://127.0.0.1:8488/v1/artifacts` prints `[]`; kill the background process after.",
+    "tags": ["manual"],
+    "defers_to": []
+  }
+]

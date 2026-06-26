@@ -1,0 +1,72 @@
+[
+  {
+    "id": "P2-A1",
+    "description": "anvilml-core: AnvilError enum + IntoResponse impl",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": ["P1-B1"],
+    "context": "Create crates/anvilml-core/src/error.rs. Define AnvilError per ANVILML_DESIGN.md §5.2 exactly: thiserror::Error derive, variants Db(#[from] sqlx::Error), Io(#[from] std::io::Error), Serde(String), Ipc(String), PayloadTooLarge(String), WorkerNotFound(String), JobNotFound(String), InvalidGraph(Vec<String>), CycleDetected(Vec<String>), ModelNotFound(String), ArtifactNotFound(String), WorkersUnavailable(String), Internal(String). Add thiserror dependency (resolve version live via registry, not memory). Implement axum::response::IntoResponse for AnvilError: each variant maps to an HTTP status (ArtifactNotFound -> 404, same as ModelNotFound/JobNotFound/WorkerNotFound), JSON body {\"error\":\"<kind>\",\"message\":\"<text>\",\"request_id\":\"<uuid>\"}. Add axum and uuid deps. Declare mod error; pub use error::AnvilError; in lib.rs. Acceptance: >=9 tests in tests/error_tests.rs covering distinct variant-to-status mappings incl. ArtifactNotFound; `cargo test -p anvilml-core --test error_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P2-A2",
+    "description": "anvilml-core: ServerConfig top-level scalar fields",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": ["P2-A1"],
+    "context": "Create crates/anvilml-core/src/config.rs. Define ServerConfig with only its top-level scalar fields per ANVILML_DESIGN.md §15/ENVIRONMENT.md §4: host: String (default \"127.0.0.1\"), port: u16 (default 8488), db_path: PathBuf (default \"./anvilml.db\"), artifact_dir: PathBuf (default \"./artifacts\"), venv_path: PathBuf (default \"./worker/.venv\"), model_scan_depth: u32 (default 2), max_ipc_payload_mib: u32 (default 256), num_threads: Option<u32> (default None). Derive Debug, Clone, Serialize, Deserialize. Implement Default for ServerConfig matching every default listed. Nested tables (model_dirs, gpu_selection, limits, rocm, hardware_override) are added by the next task — do not stub placeholder fields for them here. Acceptance: >=4 tests in crates/anvilml-core/tests/config_tests.rs asserting each scalar field's default value; `cargo test -p anvilml-core --test config_tests` exits 0.",
+    "tags": [],
+    "defers_to": ["P2-A3"]
+  },
+  {
+    "id": "P2-A3",
+    "description": "anvilml-core: ServerConfig nested table structs",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": ["P2-A2"],
+    "context": "Extend ServerConfig in crates/anvilml-core/src/config.rs with the nested-table fields deferred by P2-A2: model_dirs: Vec<ModelDirConfig> {path: PathBuf, recursive: bool, max_depth: Option<u32>} (default empty vec); gpu_selection: GpuSelectionConfig {default_device: String} (default \"auto\"); limits: LimitsConfig {max_queued_jobs: u32} (default 100); rocm: Option<RocmConfig> {hsa_override_gfx_version: Option<String>} (default None); hardware_override: Option<HardwareOverrideConfig> {device_type: String, vram_total_mib: u32} (default None). All derive Debug, Clone, Serialize, Deserialize. Extend ServerConfig's Default impl to include these. This receives the scope P2-A2 explicitly deferred. Acceptance: >=5 tests in config_tests.rs covering each nested struct's default; `cargo test -p anvilml-core --test config_tests` exits 0 (>=9 tests total in file after this task).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P2-A4",
+    "description": "anvilml-core: config_load layered precedence (defaults+toml)",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": ["P2-A3"],
+    "context": "Create crates/anvilml-core/src/config_load.rs. Implement pub fn load(toml_path: Option<&Path>) -> Result<ServerConfig, AnvilError>: start from ServerConfig::default(), if toml_path (or default ./anvilml.toml) exists, parse via toml crate and merge field-by-field (toml values override defaults; missing fields keep default). Add toml dependency, version resolved live. This task covers ONLY the defaults->toml two layers; env vars and CLI flags are added in a separate task. Per ANVILML_DESIGN.md §15 precedence order, toml is layer 2 of 4. Acceptance: >=4 tests in crates/anvilml-core/tests/config_load_tests.rs: (1) missing file falls back to defaults, (2) partial toml overrides only specified fields, (3) malformed toml returns Err, (4) full toml round-trips all fields; `cargo test -p anvilml-core --test config_load_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P2-A5",
+    "description": "anvilml-core: config_load env var + CLI flag layers",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": ["P2-A4"],
+    "context": "Extend crates/anvilml-core/src/config_load.rs's load() to apply layers 3-4 of ANVILML_DESIGN.md §15: after toml merge, scan ANVILML_* env vars (nested fields via __, e.g. ANVILML_GPU_SELECTION__DEFAULT_DEVICE) and override matching ServerConfig fields; then accept optional cli_overrides: Option<CliOverrides> {host: Option<String>, port: Option<u16>} applied last (highest precedence). Reference ENVIRONMENT.md §3 for the exact variable name list. Acceptance: >=5 tests in config_load_tests.rs: env var overrides toml value, env var overrides default when no toml, CLI override beats env var, nested __ field (gpu_selection.default_device) parses correctly, unset vars leave prior layer's value; `cargo test -p anvilml-core --test config_load_tests` exits 0 (>=9 tests total in file after this task).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P2-A6",
+    "description": "backend: wire config_load::load() into main.rs",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": ["P2-A5"],
+    "context": "Update backend/src/main.rs: replace the direct cli.host/cli.port usage from Phase 1 with anvilml_core::config_load::load(cli.config.as_deref().map(Path::new)) passing a CliOverrides built from cli.host/cli.port (only Some(..) if the user actually passed the flag, not the clap default — use Option<String>/Option<u16> with no default in cli.rs's Cli struct fields for host/port, replacing the prior hardcoded defaults). If load() returns Err, print the error and exit 1 before binding any socket. Use the resulting ServerConfig.host/port for the TcpListener bind. Acceptance: `cargo build -p anvilml` exits 0; existing backend/tests/shutdown_tests.rs and anvilml-server health_tests still pass; `cargo test --workspace --features mock-hardware` exits 0.",
+    "tags": ["breaking"],
+    "defers_to": []
+  },
+  {
+    "id": "P2-A7",
+    "description": "config_reference test: anvilml.toml matches ServerConfig",
+    "phase": "2",
+    "project": "anvilml",
+    "prereqs": ["P2-A6"],
+    "context": "Update root anvilml.toml to include every ServerConfig field at its documented default (host, port, db_path, artifact_dir, venv_path, model_scan_depth, max_ipc_payload_mib; omit num_threads since its default is absent/null per ENVIRONMENT.md §4; include one example [[model_dirs]] table commented out; [gpu_selection] default_device=\"auto\"; [limits] max_queued_jobs=100). Create backend/tests/config_reference.rs: parse anvilml.toml via anvilml_core::config_load::load(Some(Path::new(\"../anvilml.toml\"))) or repo-root-relative path, assert every loaded field equals ServerConfig::default() (proving the checked-in file matches compiled defaults exactly). Acceptance: `cargo test -p anvilml --features mock-hardware -- config_reference` exits 0.",
+    "tags": [],
+    "defers_to": []
+  }
+]

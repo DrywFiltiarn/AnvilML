@@ -1,0 +1,82 @@
+[
+  {
+    "id": "P7-A1",
+    "description": "anvilml-ipc: IPC-specific error types",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P3-A11"],
+    "context": "Create crates/anvilml-ipc/src/error.rs per ANVILML_DESIGN.md §8.4's module layout. Define IpcError (thiserror::Error derive) covering: BindFailed(String), SendFailed(String), RecvFailed(String), SerializationFailed(String), PayloadTooLarge{actual: usize, max: usize}, UnknownWorker(String). Implement From<IpcError> for AnvilError mapping to AnvilError::Ipc(String) (the existing variant from Phase 2's P2-A1 - do not invent a new AnvilError variant, reuse the existing one). Add thiserror to crates/anvilml-ipc/Cargo.toml (resolve version live via registry). Declare mod error; pub use error::IpcError; in lib.rs. Acceptance: >=5 tests in crates/anvilml-ipc/tests/error_tests.rs covering each variant's Display output and the From<IpcError> for AnvilError conversion; `cargo test -p anvilml-ipc --test error_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P7-A2",
+    "description": "anvilml-ipc: WorkerMessage enum (Rust to Python)",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-A1"],
+    "context": "Create crates/anvilml-ipc/src/messages.rs. Define WorkerMessage per ANVILML_DESIGN.md §8.5 exactly: #[serde(tag=\"_type\")] enum with variants Ping{seq:u64}, Shutdown, Execute{job_id:Uuid, graph:serde_json::Value, settings:JobSettings, device_index:u32}, CancelJob{job_id:Uuid}, MemoryQuery. JobSettings imported from anvilml-core (Phase 3, P3-A1) - do not redefine. Derive Debug, Clone, Serialize, Deserialize. No InitializeHardware message - hardware init happens via ANVILML_DEVICE_INDEX env var at worker startup, not an IPC round trip, per §8.5's explicit note. Declare mod messages; in lib.rs (WorkerMessage re-export is a later task's scope alongside WorkerEvent). Acceptance: >=5 tests in crates/anvilml-ipc/tests/roundtrip_tests.rs covering msgpack serialize/deserialize roundtrip for each WorkerMessage variant via rmp-serde; `cargo test -p anvilml-ipc --test roundtrip_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P7-A3",
+    "description": "anvilml-ipc: WorkerEvent enum, Ready/Pong/Dying/MemoryReport",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-A2"],
+    "context": "Extend crates/anvilml-ipc/src/messages.rs with WorkerEvent per ANVILML_DESIGN.md §8.6, populated with only its startup/health variants: #[serde(tag=\"_type\")] enum with Ready{worker_id:String, device_index:u32, device_name:String, device_type:String, vram_total_mib:u32, vram_free_mib:u32, torch_version:String, fp16:bool, bf16:bool, fp8:bool, flash_attention:bool, capabilities_source:String, node_types:Vec<NodeTypeDescriptor>}, Pong{seq:u64}, Dying{reason:String}, MemoryReport{vram_used_mib:u32, ram_used_mib:u64}. NodeTypeDescriptor from anvilml-core (Phase 3, P3-A7). Derive Debug, Clone, Serialize, Deserialize. Add rmp-serde dep (resolve version live). Job-lifecycle variants are the next task's scope - do not add them here. Acceptance: >=4 new tests in roundtrip_tests.rs, one per variant, msgpack roundtrip via rmp-serde; `cargo test -p anvilml-ipc --test roundtrip_tests` exits 0 (>=9 tests total in file).",
+    "tags": [],
+    "defers_to": ["P7-A4"]
+  },
+  {
+    "id": "P7-A4",
+    "description": "anvilml-ipc: WorkerEvent job-lifecycle variants",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-A3"],
+    "context": "Extend the WorkerEvent enum in crates/anvilml-ipc/src/messages.rs with the job-lifecycle variants deferred by P7-A3, per ANVILML_DESIGN.md §8.6: Progress{job_id:Uuid, step:u32, total_steps:u32, preview_b64:Option<String>}, ImageReady{job_id:Uuid, image_b64:String, width:u32, height:u32, format:String, seed:i64, steps:u32}, Completed{job_id:Uuid, elapsed_ms:u64}, Failed{job_id:Uuid, error:String, traceback:Option<String>}, Cancelled{job_id:Uuid}. This receives the scope P7-A3 explicitly deferred. Add pub use messages::{WorkerMessage, WorkerEvent}; to lib.rs. Acceptance: >=5 new tests in roundtrip_tests.rs, one per variant, msgpack roundtrip; `cargo test -p anvilml-ipc --test roundtrip_tests` exits 0 (>=14 tests total in file).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P7-B1",
+    "description": "anvilml-ipc: RouterTransport struct + bind()",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-A4"],
+    "context": "Create crates/anvilml-ipc/src/transport.rs per ANVILML_DESIGN.md §8.3 EXACTLY - read §8.3 first, it documents a previously-fixed shutdown deadlock incident. Define RouterTransport{sender:Arc<tokio::sync::Mutex<RouterSocketSendHalf>>, receiver:Arc<tokio::sync::Mutex<RouterSocketRecvHalf>>, pub port:u16}. Implement pub async fn bind() -> Result<Self, IpcError>: binds a zeromq ROUTER socket on tcp://127.0.0.1:0 (OS-assigned port), splits into independent send/recv halves at construction via the zeromq crate's split mechanism (resolve current version live via registry, confirm the split API's shape - do not assume a version recalled from memory), reads back the assigned port. Construction/bind ONLY - send()/recv() are the next task. Add zeromq dep to Cargo.toml. Acceptance: >=3 tests in tests/roundtrip_tests.rs: bind() succeeds with a nonzero port, two binds get different ports, the port is listening; `cargo test -p anvilml-ipc --test roundtrip_tests` exits 0.",
+    "tags": [],
+    "defers_to": ["P7-B2"]
+  },
+  {
+    "id": "P7-B2",
+    "description": "anvilml-ipc: RouterTransport send()/recv() split-lock methods",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-B1"],
+    "context": "Extend RouterTransport (crates/anvilml-ipc/src/transport.rs) with the methods P7-B1 deferred, per §8.3: pub async fn send(&self, worker_id: &str, msg: &WorkerMessage) -> Result<(), IpcError> (locks ONLY self.sender, serializes via rmp_serde::to_vec_named, sends as a multipart ROUTER message with worker_id as identity frame); pub async fn recv(&self) -> Result<(String, WorkerEvent), IpcError> (locks ONLY self.receiver, never touches self.sender). CRITICAL: send and recv must never share a lock or block on each other - this is the exact fix for the documented v3 shutdown deadlock. Do not introduce a combined select! loop or a single mutex around both directions, under any justification. Acceptance: >=4 new tests: send-then-recv roundtrips a real message/event pair over the bound socket, a recv() blocked waiting does not block a concurrent send() (load-bearing regression test); `cargo test -p anvilml-ipc --test roundtrip_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P7-C1",
+    "description": "anvilml-ipc: EventBroadcaster tokio::sync::broadcast wrapper",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P3-A9"],
+    "context": "Create crates/anvilml-ipc/src/ws/mod.rs and ws/broadcaster.rs per ANVILML_DESIGN.md §8.4. Implement EventBroadcaster wrapping tokio::sync::broadcast::Sender<WsEvent> (WsEvent from anvilml-core, Phase 3 P3-A8/P3-A9 - do not redefine). Buffer capacity 1024 per §13.6. Methods: new() -> Self, publish(&self, event: WsEvent) (sends, ignores SendError when there are zero subscribers - expected, not an error), subscribe(&self) -> broadcast::Receiver<WsEvent>. Placed in anvilml-ipc specifically to avoid a worker<->server crate dependency cycle per §3.2's graph - do not relocate to anvilml-worker or anvilml-server. Declare mod ws; pub use ws::broadcaster::EventBroadcaster; in lib.rs. Acceptance: >=4 tests in tests/roundtrip_tests.rs: publish with zero subscribers does not error, publish with one subscriber delivers it, multiple subscribers each get their own copy; `cargo test -p anvilml-ipc --test roundtrip_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P7-D1",
+    "description": "anvilml-ipc: lib.rs re-export pass, 80-line check",
+    "phase": "7",
+    "project": "anvilml",
+    "prereqs": ["P7-B2", "P7-C1"],
+    "context": "Update crates/anvilml-ipc/src/lib.rs: confirm pub use re-exports for IpcError (error), WorkerMessage/WorkerEvent (messages), RouterTransport (transport), EventBroadcaster (ws::broadcaster) are all present per ANVILML_DESIGN.md §8.4's module layout. No implementation logic added - re-export and 80-line cap verification only, same pattern as every prior crate's closing lib.rs task. Acceptance: `wc -l crates/anvilml-ipc/src/lib.rs` reports <=80; `cargo test -p anvilml-ipc` (full crate suite) exits 0.",
+    "tags": ["refactor"],
+    "defers_to": []
+  }
+]

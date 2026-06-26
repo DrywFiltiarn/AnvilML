@@ -1,0 +1,72 @@
+[
+  {
+    "id": "P29-A1",
+    "description": "docs/book/: mdBook scaffold + SUMMARY.md structure",
+    "phase": "29",
+    "project": "anvilml",
+    "prereqs": ["P28-D1"],
+    "context": "Create docs/book/ as an mdBook source directory per ANVILML_DESIGN.md §20's Documentation roadmap entry: book.toml at the repo root or docs/book/ (confirm mdBook's expected location via its own convention, resolve mdBook's current version/install method live, not from memory), src/SUMMARY.md listing the planned chapter structure (Introduction, Getting Started, Configuration Reference, REST API Reference, WebSocket Events, Node SDK Guide, Operations/Runbook - matching this project's existing docs: ENVIRONMENT.md's config/env reference, ANVILML_DESIGN.md §13's API surface, §19's runbook), each chapter created as a stub (title + 1-sentence placeholder) for now - full content is the next several tasks' scope. Scaffolding only - no full chapter content here. Acceptance: `mdbook build docs/book` exits 0, produces a built site with no broken internal links; every SUMMARY.md entry resolves to an existing file.",
+    "tags": ["docs"],
+    "defers_to": []
+  },
+  {
+    "id": "P29-B1",
+    "description": "docs/book/: Getting Started + Configuration Reference chapters",
+    "phase": "29",
+    "project": "anvilml",
+    "prereqs": ["P29-A1"],
+    "context": "Write full content for the Getting Started and Configuration Reference chapters (Phase 29's P29-A1 stubs), sourcing content from existing project docs rather than inventing new prose duplicating them: Getting Started reuses ENVIRONMENT.md §1-2's bootstrap steps (build, provision venv, run); Configuration Reference reuses ENVIRONMENT.md §3-4's env var/config field tables, reformatted for mdBook's rendering (tables, code blocks) rather than copy-pasted verbatim Markdown tables that may not render identically. Acceptance: `mdbook build docs/book` exits 0; both chapters' content correctly reflects the CURRENT (post-Phase-28) state of ServerConfig's fields and the auto-provisioning behavior - cross-check against anvilml.toml's actual current key set (Phase 2's config_reference test, Phase 28's auto-provisioning) rather than an older draft.",
+    "tags": ["docs"],
+    "defers_to": []
+  },
+  {
+    "id": "P29-C1",
+    "description": "docs/book/: REST API Reference chapter generated from api/openapi.json",
+    "phase": "29",
+    "project": "anvilml",
+    "prereqs": ["P29-B1"],
+    "context": "Write the REST API Reference chapter (Phase 29's P29-A1 stub) by deriving content from the REAL api/openapi.json (Phase 18's P18-F1 - generated, not hand-written) rather than hand-transcribing §13.4's route table separately, which would create two independently-maintained sources of truth for the same routes. Either embed/link the OpenAPI spec directly (mdBook supports raw asset inclusion) or write a short generation step (a build script or documented manual step) deriving the chapter's route listing from api/openapi.json's actual paths - confirm whichever approach is chosen does not require hand-updating this chapter on every route change, since openapi-drift (Phase 18's CI gate) already catches spec/handler drift and this chapter must not become a third, unsynchronized copy. Acceptance: `mdbook build docs/book` exits 0; the chapter's route listing is verified to match api/openapi.json's actual paths (a test or script comparing the two).",
+    "tags": ["docs"],
+    "defers_to": []
+  },
+  {
+    "id": "P29-D1",
+    "description": "docs/book/: WebSocket Events chapter",
+    "phase": "29",
+    "project": "anvilml",
+    "prereqs": ["P29-C1"],
+    "context": "Write the WebSocket Events chapter (Phase 29's P29-A1 stub) per ANVILML_DESIGN.md §13.6 and the WsEvent variant list (Phase 3's P3-A8/A9): documents the GET /v1/events connect sequence (subscribe, initial SystemStats frame, ongoing forward loop, the 1024-buffer-overflow disconnect rule from Phase 16's P16-C1/C2), then one short subsection per WsEvent variant with its exact JSON shape (tag + fields) as a representative example payload - sourced from the actual struct definitions in anvilml-core, not re-derived from memory of what the fields probably are. Acceptance: `mdbook build docs/book` exits 0; every WsEvent variant from the current codebase has a corresponding documented subsection (cross-checked against the actual enum definition, not assumed complete from an earlier phase's summary).",
+    "tags": ["docs"],
+    "defers_to": []
+  },
+  {
+    "id": "P29-E1",
+    "description": "docs/book/: Node SDK Guide chapter (BaseNode contract for new node authors)",
+    "phase": "29",
+    "project": "anvilml",
+    "prereqs": ["P29-D1"],
+    "context": "Write the Node SDK Guide chapter (Phase 29's P29-A1 stub) per ANVILML_DESIGN.md §10's full node system specification: documents @register/BaseNode/SlotSpec/NodeContext (Phase 10's P10-A1-A4) for someone writing a NEW node type, the fixed method-name contract for arch modules (§10.4's table, for someone writing a new architecture module), the §10.6 marker requirement, and a worked example referencing the actual PassThrough node (Phase 14's P14-B1) as the simplest real example - not an invented hypothetical, since PassThrough already exists and is simpler to point to than a new pedagogical example. This guide covers AnvilML's own node system (worker/nodes/) only, NOT an extension/plugin SDK for any frontend - no such concept exists in AnvilML's scope per §1. Acceptance: `mdbook build docs/book` exits 0; the chapter's PassThrough reference matches the actual current file content, not a drifted paraphrase.",
+    "tags": ["docs"],
+    "defers_to": []
+  },
+  {
+    "id": "P29-F1",
+    "description": "docs/book/: Operations/Runbook chapter",
+    "phase": "29",
+    "project": "anvilml",
+    "prereqs": ["P29-E1"],
+    "context": "Write the Operations/Runbook chapter (Phase 29's P29-A1 stub) reusing ANVILML_DESIGN.md §19's existing runbook content (first-run setup, ghost job reset, graceful shutdown sequence) plus Phase 28's auto-provisioning and --version additions, reformatted for mdBook rather than duplicated as independent prose - the goal is one coherent operator-facing narrative pulling together content that currently exists scattered across ANVILML_DESIGN.md §19, ENVIRONMENT.md, and Phase 28's docs/RELEASE.md, not a fourth independent description of the same procedures. Acceptance: `mdbook build docs/book` exits 0 with no broken links across all chapters now that every SUMMARY.md entry has real content (this is the first task where a build with stub-content chapters would actually be a regression - confirm zero stub placeholders remain anywhere in docs/book/src/).",
+    "tags": ["docs"],
+    "defers_to": []
+  },
+  {
+    "id": "P29-G1",
+    "description": "CI: add a docs-build job verifying mdBook builds cleanly",
+    "phase": "29",
+    "project": "anvilml",
+    "prereqs": ["P29-F1"],
+    "context": "Add a docs-build job to .github/workflows/ci.yml (a new job, not replacing or modifying any existing job per FORGE_AGENT_RULES.md §5.5's 'preserve all existing jobs' rule): installs mdBook (resolve the correct CI installation method live, e.g. a cargo install or a prebuilt binary download action - do not assume a method from memory), runs `mdbook build docs/book`, fails the job if the build is non-zero or if it detects broken internal links (mdBook's own linkcheck if available, or a separate link-check step). This is a new, additive CI job - the existing rust-test/worker-test/openapi-drift/config-drift jobs are untouched. Acceptance: `grep -c 'docs-build' .github/workflows/ci.yml` shows the new job exists; `mdbook build docs/book` exits 0 locally; a pushed commit shows all jobs (the 4 pre-existing plus this new one) green.",
+    "tags": [],
+    "defers_to": []
+  }
+]

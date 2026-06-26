@@ -1,0 +1,92 @@
+[
+  {
+    "id": "P23-A1",
+    "description": "worker/tests/fixtures/: ZiT VAE fixture safetensors builder",
+    "phase": "23",
+    "project": "anvilml",
+    "prereqs": ["P19-D1"],
+    "context": "Create worker/tests/fixtures/build_zit_vae_fixture.py per worker/tests/fixtures/README.md's conventions (Phase 19's P19-D1): a script generating a tiny synthetic .safetensors file with ZiT-VAE-shaped tensor keys (small encoder/decoder channel counts, small latent channel count - structurally valid for whatever shape-inference formula zit_vae.py's load() will read, NOT a miniaturized copy of the real model's shapes) and a second variant with a non-recognizable key prefix and no arch metadata key, for the mandatory metadata-fallback regression case per §17.5 (the same case Phase 20's P20-A1 built for diffusion - VAE fixtures need it too, per §17.5's per-family requirement). Run the script to produce zit_vae_tiny.safetensors and zit_vae_tiny_no_metadata.safetensors, committing both. Acceptance: `python worker/tests/fixtures/build_zit_vae_fixture.py` exits 0, produces both files under 10MB combined; both load via safetensors.safe_open.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P23-B1",
+    "description": "worker/nodes/arch/vae/zit_vae.py: shape inference from safetensors header",
+    "phase": "23",
+    "project": "anvilml",
+    "prereqs": ["P23-A1"],
+    "context": "Create worker/nodes/arch/vae/zit_vae.py. Implement _infer_hyperparams(path: str) -> dict per ANVILML_DESIGN.md §11.3 step 1 (same discipline as zit.py/qwen3.py - read ALL keys via f.keys(), never a truncated sample) to infer the VAE's encoder/decoder channel counts and latent channel count from the P23-A1 fixture's safetensors header. can_handle()/dispatch registration are the next task's scope - do not add them here. This is a genuinely separate nn.Module family from zit.py per §11.4 (VAE is its own arch family, not nested under diffusion) - do not import or reuse zit.py's hyperparameter inference logic even though both relate to ZiT, their shape-inference formulas are independent. Acceptance: >=4 tests in worker/tests/test_arch_vae_zit.py: _infer_hyperparams against the fixture returns the expected dict, the same function against the no-metadata variant succeeds via fallback, malformed input raises a clear error; `python -m pytest worker/tests/test_arch_vae_zit.py -v` exits 0.",
+    "tags": [],
+    "defers_to": ["P23-B2"]
+  },
+  {
+    "id": "P23-B2",
+    "description": "worker/nodes/arch/vae/zit_vae.py: can_handle() + dispatch registration",
+    "phase": "23",
+    "project": "anvilml",
+    "prereqs": ["P23-B1"],
+    "context": "Extend zit_vae.py with can_handle(key) -> bool, the scope P23-B1 deferred: matches the architecture string read from safetensors metadata, or the path-derived fallback when metadata is absent (the same metadata-or-path pattern as zit.py and the diffusion/vae families generally, per §10.4 - distinct from qwen3.py's clip_type string dispatch). Register zit_vae.py into arch/vae/__init__.py's _REGISTERED_MODULES list (Phase 10's P10-B2 dispatcher, gaining its first real entry). load()/decode() per §10.4's table for vae family - no sample()/compute_latent_shape(), those are diffusion-only. Acceptance: >=3 new tests in test_arch_vae_zit.py: can_handle matches the P23-A1 fixture's arch key, can_handle rejects an unrelated key, get_module() now returns zit_vae.py for a matching key; `python -m pytest worker/tests/test_arch_vae_zit.py -v` exits 0 (>=7 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P23-C1",
+    "description": "worker/nodes/arch/vae/zit_vae.py: meta construction + dtype selection",
+    "phase": "23",
+    "project": "anvilml",
+    "prereqs": ["P23-B2"],
+    "context": "Extend zit_vae.py with load()'s step 2 per ANVILML_DESIGN.md §11.3, identical discipline to Phase 20's zit.py: construct the target nn.Module on torch.device(\"meta\") using ONLY P23-B1's inferred hyperparameters, dtype chosen per §11.5's precedence reading ctx.caps. Uses diffusers'/torch's layer/block classes (conv, norm, attention if present in the VAE architecture) per §11.2's library boundary. Step 3 (materialize+remap+load) and the .arch attribute are the next task's scope. Acceptance: >=3 tests in test_arch_vae_zit.py: meta construction succeeds against the P23-A1 fixture's inferred hyperparameters, constructed parameters confirmed on torch.device(\"meta\") (zero real memory allocated), construction against the no-metadata fixture variant also succeeds; `python -m pytest worker/tests/test_arch_vae_zit.py -v` exits 0 (>=10 total).",
+    "tags": [],
+    "defers_to": ["P23-C2"]
+  },
+  {
+    "id": "P23-C2",
+    "description": "worker/nodes/arch/vae/zit_vae.py: dtype selection per InferenceCaps",
+    "phase": "23",
+    "project": "anvilml",
+    "prereqs": ["P23-C1"],
+    "context": "Extend zit_vae.py's load() with dtype selection, the scope P23-C1 deferred, per §11.5's fixed precedence: fp8 (if caps.fp8 AND checkpoint native dtype is fp8) -> bf16 (if caps.bf16) -> fp16 (if caps.fp16) -> fp32 fallback - the identical precedence every arch module in every family follows, restated here per-module rather than assumed shared. ctx.caps is InferenceCaps from Phase 10's NodeContext. Apply the selected dtype to the meta-device construction from P23-C1. Acceptance: >=4 new tests in test_arch_vae_zit.py: each of the 4 precedence branches is exercised with the correct caps combination and produces a module at the expected dtype; `python -m pytest worker/tests/test_arch_vae_zit.py -v` exits 0 (>=14 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P23-C3",
+    "description": "worker/nodes/arch/vae/zit_vae.py: key remap, load_state_dict, .arch attribute",
+    "phase": "23",
+    "project": "anvilml",
+    "prereqs": ["P23-C2"],
+    "context": "Complete zit_vae.py's load() with steps 3-4 per §11.3, the scope P23-C1/C2 deferred: build the checkpoint-key to constructed-module-key mapping by hand, informed by inspecting both key sets directly against the P23-A1 fixture (never assumed from zit.py's diffusion mapping or any other model's - this is a genuinely separate key namespace per §11.4). Materialize via to_empty(), cast tensors to the already-selected dtype (P23-C2) BEFORE load_state_dict(..., assign=True) - the same mandatory ordering as every prior arch module, restated per-module. Return the constructed module with .arch set to the architecture string can_handle() (P23-B2) matches. Acceptance: >=6 new tests in test_arch_vae_zit.py: load() against the fixture succeeds with correctly-loaded weights (spot-check values), .arch is set correctly, tensors confirmed at the selected dtype, load() against the no-metadata fixture succeeds via fallback; `python -m pytest worker/tests/test_arch_vae_zit.py -v` exits 0 (>=20 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P23-D1",
+    "description": "worker/nodes/arch/vae/zit_vae.py: decode() latent-to-image",
+    "phase": "23",
+    "project": "anvilml",
+    "prereqs": ["P23-C3"],
+    "context": "Extend zit_vae.py with decode(vae_module, latent) -> PIL.Image per ANVILML_DESIGN.md's VaeDecode row and §10.4's fixed method-name table (decode exactly, never vae_decode() or to_image()): runs the loaded VAE's decoder forward pass on the latent tensor, post-processes into a PIL Image (denormalize, clamp, convert to uint8 HWC, PIL.Image.fromarray). Receives a latent shaped consistently with Phase 21's zit.py compute_latent_shape() output, even though zit.py and zit_vae.py are independent modules per §11.4 - the latent shape contract between them is the actual point of integration this task tests. Acceptance: >=5 tests in test_arch_vae_zit.py: decode() against a fixture-shaped latent produces a valid PIL Image at the expected width/height, output dtype/mode is correct (RGB uint8), decode() against a batch (batch_size>1) produces the matching number of images; `python -m pytest worker/tests/test_arch_vae_zit.py -v` exits 0 (>=25 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P23-E1",
+    "description": "worker/nodes/loader.py: LoadVae real branch calls zit_vae.py via dispatch",
+    "phase": "23",
+    "project": "anvilml",
+    "prereqs": ["P23-D1"],
+    "context": "Update LoadVae's real branch (worker/nodes/loader.py, Phase 19's P19-C3 - a deliberate NotImplementedError placeholder) to call arch.vae.get_module(arch_key).load(path, ctx.caps) via pipeline_cache.get_or_load(), where arch_key matches zit_vae.py's can_handle() contract (P23-B2). Update the REAL_PATH_VERIFIED marker to point at the new passing test, removing the old NotImplementedError-asserting test rather than leaving it alongside - the same stale-marker discipline as Phases 20/22. This is the third and final loader (after LoadModel Phase 20, LoadClip Phase 22) to gain a real branch - all three are now fully real, closing the gap Phase 19 opened. Acceptance: >=4 tests in worker/tests/test_nodes_loader.py (real_mode): LoadVae.execute() against the P23-A1 fixture path succeeds, returns a loaded VAE per the VAE slot contract, the stale LoadVae NotImplementedError test is removed; `python -m pytest worker/tests/test_nodes_loader.py -v -m real_mode` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P23-F1",
+    "description": "Runnable Proof: full load+sample+decode chain produces a real PIL image",
+    "phase": "23",
+    "project": "anvilml",
+    "prereqs": ["P23-E1"],
+    "context": "No new source files. Run a real-mode integration test (create worker/tests/test_e2e_zit_pipeline.py if one does not already exist) chaining: LoadModel (Phase 20) -> Sampler (Phase 21) -> zit_vae.py's decode() (this phase) directly, all against the respective fixture checkpoints, producing a real PIL Image object as the final output - this is the FIRST genuinely complete real-mode generation chain in the project, even though it bypasses the generic VaeDecode/ClipTextEncode nodes (those wire-up tasks are a later phase's scope; this proof exercises the underlying arch modules directly to confirm the full chain works before the generic node layer is wired through it). Record the literal pytest output and confirm the produced image's dimensions match the requested width/height. Acceptance: `python -m pytest worker/tests/test_e2e_zit_pipeline.py -v -m real_mode` exits 0, asserting a real, non-mock PIL Image with correct dimensions is produced.",
+    "tags": ["manual"],
+    "defers_to": []
+  }
+]

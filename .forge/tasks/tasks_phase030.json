@@ -1,0 +1,52 @@
+[
+  {
+    "id": "P30-A1",
+    "description": "docs/TESTS.md: audit completeness against every test file in the repo",
+    "phase": "30",
+    "project": "anvilml",
+    "prereqs": ["P29-G1"],
+    "context": "Audit docs/TESTS.md (maintained incrementally per-task since Phase 1, per FORGE_AGENT_RULES.md §5.10) against the actual current set of test files across the entire repo (crates/*/tests/*.rs, backend/tests/*.rs, worker/tests/test_*.py) to confirm every test function has a corresponding entry per ANVILML_DESIGN.md §17.1's format (File/Context/Tests/Mode/Inputs/Expected output). This is a verification-and-backfill task, not a rewrite - if entries are missing for tests added in any prior phase (an omission is plausible across 29 phases of incremental updates), add them now using the same format; do not restructure entries that are already correct. Acceptance: a script or manual cross-check (documented in the report) confirms every test function name appearing in `grep -rn 'fn test_\\|#\\[test\\]\\|def test_' crates/ backend/ worker/tests/` has a corresponding docs/TESTS.md entry; any gaps found are backfilled in this task.",
+    "tags": ["manual"],
+    "defers_to": []
+  },
+  {
+    "id": "P30-B1",
+    "description": "Project-wide sweep: zero unmarked stubs, zero stale defers_to, zero TODOs",
+    "phase": "30",
+    "project": "anvilml",
+    "prereqs": ["P30-A1"],
+    "context": "Run the FORGE_AGENT_RULES.md §9a.1-equivalent sweep across the ENTIRE codebase (not just one task's files, since this is the project's final closeout): grep for TODO/FIXME/unimplemented!()/todo!()/NotImplementedError outside any intentional, already-flagged exceptions (Phase 19's deliberately-deferred loader real branches - all three should be CLOSED by now per Phases 20/22/23, so any remaining NotImplementedError in loader.py at this point IS a genuine finding, not expected). Also grep every defers_to reference across all tasks_phase*.json and confirm each named successor task exists and was completed in this delivery's own artifacts. Acceptance: the sweep's exact commands and output (even if empty) are recorded in the report per §9a.1's requirement; any finding is fixed in this task or escalated as a blocker - never deferred to a nonexistent Phase 31.",
+    "tags": ["manual"],
+    "defers_to": []
+  },
+  {
+    "id": "P30-C1",
+    "description": "Project-wide sweep: every REAL_PATH_VERIFIED/MOCK_PATH_VERIFIED marker resolves",
+    "phase": "30",
+    "project": "anvilml",
+    "prereqs": ["P30-B1"],
+    "context": "Run ENVIRONMENT.md §8 Gate 4's exact validation commands across the entire worker/nodes/ tree (not scoped to one task's files, since this is the final closeout): every REAL_PATH_VERIFIED/MOCK_PATH_VERIFIED marker must name a real, collectible, passing (not skipped/xfailed) test, and every public execute()/load()/sample()/decode()/compute_latent_shape() function must have BOTH markers present. This re-confirms project-wide the same property each arch-module phase (20-26) already confirmed locally - this task's value is catching any regression or omission across 10+ phases of incremental work. Acceptance: both grep -L commands from Gate 4 (files lacking either marker) return empty for every file in worker/nodes/ defining a node or arch-module function; the marker-collection xargs command resolves every named test successfully; record \"Gate 4 project-wide sweep: 0 findings\" (or the actual findings, fixed) per §9a.1's pattern.",
+    "tags": ["manual"],
+    "defers_to": []
+  },
+  {
+    "id": "P30-D1",
+    "description": "Project-wide sweep: full standard gate suite + both platform cross-checks",
+    "phase": "30",
+    "project": "anvilml",
+    "prereqs": ["P30-C1"],
+    "context": "Run the complete standard gate sequence from ENVIRONMENT.md §6-8 against the full, final state of the repository: cargo fmt --all -- --check, cargo clippy --workspace --features mock-hardware -- -D warnings, cargo clippy --bin anvilml -- -D warnings, cargo test --workspace --features mock-hardware, the full ENVIRONMENT.md §7 four-command platform cross-check (mock-hardware Linux/Windows, real-hardware Linux/Windows), ANVILML_WORKER_MOCK=1 python -m pytest worker/tests -v, python -m pytest worker/tests -v -m real_mode, the config-drift gate, the openapi-drift gate, mdbook build docs/book. This is the project's final, complete green-build confirmation before considering the v4 rewrite's authored scope complete. Acceptance: every single command listed above exits 0; verbatim output for each is recorded in the report, matching the exact documentation discipline every individual phase's own gate has used throughout this delivery.",
+    "tags": ["manual"],
+    "defers_to": []
+  },
+  {
+    "id": "P30-E1",
+    "description": "docs/PHASES.md + RUNNABLE_PROOF.md: final consistency audit across all phases",
+    "phase": "30",
+    "project": "anvilml",
+    "prereqs": ["P30-D1"],
+    "context": "Audit docs/PHASES.md and docs/RUNNABLE_PROOF.md (both maintained incrementally as living indexes across this delivery) for internal consistency now that all 30 phases are authored: every phase number 1-30 appears exactly once in both files, in order, no gaps, no duplicates; every Runnable Proof block in RUNNABLE_PROOF.md matches the corresponding TASKS_PHASE*.md's own block verbatim (a drift here means one was edited without updating the other - check explicitly, don't assume sync held across 30 phases of edits); the amendments/deviations log in PHASES.md accounts for every flagged Deviation across all 30 phases' task contexts (grep 'Deviation'/'flag' across all tasks_phase*.json/TASKS_PHASE*.md, cross-check each appears in the log or is otherwise resolved). Acceptance: the cross-check is performed and documented; any drift or missing log entry found is fixed in this task.",
+    "tags": ["manual"],
+    "defers_to": []
+  }
+]

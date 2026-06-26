@@ -1,0 +1,122 @@
+[
+  {
+    "id": "P8-A1",
+    "description": "anvilml-ipc: 1000-round-trip ROUTER/DEALER stress test (GATE)",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": ["P7-D1"],
+    "context": "Create crates/anvilml-ipc/tests/stress_test.rs per ANVILML_DESIGN.md §17.2: bind a RouterTransport, spawn a counterpart DEALER socket within the same test process (Rust-side simulated worker, not a real Python subprocess - that integration is anvilml-worker's later concern), send 1000 WorkerMessage::Ping{seq} messages with increasing seq, reply with WorkerEvent::Pong{seq} from the simulated DEALER side, assert all 1000 round trips complete with matching seq values and no message loss or reordering. Use an explicit timeout per ANVILML_DESIGN.md/ENVIRONMENT.md §11.5's required pattern - never an unguarded blocking call. THIS TEST GATES PHASE 8 AND EVERY SUBSEQUENT PHASE per ANVILML_DESIGN.md §20's IPC Baseline roadmap entry - no later phase's tasks begin until this passes. Acceptance: `cargo test -p anvilml-ipc --test stress_test --release` exits 0, completing all 1000 round trips with zero loss within the test's timeout.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P8-B1",
+    "description": "anvilml-worker: WorkerEnv environment variable map builder",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": ["P8-A1"],
+    "context": "Create crates/anvilml-worker/src/env.rs. Implement WorkerEnv::build(ipc_port: u16, worker_id: &str, device_index: u32, device_type: DeviceType, mock: bool, log_level: &str, max_ipc_payload_mib: u32) -> HashMap<String, String> per ANVILML_DESIGN.md §9.7's exact table: ANVILML_IPC_PORT, ANVILML_WORKER_ID, ANVILML_DEVICE_INDEX, ANVILML_DEVICE_TYPE (\"cuda\"|\"rocm\"|\"cpu\"), ANVILML_WORKER_MOCK (\"1\" if mock else unset/absent from the map), ANVILML_LOG_LEVEL, ANVILML_MAX_IPC_PAYLOAD_MIB. ANVILML_FORCE_WORKER_MOCK is a runtime override read separately by the caller, not set by this builder. Declare mod env; pub use env::WorkerEnv; in lib.rs. Acceptance: >=5 tests in crates/anvilml-worker/tests/env_tests.rs: all 6 builder-set vars present with correct values, ANVILML_WORKER_MOCK absent when mock=false, ANVILML_WORKER_MOCK=\"1\" when mock=true, device_type string mapping correct for all 3 DeviceType variants; `cargo test -p anvilml-worker --test env_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P8-B2",
+    "description": "anvilml-worker: spawn.rs subprocess Command construction",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": ["P8-B1"],
+    "context": "Create crates/anvilml-worker/src/spawn.rs. Implement spawn_worker(venv_path: &Path, env: HashMap<String,String>) -> Result<tokio::process::Child, AnvilError>: constructs tokio::process::Command targeting {venv_path}/bin/python3 (Linux/macOS) or {venv_path}\\Scripts\\python.exe (Windows, #[cfg(windows)]) per ENVIRONMENT.md §5's interpreter paths, running worker/worker_main.py, .envs(env) applying WorkerEnv's map, stdout/stderr piped (not inherited - the supervisor reads them, never lets them pass through directly). No Windows Job Object wrapping yet - separate cfg-gated task. Declare mod spawn; pub use spawn::spawn_worker; in lib.rs. Acceptance: >=4 tests in tests/spawn_tests.rs: correct interpreter path per platform, worker_main.py path correct relative to cwd, env vars present on the Command, stdio is Stdio::piped(); `cargo test -p anvilml-worker --test spawn_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P8-B3",
+    "description": "anvilml-worker: job_object.rs Windows orphan-cleanup wrapper",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": ["P8-B2"],
+    "context": "Create crates/anvilml-worker/src/job_object.rs, gated #[cfg(windows)] at the mod statement in lib.rs (PR_SET_PDEATHSIG is Linux-only; Windows requires Win32 Job Objects with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE). Implement JobObjectGuard::new() -> Result<Self, AnvilError> (creates a Job Object via the windows crate, resolve version live via registry, sets the kill-on-close limit) and assign_process(&self, child: &tokio::process::Child) -> Result<(), AnvilError> (assigns the child's handle to the job object, so it is force-killed if the supervisor dies, preventing orphans). Linux orphan cleanup is out of scope here - flag as a gap if uncovered elsewhere. Acceptance: >=3 tests in tests/spawn_tests.rs (gated #[cfg(windows)] at file level): job object creation succeeds, an assigned child is terminated when the handle drops, double-assignment errors cleanly or is idempotent; `cargo test -p anvilml-worker --test spawn_tests` exits 0 on Windows.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P8-C1",
+    "description": "anvilml-worker: demux.rs register/deregister pair (mandatory)",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": ["P8-A1"],
+    "context": "Create crates/anvilml-worker/src/demux.rs per ANVILML_DESIGN.md §9.4 - v3 shipped register() with NO deregister(), so every crash+respawn leaked a routing entry permanently. Implement Demux: HashMap<String, mpsc::Sender<WorkerEvent>> behind a lock. register(&self, worker_id: String, tx: mpsc::Sender<WorkerEvent>) and deregister(&self, worker_id: &str) -> bool (true if an entry was removed) MUST both exist in this task, not register() now and deregister() later. route(&self, worker_id: &str, event: WorkerEvent) -> Result<(), AnvilError> dispatches or returns AnvilError::WorkerNotFound if absent. Declare mod demux; pub use demux::Demux; in lib.rs. Acceptance: >=5 tests in tests/demux_tests.rs INCLUDING a deregistration test (register, deregister, assert route() now errors - mandatory per §9.4): register+route delivers, deregister removes, route after deregister fails, double-deregister is safe; `cargo test -p anvilml-worker --test demux_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P8-C2",
+    "description": "anvilml-worker: keepalive.rs ping/pong heartbeat watchdog",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": ["P8-C1"],
+    "context": "Create crates/anvilml-worker/src/keepalive.rs per ANVILML_DESIGN.md §9.2: a tokio task sending WorkerMessage::Ping{seq} every 30s (configurable) and tracking the most recent Pong{seq}; if no Pong arrives within 10s of a Ping, the watchdog declares the worker dead (signal via a provided callback or channel - implementer's choice, but must be testable without a real 30s wait, e.g. inject interval/timeout as constructor params rather than hardcoding Duration::from_secs literals). Declare mod keepalive; pub use keepalive::KeepaliveWatchdog (or equivalent); in lib.rs. Acceptance: >=4 tests in tests/keepalive_tests.rs using short injected durations (milliseconds) so tests run fast: pong within timeout keeps worker alive, missing pong past timeout triggers dead signal, repeated successful pings do not false-trigger; `cargo test -p anvilml-worker --test keepalive_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P8-D1",
+    "description": "anvilml-worker: respawn.rs RespawnPolicy backoff + max-attempt guard",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": ["P8-A1"],
+    "context": "Create crates/anvilml-worker/src/respawn.rs per ANVILML_DESIGN.md §19.4: RespawnPolicy{respawn_delay_ms: u32 (default 2000), respawn_max_attempts: u32 (default 5), respawn_window_s: u32 (default 300)}. Implement should_respawn(&self, attempt_history: &[Instant]) -> bool: counts attempts within the trailing respawn_window_s; if count >= respawn_max_attempts, returns false (respawn halts, worker stays Dead until manual restart). next_delay(&self) -> Duration returns respawn_delay_ms as a Duration (constant-delay only - exponential backoff is NOT in scope, the design doc does not specify it, do not add speculatively). Declare mod respawn; pub use respawn::RespawnPolicy; in lib.rs. Acceptance: >=5 tests in tests/respawn_tests.rs: under the limit allows respawn, at the limit within the window blocks it, attempts outside the window don't count, defaults match documented values; `cargo test -p anvilml-worker --test respawn_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P8-E1",
+    "description": "anvilml-worker: WorkerHandle struct (cheap, Clone-able)",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": ["P8-C2", "P8-D1"],
+    "context": "Create crates/anvilml-worker/src/managed.rs (WorkerHandle lives here alongside ManagedWorker per §9.3's module layout, even though it's a distinct type). Define WorkerHandle per §9.1 EXACTLY - read §9.1 first, it documents a regression where run() was never callable: #[derive(Clone)] pub struct WorkerHandle{pub worker_id: String, status: Arc<RwLock<WorkerStatus>>, shutdown_tx: Option<oneshot::Sender<()>>, join_handle: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>>}. Cloning shares the status lock and shutdown sender, never the worker itself. Provide status(&self) -> WorkerStatus (read lock) and request_shutdown(&mut self) (takes the Option, sends on the oneshot if present). ManagedWorker itself (owning run()) is the next task. Acceptance: >=4 tests in tests/managed_tests.rs: clone shares status updates, request_shutdown is idempotent, status() needs no lock the run task holds; `cargo test -p anvilml-worker --test managed_tests` exits 0.",
+    "tags": [],
+    "defers_to": ["P8-E2"]
+  },
+  {
+    "id": "P8-E2",
+    "description": "anvilml-worker: ManagedWorker::run() owns full lifecycle task",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": ["P8-E1"],
+    "context": "Extend crates/anvilml-worker/src/managed.rs with ManagedWorker per §9.1 EXACTLY: pub async fn run(mut self, mut shutdown_rx: oneshot::Receiver<()>) - takes self BY VALUE, owns its entire lifecycle for this one async fn, calling demux.register() on entry and demux.deregister() on EVERY exit path (graceful shutdown via shutdown_rx, the 60s Initializing timeout, and crash/Dead) per §9.4's mandatory pairing - deregistering only on the graceful path is non-compliant. NO separate by-value shutdown(self) method exists - graceful shutdown lives entirely inside run()'s own tokio::select! loop. Receives the construction P8-E1 deferred; use exactly that WorkerHandle shape, do not re-derive it. Acceptance: >=5 tests in tests/managed_tests.rs (>=9 total in file): run() completes against a mock IPC backend, shutdown_rx triggers graceful exit, deregister called on graceful exit, on simulated crash, and on Initializing-timeout exit; `cargo test -p anvilml-worker --test managed_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P8-F1",
+    "description": "anvilml-worker: bridge.rs independent reader/writer tasks",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": ["P8-E2"],
+    "context": "Create crates/anvilml-worker/src/bridge.rs per ANVILML_DESIGN.md §9.6 EXACTLY: two separate tokio::spawn tasks, each locking only its own half of the already-split RouterTransport (Phase 7's P7-B2) - bridge.rs adds NO additional lock around either half. writer_task drains an mpsc::Receiver<WorkerMessage>, calls transport.send() per message. reader_task loops transport.recv(), routes each (worker_id, event) via Demux::route() (P8-C1). Both spawned together by pub fn spawn_bridge(transport: Arc<RouterTransport>, demux: Arc<Demux>) -> (mpsc::Sender<WorkerMessage>, JoinHandle<()>, JoinHandle<()>) returning the writer's input channel and both handles. Declare mod bridge; pub use bridge::spawn_bridge; in lib.rs. Acceptance: >=4 tests in tests/bridge_tests.rs: sent message reaches transport.send(), a recv()'d event reaches the right demux receiver, both tasks run concurrently without blocking; `cargo test -p anvilml-worker --test bridge_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P8-G1",
+    "description": "anvilml-worker: WorkerPool spawn_all()/shutdown_all()",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": ["P8-F1", "P8-B3"],
+    "context": "Create crates/anvilml-worker/src/pool.rs per ANVILML_DESIGN.md §9.2-9.3: WorkerPool{handles: Vec<WorkerHandle>, transport: Arc<RouterTransport>}. spawn_all(&mut self, devices: &[GpuDevice], cfg: &ServerConfig) -> Result<(), AnvilError>: per device, builds WorkerEnv (P8-B1), spawns the subprocess (P8-B2, plus Windows job_object via P8-B3), constructs a ManagedWorker (P8-E2) and spawns its run() task, registers the resulting WorkerHandle. shutdown_all(&mut self, timeout: Duration) -> Result<(), AnvilError>: calls request_shutdown() on every handle, awaits join handles within the bounded timeout per §19.3 step 3 (30s default), force-kills any not exited per step 4. Declare mod pool; pub use pool::WorkerPool; in lib.rs. Acceptance: >=5 tests in tests/pool_tests.rs (mock-hardware, mock IPC): spawn_all creates one handle per device, shutdown_all awaits exit, force-kills a non-exiting handle; `cargo test -p anvilml-worker --features mock-hardware --test pool_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P8-H1",
+    "description": "anvilml-worker: lib.rs re-export pass, 80-line check",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": ["P8-G1"],
+    "context": "Update crates/anvilml-worker/src/lib.rs: confirm pub use re-exports for WorkerPool (pool), WorkerHandle/ManagedWorker (managed), WorkerEnv (env), Demux (demux), RespawnPolicy (respawn) are all present per ANVILML_DESIGN.md §9.3's module layout, with the windows-only job_object module correctly cfg-gated at its mod statement. No implementation logic added - re-export and 80-line cap verification only. Acceptance: `wc -l crates/anvilml-worker/src/lib.rs` reports <=80; `cargo test -p anvilml-worker --features mock-hardware` (full crate suite) exits 0.",
+    "tags": ["refactor"],
+    "defers_to": []
+  }
+]

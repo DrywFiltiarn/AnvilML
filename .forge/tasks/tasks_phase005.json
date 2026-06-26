@@ -1,0 +1,62 @@
+[
+  {
+    "id": "P5-A1",
+    "description": "anvilml-hardware: hardware_override config short-circuit",
+    "phase": "5",
+    "project": "anvilml",
+    "prereqs": ["P4-A6"],
+    "context": "In crates/anvilml-hardware/src/detect.rs, implement pub async fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, AnvilError> (no SqlitePool param yet - anvilml-registry's DeviceCapabilityStore doesn't exist until a later phase; param added then). Step 1 of priority order per ANVILML_DESIGN.md §6.4: if cfg.hardware_override is Some, synthesize one GpuDevice from its device_type/vram_total_mib, enumeration_source=Override, capabilities_source=Fallback, return Ok(HardwareInfo{...}) immediately, skipping all other detectors. This task implements ONLY this short-circuit step; the rest of the chain is deferred to the next task. Acceptance: crates/anvilml-hardware/tests/detect_tests.rs, >=2 tests: override present returns exactly that device, override absent does not short-circuit (returns Err pending P5-A2's chain); `cargo test -p anvilml-hardware --test detect_tests` exits 0.",
+    "tags": [],
+    "defers_to": ["P5-A2"]
+  },
+  {
+    "id": "P5-A2",
+    "description": "anvilml-hardware: mock-vs-real branch + Vulkan fallback chain",
+    "phase": "5",
+    "project": "anvilml",
+    "prereqs": ["P5-A1"],
+    "context": "Extend detect_all_devices() in crates/anvilml-hardware/src/detect.rs, continuing past P5-A1's override short-circuit, per ANVILML_DESIGN.md §6.4 steps 2-5: if the mock-hardware feature is compiled in, use MockDetector exclusively (mock and real are mutually exclusive per build, never both queried). If mock-hardware is not compiled, try VulkanDetector; if it returns an empty Vec, try the platform fallback (DxgiDetector on Windows via cfg, SysfsPciDetector on Linux via cfg). Return the resulting Vec<GpuDevice> from this branch (CPU-append and final HardwareInfo assembly are the next task's scope - do not append CPU or construct HardwareInfo here). Acceptance: >=4 tests in detect_tests.rs: mock-hardware feature path returns exactly the mock device, override still takes priority over mock when both could apply, empty vulkan result triggers the platform fallback path; `cargo test -p anvilml-hardware --features mock-hardware --test detect_tests` exits 0.",
+    "tags": [],
+    "defers_to": ["P5-A3"]
+  },
+  {
+    "id": "P5-A3",
+    "description": "anvilml-hardware: CPU-append + HardwareInfo assembly",
+    "phase": "5",
+    "project": "anvilml",
+    "prereqs": ["P5-A2"],
+    "context": "Complete detect_all_devices() in crates/anvilml-hardware/src/detect.rs per ANVILML_DESIGN.md §6.4 step 6: take the Vec<GpuDevice> produced by P5-A2's branch, always append CpuDetector's single device last (guarantees the result is never empty), then construct the final HardwareInfo{host, gpus, inference_caps} where inference_caps is the union (any field true if true in any GPU's caps) of all per-GPU InferenceCaps. host: HostInfo is populated minimally (hostname via std::env, os via std::env::consts::OS). This receives the assembly scope P5-A2 explicitly deferred. Acceptance: >=3 new tests in detect_tests.rs: cpu device always present and always last in gpus, inference_caps union correctness with 2+ devices having different true fields, host fields are non-empty; `cargo test -p anvilml-hardware --features mock-hardware --test detect_tests` exits 0 (>=9 tests total in file).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P5-A4",
+    "description": "anvilml-hardware: lib.rs re-export detect_all_devices, 80-line check",
+    "phase": "5",
+    "project": "anvilml",
+    "prereqs": ["P5-A3"],
+    "context": "Update crates/anvilml-hardware/src/lib.rs: add pub use detect::detect_all_devices; alongside the existing DeviceDetector re-export. Confirm all module declarations from Phase 4 and this phase (detect, cpu, mock, vulkan, dxgi, sysfs) are present with correct cfg/feature gates per ANVILML_DESIGN.md §6.3's module layout table, and that the file stays <=80 lines per the hard cap. No implementation logic added - re-export and gate verification only. Acceptance: `wc -l crates/anvilml-hardware/src/lib.rs` reports <=80; `cargo build -p anvilml-hardware --features mock-hardware` and `cargo build -p anvilml-hardware` (no features) both exit 0.",
+    "tags": ["refactor"],
+    "defers_to": []
+  },
+  {
+    "id": "P5-A5",
+    "description": "backend: hw-probe CLI subcommand prints HardwareInfo JSON",
+    "phase": "5",
+    "project": "anvilml",
+    "prereqs": ["P5-A4", "P2-A6"],
+    "context": "Add a hw-probe subcommand to backend/src/cli.rs (clap Subcommand enum: HwProbe, alongside the existing default run-server behavior - restructure Cli to have an optional #[command(subcommand)] command: Option<Commands> field, default None meaning 'run the server' as today). In backend/src/main.rs, if Commands::HwProbe is selected: load ServerConfig same as the normal path, call anvilml_hardware::detect_all_devices(&cfg).await, print the result as pretty JSON via serde_json::to_string_pretty to stdout, exit 0 - do not bind any socket or start the server in this branch. This is the phase's externally-observable proof: a real CLI invocation prints real detected hardware. Acceptance: `cargo build -p anvilml` exits 0; `cargo test --workspace --features mock-hardware` exits 0 (existing tests unaffected by the Cli restructure).",
+    "tags": ["breaking"],
+    "defers_to": []
+  },
+  {
+    "id": "P5-A6",
+    "description": "Runnable Proof: hw-probe CLI prints valid HardwareInfo JSON",
+    "phase": "5",
+    "project": "anvilml",
+    "prereqs": ["P5-A5"],
+    "context": "No new source files. Run the built binary's new subcommand under mock-hardware to produce this phase's Runnable Proof transcript. Confirm the printed JSON parses and contains at least one GPU entry with device_type \"cpu\" (the CpuDetector's guaranteed fallback device, always appended last per ANVILML_DESIGN.md §6.4 step 6) plus, under the mock env vars, a second device matching the mock config. Record the literal terminal output in the implementation report - this is what docs/RUNNABLE_PROOF.md's Phase 5 entry references. Acceptance: `cargo build --release -p anvilml --features mock-hardware && ANVILML_MOCK_DEVICE_TYPE=cuda ANVILML_MOCK_VRAM_MIB=24576 ./target/release/anvilml hw-probe | python3 -c \"import sys,json; d=json.load(sys.stdin); assert len(d['gpus'])>=2; assert any(g['device_type']=='cpu' for g in d['gpus']); assert any(g['device_type']=='cuda' for g in d['gpus'])\"` exits 0.",
+    "tags": ["manual"],
+    "defers_to": []
+  }
+]

@@ -1,0 +1,112 @@
+[
+  {
+    "id": "P6-A1",
+    "description": "database/: migrations dir + 001_initial.sql (models, device_capabilities)",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": ["P3-A11"],
+    "context": "Create database/migrations/001_initial.sql per ANVILML_DESIGN.md §7 and the device_capabilities DDL reference: CREATE TABLE models (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, dtype TEXT NOT NULL, format TEXT NOT NULL, size_bytes INTEGER NOT NULL, mtime_unix INTEGER NOT NULL, scanned_at TEXT NOT NULL); CREATE TABLE device_capabilities (vendor_id INTEGER NOT NULL, device_id INTEGER NOT NULL, name TEXT NOT NULL, arch TEXT NOT NULL, fp32 INTEGER NOT NULL DEFAULT 0, fp16 INTEGER NOT NULL DEFAULT 0, bf16 INTEGER NOT NULL DEFAULT 0, fp8 INTEGER NOT NULL DEFAULT 0, fp4 INTEGER NOT NULL DEFAULT 0, flash_attention INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (vendor_id, device_id)); plus its unique index. Booleans are INTEGER 0/1. No jobs/artifacts tables yet. Acceptance: `sqlite3 :memory: < database/migrations/001_initial.sql` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P6-A2",
+    "description": "anvilml-registry: db.rs SqlitePool creation + migration runner",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": ["P6-A1"],
+    "context": "Create crates/anvilml-registry/src/db.rs. Implement pub async fn create_pool(db_path: &Path) -> Result<SqlitePool, AnvilError> using sqlx (resolve version live via registry, not memory; add to Cargo.toml with features=[\"sqlite\",\"runtime-tokio\"]). On pool creation, run all SQL files in database/migrations/ in filename-sorted order via sqlx::migrate! or manual file execution - pick one approach and apply it consistently. WAL mode enabled (PRAGMA journal_mode=WAL). Ghost-job reset (resetting Queued/Running jobs to Failed) is explicitly deferred to the phase that introduces the jobs table - do not implement it here since no jobs table exists yet. Declare mod db; pub use db::create_pool; in lib.rs. Acceptance: >=4 tests in crates/anvilml-registry/tests/db_tests.rs: pool creation against a temp file succeeds, migrations create both tables, WAL mode is active, re-running migrations against an already-migrated db is idempotent; `cargo test -p anvilml-registry --test db_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P6-A3",
+    "description": "anvilml-registry: ModelStore CRUD for ModelMeta",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": ["P6-A2"],
+    "context": "Create crates/anvilml-registry/src/store.rs. Implement ModelStore { pool: SqlitePool } with: upsert(&self, meta: &ModelMeta) -> Result<(), AnvilError> (INSERT OR REPLACE keyed by id), get(&self, id: &str) -> Result<Option<ModelMeta>, AnvilError>, list(&self, kind: Option<ModelKind>) -> Result<Vec<ModelMeta>, AnvilError>, delete(&self, id: &str) -> Result<(), AnvilError>. ModelMeta (anvilml-core, Phase 3) maps to the models table per P6-A1's schema; mtime_unix/scanned_at are extra persisted columns, not fields added to ModelMeta itself - populated by the scanner (next task). Declare mod store; pub use store::ModelStore; in lib.rs. Acceptance: >=5 tests in crates/anvilml-registry/tests/store_tests.rs (in-memory db per test, §17.4 rule 1): upsert+get roundtrip, list with/without kind filter, delete removes row, get on missing id returns None; `cargo test -p anvilml-registry --test store_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P6-A4",
+    "description": "anvilml-registry: ModelScanner hashing + ModelKind/Dtype inference",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": ["P6-A3"],
+    "context": "Create crates/anvilml-registry/src/scanner.rs. Implement ModelScanner::scan_dir(&self, root: &Path, depth: u32) -> Result<Vec<ModelMeta>, AnvilError>: non-recursive by default, depth configurable per §7.4. Model ID = lowercase hex SHA256 of the first 1 MiB of file content (whole file if smaller, §7.2). ModelKind inferred from directory component per §7.3 (diffusion/->Diffusion, text_encoders/->TextEncoder, vae/->Vae, else Unknown). ModelDtype inferred from filename substrings (fp8/fp16/bf16/fp32 case-insensitive; fp8_e4m3fn/fp8_e5m2 both match Fp8; ambiguous->Unknown). A file already in the store with unchanged size+mtime is not re-hashed (inject ModelStore as a constructor param to check). Declare mod scanner; pub use scanner::ModelScanner; in lib.rs. Acceptance: >=6 tests in tests/scanner_tests.rs with tempdir fixtures: hash stability across rename, kind/dtype inference, unchanged file skips rehash, depth limit respected; `cargo test -p anvilml-registry --test scanner_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P6-A5",
+    "description": "anvilml-registry: DeviceCapabilityStore PCI-ID lookup",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": ["P6-A2"],
+    "context": "Create crates/anvilml-registry/src/device_store.rs. Implement DeviceCapabilityStore { pool: SqlitePool } with one method: lookup(&self, vendor_id: u16, device_id: u16) -> Result<Option<InferenceCaps>, AnvilError>, querying device_capabilities by composite PK, mapping INTEGER 0/1 to bool (value != 0). Returns None (not Err) for an unknown PCI-ID pair - caller falls through to CapabilitySource::Fallback per §7.5; this store never invents a fallback row. No write methods in MVP scope - this table is populated once by the seed loader (next task), never written by application code at runtime. Declare mod device_store; pub use device_store::DeviceCapabilityStore; in lib.rs. Acceptance: >=4 tests in tests/device_store_tests.rs (in-memory db, manually inserted rows): known PCI-ID returns Some(caps), unknown returns None, boundary value 0xFFFF handled; `cargo test -p anvilml-registry --test device_store_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P6-A6",
+    "description": "anvilml-registry: SeedLoader hash-check + bookkeeping table",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": ["P6-A5"],
+    "context": "Create crates/anvilml-registry/src/seed_loader.rs. Implement SeedLoader::new(pool: SqlitePool) and an internal fn already_applied(&self, seed_name: &str, sha256: &str) -> Result<bool, AnvilError> backed by a bookkeeping table created here (not in 001_initial.sql, since it is this module's own concern): CREATE TABLE IF NOT EXISTS _seed_log(seed_name TEXT PRIMARY KEY, sha256 TEXT NOT NULL, applied_at TEXT NOT NULL). already_applied returns true only if seed_name exists AND its stored sha256 matches the given hash (a changed file is not-yet-applied). SQL execution and the public run() entrypoint are the next task's scope - do not implement them here. Declare mod seed_loader; in lib.rs. Acceptance: >=3 tests in tests/seed_loader_tests.rs: _seed_log created on first use, already_applied false for unseen seed_name, already_applied false when hash differs from a recorded run; `cargo test -p anvilml-registry --test seed_loader_tests` exits 0.",
+    "tags": [],
+    "defers_to": ["P6-A7"]
+  },
+  {
+    "id": "P6-A7",
+    "description": "anvilml-registry: SeedLoader::run() SQL execution + recording",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": ["P6-A6"],
+    "context": "Extend crates/anvilml-registry/src/seed_loader.rs with pub async fn run(&self, seed_name: &str, seed_path: &Path) -> Result<(), AnvilError>: compute SHA256 of seed_path's content, call P6-A6's already_applied(); if true, return Ok(()) (skip, idempotent). If false, execute the seed file's SQL against the pool and record the new hash+timestamp into _seed_log. Receives the execution scope P6-A6 deferred. Runs against database/seeds/devices.sql at server startup (the seed file itself, with real PCI-ID rows, is a separate one-time conversion task outside this phase - do not author it here). pub use seed_loader::SeedLoader; in lib.rs. Acceptance: >=4 new tests: first run() applies+records hash, second run() with unchanged file skips, changed content re-applies, malformed SQL returns Err without partial application; `cargo test -p anvilml-registry --test seed_loader_tests` exits 0 (>=7 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P6-A8",
+    "description": "anvilml-registry: lib.rs re-export pass, 80-line check",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": ["P6-A7"],
+    "context": "Update crates/anvilml-registry/src/lib.rs: confirm pub use re-exports for create_pool (db), ModelStore (store), ModelScanner (scanner), DeviceCapabilityStore (device_store), SeedLoader (seed_loader) are all present per ANVILML_DESIGN.md §7.1's module layout. No implementation logic added - re-export and 80-line cap verification only, same pattern as P1-B1/P3-A11/P5-A4. Acceptance: `wc -l crates/anvilml-registry/src/lib.rs` reports <=80; `cargo test -p anvilml-registry` (full crate suite) exits 0.",
+    "tags": ["refactor"],
+    "defers_to": []
+  },
+  {
+    "id": "P6-B1",
+    "description": "anvilml-artifacts: ArtifactStore::save content-addressed write",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": ["P3-A11"],
+    "context": "Create crates/anvilml-artifacts/src/store.rs. Implement ArtifactStore { artifact_dir: PathBuf, pool: SqlitePool } with save(&self, png_bytes: &[u8], meta: ArtifactMeta) -> Result<String, AnvilError>: computes SHA256 hex of png_bytes as the content hash, writes to {artifact_dir}/{hash}.png only if not already present (duplicate save is a no-op write, not an error), persists an ArtifactMeta row keyed by hash, returns the hash. get()/list() deferred to later tasks - this is save() only. anvilml-artifacts has no db.rs of its own per §3.1 - it shares the SqlitePool anvilml-registry's db.rs creates. No artifacts table migration here - that is P6-B2's scope. Acceptance: >=3 tests in tests/store_tests.rs with a tempdir: save writes the file once, duplicate save does not duplicate or error, different content produces a different hash; `cargo test -p anvilml-artifacts --test store_tests` exits 0.",
+    "tags": [],
+    "defers_to": ["P6-B2"]
+  },
+  {
+    "id": "P6-B2",
+    "description": "database/: artifacts table migration + ArtifactStore::get",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": ["P6-B1"],
+    "context": "Create database/migrations/002_artifacts.sql: CREATE TABLE artifacts (hash TEXT PRIMARY KEY, job_id TEXT NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL, seed INTEGER NOT NULL, steps INTEGER NOT NULL, created_at TEXT NOT NULL, file_path TEXT NOT NULL); CREATE INDEX idx_artifacts_job_id ON artifacts(job_id). Receives the migration dependency P6-B1 deferred. Extend ArtifactStore (crates/anvilml-artifacts/src/store.rs) with get(&self, hash: &str) -> Result<Option<Vec<u8>>, AnvilError> (reads the PNG file by hash from artifact_dir, returns None if absent - filesystem read only, no query against the new table needed). Declare mod store; pub use store::ArtifactStore; in lib.rs. Acceptance: `sqlite3 :memory: < database/migrations/002_artifacts.sql` exits 0; >=3 new tests: save-then-get roundtrips exactly, get on unknown hash returns None, get after a duplicate save still returns original content; `cargo test -p anvilml-artifacts --test store_tests` exits 0 (>=6 total).",
+    "tags": [],
+    "defers_to": ["P6-B3"]
+  },
+  {
+    "id": "P6-B3",
+    "description": "anvilml-artifacts: ArtifactStore::list by job_id",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": ["P6-B2"],
+    "context": "Extend ArtifactStore (crates/anvilml-artifacts/src/store.rs) with list(&self, job_id: Option<Uuid>) -> Result<Vec<ArtifactMeta>, AnvilError>, querying the artifacts table created by P6-B2, optionally filtered by job_id (None returns all rows). This receives the listing scope P6-B2 explicitly deferred. Acceptance: >=3 new tests in crates/anvilml-artifacts/tests/store_tests.rs: list with job_id filter returns only matching rows, list without filter returns all, list against an empty table returns an empty vec; `cargo test -p anvilml-artifacts --test store_tests` exits 0 (>=9 tests total in file).",
+    "tags": [],
+    "defers_to": []
+  }
+]

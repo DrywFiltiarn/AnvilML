@@ -1,0 +1,92 @@
+[
+  {
+    "id": "P10-A1",
+    "description": "worker/nodes/base.py: SlotSpec dataclass + NODE_REGISTRY dict",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": ["P9-F1"],
+    "context": "Create worker/nodes/__init__.py (empty for now, auto-import wiring is a later task) and worker/nodes/base.py per ANVILML_DESIGN.md §14.5 EXACTLY - the module docstring, NODE_REGISTRY global, and SlotSpec dataclass given there are normative, copy verbatim. NODE_REGISTRY: dict[str, type] = {} module-level global. @dataclass SlotSpec{name: str, slot_type: str, optional: bool = False}. No @register decorator or NodeContext yet - those are separate tasks. Acceptance: >=3 tests in worker/tests/test_base.py: NODE_REGISTRY starts empty, SlotSpec constructs with optional defaulting to False, SlotSpec accepts explicit optional=True; `python -m pytest worker/tests/test_base.py -v` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P10-A2",
+    "description": "worker/nodes/base.py: @register decorator with required-attr validation",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": ["P10-A1"],
+    "context": "Extend worker/nodes/base.py with the @register decorator per ANVILML_DESIGN.md §14.5 EXACTLY: def register(cls: type) -> type, checking hasattr for each of NODE_TYPE, CATEGORY, DISPLAY_NAME, DESCRIPTION, INPUT_SLOTS, OUTPUT_SLOTS, raising TypeError naming the missing attr if any check fails, otherwise inserting into NODE_REGISTRY keyed by cls.NODE_TYPE and returning cls unchanged. Acceptance: >=5 tests in worker/tests/test_base.py: decorating a fully-specified class succeeds and adds it to NODE_REGISTRY, missing any one of the 6 required attrs raises TypeError naming that attr, decorator returns the class unchanged (identity preserved); `python -m pytest worker/tests/test_base.py -v` exits 0 (>=8 tests total in file).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P10-A3",
+    "description": "worker/nodes/base.py: NodeContext runtime context class",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": ["P10-A2"],
+    "context": "Extend worker/nodes/base.py with NodeContext per ANVILML_DESIGN.md §14.5 EXACTLY - the class docstring listing all 7 attributes (job_id, device, caps, cancel_flag, emit, pipeline_cache, mock) is normative, copy verbatim. __init__(self, job_id, device, caps, cancel_flag, emit, pipeline_cache, mock) assigns each param to the same-named self attribute, no validation or transformation. caps is the worker's own InferenceCaps dict from probe_capabilities() or the mock equivalent - arch modules read dtype decisions from this, never a Rust-side hint, per §6.6/§11.5 (documentation only at this phase, no arch module exists to enforce it against yet). mock: bool drives the exactly-once top-of-execute() branch every future node uses. Acceptance: >=4 tests in worker/tests/test_base.py: constructor assigns all 7 attrs, mock True/False both construct cleanly, caps accepts an arbitrary dict; `python -m pytest worker/tests/test_base.py -v` exits 0 (>=12 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P10-A4",
+    "description": "worker/nodes/base.py: BaseNode ABC abstract execute()",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": ["P10-A3"],
+    "context": "Extend worker/nodes/base.py with BaseNode(ABC) per ANVILML_DESIGN.md §14.5's surrounding context: abstract method execute(self, ctx: NodeContext, **inputs) -> dict, decorated @abstractmethod. BaseNode itself defines no NODE_TYPE/CATEGORY/etc class attributes - those come from each concrete subclass, validated by @register at class-definition time (P10-A2). A subclass missing execute() entirely fails to instantiate per ABC semantics - no additional enforcement needed in this task. Acceptance: >=3 tests in worker/tests/test_base.py: BaseNode cannot be instantiated directly (TypeError per ABC), a minimal concrete subclass implementing execute() instantiates successfully, calling execute() on the concrete subclass invokes the subclass's implementation not a base no-op; `python -m pytest worker/tests/test_base.py -v` exits 0 (>=15 tests total in file).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P10-B1",
+    "description": "worker/nodes/arch/diffusion/__init__.py: can_handle/get_module dispatch",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": ["P10-A4"],
+    "context": "Create worker/nodes/arch/diffusion/__init__.py per ANVILML_DESIGN.md §10.4/§11.4: def get_module(key: Any) -> ModuleType | None, scanning a module-level _REGISTERED_MODULES list (currently empty - concrete arch modules like zit.py are NOT in scope, this task builds only the shared dispatcher) for the first module whose can_handle(key) returns True. can_handle is NOT defined at the package level - each concrete module defines its own; get_module is the ONE shared dispatcher per family, never reimplemented per module, per §10.4. With zero registered modules, get_module must return None for any key, never raise. Acceptance: >=3 tests in worker/tests/test_arch_dispatch.py: get_module returns None when empty, does not raise for any key type (str, None, arbitrary object), dispatch loop skips a module whose can_handle returns False (test double); `python -m pytest worker/tests/test_arch_dispatch.py -v` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P10-B2",
+    "description": "worker/nodes/arch/clip/__init__.py and arch/vae/__init__.py: same dispatch",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": ["P10-B1"],
+    "context": "Create worker/nodes/arch/clip/__init__.py and worker/nodes/arch/vae/__init__.py, each implementing the identical get_module(key)->ModuleType|None shared-scan-logic pattern P10-B1 established for arch/diffusion/__init__.py - copy the same structure, do not write three divergent implementations of the same scan logic per ANVILML_DESIGN.md §10.4's explicit 'do not write three separate iteration implementations' instruction. Both start with an empty _REGISTERED_MODULES list - qwen3.py, zit_vae.py, flux2_vae.py etc are NOT in this phase's scope. Acceptance: >=3 tests in worker/tests/test_arch_dispatch.py for EACH of clip and vae (>=6 new tests total): get_module returns None on empty registry, does not raise for any key type; `python -m pytest worker/tests/test_arch_dispatch.py -v` exits 0 (>=9 tests total in file).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P10-C1",
+    "description": "worker/nodes/__init__.py: auto-import wiring for nodes/ submodules",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": ["P10-B2"],
+    "context": "Update worker/nodes/__init__.py per ANVILML_DESIGN.md §10.2/§14.5's auto-import note: iterate all .py files directly under worker/nodes/ (not recursively into arch/ - arch modules are imported by their family's __init__.py dispatcher, not by this top-level auto-import) via importlib, triggering each module's @register decorators as a side effect of import. At this phase, no concrete node files exist yet (loader.py, sampler.py etc are out of scope - this task only builds the import mechanism), so after this task NODE_REGISTRY remains empty when imported - that is the correct, expected state. Acceptance: >=3 tests in worker/tests/test_nodes_init.py: importing worker.nodes does not raise, NODE_REGISTRY is empty immediately after import (no node files exist yet), re-importing is idempotent (no duplicate registration error); `python -m pytest worker/tests/test_nodes_init.py -v` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P10-D1",
+    "description": "worker_main.py: wire real _import_nodes() to worker.nodes auto-import",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": ["P10-C1"],
+    "context": "Update worker/worker_main.py's _import_nodes() function (currently a stub returning [] per Phase 9's P9-D2): replace the stub with a real call to worker.nodes's auto-import (P10-C1), then build and return NodeTypeDescriptor-equivalent dicts from the now-populated (but still empty at this phase, since no concrete node files exist) NODE_REGISTRY. Update BOTH the real-mode (P9-D2) and mock-mode (P9-D3) call sites - per §14.3, node import is IDENTICAL code in both modes, not separately maintained. node_types stays an empty list in practice (no concrete nodes exist yet), but the wiring is now real, not stubbed. Acceptance: existing tests from P9-D2/P9-D3 continue passing with node_types now derived from a real (currently-empty) NODE_REGISTRY rather than a hardcoded []; `python -m pytest worker/tests/test_worker_main.py -v -m real_mode` and the mock-mode equivalent both exit 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P10-E1",
+    "description": "FORGE_TASK_AUTHORING_SPEC.md-style marker convention doc note",
+    "phase": "10",
+    "project": "anvilml",
+    "prereqs": ["P10-D1"],
+    "context": "Create worker/nodes/MARKER_CONVENTION.md documenting the REAL_PATH_VERIFIED/MOCK_PATH_VERIFIED marker pair per ANVILML_DESIGN.md §10.6, as a quick-reference for the next phase's node-authoring tasks (the full rule already lives in ANVILML_DESIGN.md §10.6 - this file is a short pointer/example, not a duplicate of the full rule, to avoid the two documents drifting apart). Include the exact comment-pair example from §10.6 (# REAL_PATH_VERIFIED: <module>::<test_function> / # MOCK_PATH_VERIFIED: <module>::<test_function>, placed as a comment immediately above the class or function it verifies) and a one-line note that this marker is mechanically checked by Gate 4 in ENVIRONMENT.md, not just a convention. No code in this task - documentation only, preparing for the marker convention's first real use once concrete nodes are authored in a later phase. Acceptance: `test -s worker/nodes/MARKER_CONVENTION.md` confirms the file exists and is non-empty.",
+    "tags": ["docs"],
+    "defers_to": []
+  }
+]

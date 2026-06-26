@@ -1,0 +1,142 @@
+[
+  {
+    "id": "P1-A1",
+    "description": "Workspace: Cargo.toml, toolchain pin, gitattributes",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": [],
+    "context": "Create root Cargo.toml as a workspace with members [\"backend\"] (other crate paths added by later tasks that create them — do not list crates/* paths that do not exist yet, cargo errors on missing members). Add [workspace.package] version = \"0.1.0\", edition = \"2024\", rust-version = \"1.96.0\". Create rust-toolchain.toml pinning channel = \"1.96.0\", components = [\"rustfmt\", \"clippy\"], targets = [\"x86_64-pc-windows-gnu\"]. Create .gitattributes: *.sh text eol=lf, *.py text eol=lf, *.rs text eol=lf, *.ps1 text eol=crlf. Verify with `rustc --version` prints 1.96.0 after toolchain install. Acceptance: `cat Cargo.toml rust-toolchain.toml .gitattributes` all exist and are non-empty.",
+    "tags": ["scaffold"],
+    "defers_to": []
+  },
+  {
+    "id": "P1-A2",
+    "description": "backend: main.rs, cli.rs stubs, binary compiles",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": ["P1-A1"],
+    "context": "Create backend/Cargo.toml (package anvilml, version 0.1.0, workspace inherited). Create backend/src/main.rs: fn main() calls cli::parse() then prints \"AnvilML scaffold\" and returns. Create backend/src/cli.rs: use clap derive; struct Cli { #[arg(long, default_value=\"127.0.0.1\")] host: String, #[arg(long, default_value=\"8488\")] port: u16, #[arg(long)] config: Option<String> }; fn parse() -> Cli. Add clap = { version, features=[\"derive\"] } — resolve current version via crates.io MCP/registry before pinning, do not use a training-data version. Acceptance: `cargo build -p anvilml` exits 0 and `./target/debug/anvilml --help` shows --host/--port/--config.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P1-A3",
+    "description": "backend: shutdown.rs signal handler stub",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": ["P1-A2"],
+    "context": "Create backend/src/shutdown.rs: async fn wait_for_shutdown_signal() that awaits tokio::signal::ctrl_c() on all platforms (cross-platform via tokio's ctrl_c, no cfg branch needed for SIGINT/SIGTERM vs Ctrl-C at this stage — full graceful sequence is a later phase). Add tokio dependency with features=[\"full\"] to backend/Cargo.toml, version resolved live via registry, not memory. Wire main.rs to call it after printing the scaffold message, inside #[tokio::main] async fn main(). Acceptance: `cargo build -p anvilml` exits 0; >=1 test in backend/tests/shutdown_tests.rs asserting the function returns when ctrl_c fires (use tokio::select! with a short timeout fallback in the test to avoid hanging CI).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P1-B1",
+    "description": "anvilml-core: empty crate, compiles, in workspace",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": ["P1-A1"],
+    "context": "Create crates/anvilml-core/Cargo.toml (workspace-inherited version/edition). Create crates/anvilml-core/src/lib.rs containing only a crate-level //! doc comment describing: \"Pure domain types, config schema, error enum. Zero I/O. Zero async. No tokio, no sqlx, no network.\" File must be <=80 lines total (it will be ~3 lines). Add \"crates/anvilml-core\" to root Cargo.toml workspace members. No other files in this task — submodules are added by later tasks. Acceptance: `cargo build -p anvilml-core` exits 0.",
+    "tags": ["scaffold"],
+    "defers_to": []
+  },
+  {
+    "id": "P1-B2",
+    "description": "anvilml-hardware: empty crate stub + mock-hardware feature decl",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": ["P1-B1"],
+    "context": "Create crates/anvilml-hardware/Cargo.toml depending on anvilml-core via path. Declare [features] mock-hardware = []. Create crates/anvilml-hardware/src/lib.rs: crate doc comment only (\"GPU/CPU detection. Never panics on missing driver. Always returns >=1 CPU device.\"), <=80 lines, no submodules yet. Add to workspace members in root Cargo.toml. Acceptance: `cargo build -p anvilml-hardware` and `cargo build -p anvilml-hardware --features mock-hardware` both exit 0.",
+    "tags": ["scaffold"],
+    "defers_to": []
+  },
+  {
+    "id": "P1-B3",
+    "description": "anvilml-registry, anvilml-artifacts: empty crate stubs",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": ["P1-B1"],
+    "context": "Create crates/anvilml-registry/Cargo.toml and crates/anvilml-artifacts/Cargo.toml, both depending on anvilml-core via path only (no sqlx dependency yet — added when db.rs/store.rs are implemented in a later phase). Each gets a lib.rs with only a crate doc comment (registry: \"Model scanner + SQLite persistence. Never caches model file contents in memory.\"; artifacts: \"Content-addressed PNG artifact storage.\"), <=80 lines each. Add both to workspace members. Acceptance: `cargo build -p anvilml-registry -p anvilml-artifacts` exits 0.",
+    "tags": ["scaffold"],
+    "defers_to": []
+  },
+  {
+    "id": "P1-B4",
+    "description": "anvilml-ipc, anvilml-worker: empty crate stubs",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": ["P1-B1"],
+    "context": "Create crates/anvilml-ipc/Cargo.toml depending on anvilml-core. Create crates/anvilml-worker/Cargo.toml depending on anvilml-ipc, anvilml-hardware, anvilml-core, with [features] mock-hardware = [\"anvilml-hardware/mock-hardware\"] per the forwarding rule. Each gets a lib.rs with crate doc comment only (ipc: \"ZeroMQ ROUTER transport + message types. No process management.\"; worker: \"Spawns/supervises Python worker subprocesses.\"), <=80 lines. Add both to workspace members. Acceptance: `cargo build -p anvilml-ipc -p anvilml-worker --features mock-hardware` exits 0.",
+    "tags": ["scaffold"],
+    "defers_to": []
+  },
+  {
+    "id": "P1-B5",
+    "description": "anvilml-scheduler, anvilml-server: empty crate stubs",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": ["P1-B3", "P1-B4"],
+    "context": "Create crates/anvilml-scheduler/Cargo.toml depending on anvilml-worker, anvilml-registry, anvilml-artifacts, anvilml-core, with mock-hardware feature forwarding to anvilml-hardware/mock-hardware. Create crates/anvilml-server/Cargo.toml depending on all of the above plus axum (version resolved live, not memory), with the same feature forwarding. Both get lib.rs with crate doc comment only, <=80 lines, no submodules. Add both to workspace members and as backend's path dependencies in backend/Cargo.toml. Acceptance: `cargo build --workspace --features mock-hardware` exits 0.",
+    "tags": ["scaffold"],
+    "defers_to": []
+  },
+  {
+    "id": "P1-B6",
+    "description": "anvilml-openapi: build-time stub binary",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": ["P1-B5"],
+    "context": "Create crates/anvilml-openapi/Cargo.toml (binary crate) depending on anvilml-core and anvilml-server via path. Create crates/anvilml-openapi/src/main.rs: fn main() prints \"openapi generation stub\" and exits 0 (real OpenAPI emission is a later task once anvilml-server has handlers). Create empty api/ directory with a .gitkeep file (api/openapi.json is generated, not hand-written, by a later task). Add to workspace members. Acceptance: `cargo run -p anvilml-openapi` exits 0 and prints the stub message.",
+    "tags": ["scaffold"],
+    "defers_to": []
+  },
+  {
+    "id": "P1-C1",
+    "description": "anvilml.toml checked-in reference config (scaffold defaults)",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": ["P1-A2"],
+    "context": "Create root anvilml.toml with the two scaffold-relevant fields at their documented defaults: host = \"127.0.0.1\", port = 8488. Add a comment header noting this file is the canonical config reference checked by the config_reference test (added in a later phase once ServerConfig exists). Do not add fields beyond host/port yet — db_path, artifact_dir, etc. are added by the tasks that introduce those config struct fields, to keep this file and ServerConfig from drifting apart from day one. Acceptance: `cat anvilml.toml` shows exactly host and port keys.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P1-D1",
+    "description": "GET /health handler returns 200 OK",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": ["P1-B5"],
+    "context": "Create crates/anvilml-server/src/handlers/mod.rs and handlers/health.rs: async fn health() -> StatusCode returning StatusCode::OK. Create crates/anvilml-server/src/lib.rs (<=80 lines): pub fn build_router() -> axum::Router that registers GET /health -> health. Wire backend/src/main.rs to bind a TcpListener on cli.host:cli.port and call axum::serve(listener, build_router()) before the shutdown-signal wait, using tokio::select! to race the server future against wait_for_shutdown_signal(). Acceptance: >=1 test in crates/anvilml-server/tests/health_tests.rs using axum::Router in-process (no real socket) asserting GET /health returns 200; `cargo test -p anvilml-server` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P1-D2",
+    "description": "Runnable Proof: live binary answers /health over real TCP",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": ["P1-D1", "P1-C1"],
+    "context": "No new source files. Confirm backend/src/main.rs reads --port/--host from cli.rs (P1-A2) and that anvilml.toml's host/port (P1-C1) are NOT yet wired into a config loader (that is Phase 2 scope) — main.rs at this point uses only CLI defaults, which already match anvilml.toml's values, so no behavior change is required. This task exists solely to produce and record the phase's Runnable Proof transcript (see TASKS_PHASE001.md Phase Acceptance Criteria) by running the built binary and curling /health. Acceptance: `cargo build --release -p anvilml && ./target/release/anvilml & sleep 1 && curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8488/health` prints 200.",
+    "tags": ["manual"],
+    "defers_to": []
+  },
+  {
+    "id": "P1-E1",
+    "description": "CI: ci.yml rust-test matrix job (real commands)",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": ["P1-D1"],
+    "context": "Create .github/workflows/ci.yml with one job, rust-test, using strategy.matrix: os: [ubuntu-latest, windows-latest] (a single job body, not duplicated blocks). Steps: checkout, install Rust via rust-toolchain.toml, then cargo clippy --workspace --features mock-hardware -- -D warnings, then cargo test --workspace --features mock-hardware. Add one extra step gated `if: matrix.os == 'ubuntu-latest'` running cargo fmt --all -- --check, placed before clippy (fmt --check is Linux-only per ENVIRONMENT.md §6 Step 11/CI §18.3). Acceptance: `cargo fmt --all -- --check && cargo clippy --workspace --features mock-hardware -- -D warnings && cargo test --workspace --features mock-hardware` all exit 0 locally, matching the job's steps; a pushed commit shows the rust-test job green on both matrix entries.",
+    "tags": ["scaffold"],
+    "defers_to": []
+  },
+  {
+    "id": "P1-E2",
+    "description": "CI: ci.yml worker-test matrix + drift job placeholders",
+    "phase": "1",
+    "project": "anvilml",
+    "prereqs": ["P1-E1"],
+    "context": "In the same .github/workflows/ci.yml, add a worker-test job using strategy.matrix: include: [{os: ubuntu-latest, mode: mock}, {os: ubuntu-latest, mode: real}, {os: windows-latest, mode: mock}, {os: windows-latest, mode: real}] (one job body, matrix-driven, not 4 duplicated jobs). Each matrix entry's step is currently `echo \"worker tests: no worker/ source yet (mode=${{ matrix.mode }})\"` exiting 0 — worker/ does not exist until Phase 7; this job becomes a real pytest invocation then. Add openapi-drift and config-drift as two separate single jobs (no matrix needed), each running `echo \"no openapi/config yet\"` exiting 0 as a placeholder. Acceptance: `grep -c 'runs-on' .github/workflows/ci.yml` shows 2 (rust-test and worker-test use matrix, drift jobs are single) plus the 2 drift jobs = 4 distinct job blocks total; pushed commit shows all jobs green.",
+    "tags": ["scaffold"],
+    "defers_to": []
+  }
+]
