@@ -1,0 +1,13 @@
+[package]
+name = "anvilml"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+# No-op feature forwarded from the workspace-level `--features mock-hardware` flag.
+# `backend` does not depend on `anvilml-hardware`, so this feature has no effect here.
+mock-hardware = []
+
+[dependencies]
+clap = { version = "4.6.1", features = ["derive"] }
