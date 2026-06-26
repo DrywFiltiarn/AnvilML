@@ -79,10 +79,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "anvilml-ipc"
+version = "0.1.0"
+dependencies = [
+ "anvilml-core",
+]
+
+[[package]]
 name = "anvilml-registry"
 version = "0.1.0"
 dependencies = [
  "anvilml-core",
+]
+
+[[package]]
+name = "anvilml-worker"
+version = "0.1.0"
+dependencies = [
+ "anvilml-core",
+ "anvilml-hardware",
+ "anvilml-ipc",
 ]
 
 [[package]]

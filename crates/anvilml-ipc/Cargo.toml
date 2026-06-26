@@ -1,0 +1,8 @@
+[package]
+name = "anvilml-ipc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anvilml-core = { path = "../anvilml-core" }

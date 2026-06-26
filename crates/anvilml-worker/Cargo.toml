@@ -1,0 +1,13 @@
+[package]
+name = "anvilml-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anvilml-ipc = { path = "../anvilml-ipc" }
+anvilml-hardware = { path = "../anvilml-hardware" }
+anvilml-core = { path = "../anvilml-core" }
+
+[features]
+mock-hardware = ["anvilml-hardware/mock-hardware"]
