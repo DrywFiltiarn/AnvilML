@@ -3,18 +3,26 @@ use clap::Parser;
 /// Command-line interface for the AnvilML server.
 ///
 /// Parses and validates all CLI arguments using clap derive macros.
-/// Default values match the compiled-in defaults in ServerConfig
-/// so the binary works correctly with defaults before config loading.
+/// Host and port defaults come from `ServerConfig::default()` via
+/// `config_load::load()` (layer 1 of the four-layer config precedence),
+/// not from clap defaults. The `--config` flag points to an optional
+/// TOML file (layer 2).
 #[derive(Parser, Debug)]
 #[command(name = "anvilml", about = "AnvilML — ML model serving platform")]
 pub struct Cli {
     /// Bind address for the HTTP server.
-    #[arg(long, default_value = "127.0.0.1")]
-    pub host: String,
+    ///
+    /// If not provided, the value from the config precedence chain
+    /// (defaults → TOML → env vars) is used.
+    #[arg(long)]
+    pub host: Option<String>,
 
     /// TCP port for the HTTP server.
-    #[arg(long, default_value = "8488")]
-    pub port: u16,
+    ///
+    /// If not provided, the value from the config precedence chain
+    /// (defaults → TOML → env vars) is used.
+    #[arg(long)]
+    pub port: Option<u16>,
 
     /// Path to the TOML configuration file.
     #[arg(long)]
