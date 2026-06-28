@@ -853,3 +853,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `EnvReport` constructed with all fields at non-default values.
 **Expected output:** Roundtripped `EnvReport` equals original; JSON contains `"python_version": "3.12.3"`, `"torch_version": "2.5.1"`, `"torch_importable": true`.
 **Acceptance:** `cargo test -p anvilml-core --test worker_tests test_env_report_serde_roundtrip` exits 0.
+
+---
+
+## test_slot_type_screaming_snake_case_serde (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/node_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, and `utoipa` (uuid, chrono features) dependencies, and the `types` submodule providing `SlotType`.
+**Tests:** Each of the eleven `SlotType` variants (`Model`, `Clip`, `Vae`, `Conditioning`, `Latent`, `Image`, `String`, `Int`, `Float`, `Bool`, `Any`) serialises to a `SCREAMING_SNAKE_CASE` JSON string and deserialises back to an equal value.
+**Mode:** both
+**Inputs:** All eleven `SlotType` variants.
+**Expected output:** Each variant roundtrips correctly; JSON strings are `"MODEL"`, `"CLIP"`, `"VAE"`, `"CONDITIONING"`, `"LATENT"`, `"IMAGE"`, `"STRING"`, `"INT"`, `"FLOAT"`, `"BOOL"`, `"ANY"`.
+**Acceptance:** `cargo test -p anvilml-core --test node_tests test_slot_type_screaming_snake_case_serde` exits 0.
+
+---
+
+## test_slot_descriptor_serde_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/node_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, and `utoipa` dependencies, and the `types` submodule providing `SlotDescriptor` and `SlotType`.
+**Tests:** A `SlotDescriptor` with a required slot (`optional: false`) and an optional slot (`optional: true`) both serialise to JSON with the correct field names (`name`, `slot_type`, `optional`) and roundtrip back to equal values.
+**Mode:** both
+**Inputs:** `SlotDescriptor` with `name="positive"`, `slot_type=Conditioning`, `optional=false`; and `SlotDescriptor` with `name="seed"`, `slot_type=Int`, `optional=true`.
+**Expected output:** Both descriptors roundtrip correctly; JSON contains `"name"`, `"slot_type"`, and `"optional"` fields.
+**Acceptance:** `cargo test -p anvilml-core --test node_tests test_slot_descriptor_serde_roundtrip` exits 0.
+
+---
+
+## test_node_type_descriptor_construction (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/node_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, and `utoipa` dependencies, and the `types` submodule providing `NodeTypeDescriptor`, `SlotDescriptor`, and `SlotType`.
+**Tests:** A `NodeTypeDescriptor` modelled after `LoadModel` — one required `model_id` input and one `MODEL` output — serialises to JSON, roundtrips back to an equal value, and contains all expected top-level field names (`type_name`, `display_name`, `category`, `description`, `inputs` array, `outputs` array).
+**Mode:** both
+**Inputs:** `NodeTypeDescriptor` with `type_name="LoadModel"`, one `String` input slot, one `Model` output slot.
+**Expected output:** Roundtripped `NodeTypeDescriptor` equals original; JSON contains all six top-level fields with correct types.
+**Acceptance:** `cargo test -p anvilml-core --test node_tests test_node_type_descriptor_construction` exits 0.
+
+---
+
+## test_node_type_descriptor_empty_slots (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/node_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, and `utoipa` dependencies, and the `types` submodule providing `NodeTypeDescriptor`, `SlotDescriptor`, and `SlotType`.
+**Tests:** A `NodeTypeDescriptor` with empty `inputs` and `outputs` vectors serialises to JSON containing `"inputs": []` and `"outputs": []`, roundtrips back to an equal value, proving the edge case of a node with no slots is handled correctly.
+**Mode:** both
+**Inputs:** `NodeTypeDescriptor` with `inputs: vec![]` and `outputs: vec![]`.
+**Expected output:** JSON contains empty arrays for `inputs` and `outputs`; roundtripped `NodeTypeDescriptor` equals original.
+**Acceptance:** `cargo test -p anvilml-core --test node_tests test_node_type_descriptor_empty_slots` exits 0.
