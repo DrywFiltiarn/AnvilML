@@ -901,3 +901,87 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `NodeTypeDescriptor` with `inputs: vec![]` and `outputs: vec![]`.
 **Expected output:** JSON contains empty arrays for `inputs` and `outputs`; roundtripped `NodeTypeDescriptor` equals original.
 **Acceptance:** `cargo test -p anvilml-core --test node_tests test_node_type_descriptor_empty_slots` exits 0.
+
+---
+
+## test_ws_event_job_queued_serde_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/events_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, `utoipa` (uuid, chrono features), and `uuid` (v4, serde) dependencies, and the `types` submodule providing `WsEvent`.
+**Tests:** A `WsEvent::JobQueued` with `job_id = "550e8400-e29b-41d4-a716-446655440000"` and `queue_position = 3` serialises to JSON containing `"type": "job_queued"`, all fields roundtrip, and the tag key is `"type"` (not a variant-name key).
+**Mode:** both
+**Inputs:** `WsEvent::JobQueued { job_id: Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap(), queue_position: 3 }`.
+**Expected output:** JSON contains `"type":"job_queued"`, `"job_id":"550e8400-e29b-41d4-a716-446655440000"`, `"queue_position":3`; roundtripped `WsEvent` equals original.
+**Acceptance:** `cargo test -p anvilml-core --test events_tests test_ws_event_job_queued_serde_roundtrip` exits 0.
+
+---
+
+## test_ws_event_job_started_serde_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/events_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, `utoipa` (uuid, chrono features), and `uuid` (v4, serde) dependencies, and the `types` submodule providing `WsEvent`.
+**Tests:** A `WsEvent::JobStarted` with `job_id = "550e8400-e29b-41d4-a716-446655440000"` and `worker_id = "gpu:0"` serialises to JSON containing `"type": "job_started"`, all fields roundtrip, and the tag key is `"type"`.
+**Mode:** both
+**Inputs:** `WsEvent::JobStarted { job_id: Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap(), worker_id: "gpu:0".to_string() }`.
+**Expected output:** JSON contains `"type":"job_started"`, `"worker_id":"gpu:0"`; roundtripped `WsEvent` equals original.
+**Acceptance:** `cargo test -p anvilml-core --test events_tests test_ws_event_job_started_serde_roundtrip` exits 0.
+
+---
+
+## test_ws_event_job_progress_serde_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/events_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, `utoipa` (uuid, chrono features), and `uuid` (v4, serde) dependencies, and the `types` submodule providing `WsEvent`.
+**Tests:** A `WsEvent::JobProgress` with `step = 3`, `total_steps = 20`, and `preview_b64 = None` serialises to JSON containing `"type": "job_progress"`, all fields roundtrip including the null `preview_b64`, and the tag key is `"type"`.
+**Mode:** both
+**Inputs:** `WsEvent::JobProgress { job_id: Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap(), step: 3, total_steps: 20, preview_b64: None }`.
+**Expected output:** JSON contains `"type":"job_progress"`, `"step":3`, `"total_steps":20`, `"preview_b64":null`; roundtripped `WsEvent` equals original.
+**Acceptance:** `cargo test -p anvilml-core --test events_tests test_ws_event_job_progress_serde_roundtrip` exits 0.
+
+---
+
+## test_ws_event_job_image_ready_serde_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/events_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, `utoipa` (uuid, chrono features), and `uuid` (v4, serde) dependencies, and the `types` submodule providing `WsEvent`.
+**Tests:** A `WsEvent::JobImageReady` with `artifact_hash = "abc123def456"`, `width = 512`, `height = 512`, `seed = 42`, `steps = 20` serialises to JSON containing `"type": "job_image_ready"`, all fields roundtrip including `seed: i64`, and the tag key is `"type"`.
+**Mode:** both
+**Inputs:** `WsEvent::JobImageReady { job_id: Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap(), artifact_hash: "abc123def456".to_string(), width: 512, height: 512, seed: 42, steps: 20 }`.
+**Expected output:** JSON contains `"type":"job_image_ready"`, `"seed":42`, `"steps":20`; roundtripped `WsEvent` equals original.
+**Acceptance:** `cargo test -p anvilml-core --test events_tests test_ws_event_job_image_ready_serde_roundtrip` exits 0.
+
+---
+
+## test_ws_event_job_completed_serde_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/events_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, `utoipa` (uuid, chrono features), and `uuid` (v4, serde) dependencies, and the `types` submodule providing `WsEvent`.
+**Tests:** A `WsEvent::JobCompleted` with `elapsed_ms = 15000` serialises to JSON containing `"type": "job_completed"`, `elapsed_ms: u64` roundtrips, and the tag key is `"type"`.
+**Mode:** both
+**Inputs:** `WsEvent::JobCompleted { job_id: Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap(), elapsed_ms: 15000 }`.
+**Expected output:** JSON contains `"type":"job_completed"`, `"elapsed_ms":15000`; roundtripped `WsEvent` equals original.
+**Acceptance:** `cargo test -p anvilml-core --test events_tests test_ws_event_job_completed_serde_roundtrip` exits 0.
+
+---
+
+## test_ws_event_job_failed_serde_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/events_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, `utoipa` (uuid, chrono features), and `uuid` (v4, serde) dependencies, and the `types` submodule providing `WsEvent`.
+**Tests:** A `WsEvent::JobFailed` with `error = "CUDA out of memory"` serialises to JSON containing `"type": "job_failed"`, the error string roundtrips, and the tag key is `"type"`.
+**Mode:** both
+**Inputs:** `WsEvent::JobFailed { job_id: Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap(), error: "CUDA out of memory".to_string() }`.
+**Expected output:** JSON contains `"type":"job_failed"`, `"error":"CUDA out of memory"`; roundtripped `WsEvent` equals original.
+**Acceptance:** `cargo test -p anvilml-core --test events_tests test_ws_event_job_failed_serde_roundtrip` exits 0.
+
+---
+
+## test_ws_event_job_cancelled_serde_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/events_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, `utoipa` (uuid, chrono features), and `uuid` (v4, serde) dependencies, and the `types` submodule providing `WsEvent`.
+**Tests:** A `WsEvent::JobCancelled` with a single `job_id` field serialises to JSON containing `"type": "job_cancelled"`, the `job_id` roundtrips, and the tag key is `"type"`.
+**Mode:** both
+**Inputs:** `WsEvent::JobCancelled { job_id: Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap() }`.
+**Expected output:** JSON contains `"type":"job_cancelled"`, `"job_id":"550e8400-e29b-41d4-a716-446655440000"`; roundtripped `WsEvent` equals original.
+**Acceptance:** `cargo test -p anvilml-core --test events_tests test_ws_event_job_cancelled_serde_roundtrip` exits 0.
