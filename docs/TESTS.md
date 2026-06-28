@@ -604,6 +604,54 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 ---
 
+## test_model_kind_serde_snake_case (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/model_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `chrono` (serde feature), `serde` (derive), and `serde_json` dependencies, and the `types` submodule providing `ModelKind`.
+**Tests:** Each of the seven `ModelKind` variants (`Diffusion`, `TextEncoder`, `Vae`, `Lora`, `ControlNet`, `Upscale`, `Unknown`) serialises to a lowercase snake_case JSON string and deserialises back to an equal value.
+**Mode:** both
+**Inputs:** All seven `ModelKind` variants.
+**Expected output:** Each variant roundtrips correctly; JSON strings are `"diffusion"`, `"text_encoder"`, `"vae"`, `"lora"`, `"control_net"`, `"upscale"`, `"unknown"`.
+**Acceptance:** `cargo test -p anvilml-core --test model_tests test_model_kind_serde_snake_case` exits 0.
+
+---
+
+## test_model_dtype_serde_snake_case (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/model_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `chrono` (serde feature), `serde` (derive), and `serde_json` dependencies, and the `types` submodule providing `ModelDtype`.
+**Tests:** Each of the six `ModelDtype` variants (`Fp32`, `Fp16`, `Bf16`, `Fp8`, `Fp4`, `Unknown`) serialises to a lowercase snake_case JSON string and deserialises back to an equal value.
+**Mode:** both
+**Inputs:** All six `ModelDtype` variants.
+**Expected output:** Each variant roundtrips correctly; JSON strings are `"fp32"`, `"fp16"`, `"bf16"`, `"fp8"`, `"fp4"`, `"unknown"`.
+**Acceptance:** `cargo test -p anvilml-core --test model_tests test_model_dtype_serde_snake_case` exits 0.
+
+---
+
+## test_model_format_serde_snake_case (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/model_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `chrono` (serde feature), `serde` (derive), and `serde_json` dependencies, and the `types` submodule providing `ModelFormat`.
+**Tests:** Each of the five `ModelFormat` variants (`Safetensors`, `Ckpt`, `Pt`, `Bin`, `Unknown`) serialises to a lowercase snake_case JSON string and deserialises back to an equal value.
+**Mode:** both
+**Inputs:** All five `ModelFormat` variants.
+**Expected output:** Each variant roundtrips correctly; JSON strings are `"safetensors"`, `"ckpt"`, `"pt"`, `"bin"`, `"unknown"`.
+**Acceptance:** `cargo test -p anvilml-core --test model_tests test_model_format_serde_snake_case` exits 0.
+
+---
+
+## test_model_meta_serde_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/model_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `chrono` (serde feature), `uuid` (v4, serde), `serde_json`, and `serde` (derive) dependencies, and the `types` submodule providing `ModelMeta`, `ModelKind`, `ModelDtype`, and `ModelFormat`.
+**Tests:** A `ModelMeta` with all fields populated (string ID, name, `PathBuf` path, `ModelKind::Diffusion`, `ModelDtype::Fp16`, `ModelFormat::Safetensors`, size, timestamp) serialises to JSON and deserialises back to an equal value. The JSON payload is also parsed to verify field names, snake_case enum values, and `PathBuf` → `String` conversion.
+**Mode:** both
+**Inputs:** `ModelMeta` constructed with all fields at non-default values.
+**Expected output:** Roundtripped `ModelMeta` equals original; JSON contains `"kind": "diffusion"`, `"dtype": "fp16"`, `"format": "safetensors"`, and `"path": "models/test.safetensors"`.
+**Acceptance:** `cargo test -p anvilml-core --test model_tests test_model_meta_serde_roundtrip` exits 0.
+
+---
+
 ## config_reference_matches_defaults (backend)
 
 **File:** `backend/tests/config_reference.rs`
