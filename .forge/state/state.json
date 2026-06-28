@@ -30,16 +30,17 @@
     "P3-A7",
     "P3-A8",
     "P3-A9",
-    "P3-A10"
+    "P3-A10",
+    "P3-A11"
   ],
-  "in_progress": "P3-A11",
+  "in_progress": "P4-A1",
   "plan_approved": true,
-  "current_plan": "1. **Read and inspect** `crates/anvilml-core/src/lib.rs` (already done). Verify:\n   - The file contains only `//!` doc comments, `mod` declarations, `pub mod` declarations, and `pub use` statements.\n   - No `impl` blocks, function bodies, or top-level expressions exist.\n   - No `#[cfg(...)]` guards are needed beyond what already exists.\n\n2. **Verify alphabetical ordering** of all module declarations and `pub use` statements by full module path:\n   - `config` (private): `mod config;`\n   - `config_load` (public): `pub mod config_load;`\n   - `error` (private): `mod error;`\n   - `node_registry` (private): `mod node_registry;`\n   - `types` (public): `pub mod types;`\n   - `pub use` items within each group, sorted by the path segment after `pub use`:\n     - `config::ServerConfig`\n     - `config_load::CliOverrides`\n     - `config_load::load`\n     - `error::AnvilError`\n     - `node_registry::NodeTypeRegistry`\n     - `types::*`\n\n   Current file already matches this ordering. No reordering is needed.\n\n3. **Confirm line count**: `wc -l crates/anvilml-core/src/lib.rs` must report \u226480. Current count is 17 lines \u2014 well under the cap.\n\n4. **Run tests**: `cargo test -p anvilml-core` must exit 0 with no regressions. This confirms the re-export structure (or lack of changes) does not break any downstream crate that depends on these public exports.\n\n5. **Refactor verification** (FORGE_AGENT_RULES.md \u00a74.6): Run `grep -n \"^pub \" crates/anvilml-core/src/lib.rs` and confirm no public signature changed. Since this task makes zero changes (or only reorders existing lines), this is a no-op confirmation.",
+  "current_plan": "1. **Create `crates/anvilml-hardware/src/detect.rs`.** Write the `DeviceDetector` trait\n   with exactly two methods, matching `ANVILML_DESIGN.md \u00a76.5` verbatim:\n\n   ```rust\n   use anvilml_core::{AnvilError, GpuDevice};\n\n   /// Trait for detecting and refreshing GPU device information.\n   ///\n   /// Every concrete detector (CPU, mock, Vulkan, DXGI, sysfs) implements this trait.\n   /// Implementations must never panic on missing drivers or hardware \u2014 they return\n   /// `Ok(vec![])` on detection failure per \u00a76.2 of the design.\n   pub trait DeviceDetector: Send + Sync {\n       /// Enumerate all compute devices on the host.\n       ///\n       /// Returns a vector of detected `GpuDevice` structs. If no devices are found,\n       /// returns `Ok(vec![])` \u2014 never an error or a panic. The caller (Phase 5's\n       /// `detect_all_devices`) appends a CPU fallback device if the result is empty.\n       fn detect(&self) -> Result<Vec<GpuDevice>, AnvilError>;\n\n       /// Refresh VRAM totals for a device by its index.\n       ///\n       /// Returns `(total_mib, free_mib)` \u2014 the total and free VRAM in mebibytes for\n       /// the device at the given `index`. This is called at dispatch time to get a\n       /// current snapshot rather than relying on the stale value from `detect()`.\n       fn refresh_vram(&self, index: u32) -> Result<(u32, u32), AnvilError>;\n   }\n   ```\n\n   Rationale: The `Send + Sync` supertrait bounds are part of the design spec (\u00a76.5)\n   and ensure the trait object can be held behind an `Arc` and shared across async\n   task boundaries without additional synchronization.\n\n2. **Modify `crates/anvilml-hardware/src/lib.rs`.** Add two lines after the existing\n   crate-level doc comment:\n\n   ```rust\n   pub mod detect;\n   pub use detect::DeviceDetector;\n   ```\n\n   Rationale: This follows the established pattern \u2014 each detector module is declared\n   as `pub mod` and re-exported at the crate root so downstream crates (worker, scheduler)\n   can reference `anvilml_hardware::DeviceDetector` without knowing which concrete\n   detector they're using.\n\n3. **Verify compilation.** Run `cargo build -p anvilml-hardware` and confirm it exits 0.\n   The trait has no implementors in this task, so there will be no dead-code warnings\n   (Rust only warns on unused *items*, not on unused *traits* \u2014 a trait definition alone\n   compiles cleanly).",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-28T21:51:06+0200",
-  "plan_approval_message_id": "1520879047540740136",
+  "last_updated": "2026-06-28T22:25:55+0200",
+  "plan_approval_message_id": "1520887361163231372",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1520879045162696757",
+  "plan_report_message_id": "1520887359586173120",
   "impl_report_message_id": null
 }
