@@ -697,3 +697,87 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `ArtifactMeta` with negative seed (`-1`), mixed dimensions (768×1024), 50 steps.
 **Expected output:** All eight fields present with correct types; exactly 8 keys in the JSON object.
 **Acceptance:** `cargo test -p anvilml-core --test artifact_tests test_artifact_meta_field_names` exits 0.
+
+---
+
+## test_device_type_serde_snake_case (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/hardware_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, and `utoipa` dependencies, and the `types` submodule providing `DeviceType`.
+**Tests:** Each of the three `DeviceType` variants (`Cuda`, `Rocm`, `Cpu`) serialises to a lowercase snake_case JSON string and deserialises back to an equal value.
+**Mode:** both
+**Inputs:** All three `DeviceType` variants.
+**Expected output:** Each variant roundtrips correctly; JSON strings are `"cuda"`, `"rocm"`, `"cpu"`.
+**Acceptance:** `cargo test -p anvilml-core --test hardware_tests test_device_type_serde_snake_case` exits 0.
+
+---
+
+## test_host_info_serde_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/hardware_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, and `utoipa` dependencies, and the `types` submodule providing `HostInfo`.
+**Tests:** A `HostInfo` with populated fields (`hostname: "testhost"`, `os: "Linux"`) serialises to JSON and deserialises back to an equal value. The JSON payload is also parsed to verify field names.
+**Mode:** both
+**Inputs:** `HostInfo` constructed with `hostname = "testhost"`, `os = "Linux"`.
+**Expected output:** Roundtripped `HostInfo` equals original; JSON contains `"hostname": "testhost"` and `"os": "Linux"`.
+**Acceptance:** `cargo test -p anvilml-core --test hardware_tests test_host_info_serde_roundtrip` exits 0.
+
+---
+
+## test_gpu_device_construction_and_serde (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/hardware_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, and `utoipa` dependencies, and the `types` submodule providing `GpuDevice` and all its nested types.
+**Tests:** A `GpuDevice` with all 12 fields populated (index, name, `DeviceType::Cuda`, VRAM, driver version, PCI IDs, architecture, `InferenceCaps`, `EnumerationSource`, `CapabilitySource`) serialises to JSON and deserialises back to an equal value. The JSON payload is also parsed to verify field names and nested structure.
+**Mode:** both
+**Inputs:** Full `GpuDevice` with all fields at non-default values.
+**Expected output:** Roundtripped `GpuDevice` equals original; JSON contains all 12 snake_case field names with correct types.
+**Acceptance:** `cargo test -p anvilml-core --test hardware_tests test_gpu_device_construction_and_serde` exits 0.
+
+---
+
+## test_hardware_info_serde_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/hardware_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, and `utoipa` dependencies, and the `types` submodule providing `HardwareInfo` with nested `HostInfo`, `Vec<GpuDevice>`, and `InferenceCaps`.
+**Tests:** A `HardwareInfo` with a `HostInfo`, a vector of two `GpuDevice` entries, and an `InferenceCaps` serialises to JSON and deserialises back to an equal value. The JSON payload is parsed to verify nested structure and array length.
+**Mode:** both
+**Inputs:** `HardwareInfo` with 2 GPUs (RTX 4090 + RTX 3080).
+**Expected output:** Roundtripped `HardwareInfo` equals original; nested structures preserved; `gpus` array has 2 elements.
+**Acceptance:** `cargo test -p anvilml-core --test hardware_tests test_hardware_info_serde_roundtrip` exits 0.
+
+---
+
+## test_inference_caps_default_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/hardware_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, and `utoipa` dependencies, and the `types` submodule providing `InferenceCaps`.
+**Tests:** An `InferenceCaps` constructed via `Default` (all fields `false`) serialises to JSON and deserialises back to an equal value. The JSON payload is parsed to verify all fields are `false`.
+**Mode:** both
+**Inputs:** `InferenceCaps::default()` (all boolean fields `false`).
+**Expected output:** Roundtripped `InferenceCaps` equals original; JSON contains `"fp32": false`, `"fp16": false`, `"bf16": false`, `"fp8": false`, `"fp4": false`, `"flash_attention": false`.
+**Acceptance:** `cargo test -p anvilml-core --test hardware_tests test_inference_caps_default_roundtrip` exits 0.
+
+---
+
+## test_enumeration_source_serde_snake_case (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/hardware_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, and `utoipa` dependencies, and the `types` submodule providing `EnumerationSource`.
+**Tests:** Each of the seven `EnumerationSource` variants (`Vulkan`, `Dxgi`, `Sysfs`, `Nvml`, `Cpu`, `Mock`, `Override`) serialises to a lowercase snake_case JSON string and deserialises back to an equal value.
+**Mode:** both
+**Inputs:** All seven `EnumerationSource` variants.
+**Expected output:** Each variant roundtrips correctly; JSON strings are `"vulkan"`, `"dxgi"`, `"sysfs"`, `"nvml"`, `"cpu"`, `"mock"`, `"override"`.
+**Acceptance:** `cargo test -p anvilml-core --test hardware_tests test_enumeration_source_serde_snake_case` exits 0.
+
+---
+
+## test_capability_source_serde_snake_case (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/hardware_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, and `utoipa` dependencies, and the `types` submodule providing `CapabilitySource`.
+**Tests:** Each of the three `CapabilitySource` variants (`PyTorch`, `DeviceTable`, `Fallback`) serialises to a lowercase snake_case JSON string and deserialises back to an equal value. `PyTorch` uses a custom `#[serde(rename = "pytorch")]` to produce `"pytorch"` rather than `"py_torch"`.
+**Mode:** both
+**Inputs:** All three `CapabilitySource` variants.
+**Expected output:** Each variant roundtrips correctly; JSON strings are `"pytorch"`, `"device_table"`, `"fallback"`.
+**Acceptance:** `cargo test -p anvilml-core --test hardware_tests test_capability_source_serde_snake_case` exits 0.
