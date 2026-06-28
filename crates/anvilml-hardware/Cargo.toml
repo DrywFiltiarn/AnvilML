@@ -1,11 +1,13 @@
 [package]
 name = "anvilml-hardware"
-version = "0.1.2"
+version = "0.1.3"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 anvilml-core = { path = "../anvilml-core" }
+ash = "0.38.0"
+tracing = "0.1"
 
 [features]
 mock-hardware = []

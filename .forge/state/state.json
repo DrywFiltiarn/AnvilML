@@ -33,16 +33,17 @@
     "P3-A10",
     "P3-A11",
     "P4-A1",
-    "P4-A2"
+    "P4-A2",
+    "P4-A3"
   ],
-  "in_progress": "P4-A3",
+  "in_progress": "P4-A4",
   "plan_approved": true,
-  "current_plan": "1. **Bump crate version.** Read `crates/anvilml-hardware/Cargo.toml`, change `version = \"0.1.1\"` to `version = \"0.1.2\"`. This follows \u00a712 of ENVIRONMENT.md \u2014 every task modifying source files bumps the patch version.\n\n2. **Create `crates/anvilml-hardware/src/mock.rs`.** Write the file with:\n   - A module-level doc comment describing `MockDetector` and its env-var contract per \u00a76.7.\n   - `pub struct MockDetector;` \u2014 zero-sized, no fields.\n   - `use crate::detect::DeviceDetector;` import.\n   - `use anvilml_core::{AnvilError, CapabilitySource, DeviceType, EnumerationSource, GpuDevice, InferenceCaps};` imports.\n   - `impl DeviceDetector for MockDetector`:\n     - `detect(&self) -> Result<Vec<GpuDevice>, AnvilError>`: read the three env vars via `std::env::var`, apply defaults, parse `device_type` (match `\"cuda\"` \u2192 `Cuda`, `\"rocm\"` \u2192 `Rocm`, else \u2192 `Cpu`), construct a single `GpuDevice` with `index=0`, `name` from env, `vram_total_mib=vram_free_mib=vr` from env, `driver_version=\"mock\"`, `pci_vendor_id=0`, `pci_device_id=0`, `arch=None`, `caps=InferenceCaps::default()`, `enumeration_source=Mock`, `capabilities_source=Fallback`. Return `Ok(vec![device])`.\n     - `refresh_vram(&self, _index: u32) -> Result<(u32, u32), AnvilError>`: read `ANVILML_MOCK_VRAM_MIB` with default 8192, return `Ok((vr, vr))`.\n   - Inline comment on the `else` branch of the device_type match explaining that any unrecognized value falls back to CPU (matching the design doc's \"cuda, rocm, or cpu\" constraint).\n   - Inline comment on `_index` underscore prefix explaining it is unused because mock mode has no per-device VRAM query.\n\n3. **Update `crates/anvilml-hardware/src/lib.rs`.** Add `#[cfg(feature = \"mock-hardware\")]` gated `pub mod mock;` and `pub use mock::MockDetector;` after the existing `cpu`/`detect` entries. Keep `lib.rs` under 80 lines (it will be ~10 lines).\n\n4. **Create `crates/anvilml-hardware/tests/mock_tests.rs`.** Write \u22654 integration tests:\n   - `test_mock_detector_defaults`: No env vars set; verify all default values (device_type=Cpu, vram=8192, name=\"Mock GPU\", enumeration_source=Mock, capabilities_source=Fallback).\n   - `test_mock_cuda_device_type`: Set `ANVILML_MOCK_DEVICE_TYPE=cuda`; verify device_type=Cuda.\n   - `test_mock_rocm_device_type`: Set `ANVILML_MOCK_DEVICE_TYPE=rocm`; verify device_type=Rocm.\n   - `test_mock_vram_override`: Set `ANVILML_MOCK_VRAM_MIB=16384`; verify vram_total_mib=16384 and vram_free_mib=16384.\n   - `test_mock_device_name_override`: Set `ANVILML_MOCK_DEVICE_NAME=Test GPU`; verify name=\"Test GPU\".\n   - `test_mock_refresh_vram`: Call `refresh_vram(0)` with default VRAM; verify `Ok((8192, 8192))`.\n   - Every env-var test uses the `#[serial]` attribute (per \u00a711.3 of ENVIRONMENT.md / \u00a79.6 of FORGE_AGENT_RULES.md) and captures/restores the prior env value unconditionally in a `drop` guard or `match prior { ... }` at function end.\n\n5. **Verify compilation.** Run `cargo check -p anvilml-hardware --features mock-hardware` to confirm the new module compiles with the feature gate.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-28T23:23:29+0200",
-  "plan_approval_message_id": "1520901769096331334",
+  "last_updated": "2026-06-29T00:13:36+0200",
+  "plan_approval_message_id": "1520911184377679903",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1520901767577993226",
+  "plan_report_message_id": "1520911182310015090",
   "impl_report_message_id": null
 }

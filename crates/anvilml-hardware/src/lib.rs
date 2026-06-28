@@ -2,8 +2,11 @@
 
 pub mod cpu;
 pub mod detect;
+pub mod vulkan;
 pub use cpu::CpuDetector;
 pub use detect::DeviceDetector;
+pub use vulkan::VulkanDetector;
+pub use vulkan::vendor_id_to_device_type;
 
 #[cfg(feature = "mock-hardware")]
 pub mod mock;

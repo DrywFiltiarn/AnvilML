@@ -1225,3 +1225,101 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `MockDetector::refresh_vram(0)` called with default VRAM.
 **Expected output:** `Ok((8192, 8192))`.
 **Acceptance:** `cargo test -p anvilml-hardware --features mock-hardware --test mock_tests -- test_mock_refresh_vram` exits 0.
+
+---
+
+## test_vulkan_nvidia_vendor_maps_to_cuda (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/vulkan_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `ash` and `tracing` dependencies.
+**Tests:** `vendor_id_to_device_type(0x10de)` returns `Some(DeviceType::Cuda)` — NVIDIA's PCI vendor ID maps to the CUDA backend.
+**Mode:** both
+**Inputs:** `vendor_id_to_device_type(0x10de)`.
+**Expected output:** `Some(DeviceType::Cuda)`.
+**Acceptance:** `cargo test -p anvilml-hardware --test vulkan_tests test_vulkan_nvidia_vendor_maps_to_cuda` exits 0.
+
+---
+
+## test_vulkan_amd_vendor_maps_to_rocm (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/vulkan_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `ash` and `tracing` dependencies.
+**Tests:** `vendor_id_to_device_type(0x1002)` returns `Some(DeviceType::Rocm)` — AMD's PCI vendor ID maps to the ROCm backend.
+**Mode:** both
+**Inputs:** `vendor_id_to_device_type(0x1002)`.
+**Expected output:** `Some(DeviceType::Rocm)`.
+**Acceptance:** `cargo test -p anvilml-hardware --test vulkan_tests test_vulkan_amd_vendor_maps_to_rocm` exits 0.
+
+---
+
+## test_vulkan_unknown_vendor_skipped (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/vulkan_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `ash` and `tracing` dependencies.
+**Tests:** `vendor_id_to_device_type(0x1234)` returns `None` — unknown vendor IDs are skipped during enumeration.
+**Mode:** both
+**Inputs:** `vendor_id_to_device_type(0x1234)`.
+**Expected output:** `None`.
+**Acceptance:** `cargo test -p anvilml-hardware --test vulkan_tests test_vulkan_unknown_vendor_skipped` exits 0.
+
+---
+
+## test_vulkan_intel_vendor_skipped (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/vulkan_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `ash` and `tracing` dependencies.
+**Tests:** `vendor_id_to_device_type(0x8086)` returns `None` — Intel's vendor ID is not a compute backend targeted by Vulkan detection.
+**Mode:** both
+**Inputs:** `vendor_id_to_device_type(0x8086)`.
+**Expected output:** `None`.
+**Acceptance:** `cargo test -p anvilml-hardware --test vulkan_tests test_vulkan_intel_vendor_skipped` exits 0.
+
+---
+
+## test_vulkan_detect_never_errors (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/vulkan_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `ash` and `tracing` dependencies. A Vulkan detector is constructed.
+**Tests:** `VulkanDetector::detect()` returns `Ok(vec![..])` — never panics and never returns `Err`, even when the Vulkan loader is absent (CI, headless).
+**Mode:** both
+**Inputs:** `VulkanDetector` constructed, `detect()` called.
+**Expected output:** `Ok(vec![])` on headless/CI; `Ok([..GpuDevices..])` on GPU-equipped systems.
+**Acceptance:** `cargo test -p anvilml-hardware --test vulkan_tests test_vulkan_detect_never_errors` exits 0.
+
+---
+
+## test_vulkan_detect_returns_empty_when_no_gpu (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/vulkan_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `ash` and `tracing` dependencies.
+**Tests:** `VulkanDetector::detect()` returns `Ok(vec![])` when no Vulkan-capable GPU is present (CI, headless). All returned devices have `enumeration_source == EnumerationSource::Vulkan`.
+**Mode:** both
+**Inputs:** `VulkanDetector` constructed, `detect()` called.
+**Expected output:** Empty vector on headless/CI; non-empty vector with Vulkan-sourced devices on GPU systems.
+**Acceptance:** `cargo test -p anvilml-hardware --test vulkan_tests test_vulkan_detect_returns_empty_when_no_gpu` exits 0.
+
+---
+
+## test_vulkan_refresh_vram_never_errors (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/vulkan_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `ash` and `tracing` dependencies.
+**Tests:** `VulkanDetector::refresh_vram(0)` returns `Ok((total, free))` — never panics or returns `Err`. When Vulkan is unavailable, returns `(0, 0)`. When total equals free, it signals "free unknown" (fallback path).
+**Mode:** both
+**Inputs:** `VulkanDetector` constructed, `refresh_vram(0)` called.
+**Expected output:** `Ok((total, total))` fallback or `Ok((0, 0))` when Vulkan unavailable.
+**Acceptance:** `cargo test -p anvilml-hardware --test vulkan_tests test_vulkan_refresh_vram_never_errors` exits 0.
+
+---
+
+## test_vulkan_refresh_vram_out_of_range (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/vulkan_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `ash` and `tracing` dependencies.
+**Tests:** `VulkanDetector::refresh_vram(999)` returns `Ok((0, 0))` — out-of-range indices are handled gracefully without panicking.
+**Mode:** both
+**Inputs:** `VulkanDetector` constructed, `refresh_vram(999)` called.
+**Expected output:** `Ok((0, 0))`.
+**Acceptance:** `cargo test -p anvilml-hardware --test vulkan_tests test_vulkan_refresh_vram_out_of_range` exits 0.
+
+---
