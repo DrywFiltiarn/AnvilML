@@ -553,3 +553,15 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Nonexistent TOML path, env var `ANVILML_NUM_THREADS = "4"`.
 **Expected output:** `config.num_threads == Some(4)`.
 **Acceptance:** `cargo test -p anvilml-core --test config_load_tests test_num_threads_env_var` exits 0.
+
+---
+
+## config_reference_matches_defaults (backend)
+
+**File:** `backend/tests/config_reference.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` and `toml` dependencies, and `anvilml.toml` at the repo root contains all `ServerConfig` fields at their documented defaults.
+**Tests:** `config_load::load(Some(Path::new("../anvilml.toml")), None)` loads the repo-root config and asserts every field matches `ServerConfig::default()` — scalar fields (`host`, `port`, `db_path`, `artifact_dir`, `venv_path`, `model_scan_depth`, `max_ipc_payload_mib`, `num_threads`) and nested/optional fields (`model_dirs.is_empty()`, `gpu_selection.default_device == "auto"`, `limits.max_queued_jobs == 100`, `rocm.is_none()`, `hardware_override.is_none()`).
+**Mode:** both
+**Inputs:** `load(Some(Path::new("../anvilml.toml")), None)` — loads the checked-in `anvilml.toml` from the repo root.
+**Expected output:** `Ok(config)` where all 13 fields match `ServerConfig::default()` exactly.
+**Acceptance:** `cargo test -p anvilml --features mock-hardware -- config_reference` exits 0.
