@@ -781,3 +781,27 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** All three `CapabilitySource` variants.
 **Expected output:** Each variant roundtrips correctly; JSON strings are `"pytorch"`, `"device_table"`, `"fallback"`.
 **Acceptance:** `cargo test -p anvilml-core --test hardware_tests test_capability_source_serde_snake_case` exits 0.
+
+---
+
+## test_inference_caps_non_default_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/hardware_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, and `utoipa` dependencies, and the `types` submodule providing `InferenceCaps`.
+**Tests:** An `InferenceCaps` with mixed true/false fields (`fp32: true, fp16: true, bf16: true, fp8: false, fp4: false, flash_attention: true`) serialises to JSON, roundtrips back to an equal value, and all six JSON field names (`fp32`, `fp16`, `bf16`, `fp8`, `fp4`, `flash_attention`) are verified via `serde_json::Value` parsing.
+**Mode:** both
+**Inputs:** `InferenceCaps { fp32: true, fp16: true, bf16: true, fp8: false, fp4: false, flash_attention: true }`.
+**Expected output:** Roundtripped `InferenceCaps` equals original; JSON contains `"fp32": true`, `"fp16": true`, `"bf16": true`, `"fp8": false`, `"fp4": false`, `"flash_attention": true`.
+**Acceptance:** `cargo test -p anvilml-core --test hardware_tests test_inference_caps_non_default_roundtrip` exits 0.
+
+---
+
+## test_enumeration_source_copy_trait (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/hardware_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, and `utoipa` dependencies, and the `types` submodule providing `EnumerationSource` and `CapabilitySource`.
+**Tests:** Both `EnumerationSource` and `CapabilitySource` implement `Copy` — assigning a variant to a new variable does not move it, so both the original and the copy remain usable. Serialises both to JSON and asserts they produce identical output.
+**Mode:** both
+**Inputs:** `EnumerationSource::Cpu`, `CapabilitySource::PyTorch`.
+**Expected output:** Both original and copy remain usable after assignment; both serialise identically.
+**Acceptance:** `cargo test -p anvilml-core --test hardware_tests test_enumeration_source_copy_trait` exits 0.

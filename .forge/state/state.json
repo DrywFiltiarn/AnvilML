@@ -23,16 +23,17 @@
     "P2-A7",
     "P3-A1",
     "P3-A2",
-    "P3-A3"
+    "P3-A3",
+    "P3-A4"
   ],
-  "in_progress": "P3-A4",
+  "in_progress": "P3-A5",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "1. **Verify existing types match the spec.** Confirm that `hardware.rs` already contains `InferenceCaps` (6 bool fields, Default all-false), `EnumerationSource` (7 variants with Cpu as 5th, Copy+PartialEq+Eq), and `CapabilitySource` (3 variants, Copy+PartialEq+Eq) with correct derives, doc comments, and `#[serde(rename_all = \"snake_case\")]`. No code changes needed \u2014 this step is a verification pass.\n\n2. **Add `test_inference_caps_non_default_roundtrip` to `hardware_tests.rs`.** Construct an `InferenceCaps` with mixed true/false values (e.g., `fp32: true, fp16: true, bf16: true, fp8: false, fp4: false, flash_attention: true`), serialise to JSON, deserialise back, assert equality. Also verify JSON field names (`fp32`, `fp16`, etc.) via `serde_json::Value` parsing. This is the 8th test.\n\n3. **Add `test_enumeration_source_copy_trait` to `hardware_tests.rs`.** Verify that `EnumerationSource` implements `Copy` by assigning a variant to a new variable and using both. Also verify `CapabilitySource` implements `Copy` the same way. This is the 9th test.\n\n4. **Run the acceptance command.** `cargo test -p anvilml-core --test hardware_tests` must exit 0 with >=9 tests. If it does not, diagnose and fix.\n\n5. **Update `docs/TESTS.md`** per `FORGE_AGENT_RULES.md \u00a75.10` and `ENVIRONMENT.md \u00a711.4` \u2014 add entries for the two new tests with Mode, context, inputs, expected outputs.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-28T16:49:30+0200",
-  "plan_approval_message_id": "1520802754174386177",
+  "last_updated": "2026-06-28T17:27:48+0200",
+  "plan_approval_message_id": "1520811815821508710",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1520802753042190346",
+  "plan_report_message_id": "1520811813179097353",
   "impl_report_message_id": null
 }

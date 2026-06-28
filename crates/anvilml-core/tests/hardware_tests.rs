@@ -271,3 +271,71 @@ fn test_capability_source_serde_snake_case() {
         );
     }
 }
+
+/// An `InferenceCaps` with mixed true/false fields serialises to correct JSON,
+/// roundtrips back to an equal value, and all six field names appear in the
+/// JSON payload with the expected types.
+#[test]
+fn test_inference_caps_non_default_roundtrip() {
+    let caps = InferenceCaps {
+        fp32: true,
+        fp16: true,
+        bf16: true,
+        fp8: false,
+        fp4: false,
+        flash_attention: true,
+    };
+
+    let json = serde_json::to_string(&caps).expect("failed to serialise InferenceCaps");
+    let roundtripped: InferenceCaps =
+        serde_json::from_str(&json).expect("failed to deserialise InferenceCaps");
+
+    assert_eq!(
+        caps, roundtripped,
+        "roundtripped InferenceCaps does not equal original"
+    );
+
+    // Verify JSON field names are correct snake_case identifiers.
+    let parsed: serde_json::Value = serde_json::from_str(&json).expect("json is valid");
+    assert_eq!(parsed["fp32"], true);
+    assert_eq!(parsed["fp16"], true);
+    assert_eq!(parsed["bf16"], true);
+    assert_eq!(parsed["fp8"], false);
+    assert_eq!(parsed["fp4"], false);
+    assert_eq!(parsed["flash_attention"], true);
+}
+
+/// Both `EnumerationSource` and `CapabilitySource` implement `Copy` — assigning
+/// a variant to a new variable does not move it, so both the original and the
+/// copy remain usable.
+#[test]
+fn test_enumeration_source_copy_trait() {
+    // EnumerationSource: copy and use both values independently.
+    let source = EnumerationSource::Cpu;
+    let source_copy = source; // If Copy is not implemented, this would move `source`.
+    assert_eq!(
+        source, source_copy,
+        "EnumerationSource Copy assignment changed value"
+    );
+    // Use both values in further assertions to prove neither was moved.
+    let json_a = serde_json::to_string(&source).expect("serialise original");
+    let json_b = serde_json::to_string(&source_copy).expect("serialise copy");
+    assert_eq!(
+        json_a, json_b,
+        "EnumerationSource original and copy serialise identically"
+    );
+
+    // CapabilitySource: same Copy verification.
+    let cap = CapabilitySource::PyTorch;
+    let cap_copy = cap; // If Copy is not implemented, this would move `cap`.
+    assert_eq!(
+        cap, cap_copy,
+        "CapabilitySource Copy assignment changed value"
+    );
+    let json_c = serde_json::to_string(&cap).expect("serialise original");
+    let json_d = serde_json::to_string(&cap_copy).expect("serialise copy");
+    assert_eq!(
+        json_c, json_d,
+        "CapabilitySource original and copy serialise identically"
+    );
+}
