@@ -1081,3 +1081,75 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `Arc::new(NodeTypeRegistry::new())` shared between main thread (register) and spawned thread (read loop).
 **Expected output:** Both threads complete without deadlock or panic; `join()` returns `Ok`.
 **Acceptance:** `cargo test -p anvilml-core --test node_registry_tests test_concurrent_get_during_register_all_does_not_deadlock` exits 0.
+
+---
+
+## test_cpu_detector_returns_one_device (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/cpu_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with the `mock-hardware` feature, and `CpuDetector` implements `DeviceDetector`.
+**Tests:** `CpuDetector::detect()` returns `Ok(vec![..])` with exactly one element; the device's `name` field equals `"CPU"`.
+**Mode:** both
+**Inputs:** `CpuDetector` constructed with no arguments.
+**Expected output:** `Ok(vec![GpuDevice { name: "CPU", device_type: Cpu, enumeration_source: Cpu, ... }])` — exactly one device.
+**Acceptance:** `cargo test -p anvilml-hardware --test cpu_tests test_cpu_detector_returns_one_device` exits 0.
+
+---
+
+## test_cpu_detector_device_type_is_cpu (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/cpu_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with the `mock-hardware` feature, and `CpuDetector` implements `DeviceDetector`.
+**Tests:** The returned device has `device_type == DeviceType::Cpu` — confirms the device is classified as a CPU backend, not a GPU.
+**Mode:** both
+**Inputs:** `CpuDetector` constructed with no arguments; `detect()` called.
+**Expected output:** `device_type == DeviceType::Cpu`.
+**Acceptance:** `cargo test -p anvilml-hardware --test cpu_tests test_cpu_detector_device_type_is_cpu` exits 0.
+
+---
+
+## test_cpu_detector_enumeration_source_is_cpu (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/cpu_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with the `mock-hardware` feature, and `CpuDetector` implements `DeviceDetector`.
+**Tests:** The returned device has `enumeration_source == EnumerationSource::Cpu` — distinct from `EnumerationSource::Mock` (env-var-driven, P4-A3) and from the four real-enumeration variants (Vulkan, Dxgi, Sysfs, Nvml).
+**Mode:** both
+**Inputs:** `CpuDetector` constructed with no arguments; `detect()` called.
+**Expected output:** `enumeration_source == EnumerationSource::Cpu`.
+**Acceptance:** `cargo test -p anvilml-hardware --test cpu_tests test_cpu_detector_enumeration_source_is_cpu` exits 0.
+
+---
+
+## test_cpu_detector_refresh_vram_returns_zero (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/cpu_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with the `mock-hardware` feature, and `CpuDetector` implements `DeviceDetector`.
+**Tests:** `refresh_vram(0)` returns `Ok((0, 0))` — CPU has no VRAM, so both total and free are zero.
+**Mode:** both
+**Inputs:** `CpuDetector` constructed with no arguments; `refresh_vram(0)` called.
+**Expected output:** `Ok((0, 0))`.
+**Acceptance:** `cargo test -p anvilml-hardware --test cpu_tests test_cpu_detector_refresh_vram_returns_zero` exits 0.
+
+---
+
+## test_cpu_detector_all_device_fields (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/cpu_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with the `mock-hardware` feature, and `CpuDetector` implements `DeviceDetector`.
+**Tests:** Every field on the returned `GpuDevice` matches expected values: `vram_total_mib=0`, `vram_free_mib=0`, `driver_version="n/a"`, `pci_vendor_id=0`, `pci_device_id=0`, `arch=None`, `caps=InferenceCaps::default()` (all-false), `capabilities_source=CapabilitySource::Fallback`.
+**Mode:** both
+**Inputs:** `CpuDetector` constructed with no arguments; `detect()` called.
+**Expected output:** All 12 fields match expected CPU-fallback values.
+**Acceptance:** `cargo test -p anvilml-hardware --test cpu_tests test_cpu_detector_all_device_fields` exits 0.
+
+---
+
+## test_cpu_detect_never_errors (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/cpu_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with the `mock-hardware` feature, and `CpuDetector` implements `DeviceDetector`.
+**Tests:** `detect()` never returns `Err` or panics — `CpuDetector` is pure value construction with no I/O, no fallible operations, no conditional branches.
+**Mode:** both
+**Inputs:** `CpuDetector` constructed with no arguments; `detect()` called.
+**Expected output:** `result.is_ok()` is true.
+**Acceptance:** `cargo test -p anvilml-hardware --test cpu_tests test_cpu_detect_never_errors` exits 0.
