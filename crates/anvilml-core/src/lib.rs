@@ -4,14 +4,12 @@
 mod config;
 pub mod config_load;
 mod error;
-
 mod node_registry;
-pub use node_registry::NodeTypeRegistry;
-
 pub mod types;
-pub use types::*;
 
 pub use config::ServerConfig;
 pub use config_load::CliOverrides;
 pub use config_load::load;
 pub use error::AnvilError;
+pub use node_registry::NodeTypeRegistry;
+pub use types::*;
