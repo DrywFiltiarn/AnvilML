@@ -556,6 +556,54 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 ---
 
+## test_job_serde_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/job_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `chrono` (serde feature), `uuid` (v4, serde), `serde_json`, and `serde` (derive) dependencies, and the `types` submodule providing `Job`, `JobStatus`, and `JobSettings`.
+**Tests:** A `Job` with all fields populated (UUID, `JobStatus::Queued`, graph JSON, `JobSettings { device_preference: Some("cuda") }`, timestamps, `worker_id`, `error`, `queue_position`) serialises to JSON and deserialises back to an equal value. The JSON payload is also parsed to verify field names and values.
+**Mode:** both
+**Inputs:** `Job` constructed with all fields at non-default values.
+**Expected output:** Roundtripped `Job` equals original; JSON contains `"status": "queued"`, `"device_preference": "cuda"`, and valid UUID.
+**Acceptance:** `cargo test -p anvilml-core --test job_tests test_job_serde_roundtrip` exits 0.
+
+---
+
+## test_job_status_all_variants_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/job_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `chrono` (serde feature), `serde_json`, and `serde` (derive) dependencies, and the `types` submodule providing `JobStatus`.
+**Tests:** Each of the five `JobStatus` variants (`Queued`, `Running`, `Completed`, `Failed`, `Cancelled`) serialises to a lowercase snake_case JSON string and deserialises back to an equal value.
+**Mode:** both
+**Inputs:** All five `JobStatus` variants.
+**Expected output:** Each variant roundtrips correctly; JSON strings are `"queued"`, `"running"`, `"completed"`, `"failed"`, `"cancelled"`.
+**Acceptance:** `cargo test -p anvilml-core --test job_tests test_job_status_all_variants_roundtrip` exits 0.
+
+---
+
+## test_job_settings_default (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/job_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `chrono` (serde feature), `serde_json`, and `serde` (derive) dependencies, and the `types` submodule providing `JobSettings`.
+**Tests:** A `JobSettings` with `device_preference: None` serialises to JSON containing `"device_preference": null` and roundtrips correctly.
+**Mode:** both
+**Inputs:** `JobSettings { device_preference: None }`.
+**Expected output:** JSON contains null for `device_preference`; roundtripped `JobSettings` equals original.
+**Acceptance:** `cargo test -p anvilml-core --test job_tests test_job_settings_default` exits 0.
+
+---
+
+## test_job_with_nulls_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/job_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `chrono` (serde feature), `uuid` (v4, serde), `serde_json`, and `serde` (derive) dependencies, and the `types` submodule providing `Job`.
+**Tests:** A `Job` with all `Option` fields (`started_at`, `completed_at`, `worker_id`, `error`, `queue_position`) set to `None` serialises to JSON and deserialises back, confirming all `None` fields remain `None` after the roundtrip.
+**Mode:** both
+**Inputs:** `Job` with `started_at: None`, `completed_at: None`, `worker_id: None`, `error: None`, `queue_position: None`.
+**Expected output:** All `None` fields remain `None` after roundtrip; non-null fields unchanged.
+**Acceptance:** `cargo test -p anvilml-core --test job_tests test_job_with_nulls_roundtrip` exits 0.
+
+---
+
 ## config_reference_matches_defaults (backend)
 
 **File:** `backend/tests/config_reference.rs`

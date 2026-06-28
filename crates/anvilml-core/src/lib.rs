@@ -5,6 +5,9 @@ mod config;
 pub mod config_load;
 mod error;
 
+pub mod types;
+pub use types::*;
+
 pub use config::ServerConfig;
 pub use config_load::CliOverrides;
 pub use config_load::load;
