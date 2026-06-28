@@ -985,3 +985,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `WsEvent::JobCancelled { job_id: Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap() }`.
 **Expected output:** JSON contains `"type":"job_cancelled"`, `"job_id":"550e8400-e29b-41d4-a716-446655440000"`; roundtripped `WsEvent` equals original.
 **Acceptance:** `cargo test -p anvilml-core --test events_tests test_ws_event_job_cancelled_serde_roundtrip` exits 0.
+
+---
+
+## test_ws_event_worker_status_changed_serde_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/events_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, `utoipa` (uuid, chrono features), and `uuid` (v4, serde) dependencies, and the `types` submodule providing `WsEvent`, `WorkerStatus`, `WorkerInfo`, and `DeviceType`.
+**Tests:** A `WsEvent::WorkerStatusChanged` with `worker_id = "gpu:0"`, `status = Busy`, and `device_index = 0` serialises to JSON containing `"type": "worker_status_changed"`, all fields roundtrip, and the tag key is `"type"`.
+**Mode:** both
+**Inputs:** `WsEvent::WorkerStatusChanged { worker_id: "gpu:0".to_string(), status: WorkerStatus::Busy, device_index: 0 }`.
+**Expected output:** JSON contains `"type":"worker_status_changed"`, `"worker_id":"gpu:0"`, `"status":"busy"`, `"device_index":0`; roundtripped `WsEvent` equals original.
+**Acceptance:** `cargo test -p anvilml-core --test events_tests test_ws_event_worker_status_changed_serde_roundtrip` exits 0.
+
+---
+
+## test_ws_event_system_stats_serde_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/events_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, `utoipa` (uuid, chrono features), and `uuid` (v4, serde) dependencies, and the `types` submodule providing `WsEvent`, `WorkerStatus`, `WorkerInfo`, and `DeviceType`.
+**Tests:** A `WsEvent::SystemStats` with `cpu_pct = 45.5`, `ram_used_mib = 512`, and a single `WorkerInfo` in the `workers` vec serialises to JSON containing `"type": "system_stats"`, all fields roundtrip including the nested `WorkerInfo` inside the `workers` array, and the tag key is `"type"`.
+**Mode:** both
+**Inputs:** `WsEvent::SystemStats { cpu_pct: 45.5, ram_used_mib: 512, workers: vec![WorkerInfo { worker_id: "0".to_string(), status: WorkerStatus::Idle, device_index: 0, device_type: DeviceType::Cpu, pid: None, current_job_id: None }] }`.
+**Expected output:** JSON contains `"type":"system_stats"`, `"cpu_pct":45.5`, `"ram_used_mib":512`, `"workers"` array with 1 element; roundtripped `WsEvent` equals original.
+**Acceptance:** `cargo test -p anvilml-core --test events_tests test_ws_event_system_stats_serde_roundtrip` exits 0.
+
+---
+
+## test_ws_event_provisioning_progress_serde_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/events_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, `utoipa` (uuid, chrono features), and `uuid` (v4, serde) dependencies, and the `types` submodule providing `WsEvent`.
+**Tests:** A `WsEvent::ProvisioningProgress` with `message = "Installing torch"` and `pct = 50` serialises to JSON containing `"type": "provisioning_progress"`, all fields roundtrip, and the tag key is `"type"`.
+**Mode:** both
+**Inputs:** `WsEvent::ProvisioningProgress { message: "Installing torch".to_string(), pct: 50 }`.
+**Expected output:** JSON contains `"type":"provisioning_progress"`, `"message":"Installing torch"`, `"pct":50`; roundtripped `WsEvent` equals original.
+**Acceptance:** `cargo test -p anvilml-core --test events_tests test_ws_event_provisioning_progress_serde_roundtrip` exits 0.

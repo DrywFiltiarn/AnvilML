@@ -4,7 +4,7 @@
 //! assert the `"type"` key equals the snake_case variant name, deserialise back,
 //! and verify equality. No I/O or env vars are used.
 
-use anvilml_core::types::WsEvent;
+use anvilml_core::types::{DeviceType, WorkerInfo, WorkerStatus, WsEvent};
 use uuid::Uuid;
 
 /// A `WsEvent::JobQueued` variant serialises with `"type": "job_queued"`, all fields
@@ -172,5 +172,90 @@ fn test_ws_event_job_cancelled_serde_roundtrip() {
     assert_eq!(
         event, roundtripped,
         "roundtripped JobCancelled does not equal original"
+    );
+}
+
+/// A `WsEvent::WorkerStatusChanged` variant serialises with `"type": "worker_status_changed"`,
+/// all fields (`worker_id`, `status`, `device_index`) roundtrip correctly, and the tag key
+/// is `"type"`.
+#[test]
+fn test_ws_event_worker_status_changed_serde_roundtrip() {
+    let event = WsEvent::WorkerStatusChanged {
+        worker_id: "gpu:0".to_string(),
+        status: WorkerStatus::Busy,
+        device_index: 0,
+    };
+
+    let json = serde_json::to_string(&event).expect("failed to serialise WorkerStatusChanged");
+
+    let parsed: serde_json::Value = serde_json::from_str(&json).expect("json is valid");
+    assert_eq!(parsed["type"], "worker_status_changed");
+    assert_eq!(parsed["worker_id"], "gpu:0");
+    assert_eq!(parsed["status"], "busy");
+    assert_eq!(parsed["device_index"], 0);
+
+    let roundtripped: WsEvent = serde_json::from_str(&json).expect("failed to deserialise");
+    assert_eq!(
+        event, roundtripped,
+        "roundtripped WorkerStatusChanged does not equal original"
+    );
+}
+
+/// A `WsEvent::SystemStats` variant serialises with `"type": "system_stats"`, all fields
+/// (`cpu_pct`, `ram_used_mib`, `workers`) roundtrip correctly including the nested
+/// `WorkerInfo` inside the `workers` vec, and the tag key is `"type"`.
+#[test]
+fn test_ws_event_system_stats_serde_roundtrip() {
+    let event = WsEvent::SystemStats {
+        cpu_pct: 45.5,
+        ram_used_mib: 512,
+        workers: vec![WorkerInfo {
+            worker_id: "0".to_string(),
+            status: WorkerStatus::Idle,
+            device_index: 0,
+            device_type: DeviceType::Cpu,
+            pid: None,
+            current_job_id: None,
+        }],
+    };
+
+    let json = serde_json::to_string(&event).expect("failed to serialise SystemStats");
+
+    let parsed: serde_json::Value = serde_json::from_str(&json).expect("json is valid");
+    assert_eq!(parsed["type"], "system_stats");
+    assert_eq!(parsed["cpu_pct"], 45.5);
+    assert_eq!(parsed["ram_used_mib"], 512);
+    assert_eq!(parsed["workers"].as_array().unwrap().len(), 1);
+    assert_eq!(parsed["workers"][0]["worker_id"], "0");
+    assert_eq!(parsed["workers"][0]["status"], "idle");
+    assert_eq!(parsed["workers"][0]["device_type"], "cpu");
+
+    let roundtripped: WsEvent = serde_json::from_str(&json).expect("failed to deserialise");
+    assert_eq!(
+        event, roundtripped,
+        "roundtripped SystemStats does not equal original"
+    );
+}
+
+/// A `WsEvent::ProvisioningProgress` variant serialises with `"type": "provisioning_progress"`,
+/// all fields (`message`, `pct`) roundtrip correctly, and the tag key is `"type"`.
+#[test]
+fn test_ws_event_provisioning_progress_serde_roundtrip() {
+    let event = WsEvent::ProvisioningProgress {
+        message: "Installing torch".to_string(),
+        pct: 50,
+    };
+
+    let json = serde_json::to_string(&event).expect("failed to serialise ProvisioningProgress");
+
+    let parsed: serde_json::Value = serde_json::from_str(&json).expect("json is valid");
+    assert_eq!(parsed["type"], "provisioning_progress");
+    assert_eq!(parsed["message"], "Installing torch");
+    assert_eq!(parsed["pct"], 50);
+
+    let roundtripped: WsEvent = serde_json::from_str(&json).expect("failed to deserialise");
+    assert_eq!(
+        event, roundtripped,
+        "roundtripped ProvisioningProgress does not equal original"
     );
 }

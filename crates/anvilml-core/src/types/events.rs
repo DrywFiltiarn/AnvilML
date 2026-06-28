@@ -3,18 +3,22 @@
 //!
 //! Events are serialised with a `"type"` tag field (via `#[serde(tag = "type")]`) so that
 //! consumers can dispatch on the variant without knowing the full payload schema in advance.
-//! The tag value is the snake_case form of the variant name (e.g. `"job_queued"`).
+//! The ten variants cover the job states and system-level events from queue entry through
+//! completion, failure, cancellation, worker status changes, and periodic health reports.
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-/// A WebSocket event emitted during a generation job's lifecycle.
+use super::worker::{WorkerInfo, WorkerStatus};
+
+/// A WebSocket event emitted during a generation job's lifecycle or system operation.
 ///
 /// Events are serialised with a `"type"` tag field so that subscribers to the
 /// `/v1/events` WebSocket endpoint can dispatch on the variant without knowing
-/// the full payload schema in advance. The seven variants cover the job states
-/// from queue entry through completion, failure, or cancellation.
+/// the full payload schema in advance. The ten variants cover the job states
+/// from queue entry through completion, failure, or cancellation, plus system-level
+/// events (worker status changes, periodic health stats, and provisioning progress).
 ///
 /// # Serde tag
 ///
@@ -106,5 +110,41 @@ pub enum WsEvent {
     JobCancelled {
         /// UUID of the cancelled job.
         job_id: Uuid,
+    },
+
+    /// A worker's lifecycle status has changed.
+    ///
+    /// Emitted by the scheduler when a worker transitions between states
+    /// (e.g. Idle → Busy, Busy → Idle, Idle → Dead).
+    WorkerStatusChanged {
+        /// Identifier of the worker whose status changed.
+        worker_id: String,
+        /// The new lifecycle state.
+        status: WorkerStatus,
+        /// Zero-based device index of the worker.
+        device_index: u32,
+    },
+
+    /// Periodic system health report broadcast to all WebSocket subscribers.
+    ///
+    /// Emitted on a fixed interval (every 5s) by the server's stats tick.
+    SystemStats {
+        /// CPU utilisation percentage (0.0–100.0).
+        cpu_pct: f32,
+        /// Resident memory used by the server process, in MiB.
+        ram_used_mib: u64,
+        /// Current state of all tracked workers.
+        workers: Vec<WorkerInfo>,
+    },
+
+    /// An update on the provisioning progress for a worker.
+    ///
+    /// Emitted while the provisioning subsystem installs or verifies
+    /// Python dependencies for a worker.
+    ProvisioningProgress {
+        /// Human-readable progress message.
+        message: String,
+        /// Completion percentage (0–100).
+        pct: u8,
     },
 }
