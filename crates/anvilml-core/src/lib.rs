@@ -5,6 +5,9 @@ mod config;
 pub mod config_load;
 mod error;
 
+mod node_registry;
+pub use node_registry::NodeTypeRegistry;
+
 pub mod types;
 pub use types::*;
 

@@ -1021,3 +1021,63 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `WsEvent::ProvisioningProgress { message: "Installing torch".to_string(), pct: 50 }`.
 **Expected output:** JSON contains `"type":"provisioning_progress"`, `"message":"Installing torch"`, `"pct":50`; roundtripped `WsEvent` equals original.
 **Acceptance:** `cargo test -p anvilml-core --test events_tests test_ws_event_provisioning_progress_serde_roundtrip` exits 0.
+
+---
+
+## test_empty_registry_returns_none (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/node_registry_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `std` and the `types` submodule providing `NodeTypeDescriptor`. The `NodeTypeRegistry` struct is available via `anvilml_core::NodeTypeRegistry`.
+**Tests:** An empty `NodeTypeRegistry` returns `None` for any `get()` lookup and reports a length of zero via `len()`.
+**Mode:** both
+**Inputs:** `NodeTypeRegistry::new()` — no descriptors registered.
+**Expected output:** `get("NonExistent")` is `None`; `len()` is `0`.
+**Acceptance:** `cargo test -p anvilml-core --test node_registry_tests test_empty_registry_returns_none` exits 0.
+
+---
+
+## test_register_all_populates (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/node_registry_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `std` and the `types` submodule providing `NodeTypeDescriptor`. The `NodeTypeRegistry` struct is available via `anvilml_core::NodeTypeRegistry`.
+**Tests:** Registering a single descriptor via `register_all` populates the registry: `get` returns the registered value, `len` returns 1, and `list` contains exactly one element.
+**Mode:** both
+**Inputs:** `NodeTypeDescriptor { type_name: "LoadModel", ... }` passed to `register_all(vec![desc])`.
+**Expected output:** `get("LoadModel")` returns `Some(desc)`; `len()` is `1`; `list().len()` is `1`.
+**Acceptance:** `cargo test -p anvilml-core --test node_registry_tests test_register_all_populates` exits 0.
+
+---
+
+## test_register_all_replaces_prior_contents (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/node_registry_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `std` and the `types` submodule providing `NodeTypeDescriptor`. The `NodeTypeRegistry` struct is available via `anvilml_core::NodeTypeRegistry`.
+**Tests:** Registering a second batch via `register_all` replaces (not merges with) prior contents: the old type name is no longer found after the second registration.
+**Mode:** both
+**Inputs:** First `register_all(vec![desc_A])`, then `register_all(vec![desc_B])` with a different type name.
+**Expected output:** `get("A")` is `None` after second register; `get("B")` is `Some`; `len()` is `1`.
+**Acceptance:** `cargo test -p anvilml-core --test node_registry_tests test_register_all_replaces_prior_contents` exits 0.
+
+---
+
+## test_list_returns_all (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/node_registry_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `std` and the `types` submodule providing `NodeTypeDescriptor`. The `NodeTypeRegistry` struct is available via `anvilml_core::NodeTypeRegistry`.
+**Tests:** Registering three descriptors with distinct type names results in `list()` returning exactly three elements, each with a matching `type_name`.
+**Mode:** both
+**Inputs:** `register_all(vec![desc1, desc2, desc3])` with three descriptors.
+**Expected output:** `list().len()` is `3`; all three type names are present in the returned vector.
+**Acceptance:** `cargo test -p anvilml-core --test node_registry_tests test_list_returns_all` exits 0.
+
+---
+
+## test_concurrent_get_during_register_all_does_not_deadlock (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/node_registry_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `std` and the `types` submodule providing `NodeTypeDescriptor`. The `NodeTypeRegistry` struct is available via `anvilml_core::NodeTypeRegistry`. Uses `std::sync::Arc` and `std::thread::spawn` for concurrency.
+**Tests:** A reader thread calling `get()` in a tight loop (100 iterations) while the main thread calls `register_all()` once completes within 2 seconds without deadlock or panic. This verifies that the `RwLock` correctly allows concurrent reads during a write.
+**Mode:** both
+**Inputs:** `Arc::new(NodeTypeRegistry::new())` shared between main thread (register) and spawned thread (read loop).
+**Expected output:** Both threads complete without deadlock or panic; `join()` returns `Ok`.
+**Acceptance:** `cargo test -p anvilml-core --test node_registry_tests test_concurrent_get_during_register_all_does_not_deadlock` exits 0.
