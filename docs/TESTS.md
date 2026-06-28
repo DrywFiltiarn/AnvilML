@@ -1153,3 +1153,75 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `CpuDetector` constructed with no arguments; `detect()` called.
 **Expected output:** `result.is_ok()` is true.
 **Acceptance:** `cargo test -p anvilml-hardware --test cpu_tests test_cpu_detect_never_errors` exits 0.
+
+---
+
+## test_mock_detector_defaults (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/mock_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with the `mock-hardware` feature, `MockDetector` implements `DeviceDetector`, and `serial_test` is available as a dev-dependency for env-var isolation. All three `ANVILML_MOCK_*` env vars are unset before the test.
+**Tests:** `MockDetector::detect()` returns exactly one device with all default values: `device_type=Cpu`, `vram_total_mib=8192`, `vram_free_mib=8192`, `name="Mock GPU"`, `enumeration_source=Mock`, `capabilities_source=Fallback`.
+**Mode:** mock
+**Inputs:** `MockDetector` constructed with no arguments; all three `ANVILML_MOCK_*` env vars unset.
+**Expected output:** `Ok(vec![GpuDevice { device_type: Cpu, vram_total_mib: 8192, vram_free_mib: 8192, name: "Mock GPU", enumeration_source: Mock, capabilities_source: Fallback, ... }])`.
+**Acceptance:** `cargo test -p anvilml-hardware --features mock-hardware --test mock_tests -- test_mock_detector_defaults` exits 0.
+
+---
+
+## test_mock_cuda_device_type (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/mock_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with the `mock-hardware` feature. `ANVILML_MOCK_DEVICE_TYPE` is set to `"cuda"`; prior value captured and restored.
+**Tests:** The returned device has `device_type == DeviceType::Cuda` — confirms the env var is parsed and mapped to the CUDA backend.
+**Mode:** mock
+**Inputs:** `ANVILML_MOCK_DEVICE_TYPE=cuda`; `MockDetector::detect()` called.
+**Expected output:** `device_type == DeviceType::Cuda`.
+**Acceptance:** `cargo test -p anvilml-hardware --features mock-hardware --test mock_tests -- test_mock_cuda_device_type` exits 0.
+
+---
+
+## test_mock_rocm_device_type (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/mock_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with the `mock-hardware` feature. `ANVILML_MOCK_DEVICE_TYPE` is set to `"rocm"`; prior value captured and restored.
+**Tests:** The returned device has `device_type == DeviceType::Rocm` — confirms the env var is parsed and mapped to the ROCm backend.
+**Mode:** mock
+**Inputs:** `ANVILML_MOCK_DEVICE_TYPE=rocm`; `MockDetector::detect()` called.
+**Expected output:** `device_type == DeviceType::Rocm`.
+**Acceptance:** `cargo test -p anvilml-hardware --features mock-hardware --test mock_tests -- test_mock_rocm_device_type` exits 0.
+
+---
+
+## test_mock_vram_override (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/mock_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with the `mock-hardware` feature. `ANVILML_MOCK_VRAM_MIB` is set to `"16384"`; prior value captured and restored.
+**Tests:** The returned device has `vram_total_mib=16384` and `vram_free_mib=16384` — both fields are set from the env var value.
+**Mode:** mock
+**Inputs:** `ANVILML_MOCK_VRAM_MIB=16384`; `MockDetector::detect()` called.
+**Expected output:** `vram_total_mib == 16384 && vram_free_mib == 16384`.
+**Acceptance:** `cargo test -p anvilml-hardware --features mock-hardware --test mock_tests -- test_mock_vram_override` exits 0.
+
+---
+
+## test_mock_device_name_override (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/mock_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with the `mock-hardware` feature. `ANVILML_MOCK_DEVICE_NAME` is set to `"Test GPU"`; prior value captured and restored.
+**Tests:** The returned device has `name="Test GPU"` — confirms the env var is read and used as the device name.
+**Mode:** mock
+**Inputs:** `ANVILML_MOCK_DEVICE_NAME=Test GPU`; `MockDetector::detect()` called.
+**Expected output:** `name == "Test GPU"`.
+**Acceptance:** `cargo test -p anvilml-hardware --features mock-hardware --test mock_tests -- test_mock_device_name_override` exits 0.
+
+---
+
+## test_mock_refresh_vram (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/mock_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with the `mock-hardware` feature. No `ANVILML_MOCK_VRAM_MIB` env var is set (uses default 8192).
+**Tests:** `refresh_vram(0)` returns `Ok((8192, 8192))` — both total and free VRAM equal the default value; the `_index` parameter is unused.
+**Mode:** mock
+**Inputs:** `MockDetector::refresh_vram(0)` called with default VRAM.
+**Expected output:** `Ok((8192, 8192))`.
+**Acceptance:** `cargo test -p anvilml-hardware --features mock-hardware --test mock_tests -- test_mock_refresh_vram` exits 0.

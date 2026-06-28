@@ -4,3 +4,8 @@ pub mod cpu;
 pub mod detect;
 pub use cpu::CpuDetector;
 pub use detect::DeviceDetector;
+
+#[cfg(feature = "mock-hardware")]
+pub mod mock;
+#[cfg(feature = "mock-hardware")]
+pub use mock::MockDetector;
