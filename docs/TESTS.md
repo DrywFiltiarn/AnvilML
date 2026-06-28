@@ -661,3 +661,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `load(Some(Path::new("../anvilml.toml")), None)` — loads the checked-in `anvilml.toml` from the repo root.
 **Expected output:** `Ok(config)` where all 13 fields match `ServerConfig::default()` exactly.
 **Acceptance:** `cargo test -p anvilml --features mock-hardware -- config_reference` exits 0.
+
+---
+
+## test_artifact_meta_serde_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/artifact_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `chrono` (serde feature), `uuid` (v4, serde), `serde_json`, `serde` (derive), and `utoipa` (uuid, chrono features) dependencies, and the `types` submodule providing `ArtifactMeta`.
+**Tests:** A full `ArtifactMeta` with all fields populated (64-char SHA-256 hex hash, UUID, 1024×1024 pixels, seed 42, 30 steps, RFC 3339 timestamp, PNG file path) serialises to JSON and deserialises back to an equal value. The raw JSON is parsed to confirm all eight field names are present.
+**Mode:** both
+**Inputs:** `ArtifactMeta` constructed with all fields at non-default values.
+**Expected output:** Roundtripped `ArtifactMeta` equals original; JSON contains all eight snake_case field names.
+**Acceptance:** `cargo test -p anvilml-core --test artifact_tests test_artifact_meta_serde_roundtrip` exits 0.
+
+---
+
+## test_artifact_meta_hash_format (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/artifact_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `chrono` (serde feature), `uuid` (v4, serde), `serde_json`, `serde` (derive), and `utoipa` (uuid, chrono features) dependencies, and the `types` submodule providing `ArtifactMeta`.
+**Tests:** A `ArtifactMeta` with a zeroed SHA-256 hex hash (64 `'0'` characters) roundtrips through serde JSON, proving the `hash` field — the primary key for artifact storage — survives serialisation byte-for-byte. The hash format is verified to be exactly 64 lowercase hex characters.
+**Mode:** both
+**Inputs:** `ArtifactMeta` with `hash = "0000...0000"` (64 zeros).
+**Expected output:** Roundtripped hash equals original; hash is 64 ASCII hex characters.
+**Acceptance:** `cargo test -p anvilml-core --test artifact_tests test_artifact_meta_hash_format` exits 0.
+
+---
+
+## test_artifact_meta_field_names (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/artifact_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `chrono` (serde feature), `uuid` (v4, serde), `serde_json`, `serde` (derive), and `utoipa` (uuid, chrono features) dependencies, and the `types` submodule providing `ArtifactMeta`.
+**Tests:** The JSON output of `ArtifactMeta` contains all eight expected snake_case field names (`hash`, `job_id`, `width`, `height`, `seed`, `steps`, `created_at`, `file_path`) with the correct types (strings, numbers, RFC 3339 timestamp), and no unexpected fields are present.
+**Mode:** both
+**Inputs:** `ArtifactMeta` with negative seed (`-1`), mixed dimensions (768×1024), 50 steps.
+**Expected output:** All eight fields present with correct types; exactly 8 keys in the JSON object.
+**Acceptance:** `cargo test -p anvilml-core --test artifact_tests test_artifact_meta_field_names` exits 0.
