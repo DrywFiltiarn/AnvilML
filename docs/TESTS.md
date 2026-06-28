@@ -805,3 +805,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `EnumerationSource::Cpu`, `CapabilitySource::PyTorch`.
 **Expected output:** Both original and copy remain usable after assignment; both serialise identically.
 **Acceptance:** `cargo test -p anvilml-core --test hardware_tests test_enumeration_source_copy_trait` exits 0.
+
+---
+
+## test_worker_info_construction_and_serde_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/worker_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, `utoipa` (uuid feature), `uuid` (v4, serde), and `chrono` (serde) dependencies, and the `types` submodule providing `WorkerInfo`, `WorkerStatus`, `DeviceType`, and `Uuid`.
+**Tests:** A `WorkerInfo` with all fields populated (`worker_id="gpu:0"`, `status=Idle`, `device_index=0`, `device_type=Cuda`, `pid=Some(1234)`, `current_job_id=Some(Uuid::new_v4())`) serialises to JSON and deserialises back to an equal value. The JSON payload is also parsed to verify all six field names appear with the correct types.
+**Mode:** both
+**Inputs:** `WorkerInfo` constructed with all fields at non-default values.
+**Expected output:** Roundtripped `WorkerInfo` equals original; JSON contains `"worker_id": "gpu:0"`, `"status": "idle"`, `"device_index": 0`, `"device_type": "cuda"`, `"pid": 1234`, `"current_job_id": "<uuid>"`.
+**Acceptance:** `cargo test -p anvilml-core --test worker_tests test_worker_info_construction_and_serde_roundtrip` exits 0.
+
+---
+
+## test_worker_status_serde_snake_case (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/worker_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, and `utoipa` dependencies, and the `types` submodule providing `WorkerStatus`.
+**Tests:** Each of the five `WorkerStatus` variants (`Spawning`, `Idle`, `Busy`, `Dying`, `Dead`) serialises to a lowercase snake_case JSON string and deserialises back to an equal value.
+**Mode:** both
+**Inputs:** All five `WorkerStatus` variants.
+**Expected output:** Each variant roundtrips correctly; JSON strings are `"spawning"`, `"idle"`, `"busy"`, `"dying"`, `"dead"`.
+**Acceptance:** `cargo test -p anvilml-core --test worker_tests test_worker_status_serde_snake_case` exits 0.
+
+---
+
+## test_provisioning_state_serde_snake_case (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/worker_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, and `utoipa` dependencies, and the `types` submodule providing `ProvisioningState`.
+**Tests:** Each of the four `ProvisioningState` variants (`NotStarted`, `InProgress`, `Complete`, `Failed`) serialises to a lowercase snake_case JSON string and deserialises back to an equal value.
+**Mode:** both
+**Inputs:** All four `ProvisioningState` variants.
+**Expected output:** Each variant roundtrips correctly; JSON strings are `"not_started"`, `"in_progress"`, `"complete"`, `"failed"`.
+**Acceptance:** `cargo test -p anvilml-core --test worker_tests test_provisioning_state_serde_snake_case` exits 0.
+
+---
+
+## test_env_report_serde_roundtrip (anvilml-core)
+
+**File:** `crates/anvilml-core/tests/worker_tests.rs`
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, and `utoipa` dependencies, and the `types` submodule providing `EnvReport`.
+**Tests:** An `EnvReport` with all fields set (`python_version="3.12.3"`, `torch_version=Some("2.5.1")`, `torch_importable=true`) serialises to JSON and deserialises back to an equal value. The JSON payload is also parsed to verify all three field names appear with the correct types.
+**Mode:** both
+**Inputs:** `EnvReport` constructed with all fields at non-default values.
+**Expected output:** Roundtripped `EnvReport` equals original; JSON contains `"python_version": "3.12.3"`, `"torch_version": "2.5.1"`, `"torch_importable": true`.
+**Acceptance:** `cargo test -p anvilml-core --test worker_tests test_env_report_serde_roundtrip` exits 0.
