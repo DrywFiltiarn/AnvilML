@@ -1753,3 +1753,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `ANVILML_MOCK_DEVICE_NAME=Custom Mock GPU`, `ANVILML_MOCK_VRAM_MIB=16384`, default `ServerConfig`.
 **Expected output:** `gpus.len() == 2`, first device has name "Custom Mock GPU" and vram_total_mib=16384, second is CPU fallback.
 **Acceptance:** `cargo test -p anvilml-hardware --features mock-hardware --test detect_tests test_mock_detector_env_vars_propagate_through_detect_all_devices` exits 0.
+
+---
+
+## test_pool_creation_succeeds (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/db_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `tokio` (macros feature), and `tempfile` dev-dependency. `create_pool()` opens a SQLite database and runs migrations.
+**Tests:** `create_pool()` against a temporary file succeeds and the returned pool can execute queries — proves the connection is valid and migrations ran without error.
+**Mode:** both
+**Inputs:** A temporary file path (created by `tempfile::NamedTempFile`).
+**Expected output:** `create_pool()` returns `Ok(SqlitePool)`, `SELECT 1` returns `1`.
+**Acceptance:** `cargo test -p anvilml-registry --test db_tests test_pool_creation_succeeds` exits 0.
+
+---
+
+## test_migrations_create_tables (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/db_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `tokio` (macros feature), and `tempfile` dev-dependency. The migration file `database/migrations/001_initial.sql` defines `models` and `device_capabilities` tables.
+**Tests:** After `create_pool()` runs migrations, querying `sqlite_master` returns both `models` and `device_capabilities` tables — proves migrations applied successfully.
+**Mode:** both
+**Inputs:** A temporary file path (created by `tempfile::NamedTempFile`).
+**Expected output:** `sqlite_master` query returns rows for both `"models"` and `"device_capabilities"` table names.
+**Acceptance:** `cargo test -p anvilml-registry --test db_tests test_migrations_create_tables` exits 0.
+
+---
+
+## test_wal_mode_enabled (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/db_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `tokio` (macros feature), and `tempfile` dev-dependency. `create_pool()` executes `PRAGMA journal_mode=WAL` after connecting.
+**Tests:** After `create_pool()`, querying `PRAGMA journal_mode` returns `"wal"` — proves WAL journaling mode is active for better concurrent access.
+**Mode:** both
+**Inputs:** A temporary file path (created by `tempfile::NamedTempFile`).
+**Expected output:** `PRAGMA journal_mode` returns `"wal"`.
+**Acceptance:** `cargo test -p anvilml-registry --test db_tests test_wal_mode_enabled` exits 0.
+
+---
+
+## test_migrations_idempotent (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/db_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `tokio` (macros feature), and `tempfile` dev-dependency. `create_pool()` runs migrations via `sqlx::migrate!().run()` which is idempotent.
+**Tests:** Creating two pools against the same database file — the first runs migrations, the second runs them again. Both succeed without error, proving migration idempotency.
+**Mode:** both
+**Inputs:** A single temporary file path used for both pool creations.
+**Expected output:** Both `create_pool()` calls return `Ok(SqlitePool)`, both pools can execute queries.
+**Acceptance:** `cargo test -p anvilml-registry --test db_tests test_migrations_idempotent` exits 0.
