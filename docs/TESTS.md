@@ -1801,3 +1801,63 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** A single temporary file path used for both pool creations.
 **Expected output:** Both `create_pool()` calls return `Ok(SqlitePool)`, both pools can execute queries.
 **Acceptance:** `cargo test -p anvilml-registry --test db_tests test_migrations_idempotent` exits 0.
+
+---
+
+## test_upsert_get_roundtrip (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/store_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `tokio` (macros feature), `chrono` (serde feature), and `serde_json` dependencies. `ModelStore::new()` wraps a `SqlitePool`, `upsert()` inserts via `INSERT OR REPLACE`, and `get()` retrieves via `query_as!` with a `ModelMetaRow` helper struct.
+**Tests:** Inserts a `ModelMeta` with id="test-1", name="test-model", kind=Diffusion via `upsert()`, then retrieves it by ID via `get()`. Asserts all fields (id, name, path, kind, dtype, format, size_bytes) match the original; `scanned_at` is within 2s tolerance.
+**Mode:** both
+**Inputs:** `ModelMeta` with id="test-1", name="test-model", path="/tmp/models/test-model.safetensors", kind=Diffusion, dtype=Fp32, format=Safetensors, size_bytes=1024.
+**Expected output:** `get("test-1")` returns `Some(meta)` with all fields matching the inserted values.
+**Acceptance:** `cargo test -p anvilml-registry --test store_tests test_upsert_get_roundtrip` exits 0.
+
+---
+
+## test_list_no_filter (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/store_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `tokio` (macros feature), `chrono` (serde feature), and `serde_json` dependencies. `list(None)` returns all rows from the `models` table.
+**Tests:** Inserts three models with different kinds (Diffusion, TextEncoder, Vae), then calls `list(None)` and asserts the result contains exactly 3 rows.
+**Mode:** both
+**Inputs:** 3 `ModelMeta` rows with ids "1", "2", "3" and kinds Diffusion, TextEncoder, Vae.
+**Expected output:** `list(None)` returns a `Vec<ModelMeta>` with length 3.
+**Acceptance:** `cargo test -p anvilml-registry --test store_tests test_list_no_filter` exits 0.
+
+---
+
+## test_list_with_kind_filter (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/store_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `tokio` (macros feature), `chrono` (serde feature), and `serde_json` dependencies. `list(Some(kind))` filters rows by the `kind` column.
+**Tests:** Inserts three models with different kinds (Diffusion, TextEncoder, Vae), then calls `list(Some(ModelKind::Diffusion))` and asserts the result contains exactly 1 row (the diffusion model) with the correct kind.
+**Mode:** both
+**Inputs:** 3 `ModelMeta` rows with kinds Diffusion, TextEncoder, Vae; kind filter = `Some(ModelKind::Diffusion)`.
+**Expected output:** `list(Some(Diffusion))` returns a `Vec<ModelMeta>` with length 1, first element has `kind == Diffusion`.
+**Acceptance:** `cargo test -p anvilml-registry --test store_tests test_list_with_kind_filter` exits 0.
+
+---
+
+## test_delete_removes_row (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/store_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `tokio` (macros feature), `chrono` (serde feature), and `serde_json` dependencies. `delete(id)` removes a row by primary key; subsequent `get(id)` returns `None`.
+**Tests:** Inserts a model, verifies it exists via `get()`, calls `delete()`, then verifies the row is gone via `get()` returning `None`.
+**Mode:** both
+**Inputs:** `ModelMeta` with id="del-1", name="to-delete", kind=Lora.
+**Expected output:** `delete("del-1")` succeeds; `get("del-1")` returns `None`.
+**Acceptance:** `cargo test -p anvilml-registry --test store_tests test_delete_removes_row` exits 0.
+
+---
+
+## test_get_missing_id_returns_none (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/store_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `tokio` (macros feature), `chrono` (serde feature), and `serde_json` dependencies. `get(id)` returns `None` for nonexistent IDs rather than an error.
+**Tests:** Does not insert any rows; directly queries for a nonexistent ID and asserts that the result is `None`.
+**Mode:** both
+**Inputs:** id="nonexistent-id"; no rows in the database.
+**Expected output:** `get("nonexistent-id")` returns `None`.
+**Acceptance:** `cargo test -p anvilml-registry --test store_tests test_get_missing_id_returns_none` exits 0.

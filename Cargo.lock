@@ -135,9 +135,11 @@ dependencies = [
 
 [[package]]
 name = "anvilml-registry"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anvilml-core",
+ "chrono",
+ "serde_json",
  "sqlx",
  "tempfile",
  "tokio",
