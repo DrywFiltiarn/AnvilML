@@ -115,6 +115,5 @@ async fn test_migrations_idempotent() {
 /// database file at this path. The `NamedTempFile` guard ensures the file is
 /// automatically deleted when the test completes.
 fn create_temp_db() -> NamedTempFile {
-    let temp = NamedTempFile::new().expect("should be able to create temp file");
-    temp
+    NamedTempFile::new().expect("should be able to create temp file");
 }
