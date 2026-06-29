@@ -51,16 +51,17 @@
     "P6-A5",
     "P6-A6",
     "P6-A7",
-    "P6-A8"
+    "P6-A8",
+    "P6-A9"
   ],
-  "in_progress": "P6-A9",
+  "in_progress": "P6-B1",
   "plan_approved": true,
-  "current_plan": "1. **Read the current `lib.rs`** at `crates/anvilml-registry/src/lib.rs` and verify each of the five required `pub mod` declarations is present: `db`, `device_store`, `scanner`, `seed_loader`, `store`. These correspond to the five modules created by P6-A2 (db), P6-A4 (scanner), P6-A3 (store), P6-A5 (device_store), and P6-A6/P6-A7 (seed_loader).\n\n2. **Verify each of the five `pub use` re-exports** matches the public item defined in its source module:\n   - `pub use db::create_pool;` \u2014 confirmed by `grep '^pub async fn create_pool' src/db.rs` returning one match.\n   - `pub use store::ModelStore;` \u2014 confirmed by `grep '^pub struct ModelStore' src/store.rs`.\n   - `pub use scanner::ModelScanner;` \u2014 confirmed by `grep '^pub struct ModelScanner' src/scanner.rs`.\n   - `pub use device_store::DeviceCapabilityStore;` \u2014 confirmed by `grep '^pub struct DeviceCapabilityStore' src/device_store.rs`.\n   - `pub use seed_loader::SeedLoader;` \u2014 confirmed by `grep '^pub struct SeedLoader' src/seed_loader.rs`.\n\n3. **Verify line count**: run `wc -l crates/anvilml-registry/src/lib.rs` and confirm the output is \u2264 80. The current file is 13 lines.\n\n4. **Verify crate-level doc comment**: confirm the first non-empty line starts with `//!` and describes the crate's ownership and hard constraints (per FORGE_AGENT_RULES.md \u00a712.3).\n\n5. **Run full test suite**: execute `cargo test -p anvilml-registry` and confirm exit 0. This exercises all five test files and confirms the re-exports are correct (tests that import from `anvilml_registry::` would fail at compile time if any re-export were missing or misnamed).\n\n6. **No changes required**. If all checks pass, the task is complete as-is. If any re-export is missing or misnamed, add the missing `pub use` line (same pattern as existing lines). If the file exceeds 80 lines, remove any non-conforming content (implementation code \u2014 which should not be present per \u00a712.3).",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-29T23:01:28+0200",
-  "plan_approval_message_id": "1521259191585476860",
+  "last_updated": "2026-06-29T23:49:48+0200",
+  "plan_approval_message_id": "1521266316290293833",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1521259189106638889",
+  "plan_report_message_id": "1521266314444804177",
   "impl_report_message_id": null
 }

@@ -2017,3 +2017,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `seed_name="bad.sql"`, temp file with `INVALID SQL STATEMENT THAT WILL FAIL`.
 **Expected output:** `run()` returns `Err`; `_seed_log` has zero rows for the seed; `already_applied()` returns `false`.
 **Acceptance:** `cargo test -p anvilml-registry --test seed_loader_tests test_run_malformed_sql_returns_err_no_partial_state` exits 0.
+
+---
+
+## test_save_writes_file_once (anvilml-artifacts)
+
+**File:** `crates/anvilml-artifacts/tests/store_tests.rs`
+**Context:** The `anvilml-artifacts` crate has been compiled with `sha2` (0.11), `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `chrono` (serde feature), `tokio` (macros feature), `tempfile`, and `uuid` (v4 feature) dependencies. Each test creates its own in-memory SQLite pool with a unique uuid-based cache name and its own temp directory.
+**Tests:** Creates a tempdir and an `ArtifactStore` pointing to it (with an in-memory SQLite pool), calls `save()` with a known 64×64 black PNG byte slice, then verifies: the file exists at the expected content-addressed path `{tempdir}/{hash}.png`, the file size matches the input PNG size, the returned hash matches the computed SHA-256 of the input, and exactly one row exists in the `artifacts` table.
+**Mode:** both
+**Inputs:** 64×64 black PNG bytes (225 bytes), `ArtifactMeta { hash: "placeholder", job_id: <uuid>, width: 64, height: 64, seed: 42, steps: 20, created_at: <now>, file_path: "/tmp/artifacts/placeholder.png" }`.
+**Expected output:** File exists at `{hash}.png` with correct size, returned hash matches SHA-256 of input, exactly one DB row in `artifacts` table.
+**Acceptance:** `cargo test -p anvilml-artifacts --test store_tests test_save_writes_file_once` exits 0.
+
+---
+
+## test_duplicate_save_does_not_duplicate_or_error (anvilml-artifacts)
+
+**File:** `crates/anvilml-artifacts/tests/store_tests.rs`
+**Context:** The `anvilml-artifacts` crate has been compiled with `sha2` (0.11), `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `chrono` (serde feature), `tokio` (macros feature), `tempfile`, and `uuid` (v4 feature) dependencies. Each test creates its own in-memory SQLite pool with a unique uuid-based cache name and its own temp directory.
+**Tests:** Same setup as `test_save_writes_file_once`, but calls `save()` twice with the same PNG bytes. Verifies: exactly 1 PNG file exists in the artifact directory (no duplicate), both calls return `Ok(hash)` with the same hash, and the file content matches the original PNG bytes.
+**Mode:** both
+**Inputs:** Same 64×64 black PNG bytes passed to `save()` twice with the same `ArtifactMeta`.
+**Expected output:** Exactly 1 file in artifact dir, both calls return `Ok(hash)`, file content matches original.
+**Acceptance:** `cargo test -p anvilml-artifacts --test store_tests test_duplicate_save_does_not_duplicate_or_error` exits 0.
+
+---
+
+## test_different_content_produces_different_hash (anvilml-artifacts)
+
+**File:** `crates/anvilml-artifacts/tests/store_tests.rs`
+**Context:** The `anvilml-artifacts` crate has been compiled with `sha2` (0.11), `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `chrono` (serde feature), `tokio` (macros feature), `tempfile`, and `uuid` (v4 feature) dependencies. Each test creates its own in-memory SQLite pool with a unique uuid-based cache name and its own temp directory.
+**Tests:** Creates a tempdir and `ArtifactStore`, calls `save()` with two different PNG byte slices (64×64 black PNG vs 64×64 white PNG), then verifies: both files exist, the two hashes are different, and each file's content matches its corresponding input.
+**Mode:** both
+**Inputs:** 64×64 black PNG (225 bytes) and 64×64 white PNG (203 bytes), with different `ArtifactMeta` values (seed 42 vs seed 137).
+**Expected output:** Two files exist at different `{hash}.png` paths, hashes differ, each file's content matches its corresponding input.
+**Acceptance:** `cargo test -p anvilml-artifacts --test store_tests test_different_content_produces_different_hash` exits 0.
