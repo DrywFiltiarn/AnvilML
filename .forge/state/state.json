@@ -41,16 +41,17 @@
     "P5-A1",
     "P5-A2",
     "P5-A3",
-    "P5-A4"
+    "P5-A4",
+    "P5-A5"
   ],
-  "in_progress": "P5-A5",
+  "in_progress": "P5-A6",
   "plan_approved": true,
-  "current_plan": "1. **Restructure `cli.rs` \u2014 add `Commands` enum and optional subcommand field.**\n   - Define a new `#[derive(Subcommand)]` enum `Commands` with one variant:\n     ```rust\n     /// Probe the system hardware and print detected devices as JSON.\n     HwProbe,\n     ```\n   - Restructure `Cli` to replace its current flat fields with an optional subcommand:\n     ```rust\n     #[command(subcommand)]\n     pub command: Option<Commands>,\n     ```\n   - Keep `--host`, `--port`, `--config` as top-level `Cli` fields (they are needed for config loading in both the server and hw-probe paths).\n   - Add doc comments to the new enum and variant following the project's `///` convention.\n\n2. **Modify `main.rs` \u2014 branch on `Commands::HwProbe`.**\n   - After loading `ServerConfig` (same path as today), check `cli.command`:\n     - `Some(Commands::HwProbe)` \u2192 call `anvilml_hardware::detect_all_devices(&cfg).await`, serialize to pretty JSON, print to stdout, `std::process::exit(0)`.\n     - `None` \u2192 proceed with the existing server startup path (build router, bind listener, serve).\n   - The `hw-probe` branch does NOT call `build_router()` or bind any socket.\n   - Error handling: if `detect_all_devices()` returns `Err`, print the error to stderr and exit 1 (same pattern as config load failure today).\n   - Add a `use anvilml_hardware;` import at the top of `main.rs`.\n\n3. **Add integration test.**\n   - Create `backend/tests/hw_probe_help_test.rs` that spawns the built binary with `hw-probe --help` and asserts the help text contains \"hw-probe\".\n   - Use the same pattern as `cli_help_test.rs`: `Command::new(env!(\"CARGO_BIN_EXE_anvilml\"))`.\n   - Include a bounded timeout (10 seconds) on the subprocess to prevent hangs.\n\n4. **Bump `backend/Cargo.toml` patch version.**\n   - Change `version = \"0.1.3\"` \u2192 `version = \"0.1.4\"`.",
+  "current_plan": "1. **Build the release binary.** Run `cargo build --release -p anvilml --features mock-hardware` from the repo root. This compiles the `anvilml` binary with the `mock-hardware` feature forwarded through `anvilml-scheduler \u2192 anvilml-hardware`. The `hw-probe` subcommand is already wired in `main.rs` (P5-A5).\n\n2. **Run `hw-probe` under mock env vars.** Execute:\n   ```bash\n   ANVILML_MOCK_DEVICE_TYPE=cuda ANVILML_MOCK_VRAM_MIB=24576 ./target/release/anvilml hw-probe\n   ```\n   This triggers the following code path:\n   - `main.rs` parses the `hw-probe` subcommand.\n   - `config_load::load()` loads `ServerConfig` (no `hardware_override` set in this env).\n   - `detect_all_devices(&config)` enters the `#[cfg(feature = \"mock-hardware\")]` branch.\n   - `MockDetector.detect()` reads `ANVILML_MOCK_DEVICE_TYPE=cuda` \u2192 `DeviceType::Cuda`, `ANVILML_MOCK_VRAM_MIB=24576` \u2192 24576 MiB, and returns one `GpuDevice` with `device_type: \"cuda\"`, `enumeration_source: EnumerationSource::Mock`.\n   - `CpuDetector.detect()` appends one `GpuDevice` with `device_type: \"cpu\"`, `enumeration_source: EnumerationSource::Cpu`.\n   - The result is a `HardwareInfo` with 2 GPUs.\n   - `main.rs` serialises to pretty JSON via `serde_json::to_string_pretty` and prints to stdout.\n\n3. **Pipe through Python assertion.** Pipe the output to:\n   ```bash\n   python3 -c \"import sys,json; d=json.load(sys.stdin); assert len(d['gpus'])>=2; assert any(g['device_type']=='cpu' for g in d['gpus']); assert any(g['device_type']=='cuda' for g in d['gpus'])\"\n   ```\n   This validates: (a) the JSON is parseable, (b) at least 2 GPU entries exist, (c) one has `device_type == \"cpu\"`, (d) one has `device_type == \"cuda\"`.\n\n4. **Record the output.** Capture the full terminal output (the pretty-printed JSON and the assertion result \u2014 no stderr output expected if assertions pass) in the implementation report's transcript section.\n\n5. **Confirm exit code 0.** The acceptance criterion is that the combined `cargo build && ... | python3 -c ...` pipeline exits 0. If the assertions fail, the python process exits non-zero and the pipeline fails.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-29T12:58:45+0200",
-  "plan_approval_message_id": "1521107338726080652",
+  "last_updated": "2026-06-29T13:33:28+0200",
+  "plan_approval_message_id": "1521114790104268841",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1521107337035780198",
+  "plan_report_message_id": "1521114788686463107",
   "impl_report_message_id": null
 }
