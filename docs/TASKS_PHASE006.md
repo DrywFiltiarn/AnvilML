@@ -40,7 +40,7 @@ Runnable Proof against a live server.
 
 | Group | Subsystem | Tasks | Summary |
 |-------|-----------|-------|---------|
-| A | Model Registry | P6-A1 … P6-A8 | Migrations, `SqlitePool` creation, `ModelStore`, `ModelScanner`, `DeviceCapabilityStore`, `SeedLoader`, `lib.rs` cleanup |
+| A | Model Registry | P6-A1 … P6-A9 | Migrations, `SqlitePool` creation, `ModelStore`, `ModelScanner`, `DeviceCapabilityStore`, `SeedLoader`, the one-time `devices.sql` conversion, `lib.rs` cleanup |
 | B | Artifacts | P6-B1 … P6-B3 | `ArtifactStore`'s `save()`, the artifacts table migration, `get()`, and `list()` |
 
 ---
@@ -58,9 +58,9 @@ as buildable stub crates per Phase 1's P1-B3.
 
 | Contract document | Relevant to tasks | What must match |
 |--------------------|--------------------|------------------|
-| `ANVILML_DESIGN.md §7.1` | P6-A1 … P6-A8 | `anvilml-registry`'s module layout (`db.rs`, `scanner.rs`, `store.rs`, `device_store.rs`, `seed_loader.rs`) |
+| `ANVILML_DESIGN.md §7.1` | P6-A1 … P6-A9 | `anvilml-registry`'s module layout (`db.rs`, `scanner.rs`, `store.rs`, `device_store.rs`, `seed_loader.rs`) |
 | `ANVILML_DESIGN.md §7.2`–§7.4 | P6-A4 | Model ID derivation (SHA256 of first 1 MiB), `ModelKind`/`ModelDtype` inference rules |
-| `ANVILML_DESIGN.md §7.5` / `SUPPORTED_DEVICES_DB.md` migration DDL reference | P6-A1, P6-A5, P6-A6, P6-A7 | `device_capabilities` table schema; the one-time, frozen nature of the Markdown→SQL conversion (not this phase's scope to perform) |
+| `ANVILML_DESIGN.md §7.5` / `SUPPORTED_DEVICES_DB.md` migration DDL reference | P6-A1, P6-A5, P6-A6, P6-A7, P6-A8 | `device_capabilities` table schema; the one-time, frozen nature of the Markdown→SQL conversion, including the conversion itself in P6-A8 |
 | `ANVILML_DESIGN.md §3.3` | P6-B1 | `anvilml-artifacts` shares `anvilml-registry`'s `SqlitePool`, never owns its own `db.rs` |
 
 ---
@@ -221,9 +221,10 @@ startup.
 - This receives exactly the execution scope P6-A6 deferred — confirm
   `already_applied()` exists and is correct before building on it.
 - The seed file itself (`database/seeds/devices.sql`, populated with real PCI-ID
-  rows converted from `docs/SUPPORTED_DEVICES_DB.md`) is a separate, one-time
-  data-conversion task explicitly **outside** this phase's scope, per
-  `ANVILML_DESIGN.md §7.5` — this task only builds the runner, not the data.
+  rows converted from `docs/SUPPORTED_DEVICES_DB.md`) does not exist yet — this
+  task only builds the runner, not the data. The one-time conversion that actually
+  produces the file's contents is the very next task, P6-A8, not a gap left open
+  beyond this phase.
 
 **Acceptance criterion:**
 ```bash
@@ -231,7 +232,46 @@ cargo test -p anvilml-registry --test seed_loader_tests
 # -> >=7 tests total in the file, exits 0
 ```
 
-#### P6-A8: anvilml-registry: lib.rs re-export pass, 80-line check
+#### P6-A8: database/seeds/devices.sql: one-time conversion from SUPPORTED_DEVICES_DB.md
+
+**Goal:** Produce the actual seed data `SeedLoader` (P6-A6/P6-A7) runs against —
+the one-time, hand-authored conversion `ANVILML_DESIGN.md §7.5` specifies, closing
+forever once this task is done.
+
+**Files to create or modify:**
+- `database/seeds/devices.sql` — new; one `INSERT` per device row from
+  `docs/SUPPORTED_DEVICES_DB.md`'s vendor tables.
+
+**Key implementation notes:**
+- This is a **one-time task, never repeated** — per `§7.5`, do not build a
+  reusable Markdown-to-SQL converter, a CI drift gate comparing the two files, or
+  any other automated link between them. All three are explicitly forbidden; the
+  design deliberately removed any such mechanism in favor of a single hand
+  conversion. A short throwaway script is an acceptable way to do the conversion,
+  but it is not itself a deliverable — nothing about it needs to be maintained.
+- Each `INSERT` is preceded by a comment naming the source vendor heading and row,
+  for traceability back to the Markdown.
+- `docs/SUPPORTED_DEVICES_DB.md` is **not** deleted or modified by this task — it
+  stays in the repository permanently as a human reference, per `§7.5` and `§13`.
+- **Flagged Deviation:** the design document contradicts itself on this exact
+  point — `§3.1`'s workspace-layout comment describes
+  `docs/SUPPORTED_DEVICES_DB.md` as "(source file deleted after conversion)",
+  while `§7.5` and `§13` both say it is "never deleted by any task." This task
+  follows `§7.5`/`§13` — the more detailed, more frequently repeated instruction —
+  and treats `§3.1`'s comment as the stale one. This contradiction should be
+  resolved in the live design document by whoever has write access, the same way
+  this delivery's other addenda (`EnumerationSource::Cpu`,
+  `AnvilError::ArtifactNotFound`) were handled.
+
+**Acceptance criterion:**
+```bash
+# The report states the row count in SUPPORTED_DEVICES_DB.md's tables and
+# confirms it matches database/seeds/devices.sql's INSERT count exactly.
+sqlite3 :memory: < database/migrations/001_initial.sql database/seeds/devices.sql
+# -> exits 0
+```
+
+#### P6-A9: anvilml-registry: lib.rs re-export pass, 80-line check
 
 **Goal:** Finalize `anvilml-registry`'s public surface, confirming every module from
 this phase is correctly re-exported and the crate's `lib.rs` stays within the
@@ -352,10 +392,11 @@ cargo test --workspace --features mock-hardware
   `ANVILML_DESIGN.md §3.3`'s explicit "owned independently... neither owns the
   other's copy" framing, which refers to crate ownership of the *artifact data*, not
   to each crate maintaining a separate database connection.
-- `docs/SUPPORTED_DEVICES_DB.md` is never read, parsed, or regenerated by any task in
-  this phase (or any phase) — it is a permanent human-reference document, frozen
-  after a one-time hand conversion that is explicitly out of this phase's scope. Do
-  not author that conversion task as part of this phase's work.
+- `docs/SUPPORTED_DEVICES_DB.md` is never read, parsed, or programmatically
+  regenerated by any task **after** P6-A8 closes — once the one-time conversion in
+  this phase produces `database/seeds/devices.sql`, the Markdown file becomes a
+  permanent, frozen human-reference document. No task, in this phase or any later
+  one, may build a converter, drift gate, or any automated link back to it.
 - `_seed_log`'s table creation belongs in `seed_loader.rs`, not in
   `001_initial.sql` — it is the seed loader's own bookkeeping concern, distinct from
   the application's domain schema.

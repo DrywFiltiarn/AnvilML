@@ -15,7 +15,7 @@ arbitrary target count.
 | 3 | Core Domain Types: Data Model | 11 | Not applicable - pure data types and an in-memory registry; no new external surface |
 | 4 | Hardware Detection: Detectors | 6 | Not applicable - individual `DeviceDetector` implementations with no orchestration wiring yet |
 | 5 | Hardware Detection: Orchestration | 6 | `anvilml hw-probe` CLI subcommand prints real, valid `HardwareInfo` JSON via the full priority-ordered `detect_all_devices()` chain |
-| 6 | Model Registry & Artifacts | 11 | Not applicable - persistence-layer crates with no HTTP handler wired up yet |
+| 6 | Model Registry & Artifacts | 12 | Not applicable - persistence-layer crates with no HTTP handler wired up yet |
 | 7 | IPC Foundations | 8 | Not applicable - IPC message types and transport in isolation; the real proof is Phase 8's stress test |
 | 8 | IPC Stress Gate & Worker Pool | 12 | The 1000-round-trip ROUTER/DEALER stress test passes with zero message loss - the explicit gate naming this entire roadmap group |
 | 9 | Real Worker Startup | 10 | A real `worker_main.py` subprocess connects over IPC, runs a real torch capability probe, and sends `Ready` with `capabilities_source: "pytorch"` |
@@ -41,7 +41,7 @@ arbitrary target count.
 | 29 | Documentation | 7 | A complete, seven-chapter mdBook documentation site builds cleanly with no broken links, every chapter sourced from exactly one authoritative project source |
 | 30 | v4 Roadmap Closeout: Final Compliance Sweep | 5 | The complete 29-phase delivery passes every project-wide compliance check this project defines, run at full project scope |
 
-**Total tasks authored across this delivery: 235.**
+**Total tasks authored across this delivery: 236.**
 
 **This delivery is complete - Phase 30 closes the full v4 roadmap.**
 
@@ -100,6 +100,21 @@ project-wide compliance sweep (Phase 30).
   design document's own one-line roadmap entries, deliberately not importing scope
   from an unrelated, separate frontend-rebuild planning document that describes a
   much larger system explicitly outside AnvilML's boundary.
+- MISSING TASK found and fixed (Phase 6) - the one-time
+  SUPPORTED_DEVICES_DB.md-to-devices.sql conversion task (Section 7.5 of the design
+  doc) was explicitly deferred out of scope three separate times across P6-A6/
+  P6-A7's authoring, but the deferred task was never actually created in any
+  subsequent phase - a genuine omission, caught on review while implementation had
+  reached Phase 5. Fixed by inserting P6-A8 (the conversion itself) between the
+  original P6-A7 and the lib.rs closer, which was renumbered P6-A8 -> P6-A9. This
+  also surfaced a real contradiction in the design document itself: Section 3.1's
+  workspace-layout comment says SUPPORTED_DEVICES_DB.md is "deleted after
+  conversion," while Section 7.5 and Section 13 both say it is "never deleted by
+  any task." P6-A8's task content flags this contradiction explicitly and follows
+  Section 7.5/13 (the more detailed, repeated instruction) over Section 3.1's
+  offhand comment. One downstream prereq reference (Phase 13's P13-B1, which
+  needed the registry crate's finalized lib.rs, not the devices.sql conversion)
+  was corrected from the old P6-A8 to the new P6-A9 identity.
 
 ## v4 roadmap status: COMPLETE
 

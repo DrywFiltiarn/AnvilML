@@ -53,7 +53,7 @@ its non-`hw-probe` run path.
 
 `anvilml-core` must export `Job`, `JobStatus`, `JobSettings` exactly as defined in
 Phase 3 (P3-A1). `anvilml-registry`'s `create_pool()` and migration runner must work
-per Phase 6 (P6-A2, P6-A8). `anvilml-scheduler`'s `ValidatedGraph`/`GraphError`/
+per Phase 6 (P6-A2, P6-A9). `anvilml-scheduler`'s `ValidatedGraph`/`GraphError`/
 `validate_graph()` must exist per Phase 12 (P12-A6).
 
 ---

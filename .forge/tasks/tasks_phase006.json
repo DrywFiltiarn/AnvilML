@@ -71,10 +71,20 @@
   },
   {
     "id": "P6-A8",
-    "description": "anvilml-registry: lib.rs re-export pass, 80-line check",
+    "description": "database/seeds/devices.sql: one-time conversion from SUPPORTED_DEVICES_DB.md",
     "phase": "6",
     "project": "anvilml",
     "prereqs": ["P6-A7"],
+    "context": "ONE-TIME TASK per ANVILML_DESIGN.md §7.5 - never repeated, no follow-on, no automation built. Read every vendor table in docs/SUPPORTED_DEVICES_DB.md (PCI Vendor/Device ID, Name, Arch, FP32/FP16/BF16/FP8/FP4/Flash Attn columns). Hand-write database/seeds/devices.sql: one INSERT per row, preceded by a comment naming the source vendor heading/row for traceability. A throwaway script is fine per §7.5 - not a maintained crate, runs once. DO NOT build a reusable Markdown-to-SQL converter, a CI drift gate comparing the two files, or any automated link - §7.5 forbids all three. DO NOT delete/modify SUPPORTED_DEVICES_DB.md - stays permanently (NOTE: §3.1's layout comment says it's 'deleted after conversion', contradicting §7.5/§13's 'never deleted' - flag as a Deviation, follow §7.5/§13). Acceptance: report states the Markdown row count matches devices.sql's INSERT count; `sqlite3 :memory: < database/migrations/001_initial.sql database/seeds/devices.sql` exits 0.",
+    "tags": ["manual"],
+    "defers_to": []
+  },
+  {
+    "id": "P6-A9",
+    "description": "anvilml-registry: lib.rs re-export pass, 80-line check",
+    "phase": "6",
+    "project": "anvilml",
+    "prereqs": ["P6-A8"],
     "context": "Update crates/anvilml-registry/src/lib.rs: confirm pub use re-exports for create_pool (db), ModelStore (store), ModelScanner (scanner), DeviceCapabilityStore (device_store), SeedLoader (seed_loader) are all present per ANVILML_DESIGN.md §7.1's module layout. No implementation logic added - re-export and 80-line cap verification only, same pattern as P1-B1/P3-A11/P5-A4. Acceptance: `wc -l crates/anvilml-registry/src/lib.rs` reports <=80; `cargo test -p anvilml-registry` (full crate suite) exits 0.",
     "tags": ["refactor"],
     "defers_to": []

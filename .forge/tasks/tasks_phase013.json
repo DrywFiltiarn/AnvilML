@@ -34,7 +34,7 @@
     "description": "anvilml-registry: JobStore CRUD, ghost-job reset on startup",
     "phase": "13",
     "project": "anvilml",
-    "prereqs": ["P13-A1", "P6-A8"],
+    "prereqs": ["P13-A1", "P6-A9"],
     "context": "Create crates/anvilml-registry/src/job_store.rs (placed in anvilml-registry, not anvilml-scheduler, since job PERSISTENCE is a registry concern while in-memory queue/ledger logic is the scheduler's - same split as ModelStore vs ModelScanner in Phase 6). JobStore{pool: SqlitePool}. upsert(&self, job: &Job) -> Result<(), AnvilError> (serializes graph/settings to JSON text columns). get(&self, id: Uuid) -> Result<Option<Job>, AnvilError>. list(&self, status: Option<JobStatus>, limit: Option<u32>) -> Result<Vec<Job>, AnvilError>. reset_ghost_jobs(&self) -> Result<u32, AnvilError> (per §19.2: Queued/Running -> Failed with error=\"server_restart\"; returns affected count). Declare mod job_store; pub use job_store::JobStore; in lib.rs. Acceptance: >=6 tests: upsert+get roundtrips JSON correctly, list with status filter, reset_ghost_jobs only affects Queued/Running, empty table returns 0; `cargo test -p anvilml-registry --test job_store_tests` exits 0.",
     "tags": [],
     "defers_to": []
