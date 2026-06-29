@@ -12,3 +12,8 @@ pub use vulkan::vendor_id_to_device_type;
 pub mod mock;
 #[cfg(feature = "mock-hardware")]
 pub use mock::MockDetector;
+
+#[cfg(target_os = "windows")]
+pub mod dxgi;
+#[cfg(target_os = "windows")]
+pub use dxgi::DxgiDetector;

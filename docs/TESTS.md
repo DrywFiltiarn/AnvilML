@@ -1323,3 +1323,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Acceptance:** `cargo test -p anvilml-hardware --test vulkan_tests test_vulkan_refresh_vram_out_of_range` exits 0.
 
 ---
+
+## test_dxgi_nvidia_vendor_maps_to_cuda (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/dxgi_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `anvilml-core` providing `DeviceType`, `vendor_id_to_device_type` from `vulkan.rs`, and `DxgiDetector` from `dxgi.rs`. The test file is gated `#[cfg(target_os = "windows")]`.
+**Tests:** `vendor_id_to_device_type(0x10de)` returns `Some(DeviceType::Cuda)` — NVIDIA's PCI vendor ID maps to CUDA backend. This is a pure function test; no Windows API calls or GPU hardware is required.
+**Mode:** both
+**Inputs:** Vendor ID `0x10de`.
+**Expected output:** `Some(DeviceType::Cuda)`.
+**Acceptance:** `cargo test -p anvilml-hardware --test dxgi_tests test_dxgi_nvidia_vendor_maps_to_cuda` exits 0.
+
+---
+
+## test_dxgi_amd_vendor_maps_to_rocm (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/dxgi_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `anvilml-core` providing `DeviceType`, `vendor_id_to_device_type` from `vulkan.rs`, and `DxgiDetector` from `dxgi.rs`. The test file is gated `#[cfg(target_os = "windows")]`.
+**Tests:** `vendor_id_to_device_type(0x1002)` returns `Some(DeviceType::Rocm)` — AMD's PCI vendor ID maps to ROCm backend. This is a pure function test; no Windows API calls or GPU hardware is required.
+**Mode:** both
+**Inputs:** Vendor ID `0x1002`.
+**Expected output:** `Some(DeviceType::Rocm)`.
+**Acceptance:** `cargo test -p anvilml-hardware --test dxgi_tests test_dxgi_amd_vendor_maps_to_rocm` exits 0.
+
+---
+
+## test_dxgi_detect_never_errors (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/dxgi_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `anvilml-core`, `tracing`, and the `windows` crate (with `Win32_Graphics_Dxgi` and `Win32_Graphics_Dxgi_Common` features). The test file is gated `#[cfg(target_os = "windows")]`.
+**Tests:** `DxgiDetector::detect()` returns `Ok(vec)` — never panics or returns `Err`. On Windows with GPUs, returns detected devices; on headless/CI Windows, returns `Ok(vec![])`. The invariant is: no panic, no `Err`.
+**Mode:** both
+**Inputs:** `DxgiDetector` constructed, `detect()` called.
+**Expected output:** `result.is_ok()` — `Ok(vec)` with zero or more devices.
+**Acceptance:** `cargo test -p anvilml-hardware --test dxgi_tests test_dxgi_detect_never_errors` exits 0.
+
+---
+
+## test_dxgi_refresh_vram_never_errors (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/dxgi_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `anvilml-core`, `tracing`, and the `windows` crate (with `Win32_Graphics_Dxgi` and `Win32_Graphics_Dxgi_Common` features). The test file is gated `#[cfg(target_os = "windows")]`.
+**Tests:** `DxgiDetector::refresh_vram(0)` returns `Ok((0, 0))` — DXGI has no VRAM query API. The `(0, 0)` return signals "unknown" to the caller, consistent with Vulkan's fallback when memory budget is unavailable.
+**Mode:** both
+**Inputs:** `DxgiDetector` constructed, `refresh_vram(0)` called.
+**Expected output:** `Ok((0, 0))`.
+**Acceptance:** `cargo test -p anvilml-hardware --test dxgi_tests test_dxgi_refresh_vram_never_errors` exits 0.
+
+---
