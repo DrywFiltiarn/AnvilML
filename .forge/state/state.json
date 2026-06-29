@@ -37,16 +37,17 @@
     "P4-A3",
     "P4-A4",
     "P4-A5",
-    "P4-A6"
+    "P4-A6",
+    "P5-A1"
   ],
-  "in_progress": "P5-A1",
+  "in_progress": "P5-A2",
   "plan_approved": true,
-  "current_plan": "1. **Add `detect_all_devices` function to `detect.rs`** (after the `DeviceDetector` trait, ~line 29). The function signature is:\n\n   ```rust\n   pub async fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, AnvilError>\n   ```\n\n   Inside the function body:\n   - Check `cfg.hardware_override`. If `Some(override_cfg)`:\n     - Parse `override_cfg.device_type` string into `DeviceType` \u2014 match `\"cuda\" => DeviceType::Cuda`, `\"rocm\" => DeviceType::Rocm`, `\"cpu\" => DeviceType::Cpu`; for any other value, log `tracing::warn!(device_type = %override_cfg.device_type, \"unrecognized hardware_override device_type, defaulting to Cpu\")` and use `DeviceType::Cpu`.\n     - Build a single `GpuDevice` with: `index = 0`, `name` derived from the parsed `DeviceType` (e.g., `\"CUDA\"` for Cuda, `\"ROCm\"` for Rocm, `\"CPU\"` for Cpu), `device_type` = parsed type, `vram_total_mib` = `override_cfg.vram_total_mib`, `vram_free_mib` = `override_cfg.vram_total_mib` (free = total for override), `driver_version = \"override\"`, `pci_vendor_id = 0`, `pci_device_id = 0`, `arch = None`, `caps = InferenceCaps::default()`, `enumeration_source = EnumerationSource::Override`, `capabilities_source = CapabilitySource::Fallback`.\n     - Build `HardwareInfo` with: `host = HostInfo { hostname, os }` where `hostname` is from `std::env::var(\"HOSTNAME\").or_else(|| std::env::var(\"COMPUTERNAME\").or_else(|| Ok(\"unknown\".into())))` and `os` is from `std::env::consts::OS`, `gpus = vec![device]`, `inference_caps = InferenceCaps::default()` (single device, so union = that device's caps).\n     - Return `Ok(hardware_info)`. This short-circuits the entire chain.\n   - If `cfg.hardware_override` is `None`:\n     - Return `Err(AnvilError::Internal(\"detect_all_devices chain not yet implemented \u2014 mock/Vulkan/fallback/CPU chain deferred to P5-A2\"))`.\n\n   Rationale for returning `Err` when override is absent: this is the first step of a multi-step chain. The full chain is not yet implemented; P5-A2 will extend this function to add the remaining steps. Returning `Err` with a clear message makes the incomplete state explicit and testable.\n\n2. **Add `///` doc comment** to the new function describing its purpose, the override short-circuit behavior, and noting that the full chain is deferred.\n\n3. **Add inline comment** at the override-synthesized device explaining that it satisfies the design's requirement that override always wins unconditionally before any detector runs.\n\n4. **Create `crates/anvilml-hardware/tests/detect_tests.rs`** with two tests:\n   - `test_override_present_returns_device` \u2014 constructs a `ServerConfig` with `hardware_override` set to `Some(HardwareOverrideConfig { device_type: \"cuda\".into(), vram_total_mib: 24576 })`, calls `detect_all_devices(&cfg).await`, verifies the returned `HardwareInfo.gpus` has exactly one device with `device_type == Cuda`, `vram_total_mib == 24576`, `enumeration_source == Override`, `capabilities_source == Fallback`.\n   - `test_override_absent_returns_err` \u2014 constructs a `ServerConfig` with `hardware_override` set to `None` (the default), calls `detect_all_devices(&cfg).await`, verifies the result is `Err` and the error message contains `\"not yet implemented\"`.\n\n5. **Bump `anvilml-hardware` crate version** from `0.1.5` to `0.1.6` in `crates/anvilml-hardware/Cargo.toml`.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-29T09:42:31+0200",
-  "plan_approval_message_id": "1521057062103027743",
+  "last_updated": "2026-06-29T10:39:56+0200",
+  "plan_approval_message_id": "1521070943898832969",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1521057060329095260",
+  "plan_report_message_id": "1521070942380494950",
   "impl_report_message_id": null
 }

@@ -9,6 +9,19 @@ use anvilml_core::{
     InferenceCaps, ServerConfig,
 };
 
+#[cfg(feature = "mock-hardware")]
+use crate::MockDetector;
+
+#[cfg(not(feature = "mock-hardware"))]
+use crate::VulkanDetector;
+
+// Platform-specific fallback detectors — only needed when mock-hardware is absent.
+#[cfg(all(not(feature = "mock-hardware"), target_os = "windows"))]
+use crate::DxgiDetector;
+
+#[cfg(all(not(feature = "mock-hardware"), target_os = "linux"))]
+use crate::SysfsPciDetector;
+
 /// Trait for detecting and refreshing GPU device information.
 ///
 /// Every concrete detector (CPU, mock, Vulkan, DXGI, sysfs) implements this trait.
@@ -35,11 +48,14 @@ pub trait DeviceDetector: Send + Sync {
 /// This is the single entry point for hardware detection, called once at server startup.
 /// It follows a priority chain defined in `ANVILML_DESIGN.md §6.4`:
 /// 1. Hardware override (config `[hardware_override]`) — short-circuits all other paths.
-///    2–6. Mock detector, Vulkan detector, platform fallback, CPU fallback, assembly.
+/// 2. Mock detector (when `mock-hardware` cargo feature is active).
+/// 3. Vulkan detector (headless GPU enumeration).
+/// 4. Platform-specific fallback (DXGI on Windows, sysfs PCI on Linux).
+///    5–6. CPU fallback and final assembly — deferred to `P5-A3`.
 ///
-/// Steps 2–6 are deferred to `P5-A2` and `P5-A3`. When `cfg.hardware_override` is
-/// `None`, this function returns `Err` to make the incomplete state explicit and
-/// testable — the full chain is not yet implemented.
+/// Steps 5–6 are deferred to `P5-A3`. The function always returns `Ok(HardwareInfo)`
+/// (never `Err`), constructing a partial `HardwareInfo` with the detected GPUs and
+/// default `InferenceCaps` — the CPU append and caps union are deferred to P5-A3.
 ///
 /// # Override short-circuit
 ///
@@ -54,12 +70,18 @@ pub trait DeviceDetector: Send + Sync {
 ///
 /// # Returns
 ///
-/// * `Ok(HardwareInfo)` — A hardware snapshot containing at least one device. When the
+/// * `Ok(HardwareInfo)` — A hardware snapshot containing detected GPUs. When the
 ///   override is present, exactly one override-synthesized device is returned.
-/// * `Err(AnvilError::Internal)` — The full detection chain is not yet implemented.
-///   This error is expected until `P5-A2` extends this function with the mock/Vulkan/
-///   fallback/CPU chain.
+///   Otherwise, devices from the mock/Vulkan/fallback chain are returned.
 pub async fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, AnvilError> {
+    // Construct host info once, before both the override and mock/real branches.
+    // HOSTNAME is the standard Unix env var; COMPUTERNAME is the Windows equivalent.
+    let hostname = std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .unwrap_or_else(|_| "unknown".into());
+    let os = std::env::consts::OS.to_string();
+    let host = HostInfo { hostname, os };
+
     // Step 1: Hardware override — unconditional short-circuit per §6.4 priority order.
     // This always wins before any detector runs, satisfying the design requirement.
     if let Some(override_cfg) = &cfg.hardware_override {
@@ -89,8 +111,9 @@ pub async fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, Anvi
 
         // Build a single override-synthesized GpuDevice.
         // This satisfies the design's requirement that override always wins
-        // unconditionally before any detector runs. defers_to: P5-A2 — the
-        // full detection chain (mock/Vulkan/fallback/CPU) is implemented by P5-A2.
+        // unconditionally before any detector runs. defers_to: P5-A3 — the
+        // CPU append and caps union (full HardwareInfo assembly) are implemented
+        // by P5-A3; this is a partial result with default inference_caps.
         let device = GpuDevice {
             index: 0,
             name: name.to_string(),
@@ -105,15 +128,6 @@ pub async fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, Anvi
             enumeration_source: EnumerationSource::Override,
             capabilities_source: CapabilitySource::Fallback,
         };
-
-        // Build the host info from environment variables.
-        // HOSTNAME is the standard Unix env var; COMPUTERNAME is the Windows equivalent.
-        let hostname = std::env::var("HOSTNAME")
-            .or_else(|_| std::env::var("COMPUTERNAME"))
-            .unwrap_or_else(|_| "unknown".into());
-        let os = std::env::consts::OS.to_string();
-
-        let host = HostInfo { hostname, os };
 
         // With a single device, the union of inference caps equals that device's caps.
         // Since the override device has default (all-false) caps, the union is also default.
@@ -134,10 +148,102 @@ pub async fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, Anvi
         return Ok(hardware_info);
     }
 
-    // Override is absent — the full detection chain is not yet implemented.
-    // P5-A2 will extend this function with the mock/Vulkan/fallback/CPU chain.
-    // Returning Err with a clear message makes the incomplete state explicit and testable.
-    Err(AnvilError::Internal(
-        "detect_all_devices chain not yet implemented — mock/Vulkan/fallback/CPU chain deferred to P5-A2".to_string(),
-    ))
+    // Steps 2–4: Mock-vs-real branch + Vulkan fallback chain.
+    // Override is absent — proceed to the priority chain.
+    // Steps 5–6 (CPU append, caps union) deferred to P5-A3.
+
+    #[cfg(feature = "mock-hardware")]
+    {
+        // Mock and real detection are mutually exclusive per build.
+        // When mock-hardware is compiled in, use MockDetector exclusively.
+        let detector = MockDetector;
+        let gpus = detector.detect()?;
+        tracing::debug!(
+            device_count = gpus.len(),
+            "mock-hardware feature: returning mock-detected devices"
+        );
+        // Partial HardwareInfo — CPU append and caps union deferred to P5-A3.
+        Ok(HardwareInfo {
+            host,
+            gpus,
+            inference_caps: InferenceCaps::default(),
+        })
+    }
+
+    #[cfg(not(feature = "mock-hardware"))]
+    {
+        // Primary real-hardware path: Vulkan enumeration.
+        // Vulkan is the preferred detector because it provides the most
+        // accurate device information (PCI IDs, driver version, etc.).
+        let detector = VulkanDetector;
+        let gpus = detector.detect()?;
+
+        if gpus.is_empty() {
+            // Vulkan returned no devices — try platform-specific fallback.
+            // This handles cases where the Vulkan loader is absent but
+            // the GPU is still present (e.g. missing drivers).
+            tracing::debug!("Vulkan returned empty, trying platform fallback");
+
+            // Platform-specific fallback — cfg-gated by target OS.
+            #[cfg(target_os = "windows")]
+            {
+                // DXGI is the Windows equivalent of Vulkan enumeration.
+                // It uses COM-based DXGI factory to enumerate adapters.
+                let detector = DxgiDetector;
+                let gpus = detector.detect()?;
+                if !gpus.is_empty() {
+                    tracing::debug!(
+                        device_count = gpus.len(),
+                        "platform fallback (DXGI) returned devices"
+                    );
+                    // Partial HardwareInfo — CPU append deferred to P5-A3.
+                    return Ok(HardwareInfo {
+                        host,
+                        gpus,
+                        inference_caps: InferenceCaps::default(),
+                    });
+                }
+            }
+
+            #[cfg(target_os = "linux")]
+            {
+                // sysfs PCI enumeration reads /sys/bus/pci/devices/ for
+                // display controllers (class 0x03) and maps vendor IDs.
+                let detector = SysfsPciDetector;
+                let gpus = detector.detect()?;
+                if !gpus.is_empty() {
+                    tracing::debug!(
+                        device_count = gpus.len(),
+                        "platform fallback (sysfs) returned devices"
+                    );
+                    // Partial HardwareInfo — CPU append deferred to P5-A3.
+                    return Ok(HardwareInfo {
+                        host,
+                        gpus,
+                        inference_caps: InferenceCaps::default(),
+                    });
+                }
+            }
+
+            // Neither Vulkan nor platform fallback found devices.
+            // Return empty Vec<GpuDevice> — P5-A3 will append the CPU device.
+            tracing::debug!("Vulkan and platform fallback both returned empty");
+            return Ok(HardwareInfo {
+                host,
+                gpus: vec![],
+                inference_caps: InferenceCaps::default(),
+            });
+        }
+
+        tracing::debug!(
+            device_count = gpus.len(),
+            "Vulkan detection returned devices"
+        );
+        // Partial HardwareInfo — CPU append deferred to P5-A3.
+        Ok(HardwareInfo {
+            host,
+            gpus,
+            inference_caps: InferenceCaps::default(),
+        })
+    }
 }

@@ -1468,15 +1468,27 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 ---
 
-## test_override_absent_returns_err (anvilml-hardware)
+## test_override_absent_returns_hardware_info (anvilml-hardware)
 
 **File:** `crates/anvilml-hardware/tests/detect_tests.rs`
 **Context:** The `anvilml-hardware` crate has been compiled with `tokio` dev-dependency. `detect_all_devices()` is called with a default `ServerConfig` (no override).
-**Tests:** `detect_all_devices` returns `Err(AnvilError::Internal(...))` with a message containing `"not yet implemented"` — proving the function is callable and returns the expected error type when no override is configured. The full detection chain is deferred to P5-A2.
+**Tests:** `detect_all_devices` returns `Ok(HardwareInfo)` with host info populated and `inference_caps == InferenceCaps::default()` — the function never returns `Err`. In mock-hardware builds, the mock-detected device is returned; in real builds, Vulkan/platform detection results are returned.
 **Mode:** both
 **Inputs:** Default `ServerConfig` (hardware_override is None).
-**Expected output:** `Err` with message containing `"not yet implemented"`.
-**Acceptance:** `cargo test -p anvilml-hardware --test detect_tests test_override_absent_returns_err` exits 0.
+**Expected output:** `Ok(HardwareInfo)` with non-empty host info and default inference_caps.
+**Acceptance:** `cargo test -p anvilml-hardware --test detect_tests test_override_absent_returns_hardware_info` exits 0.
+
+---
+
+## test_partial_hardware_info_has_default_inference_caps (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/detect_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `tokio` dev-dependency. `detect_all_devices()` is called with a default `ServerConfig` (no override).
+**Tests:** The returned `HardwareInfo` has `inference_caps == InferenceCaps::default()` — this verifies the partial HardwareInfo contract where P5-A2 returns detected GPUs with default caps, deferring the per-device caps union to P5-A3.
+**Mode:** both
+**Inputs:** Default `ServerConfig` (hardware_override is None).
+**Expected output:** `Ok(HardwareInfo)` with default inference_caps and populated host info.
+**Acceptance:** `cargo test -p anvilml-hardware --test detect_tests test_partial_hardware_info_has_default_inference_caps` exits 0.
 
 ---
 
@@ -1527,3 +1539,37 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Acceptance:** `cargo test -p anvilml-hardware --test detect_tests test_override_inference_caps_is_default` exits 0.
 
 ---
+
+## test_mock_hardware_feature_returns_mock_device (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/detect_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `mock-hardware` feature and `tokio` dev-dependency. `ANVILML_MOCK_DEVICE_TYPE=cuda` and `ANVILML_MOCK_VRAM_MIB=24576` are set. `detect_all_devices()` is called with a default `ServerConfig` (no override).
+**Tests:** `detect_all_devices` returns `Ok(HardwareInfo)` with exactly one mock-detected device: `device_type == Cuda`, `vram_total_mib == 24576`, `enumeration_source == Mock`, `name == "Mock GPU"`.
+**Mode:** mock
+**Inputs:** `ServerConfig::default()`, env vars `ANVILML_MOCK_DEVICE_TYPE=cuda`, `ANVILML_MOCK_VRAM_MIB=24576`.
+**Expected output:** `Ok(HardwareInfo)` with one GPU device matching mock env vars.
+**Acceptance:** `cargo test -p anvilml-hardware --features mock-hardware --test detect_tests test_mock_hardware_feature_returns_mock_device` exits 0.
+
+---
+
+## test_override_takes_priority_over_mock (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/detect_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `mock-hardware` feature and `tokio` dev-dependency. `ANVILML_MOCK_DEVICE_TYPE=cuda` and `ANVILML_MOCK_VRAM_MIB=8192` are set. `detect_all_devices()` is called with a `ServerConfig` that has `hardware_override` set to `Some(HardwareOverrideConfig { device_type: "rocm", vram_total_mib: 16384 })`.
+**Tests:** The override short-circuit fires before `MockDetector` is queried — the returned device has `device_type == Rocm` and `vram_total_mib == 16384` (from override), not the mock values. Proves override priority is preserved when mock-hardware is compiled in.
+**Mode:** mock
+**Inputs:** `ServerConfig` with `hardware_override = Some(HardwareOverrideConfig { device_type: "rocm", vram_total_mib: 16384 })`, env vars `ANVILML_MOCK_DEVICE_TYPE=cuda`, `ANVILML_MOCK_VRAM_MIB=8192`.
+**Expected output:** `Ok(HardwareInfo)` with one GPU device matching override config (Rocm/16384), not mock (Cuda/8192).
+**Acceptance:** `cargo test -p anvilml-hardware --features mock-hardware --test detect_tests test_override_takes_priority_over_mock` exits 0.
+
+---
+
+## test_mock_detector_env_vars_propagate_through_detect_all_devices (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/detect_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `mock-hardware` feature and `tokio` dev-dependency. `ANVILML_MOCK_DEVICE_NAME=Custom Mock GPU` and `ANVILML_MOCK_VRAM_MIB=16384` are set. `detect_all_devices()` is called with a default `ServerConfig` (no override).
+**Tests:** The returned device has `name == "Custom Mock GPU"` and `vram_total_mib == 16384`, confirming that custom mock env vars propagate through `detect_all_devices` → `MockDetector::detect()` → `GpuDevice` construction.
+**Mode:** mock
+**Inputs:** `ServerConfig::default()`, env vars `ANVILML_MOCK_DEVICE_NAME=Custom Mock GPU`, `ANVILML_MOCK_VRAM_MIB=16384`.
+**Expected output:** `Ok(HardwareInfo)` with one GPU device having name "Custom Mock GPU" and vram_total_mib=16384.
+**Acceptance:** `cargo test -p anvilml-hardware --features mock-hardware --test detect_tests test_mock_detector_env_vars_propagate_through_detect_all_devices` exits 0.
