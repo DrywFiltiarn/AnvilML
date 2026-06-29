@@ -35,8 +35,18 @@
     "phase": "900",
     "project": "anvilml",
     "prereqs": ["P900-A3", "P3-A2"],
-    "context": "Audit finding: ANVILML_DESIGN.md \u00a75.4 derives ToSchema on ModelMeta, ModelKind, ModelDtype, ModelFormat, but P3-A2's context omitted it - model.rs has no utoipa import and no ToSchema on any of the four (same omission pattern as P900-A3's job.rs finding; isolated to model.rs and job.rs only - hardware.rs, worker.rs, node.rs, artifact.rs, events.rs all correctly include it). Fix: add `use utoipa::ToSchema;` to types/model.rs; append `, ToSchema` to the derive list on ModelMeta, ModelKind, ModelDtype, ModelFormat. No field, variant, or serde attribute changes (snake_case rename_all stays) - additive-derive-only. Acceptance: cargo test -p anvilml-core --test model_tests exits 0 (existing tests unaffected); cargo doc -p anvilml-core --no-deps exits 0; cargo test --workspace --features mock-hardware exits 0 as the phase-closing regression check.",
+    "context": "Audit finding: ANVILML_DESIGN.md \u00a75.4 derives ToSchema on ModelMeta, ModelKind, ModelDtype, ModelFormat, but P3-A2's context omitted it - model.rs has no utoipa import and no ToSchema on any of the four (same omission pattern as P900-A3's job.rs finding; isolated to model.rs and job.rs only - hardware.rs, worker.rs, node.rs, artifact.rs, events.rs all correctly include it). Fix: add `use utoipa::ToSchema;` to types/model.rs; append `, ToSchema` to the derive list on ModelMeta, ModelKind, ModelDtype, ModelFormat. No field, variant, or serde attribute changes (snake_case rename_all stays) - additive-derive-only. Acceptance: cargo test -p anvilml-core --test model_tests exits 0 (existing tests unaffected); cargo doc -p anvilml-core --no-deps exits 0.",
     "tags": ["refactor"],
+    "defers_to": []
+  },
+  {
+    "id": "P900-A5",
+    "description": "backend: add --log-format plain|json CLI flag per ENVIRONMENT.md \u00a73.3",
+    "phase": "900",
+    "project": "anvilml",
+    "prereqs": ["P900-A1", "P900-A4"],
+    "context": "Audit finding: ENVIRONMENT.md \u00a73.3 documents a --log-format plain|json CLI flag (default plain) controlling tracing output format, but no task in any phase ever added it - cli.rs has no log_format field and P900-A1 wires only the plain-text fmt() layer. Fix: add log_format: Option<String> to Cli in backend/src/cli.rs via #[arg(long, default_value=\"plain\")], validated against exactly \"plain\"|\"json\" (clap value_parser or post-parse match, exit 2 with usage on any other value). In backend/src/main.rs, branch the P900-A1 subscriber build: \"plain\" keeps fmt() as-is, \"json\" adds .json() on the same builder before .init() - same EnvFilter precedence either way. Acceptance: >=4 tests in backend/tests/logging_tests.rs (extend P900-A1's file): --log-format=json produces valid-JSON stderr lines, plain default unaffected, invalid value exits non-zero; cargo test -p anvilml --test logging_tests exits 0; cargo test --workspace --features mock-hardware exits 0 as the phase-closing regression check.",
+    "tags": ["breaking"],
     "defers_to": []
   }
 ]
