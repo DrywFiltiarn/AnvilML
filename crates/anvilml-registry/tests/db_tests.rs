@@ -117,7 +117,5 @@ async fn test_migrations_idempotent() {
 /// automatically deleted when the test completes.
 fn create_temp_db() -> NamedTempFile {
     let mut temp = NamedTempFile::new().expect("should be able to create temp file");
-    // Write a zero byte so the file exists before passing to create_pool.
-    let _ = temp.write_all(b"\0");
     temp
 }
