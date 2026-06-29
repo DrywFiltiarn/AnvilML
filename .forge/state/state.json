@@ -46,16 +46,17 @@
     "P5-A6",
     "P6-A1",
     "P6-A2",
-    "P6-A3"
+    "P6-A3",
+    "P6-A4"
   ],
-  "in_progress": "P6-A4",
+  "in_progress": "P6-A5",
   "plan_approved": true,
-  "current_plan": "**Step 1: Add sha2 dependency.** Edit `crates/anvilml-registry/Cargo.toml` to add `sha2 = \"0.11\"` to the `[dependencies]` section. This is a new direct dependency; `sha2` is already a transitive dependency so there are no version conflicts.\n\n**Step 2: Create `crates/anvilml-registry/src/scanner.rs`.** Implement the following:",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-29T18:12:23+0200",
-  "plan_approval_message_id": "1521169679605960886",
+  "last_updated": "2026-06-29T20:15:41+0200",
+  "plan_approval_message_id": "1521209028028530819",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1521169677311803505",
+  "plan_report_message_id": "1521209025931513931",
   "impl_report_message_id": null
 }

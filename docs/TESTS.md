@@ -1861,3 +1861,63 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** id="nonexistent-id"; no rows in the database.
 **Expected output:** `get("nonexistent-id")` returns `None`.
 **Acceptance:** `cargo test -p anvilml-registry --test store_tests test_get_missing_id_returns_none` exits 0.
+
+---
+
+## test_lookup_known_pciid_returns_caps (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/device_store_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `tokio` (macros feature), `anvilml-core` (types submodule with `InferenceCaps`), and `uuid` (v4 feature) dev-dependencies. `lookup(vendor_id, device_id)` queries the `device_capabilities` table and returns `Some(InferenceCaps)` when a row exists.
+**Tests:** Inserts a row with vendor_id=0x10DE, device_id=0x2684, all capability columns=1 (fp32, fp16, bf16, fp8=1, fp4=0, flash_attention=1), then looks it up and asserts that every bool field matches the expected value.
+**Mode:** both
+**Inputs:** vendor_id=0x10DE, device_id=0x2684; row with fp32=1, fp16=1, bf16=1, fp8=1, fp4=0, flash_attention=1.
+**Expected output:** `Ok(Some(InferenceCaps { fp32: true, fp16: true, bf16: true, fp8: true, fp4: false, flash_attention: true }))`.
+**Acceptance:** `cargo test -p anvilml-registry --test device_store_tests test_lookup_known_pciid_returns_caps` exits 0.
+
+---
+
+## test_lookup_unknown_pciid_returns_none (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/device_store_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `tokio` (macros feature), `anvilml-core` (types submodule with `InferenceCaps`), and `uuid` (v4 feature) dev-dependencies. `lookup(vendor_id, device_id)` returns `Ok(None)` for unknown PCI-ID pairs — never `Err`.
+**Tests:** Does not insert any rows; directly queries for a nonexistent PCI-ID pair and asserts that the result is `None` rather than an error.
+**Mode:** both
+**Inputs:** vendor_id=0xFFFF, device_id=0xFFFF; no rows in the database.
+**Expected output:** `Ok(None)`.
+**Acceptance:** `cargo test -p anvilml-registry --test device_store_tests test_lookup_unknown_pciid_returns_none` exits 0.
+
+---
+
+## test_lookup_boundary_0xffff (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/device_store_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `tokio` (macros feature), `anvilml-core` (types submodule with `InferenceCaps`), and `uuid` (v4 feature) dev-dependencies. `lookup` accepts `u16` arguments and casts them to `i64` for SQL binding — the maximum u16 value (0xFFFF) tests this cast path.
+**Tests:** Queries for the maximum u16 values (vendor_id=0xFFFF, device_id=0xFFFF) and asserts that the result is `None` since no row exists at that ID.
+**Mode:** both
+**Inputs:** vendor_id=0xFFFF, device_id=0xFFFF; no rows in the database.
+**Expected output:** `Ok(None)`.
+**Acceptance:** `cargo test -p anvilml-registry --test device_store_tests test_lookup_boundary_0xffff` exits 0.
+
+---
+
+## test_lookup_integer_to_bool_mapping (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/device_store_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `tokio` (macros feature), `anvilml-core` (types submodule with `InferenceCaps`), and `uuid` (v4 feature) dev-dependencies. The `row_to_caps` helper maps INTEGER 0/1 columns to `bool` fields via `value != 0`.
+**Tests:** Inserts a row with mixed 0/1 values (fp32=1, fp16=0, bf16=1, fp8=0, fp4=0, flash_attention=1) and asserts that the `row_to_caps` conversion produces the correct bool values.
+**Mode:** both
+**Inputs:** vendor_id=0x1234, device_id=0x5678; row with fp32=1, fp16=0, bf16=1, fp8=0, fp4=0, flash_attention=1.
+**Expected output:** `Ok(Some(InferenceCaps { fp32: true, fp16: false, bf16: true, fp8: false, fp4: false, flash_attention: true }))`.
+**Acceptance:** `cargo test -p anvilml-registry --test device_store_tests test_lookup_integer_to_bool_mapping` exits 0.
+
+---
+
+## test_lookup_multiple_ids_no_interference (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/device_store_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `tokio` (macros feature), `anvilml-core` (types submodule with `InferenceCaps`), and `uuid` (v4 feature) dev-dependencies. Each test gets its own in-memory SQLite pool, so multiple rows inserted in the same pool must not cause cross-contamination.
+**Tests:** Inserts three rows with different PCI-IDs and different capability values, then verifies that each lookup returns only its own row's values — no cross-contamination between rows.
+**Mode:** both
+**Inputs:** Three rows: (0x1001, 0x1111) with fp32=1,fp16=1; (0x1002, 0x2222) with bf16=1,fp8=1; (0x10DE, 0x3333) with fp4=1,flash_attention=1.
+**Expected output:** Each lookup returns `Some` with its own correct caps.
+**Acceptance:** `cargo test -p anvilml-registry --test device_store_tests test_lookup_multiple_ids_no_interference` exits 0.
