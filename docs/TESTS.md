@@ -1371,3 +1371,87 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Acceptance:** `cargo test -p anvilml-hardware --test dxgi_tests test_dxgi_refresh_vram_never_errors` exits 0.
 
 ---
+
+## test_sysfs_detect_missing_path_returns_empty (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/sysfs_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with the `mock-hardware` feature, `SysfsPciDetector` implements `DeviceDetector`, and the `detect_from_path` helper is accessible via `pub(crate)` visibility. The test file is gated `#[cfg(target_os = "linux")]`.
+**Tests:** `detect_from_path("/nonexistent/sysfs/path")` returns `Ok(vec![])` — proves the detector handles missing sysfs gracefully without panicking or returning `Err`.
+**Mode:** both
+**Inputs:** `detect_from_path` called with a nonexistent path.
+**Expected output:** `Ok(vec![])` — empty vector, no error, no panic.
+**Acceptance:** `cargo test -p anvilml-hardware --test sysfs_tests test_sysfs_detect_missing_path_returns_empty` exits 0.
+
+---
+
+## test_sysfs_detect_synthetic_display_device (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/sysfs_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with the `mock-hardware` feature. A temp-dir-mocked sysfs tree is created with one synthetic AMD display-class device (vendor=0x1002, device=0x2204, class=0x030000) using `std::env::temp_dir()`.
+**Tests:** `detect_from_path(temp_dir)` returns exactly one `GpuDevice` with `enumeration_source == Sysfs`, `device_type == Rocm`, `vram_total_mib == 0`, `driver_version == "n/a"`.
+**Mode:** both
+**Inputs:** Synthetic sysfs tree in temp dir with AMD display-class device.
+**Expected output:** `Ok(vec![GpuDevice { enumeration_source: Sysfs, device_type: Rocm, vram_total_mib: 0, ... }])`.
+**Acceptance:** `cargo test -p anvilml-hardware --test sysfs_tests test_sysfs_detect_synthetic_display_device` exits 0.
+
+---
+
+## test_sysfs_filter_non_display_class (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/sysfs_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with the `mock-hardware` feature. A temp-dir-mocked sysfs tree is created with one synthetic network controller (class=0x020000, vendor=0x10de) using `std::env::temp_dir()`.
+**Tests:** `detect_from_path(temp_dir)` returns an empty vector — the non-display-class device is filtered out by the `0x03` class prefix check.
+**Mode:** both
+**Inputs:** Synthetic sysfs tree with non-display class device (network controller, class 0x020000).
+**Expected output:** `Ok(vec![])` — device excluded by class filter.
+**Acceptance:** `cargo test -p anvilml-hardware --test sysfs_tests test_sysfs_filter_non_display_class` exits 0.
+
+---
+
+## test_sysfs_detect_nvidia_vendor (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/sysfs_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with the `mock-hardware` feature. A temp-dir-mocked sysfs tree is created with one synthetic NVIDIA display-class device (vendor=0x10de, class=0x030000) using `std::env::temp_dir()`.
+**Tests:** `detect_from_path(temp_dir)` returns exactly one `GpuDevice` with `device_type == Cuda` — NVIDIA vendor ID 0x10de maps to the CUDA backend via the shared `vendor_id_to_device_type()` function.
+**Mode:** both
+**Inputs:** Synthetic sysfs tree with NVIDIA display-class device.
+**Expected output:** `Ok(vec![GpuDevice { device_type: Cuda, enumeration_source: Sysfs }])`.
+**Acceptance:** `cargo test -p anvilml-hardware --test sysfs_tests test_sysfs_detect_nvidia_vendor` exits 0.
+
+---
+
+## test_sysfs_detect_never_errors (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/sysfs_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with the `mock-hardware` feature. `SysfsPciDetector` is constructed.
+**Tests:** `SysfsPciDetector::detect()` returns `Ok(vec)` — never panics or returns `Err`. On Linux with `/sys/bus/pci/devices/`, may return real devices; on headless/CI, returns `Ok(vec![])`. The invariant is: no panic, no `Err`.
+**Mode:** both
+**Inputs:** `SysfsPciDetector` constructed, `detect()` called.
+**Expected output:** `result.is_ok()` — `Ok(vec)` with zero or more devices.
+**Acceptance:** `cargo test -p anvilml-hardware --test sysfs_tests test_sysfs_detect_never_errors` exits 0.
+
+---
+
+## test_sysfs_refresh_vram_returns_zero (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/sysfs_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with the `mock-hardware` feature. `SysfsPciDetector` is constructed.
+**Tests:** `SysfsPciDetector::refresh_vram(0)` returns `Ok((0, 0))` — sysfs has no VRAM query API. The `(0, 0)` return signals "unknown" to the caller, consistent with `DxgiDetector`'s approach.
+**Mode:** both
+**Inputs:** `SysfsPciDetector` constructed, `refresh_vram(0)` called.
+**Expected output:** `Ok((0, 0))`.
+**Acceptance:** `cargo test -p anvilml-hardware --test sysfs_tests test_sysfs_refresh_vram_returns_zero` exits 0.
+
+---
+
+## test_sysfs_multi_device_filter (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/sysfs_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with the `mock-hardware` feature. A temp-dir-mocked sysfs tree is created with three synthetic devices: one AMD display controller (class 0x030000), one NVIDIA network controller (class 0x020000), and one Intel audio controller (class 0x040300) using `std::env::temp_dir()`.
+**Tests:** `detect_from_path(temp_dir)` returns exactly one device — only the display-class device is included; the network and audio controllers are filtered out by the class prefix check.
+**Mode:** both
+**Inputs:** Synthetic sysfs tree with three devices of different PCI classes.
+**Expected output:** `Ok(vec![GpuDevice])` with exactly one AMD/Rocm device.
+**Acceptance:** `cargo test -p anvilml-hardware --test sysfs_tests test_sysfs_multi_device_filter` exits 0.
+
+---

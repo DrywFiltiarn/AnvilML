@@ -17,3 +17,8 @@ pub use mock::MockDetector;
 pub mod dxgi;
 #[cfg(target_os = "windows")]
 pub use dxgi::DxgiDetector;
+
+#[cfg(target_os = "linux")]
+pub mod sysfs;
+#[cfg(target_os = "linux")]
+pub use sysfs::{SysfsPciDetector, detect_from_path};
