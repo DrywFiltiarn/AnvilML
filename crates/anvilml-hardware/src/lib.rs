@@ -5,6 +5,7 @@ pub mod detect;
 pub mod vulkan;
 pub use cpu::CpuDetector;
 pub use detect::DeviceDetector;
+pub use detect::detect_all_devices;
 pub use vulkan::VulkanDetector;
 pub use vulkan::vendor_id_to_device_type;
 
