@@ -5,7 +5,6 @@
 //! there is no cross-test shared state.
 
 use anvilml_registry::create_pool;
-use std::io::Write;
 use tempfile::NamedTempFile;
 
 /// `create_pool()` succeeds against a temporary file and the pool can execute queries.
