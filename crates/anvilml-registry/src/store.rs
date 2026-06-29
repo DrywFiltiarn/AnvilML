@@ -47,6 +47,15 @@ struct ModelMetaRow {
     scanned_at: String,
 }
 
+/// Helper struct for querying just size_bytes and mtime_unix from the `models` table.
+///
+/// Used by `ModelStore::get_path_info` for deduplication checks.
+#[derive(sqlx::FromRow)]
+struct PathInfoRow {
+    size_bytes: i64,
+    mtime_unix: i64,
+}
+
 impl ModelStore {
     /// Construct a new `ModelStore` backed by the given connection pool.
     ///
@@ -94,9 +103,9 @@ impl ModelStore {
         let dtype_clean = dtype_text.trim_matches('"');
         let format_clean = format_text.trim_matches('"');
 
-        // mtime_unix is always 0 — the scanner populates the real value in P6-A4.
-        // This is a placeholder; INSERT OR REPLACE will overwrite it when the
-        // scanner calls upsert with the actual modification time.
+        // mtime_unix is populated by the scanner with the file's actual modification time.
+        // This enables dedup: on subsequent scans, we compare stored mtime against
+        // the file's current mtime to detect changes without re-hashing.
         let scanned_at = meta.scanned_at.to_rfc3339();
 
         sqlx::query(
@@ -111,7 +120,7 @@ impl ModelStore {
         .bind(dtype_clean)
         .bind(format_clean)
         .bind(meta.size_bytes as i64)
-        .bind(0i64) // placeholder — scanner populates real value
+        .bind(meta.mtime_unix)
         .bind(scanned_at)
         .execute(&self.pool)
         .await?;
@@ -211,6 +220,42 @@ impl ModelStore {
         tracing::debug!(id = %id, "deleted model metadata");
         Ok(())
     }
+
+    /// Retrieve the stored size and modification time for a file at the given path.
+    ///
+    /// This is used by the scanner to implement dedup: if a file's current size and
+    /// mtime match the stored values, the file has not changed and can be skipped
+    /// without re-hashing.
+    ///
+    /// Returns `Ok(Some((size_bytes, mtime_unix)))` if a row with the given path
+    /// exists, `Ok(None)` if no row matches.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` — The filesystem path to look up.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AnvilError::Db` if the query fails.
+    #[tracing::instrument(fields(path = %path.display()), skip(self))]
+    pub async fn get_path_info(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<Option<(u64, i64)>, AnvilError> {
+        // Use PathInfoRow which only expects the two columns we select,
+        // unlike ModelMetaRow which expects all columns from the full row.
+        let row = sqlx::query_as::<_, PathInfoRow>(
+            "SELECT size_bytes, mtime_unix FROM models WHERE path = ?",
+        )
+        .bind(path.to_string_lossy().into_owned())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(r) => Ok(Some((r.size_bytes as u64, r.mtime_unix))),
+            None => Ok(None),
+        }
+    }
 }
 
 impl ModelStore {
@@ -247,6 +292,9 @@ impl ModelStore {
             dtype,
             format,
             size_bytes: row.size_bytes as u64,
+            // Use the actual mtime from the database, populated by the scanner.
+            // This enables dedup checks on subsequent scans.
+            mtime_unix: row.mtime_unix,
             scanned_at,
         }
     }

@@ -12,20 +12,23 @@ use std::path::PathBuf;
 
 /// Create an in-memory SQLite pool with migrations applied.
 ///
-/// Each test gets its own pool — the in-memory database is isolated per connection,
-/// and we create a dedicated pool for each test to avoid cross-test interference.
+/// Each test gets its own pool — the in-memory database is isolated per connection
+/// by using a unique cache name (uuid-based) so parallel tests don't collide on
+/// the shared `:memory:` database.
+///
 /// The migration from `database/migrations/001_initial.sql` is applied so the
 /// `models` table exists before any CRUD operation.
 async fn make_pool() -> SqlitePool {
-    // Use SqliteConnectOptions::new().filename() to build the connection options.
-    // The filename "sqlite::memory:" creates an ephemeral in-memory database.
-    // create_if_missing(true) ensures the in-memory DB is created even if no
-    // prior connection has opened it.
+    // Use a unique in-memory database name per test to avoid the shared `:memory:`
+    // database problem: without a unique name, all connections in the same process
+    // share the same in-memory database, causing cross-test interference.
+    let unique_name = uuid::Uuid::new_v4().to_string();
+
     let pool = SqlitePoolOptions::new()
-        .max_connections(4)
+        .max_connections(1)
         .connect_with(
             SqliteConnectOptions::new()
-                .filename("sqlite::memory:")
+                .filename(format!("file:{unique_name}?mode=memory&cache=shared"))
                 .create_if_missing(true),
         )
         .await
@@ -54,6 +57,7 @@ fn test_meta(id: &str, name: &str, kind: ModelKind) -> ModelMeta {
         dtype: ModelDtype::Fp32,
         format: ModelFormat::Safetensors,
         size_bytes: 1024,
+        mtime_unix: 0,
         scanned_at: Utc::now(),
     }
 }

@@ -6,7 +6,8 @@ use std::path::PathBuf;
 ///
 /// This struct is the primary output of the model scanner: it captures
 /// the stable identity, location, architecture family, data type, file
-/// format, size, and scan timestamp of a single model file on disk.
+/// format, size, modification time, and scan timestamp of a single
+/// model file on disk.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelMeta {
     /// Stable identifier: SHA256 hex of the first 1 MiB of the file.
@@ -23,6 +24,8 @@ pub struct ModelMeta {
     pub format: ModelFormat,
     /// File size in bytes.
     pub size_bytes: u64,
+    /// File modification time as Unix epoch seconds (populated by the scanner).
+    pub mtime_unix: i64,
     /// Timestamp when this metadata was scanned.
     pub scanned_at: DateTime<Utc>,
 }

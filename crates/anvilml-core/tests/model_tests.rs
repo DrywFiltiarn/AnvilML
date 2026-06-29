@@ -115,6 +115,7 @@ fn test_model_meta_serde_roundtrip() {
         dtype: ModelDtype::Fp16,
         format: ModelFormat::Safetensors,
         size_bytes: 6_442_529_280,
+        mtime_unix: 1705312200,
         scanned_at: DateTime::parse_from_rfc3339("2026-01-15T10:30:00Z")
             .unwrap()
             .with_timezone(&Utc),
