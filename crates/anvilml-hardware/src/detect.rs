@@ -9,6 +9,8 @@ use anvilml_core::{
     InferenceCaps, ServerConfig,
 };
 
+use crate::CpuDetector;
+
 #[cfg(feature = "mock-hardware")]
 use crate::MockDetector;
 
@@ -51,18 +53,21 @@ pub trait DeviceDetector: Send + Sync {
 /// 2. Mock detector (when `mock-hardware` cargo feature is active).
 /// 3. Vulkan detector (headless GPU enumeration).
 /// 4. Platform-specific fallback (DXGI on Windows, sysfs PCI on Linux).
-///    5–6. CPU fallback and final assembly — deferred to `P5-A3`.
+/// 5. CPU fallback — an unconditional synthesized CPU device is appended last.
+/// 6. Final assembly — `HardwareInfo` is constructed with host info, all devices,
+///    and the field-wise OR union of per-device `InferenceCaps`.
 ///
-/// Steps 5–6 are deferred to `P5-A3`. The function always returns `Ok(HardwareInfo)`
-/// (never `Err`), constructing a partial `HardwareInfo` with the detected GPUs and
-/// default `InferenceCaps` — the CPU append and caps union are deferred to P5-A3.
+/// The function always returns `Ok(HardwareInfo)` (never `Err`). The result always
+/// contains at least one device — the synthesized CPU fallback — guaranteeing that
+/// callers never receive an empty device list.
 ///
 /// # Override short-circuit
 ///
 /// When `cfg.hardware_override` is `Some`, this function synthesizes exactly one
-/// `GpuDevice` from the override config and returns `Ok(HardwareInfo{...})`
-/// immediately, skipping all other detectors. This satisfies the design requirement
-/// that override always wins unconditionally before any detector runs.
+/// `GpuDevice` from the override config, appends the CPU fallback device, and
+/// returns `Ok(HardwareInfo{...})` immediately, skipping all other detectors.
+/// This satisfies the design requirement that override always wins unconditionally
+/// before any detector runs.
 ///
 /// # Arguments
 ///
@@ -70,9 +75,11 @@ pub trait DeviceDetector: Send + Sync {
 ///
 /// # Returns
 ///
-/// * `Ok(HardwareInfo)` — A hardware snapshot containing detected GPUs. When the
-///   override is present, exactly one override-synthesized device is returned.
-///   Otherwise, devices from the mock/Vulkan/fallback chain are returned.
+/// * `Ok(HardwareInfo)` — A hardware snapshot containing:
+///   - `host`: populated from OS environment variables.
+///   - `gpus`: detected GPUs (from override, mock, Vulkan, or platform fallback)
+///     followed by the unconditional CPU fallback device.
+///   - `inference_caps`: field-wise OR union of all per-device `InferenceCaps`.
 pub async fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, AnvilError> {
     // Construct host info once, before both the override and mock/real branches.
     // HOSTNAME is the standard Unix env var; COMPUTERNAME is the Windows equivalent.
@@ -111,9 +118,7 @@ pub async fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, Anvi
 
         // Build a single override-synthesized GpuDevice.
         // This satisfies the design's requirement that override always wins
-        // unconditionally before any detector runs. defers_to: P5-A3 — the
-        // CPU append and caps union (full HardwareInfo assembly) are implemented
-        // by P5-A3; this is a partial result with default inference_caps.
+        // unconditionally before any detector runs.
         let device = GpuDevice {
             index: 0,
             name: name.to_string(),
@@ -129,13 +134,16 @@ pub async fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, Anvi
             capabilities_source: CapabilitySource::Fallback,
         };
 
-        // With a single device, the union of inference caps equals that device's caps.
-        // Since the override device has default (all-false) caps, the union is also default.
-        let inference_caps = InferenceCaps::default();
+        // Assemble the final HardwareInfo: append CPU fallback and compute caps union.
+        let mut gpus = vec![device];
+        let cpu_devices = CpuDetector.detect()?;
+        gpus.extend(cpu_devices); // CPU fallback is always appended last
+
+        let inference_caps = compute_caps_union(&gpus); // union of override + CPU caps
 
         let hardware_info = HardwareInfo {
             host,
-            gpus: vec![device],
+            gpus,
             inference_caps,
         };
 
@@ -150,7 +158,6 @@ pub async fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, Anvi
 
     // Steps 2–4: Mock-vs-real branch + Vulkan fallback chain.
     // Override is absent — proceed to the priority chain.
-    // Steps 5–6 (CPU append, caps union) deferred to P5-A3.
 
     #[cfg(feature = "mock-hardware")]
     {
@@ -158,15 +165,23 @@ pub async fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, Anvi
         // When mock-hardware is compiled in, use MockDetector exclusively.
         let detector = MockDetector;
         let gpus = detector.detect()?;
+
+        // Append CPU fallback and compute caps union for the final assembly.
+        let cpu_devices = CpuDetector.detect()?;
+        let mut gpus = gpus;
+        gpus.extend(cpu_devices); // CPU fallback is always appended last
+
+        let inference_caps = compute_caps_union(&gpus); // union of mock + CPU caps
+
         tracing::debug!(
             device_count = gpus.len(),
-            "mock-hardware feature: returning mock-detected devices"
+            "mock-hardware feature: returning mock-detected devices with CPU fallback"
         );
-        // Partial HardwareInfo — CPU append and caps union deferred to P5-A3.
+
         Ok(HardwareInfo {
             host,
             gpus,
-            inference_caps: InferenceCaps::default(),
+            inference_caps,
         })
     }
 
@@ -192,15 +207,22 @@ pub async fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, Anvi
                 let detector = DxgiDetector;
                 let gpus = detector.detect()?;
                 if !gpus.is_empty() {
+                    // Append CPU fallback and compute caps union.
+                    let cpu_devices = CpuDetector.detect()?;
+                    let mut gpus = gpus;
+                    gpus.extend(cpu_devices); // CPU fallback appended after DXGI devices
+
+                    let inference_caps = compute_caps_union(&gpus);
+
                     tracing::debug!(
                         device_count = gpus.len(),
                         "platform fallback (DXGI) returned devices"
                     );
-                    // Partial HardwareInfo — CPU append deferred to P5-A3.
+
                     return Ok(HardwareInfo {
                         host,
                         gpus,
-                        inference_caps: InferenceCaps::default(),
+                        inference_caps,
                     });
                 }
             }
@@ -212,26 +234,40 @@ pub async fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, Anvi
                 let detector = SysfsPciDetector;
                 let gpus = detector.detect()?;
                 if !gpus.is_empty() {
+                    // Append CPU fallback and compute caps union.
+                    let cpu_devices = CpuDetector.detect()?;
+                    let mut gpus = gpus;
+                    gpus.extend(cpu_devices); // CPU fallback appended after sysfs devices
+
+                    let inference_caps = compute_caps_union(&gpus);
+
                     tracing::debug!(
                         device_count = gpus.len(),
                         "platform fallback (sysfs) returned devices"
                     );
-                    // Partial HardwareInfo — CPU append deferred to P5-A3.
+
                     return Ok(HardwareInfo {
                         host,
                         gpus,
-                        inference_caps: InferenceCaps::default(),
+                        inference_caps,
                     });
                 }
             }
 
             // Neither Vulkan nor platform fallback found devices.
-            // Return empty Vec<GpuDevice> — P5-A3 will append the CPU device.
+            // Still append CPU fallback — result is never empty.
+            let mut gpus: Vec<GpuDevice> = vec![];
+            let cpu_devices = CpuDetector.detect()?;
+            gpus.extend(cpu_devices); // Only CPU device — the fallback guarantee
+
+            let inference_caps = compute_caps_union(&gpus); // CPU caps only
+
             tracing::debug!("Vulkan and platform fallback both returned empty");
+
             return Ok(HardwareInfo {
                 host,
-                gpus: vec![],
-                inference_caps: InferenceCaps::default(),
+                gpus,
+                inference_caps,
             });
         }
 
@@ -239,11 +275,39 @@ pub async fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, Anvi
             device_count = gpus.len(),
             "Vulkan detection returned devices"
         );
-        // Partial HardwareInfo — CPU append deferred to P5-A3.
+
+        // Append CPU fallback and compute caps union.
+        let cpu_devices = CpuDetector.detect()?;
+        let mut gpus = gpus;
+        gpus.extend(cpu_devices); // CPU fallback appended after Vulkan devices
+
+        let inference_caps = compute_caps_union(&gpus); // union of Vulkan + CPU caps
+
         Ok(HardwareInfo {
             host,
             gpus,
-            inference_caps: InferenceCaps::default(),
+            inference_caps,
         })
     }
+}
+
+/// Compute the field-wise OR union of all per-device `InferenceCaps`.
+///
+/// Starting from `InferenceCaps::default()` (all fields `false`), this function
+/// ORs each field against every device's caps. The result represents the union
+/// of all capabilities across all detected devices.
+///
+/// This is a simple sequential fold — no external crate needed for such a small
+/// struct with only 6 boolean fields.
+fn compute_caps_union(devices: &[GpuDevice]) -> InferenceCaps {
+    let mut caps = InferenceCaps::default();
+    for device in devices {
+        caps.fp32 |= device.caps.fp32;
+        caps.fp16 |= device.caps.fp16;
+        caps.bf16 |= device.caps.bf16;
+        caps.fp8 |= device.caps.fp8;
+        caps.fp4 |= device.caps.fp4;
+        caps.flash_attention |= device.caps.flash_attention;
+    }
+    caps
 }
