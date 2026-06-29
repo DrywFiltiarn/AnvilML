@@ -369,8 +369,37 @@ PNG artifact matching the requested dimensions. This closes "ZiT Diffusion + Qwe
 CLIP + ZiT VAE" as a fully completed roadmap group.
 
 \`\`\`bash
-# Runnable Proof (manual): full submit -> poll -> retrieve sequence against a live
-# server in real mode, using the Appendix B.2 example graph with fixture model_id
-# values, producing a retrievable, valid PNG artifact.
+# Runnable Proof (manual): real (non-mock-hardware) mode, fixture checkpoints
+# already registered in the model registry under their SHA256 ids.
+cargo build --release -p anvilml
+./target/release/anvilml &
+sleep 2
+ZIT_ID=$(sha256sum worker/tests/fixtures/zit_tiny.safetensors | head -c1048576 | cut -d' ' -f1)
+VAE_ID=$(sha256sum worker/tests/fixtures/zit_vae_tiny.safetensors | head -c1048576 | cut -d' ' -f1)
+CLIP_ID=$(sha256sum worker/tests/fixtures/qwen3_tiny.safetensors | head -c1048576 | cut -d' ' -f1)
+JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' \
+  -d "{\"graph\":{\"nodes\":[
+    {\"id\":\"model\",\"type\":\"LoadModel\",\"inputs\":{\"model_id\":\"$ZIT_ID\"}},
+    {\"id\":\"vae\",\"type\":\"LoadVae\",\"inputs\":{\"model_id\":\"$VAE_ID\"}},
+    {\"id\":\"encoder\",\"type\":\"LoadClip\",\"inputs\":{\"model_id\":\"$CLIP_ID\",\"clip_type\":\"qwen3\"}},
+    {\"id\":\"latent\",\"type\":\"EmptyLatent\",\"inputs\":{\"width\":64,\"height\":64,\"model\":{\"node_id\":\"model\",\"output_slot\":\"model\"}}},
+    {\"id\":\"cond\",\"type\":\"ClipTextEncode\",\"inputs\":{\"clip\":{\"node_id\":\"encoder\",\"output_slot\":\"clip\"},\"positive_text\":\"a photograph of a red fox in a snowy forest\"}},
+    {\"id\":\"sampled\",\"type\":\"Sampler\",\"inputs\":{\"model\":{\"node_id\":\"model\",\"output_slot\":\"model\"},\"conditioning\":{\"node_id\":\"cond\",\"output_slot\":\"conditioning\"},\"clip\":{\"node_id\":\"encoder\",\"output_slot\":\"clip\"},\"latent\":{\"node_id\":\"latent\",\"output_slot\":\"latent\"},\"steps\":4,\"cfg\":1.0,\"seed\":-1}},
+    {\"id\":\"decoded\",\"type\":\"VaeDecode\",\"inputs\":{\"vae\":{\"node_id\":\"vae\",\"output_slot\":\"vae\"},\"latent\":{\"node_id\":\"sampled\",\"output_slot\":\"latent\"}}},
+    {\"id\":\"saved\",\"type\":\"SaveImage\",\"inputs\":{\"image\":{\"node_id\":\"decoded\",\"output_slot\":\"image\"},\"seed\":{\"node_id\":\"sampled\",\"output_slot\":\"seed\"}}}
+  ]},\"settings\":{}}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['job_id'])")
+sleep 5
+HASH=$(curl -s "http://127.0.0.1:8488/v1/jobs/$JOB_ID" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+assert d['status']=='Completed'
+print(d.get('artifact_hash') or d.get('result',{}).get('artifact_hash'))
+")
+curl -s -o saved_proof.png "http://127.0.0.1:8488/v1/artifacts/$HASH"
+python3 -c "from PIL import Image; im=Image.open('saved_proof.png'); assert im.size==(64,64)"
+# -> exits 0; a real, retrievable 64x64 PNG was produced
+kill %1
+rm -f saved_proof.png
 \`\`\`
 ```

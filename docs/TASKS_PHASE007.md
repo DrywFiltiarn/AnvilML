@@ -284,14 +284,38 @@ cargo fmt --all -- --check
 cargo clippy --workspace --features mock-hardware -- -D warnings
 cargo test --workspace --features mock-hardware
 
-# Runnable Proof: not applicable — this phase implements the IPC transport and
-# message-type layer in isolation, with no worker subprocess yet spawned to
-# communicate with and no HTTP/WebSocket surface wired up. The 1000-round-trip
-# stress test that constitutes this subsystem's real Runnable Proof is Phase 8's
-# explicit gate, not this phase's. The full test suite (error_tests,
-# roundtrip_tests covering messages, transport, and the broadcaster) is the
-# complete and sufficient proof of this phase's deliverable, per the narrow
-# exemption in FORGE_TASK_AUTHORING_SPEC.md §9.
+# Runnable Proof (manual):
+cat > /tmp/anvilml_bind_proof.rs <<'EOF'
+use anvilml_ipc::RouterTransport;
+#[tokio::main]
+async fn main() {
+    let t = RouterTransport::bind().await.expect("bind failed");
+    println!("{}", t.port);
+}
+EOF
+mkdir -p crates/anvilml-ipc/examples
+cp /tmp/anvilml_bind_proof.rs crates/anvilml-ipc/examples/
+PORT=$(cargo run -q -p anvilml-ipc --example anvilml_bind_proof)
+ss -ltn | grep -q ":$PORT "
+# -> prints a real port number, and ss confirms a live LISTEN socket on it
+```
+
+```powershell
+# Runnable Proof (manual, PowerShell):
+$proofSrc = @'
+use anvilml_ipc::RouterTransport;
+#[tokio::main]
+async fn main() {
+    let t = RouterTransport::bind().await.expect("bind failed");
+    println!("{}", t.port);
+}
+'@
+New-Item -ItemType Directory -Force -Path crates\anvilml-ipc\examples | Out-Null
+Set-Content -Path crates\anvilml-ipc\examples\anvilml_bind_proof.rs -Value $proofSrc
+$portOut = cargo run -q -p anvilml-ipc --example anvilml_bind_proof
+$listening = Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -eq [int]$portOut }
+if (-not $listening) { throw "no listener found on port $portOut" }
+# -> $portOut prints a real port number, and Get-NetTCPConnection confirms LISTEN state
 ```
 
 ---
@@ -320,10 +344,16 @@ cargo test --workspace --features mock-hardware
 ```markdown
 ## Phase 7 — IPC Foundations
 
-**Capability proved:** Not applicable — this phase implements the IPC message
-types and `RouterTransport`/`EventBroadcaster` wrappers in isolation, with no
-worker subprocess yet spawned to communicate with. The 1000-round-trip stress test
-that proves this subsystem end-to-end is Phase 8's explicit gate. See
-`TASKS_PHASE007.md`'s Phase Acceptance Criteria for this phase's own test-suite
-proof.
+**Capability proved:** `RouterTransport::bind()` opens a real ZeroMQ ROUTER socket
+on a real, OS-assigned TCP port — observable from outside the test process via a
+live port scan — even though no worker subprocess exists yet to complete a round
+trip with it. The full 1000-round-trip stress proof is Phase 8's explicit gate.
+
+```bash
+mkdir -p crates/anvilml-ipc/examples
+# (anvilml_bind_proof.rs: calls RouterTransport::bind().await, prints t.port)
+PORT=$(cargo run -q -p anvilml-ipc --example anvilml_bind_proof)
+ss -ltn | grep -q ":$PORT "
+# -> a real port number is printed, and ss confirms a live LISTEN socket on it
+```
 ```

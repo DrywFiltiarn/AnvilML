@@ -31,8 +31,10 @@ persist and query `ModelMeta` rows, look up PCI-ID capability hints, and idempot
 apply one-time SQL seed files; `anvilml-artifacts` can save and retrieve
 content-addressed PNG artifacts. Neither crate's capability is yet wired into an HTTP
 endpoint — `/v1/models` and `/v1/artifacts` are the HTTP server phase's scope, not
-this one — so this phase's tests are the complete proof of its deliverable, with no
-Runnable Proof against a live server.
+this one — but `P6-A1`'s and `P6-A8`'s SQL files are themselves real,
+externally-loadable artifacts, so this phase's Runnable Proof loads them into a live
+SQLite instance directly, per `FORGE_TASK_AUTHORING_SPEC.md §9`'s build/lint-artifact
+exemption clause — see the Phase Acceptance Criteria below.
 
 ---
 
@@ -373,14 +375,25 @@ cargo fmt --all -- --check
 cargo clippy --workspace --features mock-hardware -- -D warnings
 cargo test --workspace --features mock-hardware
 
-# Runnable Proof: not applicable — this phase implements persistence-layer crates
-# (anvilml-registry, anvilml-artifacts) with no HTTP handler, CLI subcommand, or
-# other externally observable surface wired up yet. /v1/models and /v1/artifacts
-# are the HTTP server phase's scope, not this one. The full test suite (db_tests,
-# store_tests, scanner_tests, device_store_tests, seed_loader_tests for
-# anvilml-registry; store_tests for anvilml-artifacts) is the complete and
-# sufficient proof of this phase's deliverable, per the narrow exemption in
-# FORGE_TASK_AUTHORING_SPEC.md §9.
+# Runnable Proof (manual):
+sqlite3 anvilml_proof.db < database/migrations/001_initial.sql
+sqlite3 anvilml_proof.db < database/seeds/devices.sql
+sqlite3 anvilml_proof.db "SELECT count(*) FROM device_capabilities;"
+# -> a non-zero row count, confirming the seed data actually loaded
+sqlite3 anvilml_proof.db ".schema models"
+# -> shows the models table with id/name/path/kind/dtype/format/size_bytes/mtime_unix/scanned_at
+rm anvilml_proof.db
+```
+
+```powershell
+# Runnable Proof (manual, PowerShell):
+Get-Content database\migrations\001_initial.sql | sqlite3 anvilml_proof.db
+Get-Content database\seeds\devices.sql | sqlite3 anvilml_proof.db
+sqlite3 anvilml_proof.db "SELECT count(*) FROM device_capabilities;"
+# -> a non-zero row count, confirming the seed data actually loaded
+sqlite3 anvilml_proof.db ".schema models"
+# -> shows the models table with id/name/path/kind/dtype/format/size_bytes/mtime_unix/scanned_at
+Remove-Item anvilml_proof.db
 ```
 
 ---
@@ -410,8 +423,18 @@ cargo test --workspace --features mock-hardware
 ```markdown
 ## Phase 6 — Model Registry & Artifacts
 
-**Capability proved:** Not applicable — this phase implements `anvilml-registry` and
-`anvilml-artifacts` as persistence-layer crates with no HTTP handler or other
-externally observable surface wired up yet. See `TASKS_PHASE006.md`'s Phase
-Acceptance Criteria for the full test-suite proof.
+**Capability proved:** `database/migrations/001_initial.sql` and
+`database/seeds/devices.sql` are both real, loadable SQL files — applying either
+to a live SQLite instance succeeds and produces real, queryable tables and rows.
+Per `FORGE_TASK_AUTHORING_SPEC.md §9`'s exemption clause (c), the load command
+itself is the full proof for this kind of file-on-disk artifact; no HTTP handler
+exists yet to wrap it.
+
+```bash
+sqlite3 anvilml_proof.db < database/migrations/001_initial.sql
+sqlite3 anvilml_proof.db < database/seeds/devices.sql
+sqlite3 anvilml_proof.db "SELECT count(*) FROM device_capabilities;"
+# -> a non-zero row count
+rm anvilml_proof.db
+```
 ```

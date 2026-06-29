@@ -15,14 +15,14 @@ arbitrary target count.
 | 3 | Core Domain Types: Data Model | 11 | Not applicable - pure data types and an in-memory registry; no new external surface |
 | 4 | Hardware Detection: Detectors | 6 | Not applicable - individual `DeviceDetector` implementations with no orchestration wiring yet |
 | 5 | Hardware Detection: Orchestration | 6 | `anvilml hw-probe` CLI subcommand prints real, valid `HardwareInfo` JSON via the full priority-ordered `detect_all_devices()` chain |
-| 6 | Model Registry & Artifacts | 12 | Not applicable - persistence-layer crates with no HTTP handler wired up yet |
-| 7 | IPC Foundations | 8 | Not applicable - IPC message types and transport in isolation; the real proof is Phase 8's stress test |
+| 6 | Model Registry & Artifacts | 12 | `database/migrations/001_initial.sql` and `database/seeds/devices.sql` load into a live SQLite instance and produce real, queryable tables/rows |
+| 7 | IPC Foundations | 8 | `RouterTransport::bind()` opens a real ZeroMQ ROUTER socket on a real, OS-assigned port, observable via a live port scan; the full round-trip proof is Phase 8's stress test |
 | 8 | IPC Stress Gate & Worker Pool | 13 | The 1000-round-trip ROUTER/DEALER stress test passes with zero message loss - the explicit gate naming this entire roadmap group |
 | 9 | Real Worker Startup | 11 | A real `worker_main.py` subprocess connects over IPC, runs a real torch capability probe, and sends `Ready` with `capabilities_source: "pytorch"` |
 | 10 | Generic Node Groundwork | 9 | Not applicable - node system scaffolding with zero concrete nodes/arch modules registered |
 | 11 | Dynamic Node System | 5 | The live binary serves `GET /v1/nodes` over real HTTP, backed by the dynamic `NodeTypeRegistry` (still empty - no worker spawned by the normal server-start path yet) |
 | 12 | Graph Validation | 7 | Not applicable - pure `validate_graph()` function with no HTTP handler wired up yet |
-| 13 | Job Queue | 6 | Not applicable - in-memory queue/ledger primitives and persistence with no HTTP handler yet |
+| 13 | Job Queue | 6 | `reset_ghost_jobs()` resets a real stale `Running` job to `Failed` against a live SQLite DB at server startup, with the reset count logged at INFO level |
 | 14 | Dispatch & Execute | 11 | A job submitted via `POST /v1/jobs`, using the real `PassThrough` node, is dispatched to a real spawned worker and reaches `Completed` - first genuine end-to-end real dispatch |
 | 15 | Artifact Storage Wiring | 5 | `GET /v1/artifacts*` live over real HTTP, backed by Phase 6's `ArtifactStore` (correctly empty - no image-producing node exists yet) |
 | 16 | Live Events | 8 | A WebSocket client connected to `GET /v1/events` observes a real `JobCompleted` event for a `PassThrough` job, delivered live |
@@ -146,6 +146,46 @@ project-wide compliance sweep (Phase 30).
   the official CPU wheel index, never the default CUDA-bundled index) between the
   original P9-A1 and P9-A2, which was renumbered P9-A2 -> P9-A3; downstream
   prereq citations (P9-B1, P9-C1) were corrected accordingly.
+- SPEC-DRIFT RETROFIT inserted (Phase 900, between Phases 6 and 7) - a manual
+  audit conducted while implementation sat at P6-A2 found three instances of the
+  same root-cause defect: a task's `context` field silently dropped part of
+  `ANVILML_DESIGN.md`'s spec when authored, and the resulting implementation
+  faithfully matched the defective task rather than the design doc. Specifically:
+  P1-D1's `/health` handler returns a bare `200` with no body, where §13.4
+  specifies `{ status, version, uptime_s }`; P3-A1's `Job`/`JobStatus`/
+  `JobSettings` are missing the `ToSchema` derive §5.3 requires; P3-A2's
+  `ModelMeta`/`ModelKind`/`ModelDtype`/`ModelFormat` are missing the `ToSchema`
+  derive §5.4 requires. None of the three was caught by any existing gate, since
+  each is internally consistent with its own (defective) task. Fixed by
+  inserting Phase 900 (P900-A1, P900-A2, P900-A3) per
+  `FORGE_TASK_AUTHORING_SPEC.md §6`'s retrofit-phase numbering convention.
+  P900-A1's `prereqs` includes Phase 6's two leaf tasks (P6-A9, P6-B3) so the
+  retrofit cannot start before Phase 6 closes; P7-A1's `prereqs` gained P900-A3
+  so Phase 7 cannot start before the retrofit closes. See
+  `docs/TASKS_PHASE900.md` for the full task definitions.
+- RUNNABLE_PROOF.md AUDIT AND REWRITE (cross-cutting, no new phase) - a follow-up
+  review of `docs/RUNNABLE_PROOF.md` against `FORGE_TASK_AUTHORING_SPEC.md §9`'s
+  exemption test found two separate defects across the existing 30-phase log,
+  fixed in the same pass: (1) three phases marked "Not applicable" (6, 7, 13)
+  actually had a real, externally-observable capability that the exemption does
+  not cover - Phase 6's two SQL files are loadable build artifacts (exemption
+  clause (c) applies to the load command, not to silence), Phase 7's
+  `RouterTransport::bind()` opens a real OS socket, and Phase 13's
+  `reset_ghost_jobs()` mutates a real database at startup with an observable
+  log line; all three were rewritten with literal Runnable Proof commands,
+  and their summaries in this document's Phase Map were updated to match;
+  (2) four phases (16, 24, 25, 26) had a Runnable Proof correctly marked as
+  required, but the proof itself was written as a prose description of what a
+  script or sequence *would* do, not literal copy-pasteable commands - all four
+  were rewritten with the actual WebSocket client script (Phase 16) or the
+  actual Appendix B.2 graph JSON with phase-appropriate fixture model_id values
+  (Phases 24-26). Separately, every phase with a literal proof (25 of 31,
+  including the newly-fixed six) gained a PowerShell equivalent block
+  immediately following its bash block, since the project explicitly supports
+  Windows as a first-class platform (`ENVIRONMENT.md §1`/§7's cross-check) but
+  the proof log had only ever been written in bash. No task JSON changed in
+  this pass - this was a documentation-only correction to `docs/RUNNABLE_PROOF.md`
+  and the corresponding three rows of this document's Phase Map.
 
 ## v4 roadmap status: COMPLETE
 

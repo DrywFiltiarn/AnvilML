@@ -328,10 +328,34 @@ delivered live as the job actually completes — not inferred by polling a REST
 endpoint afterward.
 
 \`\`\`bash
-# Runnable Proof (manual): a short Python script using the websockets library
-# connects to ws://127.0.0.1:8488/v1/events, submits a PassThrough job via a
-# parallel HTTP POST, and asserts a job_completed frame with the matching job_id
-# arrives within 10 seconds.
-# -> script exits 0
+cargo build --release -p anvilml --features mock-hardware
+./target/release/anvilml &
+sleep 1
+python3 - <<'EOF'
+import asyncio, json, urllib.request
+import websockets
+
+async def main():
+    async with websockets.connect("ws://127.0.0.1:8488/v1/events") as ws:
+        await ws.recv()  # initial SystemStats frame
+        req = urllib.request.Request(
+            "http://127.0.0.1:8488/v1/jobs",
+            data=json.dumps({
+                "graph": {"nodes": [{"id": "n0", "type": "PassThrough", "inputs": {"value": 1}}]},
+                "settings": {}
+            }).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        job_id = json.loads(urllib.request.urlopen(req).read())["job_id"]
+        async with asyncio.timeout(10):
+            while True:
+                frame = json.loads(await ws.recv())
+                if frame.get("type") == "job_completed" and frame.get("job_id") == job_id:
+                    return
+
+asyncio.run(main())
+EOF
+# -> script exits 0; a job_completed frame with the matching job_id arrived within 10s
+kill %1
 \`\`\`
 ```

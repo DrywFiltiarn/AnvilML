@@ -223,15 +223,40 @@ cargo fmt --all -- --check
 cargo clippy --workspace --features mock-hardware -- -D warnings
 cargo test --workspace --features mock-hardware
 
-# Runnable Proof: not applicable — this phase implements in-memory queue/ledger
-# primitives and a persistence store with no HTTP handler, CLI subcommand, or
-# other externally observable surface beyond the ghost-job reset's INFO log line
-# at startup (which is observable but not a distinct, scriptable assertion target
-# the way an HTTP response is). The full test suite (queue_tests, ledger_tests,
-# job_store_tests) is the complete and sufficient proof of this phase's
-# deliverable, per the narrow exemption in FORGE_TASK_AUTHORING_SPEC.md §9.
-# POST /v1/jobs and the dispatch loop (a later phase) are the eventual real
-# consumers of everything built here.
+# Runnable Proof (manual):
+cargo build --release -p anvilml --features mock-hardware
+rm -f anvilml_proof.db
+sqlite3 anvilml_proof.db < database/migrations/001_initial.sql
+sqlite3 anvilml_proof.db < database/migrations/003_jobs.sql
+sqlite3 anvilml_proof.db "INSERT INTO jobs (id, status, graph, settings, created_at) VALUES ('11111111-1111-1111-1111-111111111111', 'running', '{}', '{}', '2026-01-01T00:00:00Z');"
+ANVILML_DB_PATH=./anvilml_proof.db RUST_LOG=info ./target/release/anvilml > /tmp/anvilml_proof.log 2>&1 &
+sleep 1
+grep -i "ghost" /tmp/anvilml_proof.log
+# -> an INFO log line reporting 1 ghost job reset
+sqlite3 anvilml_proof.db "SELECT status FROM jobs WHERE id='11111111-1111-1111-1111-111111111111';"
+# -> failed
+kill %1
+rm -f anvilml_proof.db /tmp/anvilml_proof.log
+```
+
+```powershell
+# Runnable Proof (manual, PowerShell):
+cargo build --release -p anvilml --features mock-hardware
+Remove-Item -ErrorAction SilentlyContinue anvilml_proof.db
+Get-Content database\migrations\001_initial.sql | sqlite3 anvilml_proof.db
+Get-Content database\migrations\003_jobs.sql | sqlite3 anvilml_proof.db
+sqlite3 anvilml_proof.db "INSERT INTO jobs (id, status, graph, settings, created_at) VALUES ('11111111-1111-1111-1111-111111111111', 'running', '{}', '{}', '2026-01-01T00:00:00Z');"
+$env:ANVILML_DB_PATH = ".\anvilml_proof.db"
+$env:RUST_LOG = "info"
+$proc = Start-Process -FilePath .\target\release\anvilml.exe -PassThru -RedirectStandardOutput proof.log -RedirectStandardError proof_err.log
+Start-Sleep -Seconds 1
+Select-String -Path proof.log,proof_err.log -Pattern "ghost"
+# -> an INFO log line reporting 1 ghost job reset
+sqlite3 anvilml_proof.db "SELECT status FROM jobs WHERE id='11111111-1111-1111-1111-111111111111';"
+# -> failed
+Stop-Process -Id $proc.Id
+Remove-Item anvilml_proof.db, proof.log, proof_err.log
+Remove-Item Env:\ANVILML_DB_PATH, Env:\RUST_LOG
 ```
 
 ---
@@ -258,10 +283,22 @@ cargo test --workspace --features mock-hardware
 ```markdown
 ## Phase 13 — Job Queue
 
-**Capability proved:** Not applicable — this phase implements in-memory queue/
-ledger primitives and job persistence with no HTTP handler wired up yet. The
-ghost-job reset now runs at every server startup, observable only via its INFO log
-line. See `TASKS_PHASE013.md`'s Phase Acceptance Criteria for the full test-suite
-proof. `POST /v1/jobs` and the dispatch loop (later phases) are the eventual real
-consumers.
+**Capability proved:** `reset_ghost_jobs()` resets a real stale `Running` job to
+`Failed` against a live SQLite database at server startup, with the reset count
+logged at INFO level — a real, externally observable startup-time behaviour
+change.
+
+```bash
+cargo build --release -p anvilml --features mock-hardware
+rm -f anvilml_proof.db
+sqlite3 anvilml_proof.db < database/migrations/001_initial.sql
+sqlite3 anvilml_proof.db < database/migrations/003_jobs.sql
+sqlite3 anvilml_proof.db "INSERT INTO jobs (id, status, graph, settings, created_at) VALUES ('11111111-1111-1111-1111-111111111111', 'running', '{}', '{}', '2026-01-01T00:00:00Z');"
+ANVILML_DB_PATH=./anvilml_proof.db RUST_LOG=info ./target/release/anvilml > /tmp/anvilml_proof.log 2>&1 &
+sleep 1
+grep -i "ghost" /tmp/anvilml_proof.log
+# -> an INFO log line reporting 1 ghost job reset
+kill %1
+rm -f anvilml_proof.db /tmp/anvilml_proof.log
+```
 ```

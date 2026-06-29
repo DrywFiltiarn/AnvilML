@@ -325,8 +325,39 @@ genuinely architecture-agnostic, with zero changes needed to add this second
 diffusion architecture.
 
 \`\`\`bash
-# Runnable Proof (manual): full submit -> poll -> retrieve sequence in real mode,
-# using the Appendix B.2 graph with Flux 2 Klein 4B / Flux 2 VAE fixture model_id
-# values, producing a retrievable, valid PNG matching the requested dimensions.
+# Runnable Proof (manual): identical to Phase 24's sequence, with model_id values
+# pointing at the Flux 2 Klein 4B + Flux 2 VAE fixtures, reusing Qwen3 4B
+# (Phase 22) for the text encoder unchanged.
+cargo build --release -p anvilml
+./target/release/anvilml &
+sleep 2
+DIFF_ID=$(sha256sum worker/tests/fixtures/flux2klein4b_tiny.safetensors | head -c1048576 | cut -d' ' -f1)
+VAE_ID=$(sha256sum worker/tests/fixtures/flux2_vae_tiny.safetensors | head -c1048576 | cut -d' ' -f1)
+CLIP_ID=$(sha256sum worker/tests/fixtures/qwen3_tiny.safetensors | head -c1048576 | cut -d' ' -f1)
+JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' \
+  -d "{\"graph\":{\"nodes\":[
+    {\"id\":\"model\",\"type\":\"LoadModel\",\"inputs\":{\"model_id\":\"$DIFF_ID\"}},
+    {\"id\":\"vae\",\"type\":\"LoadVae\",\"inputs\":{\"model_id\":\"$VAE_ID\"}},
+    {\"id\":\"encoder\",\"type\":\"LoadClip\",\"inputs\":{\"model_id\":\"$CLIP_ID\",\"clip_type\":\"qwen3\"}},
+    {\"id\":\"latent\",\"type\":\"EmptyLatent\",\"inputs\":{\"width\":64,\"height\":64,\"model\":{\"node_id\":\"model\",\"output_slot\":\"model\"}}},
+    {\"id\":\"cond\",\"type\":\"ClipTextEncode\",\"inputs\":{\"clip\":{\"node_id\":\"encoder\",\"output_slot\":\"clip\"},\"positive_text\":\"a photograph of a red fox in a snowy forest\"}},
+    {\"id\":\"sampled\",\"type\":\"Sampler\",\"inputs\":{\"model\":{\"node_id\":\"model\",\"output_slot\":\"model\"},\"conditioning\":{\"node_id\":\"cond\",\"output_slot\":\"conditioning\"},\"clip\":{\"node_id\":\"encoder\",\"output_slot\":\"clip\"},\"latent\":{\"node_id\":\"latent\",\"output_slot\":\"latent\"},\"steps\":4,\"cfg\":1.0,\"seed\":-1}},
+    {\"id\":\"decoded\",\"type\":\"VaeDecode\",\"inputs\":{\"vae\":{\"node_id\":\"vae\",\"output_slot\":\"vae\"},\"latent\":{\"node_id\":\"sampled\",\"output_slot\":\"latent\"}}},
+    {\"id\":\"saved\",\"type\":\"SaveImage\",\"inputs\":{\"image\":{\"node_id\":\"decoded\",\"output_slot\":\"image\"},\"seed\":{\"node_id\":\"sampled\",\"output_slot\":\"seed\"}}}
+  ]},\"settings\":{}}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['job_id'])")
+sleep 5
+HASH=$(curl -s "http://127.0.0.1:8488/v1/jobs/$JOB_ID" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+assert d['status']=='Completed'
+print(d.get('artifact_hash') or d.get('result',{}).get('artifact_hash'))
+")
+curl -s -o saved_proof.png "http://127.0.0.1:8488/v1/artifacts/$HASH"
+python3 -c "from PIL import Image; im=Image.open('saved_proof.png'); assert im.size==(64,64)"
+# -> exits 0; a real, retrievable 64x64 PNG was produced via the unmodified
+#    generic node pipeline, now serving a second diffusion architecture
+kill %1
+rm -f saved_proof.png
 \`\`\`
 ```
