@@ -3,6 +3,7 @@
 [![CI](https://github.com/DrywFiltiarn/AnvilML/actions/workflows/ci.yml/badge.svg)](https://github.com/DrywFiltiarn/AnvilML/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust 1.96.0](https://img.shields.io/badge/rust-1.96.0-orange.svg)](rust-toolchain.toml)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-3776AB.svg)]()
 
 AnvilML is the headless Rust backend binary (`anvilml` / `anvilml.exe`) of the
 **SindriStudio** local AI image-generation platform. It is the engine room: a
