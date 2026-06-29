@@ -1455,3 +1455,75 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Acceptance:** `cargo test -p anvilml-hardware --test sysfs_tests test_sysfs_multi_device_filter` exits 0.
 
 ---
+
+## test_override_present_returns_device (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/detect_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `tokio` dev-dependency for async test support. `detect_all_devices()` is called with a `ServerConfig` that has `hardware_override` set to `Some(HardwareOverrideConfig { device_type: "cuda", vram_total_mib: 24576 })`.
+**Tests:** `detect_all_devices` returns `Ok(HardwareInfo)` with exactly one synthesized `GpuDevice` matching all override config fields: `device_type == Cuda`, `vram_total_mib == 24576`, `enumeration_source == Override`, `capabilities_source == Fallback`, `name == "CUDA"`, `driver_version == "override"`, `vram_free_mib == 24576`. Host fields are non-empty.
+**Mode:** both
+**Inputs:** `ServerConfig` with `hardware_override = Some(HardwareOverrideConfig { device_type: "cuda", vram_total_mib: 24576 })`.
+**Expected output:** `Ok(HardwareInfo)` with exactly one GPU device matching override config.
+**Acceptance:** `cargo test -p anvilml-hardware --test detect_tests test_override_present_returns_device` exits 0.
+
+---
+
+## test_override_absent_returns_err (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/detect_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `tokio` dev-dependency. `detect_all_devices()` is called with a default `ServerConfig` (no override).
+**Tests:** `detect_all_devices` returns `Err(AnvilError::Internal(...))` with a message containing `"not yet implemented"` — proving the function is callable and returns the expected error type when no override is configured. The full detection chain is deferred to P5-A2.
+**Mode:** both
+**Inputs:** Default `ServerConfig` (hardware_override is None).
+**Expected output:** `Err` with message containing `"not yet implemented"`.
+**Acceptance:** `cargo test -p anvilml-hardware --test detect_tests test_override_absent_returns_err` exits 0.
+
+---
+
+## test_override_unrecognized_device_type_defaults_to_cpu (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/detect_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `tokio` dev-dependency. `detect_all_devices()` is called with an unrecognized `device_type` value (`"metal"`).
+**Tests:** The function falls back to `DeviceType::Cpu` with a warning log, returning a synthesized CPU device. This verifies the graceful degradation path for unrecognized override values.
+**Mode:** both
+**Inputs:** `ServerConfig` with `hardware_override = Some(HardwareOverrideConfig { device_type: "metal", vram_total_mib: 8192 })`.
+**Expected output:** `Ok(HardwareInfo)` with one device having `device_type == Cpu` and `name == "CPU"`.
+**Acceptance:** `cargo test -p anvilml-hardware --test detect_tests test_override_unrecognized_device_type_defaults_to_cpu` exits 0.
+
+---
+
+## test_override_rocm_device_type (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/detect_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `tokio` dev-dependency. `detect_all_devices()` is called with `device_type == "rocm"`.
+**Tests:** The function returns a synthesized ROCm device with `device_type == Rocm`, `name == "ROCm"`, and correct VRAM from the override config.
+**Mode:** both
+**Inputs:** `ServerConfig` with `hardware_override = Some(HardwareOverrideConfig { device_type: "rocm", vram_total_mib: 16384 })`.
+**Expected output:** `Ok(HardwareInfo)` with one device having `device_type == Rocm`, `name == "ROCm"`, `vram_total_mib == 16384`.
+**Acceptance:** `cargo test -p anvilml-hardware --test detect_tests test_override_rocm_device_type` exits 0.
+
+---
+
+## test_override_cpu_device_type (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/detect_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `tokio` dev-dependency. `detect_all_devices()` is called with `device_type == "cpu"`.
+**Tests:** The function returns a synthesized CPU device with `device_type == Cpu`, `name == "CPU"`, and correct VRAM (0) from the override config.
+**Mode:** both
+**Inputs:** `ServerConfig` with `hardware_override = Some(HardwareOverrideConfig { device_type: "cpu", vram_total_mib: 0 })`.
+**Expected output:** `Ok(HardwareInfo)` with one device having `device_type == Cpu`, `name == "CPU"`, `vram_total_mib == 0`.
+**Acceptance:** `cargo test -p anvilml-hardware --test detect_tests test_override_cpu_device_type` exits 0.
+
+---
+
+## test_override_inference_caps_is_default (anvilml-hardware)
+
+**File:** `crates/anvilml-hardware/tests/detect_tests.rs`
+**Context:** The `anvilml-hardware` crate has been compiled with `tokio` dev-dependency. `detect_all_devices()` is called with a CUDA override.
+**Tests:** The returned `HardwareInfo.inference_caps` equals `InferenceCaps::default()` (all fields false) — since override devices have no real inference capabilities, the default is correct.
+**Mode:** both
+**Inputs:** `ServerConfig` with `hardware_override = Some(HardwareOverrideConfig { device_type: "cuda", vram_total_mib: 24576 })`.
+**Expected output:** `inference_caps == InferenceCaps::default()` (all boolean fields false).
+**Acceptance:** `cargo test -p anvilml-hardware --test detect_tests test_override_inference_caps_is_default` exits 0.
+
+---
