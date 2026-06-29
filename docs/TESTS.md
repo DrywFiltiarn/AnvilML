@@ -1921,3 +1921,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Three rows: (0x1001, 0x1111) with fp32=1,fp16=1; (0x1002, 0x2222) with bf16=1,fp8=1; (0x10DE, 0x3333) with fp4=1,flash_attention=1.
 **Expected output:** Each lookup returns `Some` with its own correct caps.
 **Acceptance:** `cargo test -p anvilml-registry --test device_store_tests test_lookup_multiple_ids_no_interference` exits 0.
+
+---
+
+## test_already_applied_unseen_seed_returns_false (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/seed_loader_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `tokio` (macros feature), `anvilml-core`, and `uuid` (v4 feature) dev-dependencies. Each test creates its own in-memory SQLite pool with a unique uuid-based cache name.
+**Tests:** Creates a fresh pool, constructs a `SeedLoader`, and calls `already_applied()` for a seed_name that has no row in `_seed_log`. The `_seed_log` table does not yet exist and should be created lazily by `already_applied()`.
+**Mode:** both
+**Inputs:** `seed_name="devices.sql"`, `sha256="abc123def456"`.
+**Expected output:** `Ok(false)` — the seed has never been applied.
+**Acceptance:** `cargo test -p anvilml-registry --test seed_loader_tests test_already_applied_unseen_seed_returns_false` exits 0.
+
+---
+
+## test_already_applied_hash_mismatch_returns_false (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/seed_loader_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `tokio` (macros feature), `anvilml-core`, and `uuid` (v4 feature) dev-dependencies. Each test creates its own in-memory SQLite pool with a unique uuid-based cache name.
+**Tests:** Inserts a row into `_seed_log` with `seed_name="devices.sql"` and `sha256="old_hash"`, then calls `already_applied("devices.sql", "new_hash")`. Verifies that the method returns `false` because the hashes do not match.
+**Mode:** both
+**Inputs:** `seed_name="devices.sql"`, stored `sha256="old_hash"`, queried `sha256="new_hash"`.
+**Expected output:** `Ok(false)` — the seed file has changed since last run.
+**Acceptance:** `cargo test -p anvilml-registry --test seed_loader_tests test_already_applied_hash_mismatch_returns_false` exits 0.
+
+---
+
+## test_already_applied_hash_match_returns_true (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/seed_loader_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `tokio` (macros feature), `anvilml-core`, and `uuid` (v4 feature) dev-dependencies. Each test creates its own in-memory SQLite pool with a unique uuid-based cache name.
+**Tests:** Inserts a row into `_seed_log` with `seed_name="devices.sql"` and `sha256="abc123"`, then calls `already_applied("devices.sql", "abc123")`. Verifies that the method returns `true` because the hashes match.
+**Mode:** both
+**Inputs:** `seed_name="devices.sql"`, stored `sha256="abc123"`, queried `sha256="abc123"`.
+**Expected output:** `Ok(true)` — the seed has already been applied with this exact content.
+**Acceptance:** `cargo test -p anvilml-registry --test seed_loader_tests test_already_applied_hash_match_returns_true` exits 0.
+
+---
+
+## test_seed_log_created_on_first_use (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/seed_loader_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `tokio` (macros feature), `anvilml-core`, and `uuid` (v4 feature) dev-dependencies. Each test creates its own in-memory SQLite pool with a unique uuid-based cache name.
+**Tests:** Calls `already_applied()` on a fresh pool (no `_seed_log` table) and verifies the method returns `Ok(false)`. Then queries `sqlite_master` directly to confirm the `_seed_log` table was created.
+**Mode:** both
+**Inputs:** `seed_name="devices.sql"`, `sha256="abc123"`.
+**Expected output:** `Ok(false)` and `_seed_log` table exists in `sqlite_master`.
+**Acceptance:** `cargo test -p anvilml-registry --test seed_loader_tests test_seed_log_created_on_first_use` exits 0.

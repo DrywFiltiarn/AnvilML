@@ -3,6 +3,7 @@
 pub mod db;
 pub mod device_store;
 pub mod scanner;
+pub mod seed_loader;
 pub mod store;
 
 pub use db::create_pool;
