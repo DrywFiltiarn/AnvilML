@@ -16,6 +16,18 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 ---
 
+## hw_probe_help_shows_subcommand (backend)
+
+**File:** `backend/tests/hw_probe_help_test.rs`
+**Context:** The `anvilml` binary has been compiled (`cargo build -p anvilml`).
+**Tests:** The `hw-probe --help` output contains the "hw-probe" subcommand name, confirming the subcommand was registered with clap.
+**Mode:** both
+**Inputs:** `hw-probe --help` passed to the compiled binary.
+**Expected output:** The help text includes "hw-probe" in the usage line or description.
+**Acceptance:** `cargo test -p anvilml --test hw_probe_help_test` exits 0.
+
+---
+
 ## test_shutdown_signal_returns_on_ctrl_c (backend)
 
 **File:** `backend/tests/shutdown_tests.rs`

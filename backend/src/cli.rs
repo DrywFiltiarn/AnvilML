@@ -1,4 +1,14 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
+
+/// Subcommands for the AnvilML binary.
+///
+/// Each variant represents a distinct operation the binary can perform
+/// (currently only hardware probing; the default `None` path runs the server).
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Probe the system hardware and print detected devices as JSON.
+    HwProbe,
+}
 
 /// Command-line interface for the AnvilML server.
 ///
@@ -7,9 +17,19 @@ use clap::Parser;
 /// `config_load::load()` (layer 1 of the four-layer config precedence),
 /// not from clap defaults. The `--config` flag points to an optional
 /// TOML file (layer 2).
+///
+/// The optional `command` subcommand field enables non-server operations
+/// (e.g., `hw-probe`) without requiring separate binary targets.
 #[derive(Parser, Debug)]
 #[command(name = "anvilml", about = "AnvilML — ML model serving platform")]
 pub struct Cli {
+    /// Subcommand to execute.
+    ///
+    /// If `None` (the default), the binary runs the HTTP server.
+    /// If `Some(Commands::HwProbe)`, the binary probes hardware and exits.
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+
     /// Bind address for the HTTP server.
     ///
     /// If not provided, the value from the config precedence chain

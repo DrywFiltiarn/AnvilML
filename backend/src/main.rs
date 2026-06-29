@@ -3,6 +3,7 @@ mod cli;
 use anvilml::shutdown;
 use anvilml_core::CliOverrides;
 use anvilml_core::config_load;
+use anvilml_hardware::detect_all_devices;
 use anvilml_server::build_router;
 use std::path::Path;
 use tokio::net::TcpListener;
@@ -11,12 +12,16 @@ use tokio::net::TcpListener;
 ///
 /// Parses CLI arguments, loads `ServerConfig` through the four-layer
 /// precedence chain (defaults → TOML → env vars → CLI flags) via
-/// `config_load::load()`, builds the HTTP router, binds a TCP listener
-/// on the loaded host and port, then serves HTTP requests until a
-/// shutdown signal (Ctrl+C / SIGINT) is received.
+/// `config_load::load()`, then branches on the parsed subcommand:
+///
+/// - `hw-probe` — calls `detect_all_devices()`, serialises the result
+///   to pretty JSON on stdout, and exits 0.
+/// - no subcommand (default) — builds the HTTP router, binds a TCP
+///   listener on the loaded host and port, then serves HTTP requests
+///   until a shutdown signal (Ctrl+C / SIGINT) is received.
 ///
 /// If config loading fails, prints the error and exits with code 1
-/// before binding any socket.
+/// before binding any socket or running hardware detection.
 #[tokio::main]
 async fn main() {
     let cli = cli::parse();
@@ -38,6 +43,31 @@ async fn main() {
             std::process::exit(1);
         })
         .unwrap();
+
+    // Branch on the parsed subcommand.
+    // `hw-probe` runs hardware detection and exits; the default `None`
+    // path starts the HTTP server as before.
+    match cli.command {
+        Some(cli::Commands::HwProbe) => {
+            // Detect all hardware devices using the loaded config.
+            // This is the same detection path used at server startup,
+            // ensuring consistent results between probe and runtime.
+            let hw_info = detect_all_devices(&config).await.unwrap();
+
+            // Serialize to pretty-printed JSON for human readability.
+            // `HardwareInfo` derives `Serialize` via serde, so this
+            // always succeeds for well-formed data.
+            let json = serde_json::to_string_pretty(&hw_info)
+                .expect("HardwareInfo serialization must succeed");
+
+            // Print to stdout and exit 0 — no server, no socket.
+            println!("{json}");
+            std::process::exit(0);
+        }
+        None => {
+            // Default path: start the HTTP server.
+        }
+    }
 
     let router = build_router();
     let listener = TcpListener::bind(format!("{}:{}", config.host, config.port))

@@ -1,6 +1,6 @@
 [package]
 name = "anvilml"
-version = "0.1.3"
+version = "0.1.4"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -10,9 +10,11 @@ mock-hardware = ["anvilml-scheduler/mock-hardware"]
 
 [dependencies]
 anvilml-core = { path = "../crates/anvilml-core" }
+anvilml-hardware = { path = "../crates/anvilml-hardware" }
 anvilml-scheduler = { path = "../crates/anvilml-scheduler" }
 anvilml-server = { path = "../crates/anvilml-server" }
-clap = { version = "4.6.1", features = ["derive"] }
 axum = "0.8.9"
+clap = { version = "4.6.1", features = ["derive"] }
+serde_json = "1.0"
 tokio = { version = "1.47.0", features = ["full"] }
 tracing = "0.1"
