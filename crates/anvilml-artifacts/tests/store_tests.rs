@@ -231,3 +231,118 @@ async fn test_different_content_produces_different_hash() {
         "second file content should match second PNG input"
     );
 }
+
+/// `save()` followed by `get()` returns the exact original PNG bytes.
+///
+/// Creates a tempdir and `ArtifactStore`, calls `save()` with a known PNG,
+/// then calls `get()` with the returned hash and verifies the bytes match
+/// the original input exactly.
+#[tokio::test]
+async fn test_save_then_get_roundtrips() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let pool = make_pool().await;
+    let store = ArtifactStore::new(tempdir.path().to_path_buf(), pool);
+
+    let meta = test_meta();
+    let hash = store
+        .save(TEST_PNG, &meta)
+        .await
+        .expect("save should succeed");
+
+    // Retrieve the artifact by hash.
+    let retrieved = store.get(&hash).await.expect("get should succeed");
+
+    // The retrieved bytes must match the original PNG exactly.
+    assert!(
+        retrieved.is_some(),
+        "get should return Some for a hash that was just saved"
+    );
+    assert_eq!(
+        retrieved.unwrap(),
+        TEST_PNG,
+        "retrieved bytes should match original PNG content"
+    );
+}
+
+/// `get()` on a hash that was never saved returns `Ok(None)`.
+///
+/// Creates an empty tempdir and `ArtifactStore`, then calls `get()` with a
+/// random hash that does not correspond to any saved file. Asserts the
+/// result is `Ok(None)` — not an error, not `Some`.
+#[tokio::test]
+async fn test_get_unknown_hash_returns_none() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let pool = make_pool().await;
+    let store = ArtifactStore::new(tempdir.path().to_path_buf(), pool);
+
+    // Use a hash that was never saved — a string of hex digits that
+    // does not match any file in the artifact directory.
+    let unknown_hash = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    let result = store
+        .get(unknown_hash)
+        .await
+        .expect("get should not error for an unknown hash");
+
+    assert!(
+        result.is_none(),
+        "get should return None for a hash that was never saved"
+    );
+}
+
+/// After saving two different PNGs, `get()` for each hash returns the
+/// correct file's content — not the other file's content.
+///
+/// Creates a tempdir and `ArtifactStore`, saves two different PNGs
+/// (black and white), then calls `get()` for each hash and verifies
+/// each returns its own content, proving content-addressed retrieval
+/// is not confused by having multiple files in the same directory.
+#[tokio::test]
+async fn test_get_after_duplicate_save_returns_original_content() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let pool = make_pool().await;
+    let store = ArtifactStore::new(tempdir.path().to_path_buf(), pool);
+
+    let meta1 = test_meta();
+    let meta2 = ArtifactMeta {
+        seed: 137,
+        ..meta1.clone()
+    };
+
+    // Save two different PNGs.
+    let hash1 = store
+        .save(TEST_PNG, &meta1)
+        .await
+        .expect("first save should succeed");
+    let hash2 = store
+        .save(TEST_PNG_WHITE, &meta2)
+        .await
+        .expect("second save should succeed");
+
+    // The two hashes must be different.
+    assert_ne!(
+        hash1, hash2,
+        "different PNGs should produce different hashes"
+    );
+
+    // Retrieve each by its own hash and verify the content.
+    let retrieved1 = store
+        .get(&hash1)
+        .await
+        .expect("get for first hash should succeed");
+    let retrieved2 = store
+        .get(&hash2)
+        .await
+        .expect("get for second hash should succeed");
+
+    assert_eq!(
+        retrieved1.unwrap(),
+        TEST_PNG,
+        "get(hash1) should return the first PNG's content, not the second's"
+    );
+    assert_eq!(
+        retrieved2.unwrap(),
+        TEST_PNG_WHITE,
+        "get(hash2) should return the second PNG's content, not the first's"
+    );
+}

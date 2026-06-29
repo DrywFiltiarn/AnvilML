@@ -5,10 +5,9 @@
 //! and metadata is persisted in an SQLite database.
 //!
 //! The `artifacts` table schema is created automatically on first save via
-//! `CREATE TABLE IF NOT EXISTS` — this is a temporary measure until P6-B2
-//! introduces the formal migration file `002_artifacts.sql`. When that
-//! migration runs, the table will already exist, making the migration
-//! a no-op for this table.
+//! `CREATE TABLE IF NOT EXISTS` as a safety net — the canonical schema lives
+//! in `database/migrations/002_artifacts.sql`. When the migration runner is
+//! wired in, the inline DDL becomes a no-op.
 
 use anvilml_core::{AnvilError, ArtifactMeta};
 use sha2::{Digest, Sha256};
@@ -157,15 +156,15 @@ impl ArtifactStore {
 
     /// Ensure the `artifacts` table exists in the database.
     ///
-    /// Uses `CREATE TABLE IF NOT EXISTS` to avoid depending on a migration
-    /// file that has not yet been introduced (deferred to P6-B2).
-    ///
-    /// The schema matches `002_artifacts.sql` exactly, so when that
-    /// migration runs, the table will already exist and the migration
-    /// becomes a no-op for this table.
+    /// Uses `CREATE TABLE IF NOT EXISTS` as a safety net so that `save()`
+    /// remains functional even when the migration runner has not yet been
+    /// wired into pool creation. The schema matches `002_artifacts.sql`
+    /// exactly, so when that migration runs first, the inline DDL becomes
+    /// a no-op.
     async fn ensure_artifacts_table(&self) -> Result<(), AnvilError> {
-        // defers_to: P6-B2 — migration file 002_artifacts.sql replaces this
-        // inline DDL when the migration system is introduced.
+        // Inline DDL is a temporary fallback — the canonical schema lives in
+        // database/migrations/002_artifacts.sql.  CREATE TABLE IF NOT EXISTS
+        // is idempotent, so this is safe to run on every save() call.
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS artifacts (\
              hash TEXT PRIMARY KEY, \
@@ -181,5 +180,52 @@ impl ArtifactStore {
         .await?;
 
         Ok(())
+    }
+
+    /// Retrieve a saved artifact by its content hash.
+    ///
+    /// Reads the PNG file at `{artifact_dir}/{hash}.png` from disk and returns
+    /// its bytes. Returns `Ok(None)` if no file exists for the given hash
+    /// (file not found). Returns `Err` for any other I/O error (permission
+    /// denied, truncated file, etc.).
+    ///
+    /// This is a pure filesystem read — it does not query the database.
+    /// The database row may exist without the file (partial save), or
+    /// the file may exist without the row (prior to P6-B1's DB persistence).
+    ///
+    /// # Arguments
+    ///
+    /// * `hash` — The SHA-256 hex content address to look up.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(bytes)` with the PNG file contents if the file exists,
+    /// `Ok(None)` if no file exists for this hash,
+    /// or `Err(AnvilError::Io)` for other filesystem errors.
+    #[tracing::instrument(fields(artifact_dir = %self.artifact_dir.display()), skip(self))]
+    pub async fn get(&self, hash: &str) -> Result<Option<Vec<u8>>, AnvilError> {
+        // Construct the content-addressed file path: {artifact_dir}/{hash}.png
+        // The .png extension is appended because all artifacts are stored as PNG.
+        let file_path = self.artifact_dir.join(format!("{hash}.png"));
+
+        // Attempt to read the file. If it doesn't exist, return None
+        // rather than an error — this is the expected "not found" path
+        // for a content-addressed store.
+        match std::fs::read(&file_path) {
+            Ok(bytes) => {
+                tracing::debug!(hash = %hash, bytes = bytes.len(), "artifact read from disk");
+                Ok(Some(bytes))
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                tracing::debug!(hash = %hash, "artifact not found on disk");
+                Ok(None)
+            }
+            Err(err) => {
+                // Any other I/O error (permission denied, etc.) propagates
+                // as an Io error via the From<std::io::Error> impl on AnvilError.
+                tracing::error!(hash = %hash, error = %err, "failed to read artifact from disk");
+                Err(err.into())
+            }
+        }
     }
 }

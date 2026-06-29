@@ -2053,3 +2053,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** 64×64 black PNG (225 bytes) and 64×64 white PNG (203 bytes), with different `ArtifactMeta` values (seed 42 vs seed 137).
 **Expected output:** Two files exist at different `{hash}.png` paths, hashes differ, each file's content matches its corresponding input.
 **Acceptance:** `cargo test -p anvilml-artifacts --test store_tests test_different_content_produces_different_hash` exits 0.
+
+---
+
+## test_save_then_get_roundtrips (anvilml-artifacts)
+
+**File:** `crates/anvilml-artifacts/tests/store_tests.rs`
+**Context:** The `anvilml-artifacts` crate has been compiled with `sha2` (0.11), `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `chrono` (serde feature), `tokio` (macros feature), `tempfile`, and `uuid` (v4 feature) dependencies. Each test creates its own in-memory SQLite pool with a unique uuid-based cache name and its own temp directory.
+**Tests:** Creates a tempdir and `ArtifactStore`, calls `save()` with a known PNG, then calls `get()` with the returned hash and verifies the retrieved bytes match the original input exactly.
+**Mode:** both
+**Inputs:** 64×64 black PNG (225 bytes), `ArtifactMeta` with seed 42.
+**Expected output:** `get(hash)` returns `Ok(Some(bytes))` where bytes are byte-for-byte identical to the original PNG.
+**Acceptance:** `cargo test -p anvilml-artifacts --test store_tests test_save_then_get_roundtrips` exits 0.
+
+---
+
+## test_get_unknown_hash_returns_none (anvilml-artifacts)
+
+**File:** `crates/anvilml-artifacts/tests/store_tests.rs`
+**Context:** The `anvilml-artifacts` crate has been compiled with `sha2` (0.11), `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `chrono` (serde feature), `tokio` (macros feature), `tempfile`, and `uuid` (v4 feature) dependencies. Each test creates its own in-memory SQLite pool with a unique uuid-based cache name and its own temp directory.
+**Tests:** Creates an empty tempdir and `ArtifactStore`, then calls `get()` with a random hex hash that does not correspond to any saved file. Verifies the result is `Ok(None)` — not an error, not `Some`.
+**Mode:** both
+**Inputs:** 64-character zeroed hex hash string (SHA-256 of all-zero bytes).
+**Expected output:** `Ok(None)` — the content-addressed store correctly returns None for an unknown hash.
+**Acceptance:** `cargo test -p anvilml-artifacts --test store_tests test_get_unknown_hash_returns_none` exits 0.
+
+---
+
+## test_get_after_duplicate_save_returns_original_content (anvilml-artifacts)
+
+**File:** `crates/anvilml-artifacts/tests/store_tests.rs`
+**Context:** The `anvilml-artifacts` crate has been compiled with `sha2` (0.11), `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `chrono` (serde feature), `tokio` (macros feature), `tempfile`, and `uuid` (v4 feature) dependencies. Each test creates its own in-memory SQLite pool with a unique uuid-based cache name and its own temp directory.
+**Tests:** Creates a tempdir and `ArtifactStore`, saves two different PNGs (black and white) producing two different hashes, then calls `get()` for each hash and verifies each returns its own content — proving content-addressed retrieval is not confused by having multiple files.
+**Mode:** both
+**Inputs:** 64×64 black PNG (225 bytes, seed 42) and 64×64 white PNG (203 bytes, seed 137).
+**Expected output:** `get(hash1)` returns the black PNG bytes, `get(hash2)` returns the white PNG bytes — each hash maps to its own file content.
+**Acceptance:** `cargo test -p anvilml-artifacts --test store_tests test_get_after_duplicate_save_returns_original_content` exits 0.
