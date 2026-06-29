@@ -1,7 +1,7 @@
-# Tasks: Phase 900 — Spec-Drift Retrofit: /health Body & Missing ToSchema
+# Tasks: Phase 900 — Spec-Drift & Logging Retrofit: tracing-subscriber, /health Body & Missing ToSchema
 
 **Phase:** 900
-**Name:** Spec-Drift Retrofit: /health Body & Missing ToSchema
+**Name:** Spec-Drift & Logging Retrofit: tracing-subscriber, /health Body & Missing ToSchema
 **Project(s):** anvilml
 **Status:** Draft
 **Depends on phases:** 1, 3, 6
@@ -13,37 +13,52 @@
 This is a retrofit phase, inserted out-of-band between Phase 6 and Phase 7, per
 `FORGE_TASK_AUTHORING_SPEC.md §6`'s numbering convention for retrofit phases
 (900–999, ordering enforced via `prereqs` rather than numeric position). It exists
-because a manual audit against `ANVILML_DESIGN.md`, conducted while implementation
-sat at P6-A2, found three independent instances of the same root-cause defect: a
-task's `context` field silently dropped part of the design doc's spec when it was
-written, and the resulting implementation, test, and review all faithfully matched
-the (defective) task rather than the design doc. None of the three was caught by
-any existing gate, because each one is internally consistent — the code does
-exactly what its own task asked for, just not what `ANVILML_DESIGN.md` specifies.
+because a manual audit against `ANVILML_DESIGN.md` and `ENVIRONMENT.md`, conducted
+while implementation sat at P6-A2, found four independent instances of the same
+root-cause defect: a task's `context` field silently dropped part of the design
+doc's (or environment doc's) spec when it was written, and the resulting
+implementation, test, and review all faithfully matched the (defective) task
+rather than the authoritative document. None of the four was caught by any
+existing gate, because each one is internally consistent — the code does exactly
+what its own task asked for, just not what the governing document specifies.
 
-The three findings are: (1) `GET /health` (Phase 1, `P1-D1`) returns a bare `200`
-with no body, where `ANVILML_DESIGN.md §13.4` specifies a JSON body of
-`{ status, version, uptime_s }`; (2) `Job`, `JobStatus`, and `JobSettings` (Phase 3,
-`P3-A1`) are missing the `ToSchema` derive that `ANVILML_DESIGN.md §5.3` requires on
-all three; (3) `ModelMeta`, `ModelKind`, `ModelDtype`, and `ModelFormat` (Phase 3,
-`P3-A2`) are missing the `ToSchema` derive that `ANVILML_DESIGN.md §5.4` requires on
-all four. The two `ToSchema` omissions matter beyond cosmetic correctness: Phase 1's
-`anvilml-openapi` stub (`P1-B6`) exists specifically to later read every type's
-`ToSchema` impl and emit `api/openapi.json` — a type missing the derive at that
-point would be either silently absent from the generated spec or a hard compile
-error, depending on how that future task is written. Closing the gap now, before
-Phase 7's IPC layer and Phase 8's worker pool start depending on these same
-`anvilml-core` types in more places, is cheaper than retrofitting it later.
+The four findings are: (0) no task in Phases 1–6 ever wired `tracing-subscriber`
+into the binary — `tracing` (the facade) is a dependency and `tracing::info!`/
+`debug!` calls exist (`P1-D1`'s listening log, `P1-A3`'s shutdown log), but with no
+registered `Subscriber` every one of those calls is a silent no-op, and the
+`ANVILML_LOG`/`RUST_LOG` precedence `ENVIRONMENT.md §3.3` documents is read by
+nothing; (1) `GET /health` (Phase 1, `P1-D1`) returns a bare `200` with no body,
+where `ANVILML_DESIGN.md §13.4` specifies a JSON body of `{ status, version,
+uptime_s }`; (2) `Job`, `JobStatus`, and `JobSettings` (Phase 3, `P3-A1`) are
+missing the `ToSchema` derive that `ANVILML_DESIGN.md §5.3` requires on all three;
+(3) `ModelMeta`, `ModelKind`, `ModelDtype`, and `ModelFormat` (Phase 3, `P3-A2`)
+are missing the `ToSchema` derive that `ANVILML_DESIGN.md §5.4` requires on all
+four. The logging gap (finding 0) is the highest-priority of the four — it was
+escalated by the project owner as a blocking operational defect, since it leaves
+the running binary silent on the terminal with no way to diagnose startup or
+shutdown behaviour, and is therefore scheduled as this phase's first task ahead of
+the three findings the original audit identified. The two `ToSchema` omissions
+matter beyond cosmetic correctness: Phase 1's `anvilml-openapi` stub (`P1-B6`)
+exists specifically to later read every type's `ToSchema` impl and emit
+`api/openapi.json` — a type missing the derive at that point would be either
+silently absent from the generated spec or a hard compile error, depending on how
+that future task is written. Closing all four gaps now, before Phase 7's IPC layer
+and Phase 8's worker pool start depending on these same `anvilml-core` types and
+the same silent-logging binary in more places, is cheaper than retrofitting it
+later.
 
-This phase is scheduled after Phase 6 completes and before Phase 7 begins. It has
-no functional dependency on Phase 6's registry/artifacts work — the three fixes
-touch only `anvilml-server`'s health handler and `anvilml-core`'s `job`/`model`
-type modules — but the project owner requested it land in this exact window, so
-`P900-A1`'s `prereqs` explicitly includes Phase 6's two leaf tasks (`P6-A9`,
-`P6-B3`) alongside its real dependency (`P1-D1`), and Phase 7's first task
-(`P7-A1`) has had `P900-A3` added to its own `prereqs` so The Forge cannot begin
-Phase 7 until this phase's last task is complete. At the start of this phase, the
-three defects above are live in the repository. At the end: `/health` returns the
+This phase is scheduled after Phase 6 completes and before Phase 7 begins. None of
+the four fixes has a functional dependency on Phase 6's registry/artifacts work —
+they touch `backend`'s entry point, `anvilml-server`'s health handler, and
+`anvilml-core`'s `job`/`model` type modules — but the project owner requested the
+phase land in this exact window, so `P900-A2`'s `prereqs` explicitly includes
+Phase 6's two leaf tasks (`P6-A9`, `P6-B3`) alongside its real dependencies
+(`P900-A1`, `P1-D1`), and Phase 7's first task (`P7-A1`) has had its `prereqs`
+updated to point at this phase's new final task (`P900-A4`, previously `P900-A3`
+before this revision inserted the logging fix ahead of it) so The Forge cannot
+begin Phase 7 until this phase's last task is complete. At the start of this
+phase, all four defects above are live in the repository. At the end: the binary
+emits real log output honouring `ANVILML_LOG`/`RUST_LOG`, `/health` returns the
 spec-correct JSON body, and every domain type the design doc says should derive
 `ToSchema` does.
 
@@ -53,12 +68,15 @@ spec-correct JSON body, and every domain type the design doc says should derive
 
 | Group | Subsystem | Tasks | Summary |
 |-------|-----------|-------|---------|
-| A | Spec-drift fixes | P900-A1 … P900-A3 | `/health` JSON body, `Job`-family `ToSchema`, `Model`-family `ToSchema` |
+| A | Spec-drift & logging fixes | P900-A1 … P900-A4 | `tracing-subscriber` wiring, `/health` JSON body, `Job`-family `ToSchema`, `Model`-family `ToSchema` |
 
 ---
 
 ## Prerequisites
 
+`backend/Cargo.toml` and `backend/src/main.rs` must exist exactly as `P1-A2`/`P1-A3`
+left them (Phase 1) — no subscriber initialization present, `tracing` declared as
+a dependency but `tracing-subscriber` absent from the dependency tree entirely.
 Phase 6 must be complete — specifically `anvilml-registry`'s `lib.rs` re-export
 pass (`P6-A9`) and `anvilml-artifacts`'s `ArtifactStore::list` (`P6-B3`), the two
 tasks nothing else in Phase 6 depends on. `crates/anvilml-server/src/handlers/health.rs`
@@ -66,7 +84,7 @@ must exist exactly as `P1-D1` left it (Phase 1). `crates/anvilml-core/src/types/
 and `crates/anvilml-core/src/types/model.rs` must exist exactly as `P3-A1` and
 `P3-A2` left them (Phase 3). `anvilml-core/Cargo.toml` must already depend on
 `utoipa` with the `uuid`/`chrono` features (established in Phase 3, used unchanged
-here — no new dependency is introduced by this phase).
+here — no new dependency is introduced by `P900-A3`/`P900-A4`).
 
 ---
 
@@ -74,17 +92,53 @@ here — no new dependency is introduced by this phase).
 
 | Contract document | Relevant to tasks | What must match |
 |--------------------|--------------------|------------------|
-| `ANVILML_DESIGN.md §13.4` | P900-A1 | `/health` success response shape: `200 { status, version, uptime_s }` |
-| `ANVILML_DESIGN.md §5.3` | P900-A2 | `Job`, `JobStatus`, `JobSettings` each derive `ToSchema` |
-| `ANVILML_DESIGN.md §5.4` | P900-A3 | `ModelMeta`, `ModelKind`, `ModelDtype`, `ModelFormat` each derive `ToSchema` |
+| `ENVIRONMENT.md §3.3` | P900-A1 | `ANVILML_LOG` takes precedence over `RUST_LOG`; both default to `info` when unset |
+| `ANVILML_DESIGN.md §13.4` | P900-A2 | `/health` success response shape: `200 { status, version, uptime_s }` |
+| `ANVILML_DESIGN.md §5.3` | P900-A3 | `Job`, `JobStatus`, `JobSettings` each derive `ToSchema` |
+| `ANVILML_DESIGN.md §5.4` | P900-A4 | `ModelMeta`, `ModelKind`, `ModelDtype`, `ModelFormat` each derive `ToSchema` |
 
 ---
 
 ## Task Descriptions
 
-### Group A — Spec-drift fixes
+### Group A — Spec-drift & logging fixes
 
-#### P900-A1: anvilml-server: /health returns ANVILML_DESIGN.md §13.4 JSON body
+#### P900-A1: backend: wire tracing-subscriber, ANVILML_LOG/RUST_LOG never read
+
+**Goal:** Make the binary actually emit log output. This is the priority fix in
+this phase — escalated ahead of the three originally-scheduled findings because a
+silent binary with no diagnostic output is a blocking operational defect, not a
+cosmetic spec mismatch.
+
+**Files to create or modify:**
+- `backend/Cargo.toml` — add `tracing-subscriber` with the `env-filter` feature.
+- `backend/src/main.rs` — initialize the subscriber as the first statement in
+  `main()`, before CLI parsing or config loading.
+
+**Key implementation notes:**
+- `tracing` (the facade crate providing the `tracing::info!`/`debug!` macros) has
+  been a dependency since Phase 1, but no `Subscriber` has ever been registered —
+  `tracing-subscriber` does not appear anywhere in `Cargo.lock`. Without a
+  registered subscriber, every `tracing::*!` call in the codebase is a no-op; this
+  is why `P1-D1`'s `"listening"` log and `P1-A3`'s shutdown log produce no visible
+  output despite the calls existing in source.
+- Filter precedence must match `ENVIRONMENT.md §3.3` exactly: try `ANVILML_LOG`
+  first, fall back to `RUST_LOG`, default to `"info"` if neither is set.
+- This must run before any other startup work so that config-loading and
+  hardware-detection log lines (already written elsewhere in the codebase) become
+  visible immediately once this task lands, with no further changes required at
+  those call sites.
+
+**Acceptance criterion:**
+```bash
+cargo test -p anvilml --test logging_tests
+# -> exits 0; >=3 tests confirming ANVILML_LOG=debug and RUST_LOG=debug both
+#    produce non-empty stderr, and that ANVILML_LOG wins when both are set
+```
+
+---
+
+#### P900-A2: anvilml-server: /health returns ANVILML_DESIGN.md §13.4 JSON body
 
 **Goal:** Make `GET /health` return the JSON body `ANVILML_DESIGN.md §13.4`
 specifies, closing the gap between the live route and its own design spec before
@@ -123,7 +177,7 @@ cargo test -p anvilml-server --test health_tests
 
 ---
 
-#### P900-A2: anvilml-core: add missing ToSchema to Job/JobStatus/JobSettings
+#### P900-A3: anvilml-core: add missing ToSchema to Job/JobStatus/JobSettings
 
 **Goal:** Add the `ToSchema` derive that `ANVILML_DESIGN.md §5.3` specifies for
 `Job`, `JobStatus`, and `JobSettings` but that the live `job.rs` is missing
@@ -155,19 +209,19 @@ cargo doc -p anvilml-core --no-deps
 
 ---
 
-#### P900-A3: anvilml-core: add missing ToSchema to ModelMeta/ModelKind/ModelDtype/ModelFormat
+#### P900-A4: anvilml-core: add missing ToSchema to ModelMeta/ModelKind/ModelDtype/ModelFormat
 
 **Goal:** Add the `ToSchema` derive that `ANVILML_DESIGN.md §5.4` specifies for
 `ModelMeta`, `ModelKind`, `ModelDtype`, and `ModelFormat` but that the live
-`model.rs` is missing entirely — the second and last instance of this omission
-pattern found by the audit.
+`model.rs` is missing entirely — the last instance of this omission pattern found
+by the audit, and the final task in this phase.
 
 **Files to create or modify:**
 - `crates/anvilml-core/src/types/model.rs` — add `use utoipa::ToSchema;` and
   append `ToSchema` to the derive list on all four types.
 
 **Key implementation notes:**
-- Additive-derive-only, identical in nature to `P900-A2`: no field, variant, or
+- Additive-derive-only, identical in nature to `P900-A3`: no field, variant, or
   `serde` attribute changes. The `#[serde(rename_all = "snake_case")]` attributes
   on the three enums are untouched.
 - This is the last task in the phase — it closes with a full-workspace regression
@@ -175,7 +229,7 @@ pattern found by the audit.
   before Phase 7 begins building on top of this crate.
 - Confirmed isolated: `hardware.rs`, `worker.rs`, `node.rs`, `artifact.rs`, and
   `events.rs` all already correctly derive `ToSchema` where the design doc
-  requires it — only `job.rs` (`P900-A2`) and `model.rs` (this task) were missing
+  requires it — only `job.rs` (`P900-A3`) and `model.rs` (this task) were missing
   it.
 
 **Acceptance criterion:**
@@ -198,14 +252,16 @@ cargo clippy --workspace --features mock-hardware -- -D warnings
 cargo test --workspace --features mock-hardware
 cargo doc -p anvilml-core --no-deps
 
-# Runnable Proof (manual): /health now returns a real JSON body, not just a bare
+# Runnable Proof (manual): the binary now emits visible log output honouring
+# ANVILML_LOG/RUST_LOG, and /health returns a real JSON body instead of a bare
 # 200 status code.
 cargo build --release -p anvilml --features mock-hardware
-./target/release/anvilml &
+ANVILML_LOG=debug ./target/release/anvilml &
 sleep 1
 curl -s http://127.0.0.1:8488/health | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['status']=='ok' and isinstance(d['version'],str) and isinstance(d['uptime_s'],int)"
 # -> exits 0; the JSON body contains status="ok", a string version, and an
-#    integer uptime_s — previously this body was empty
+#    integer uptime_s — previously this body was empty; stderr above also shows
+#    real DEBUG-level log lines — previously stderr was silent
 kill %1
 ```
 
@@ -213,39 +269,51 @@ kill %1
 
 ## Known Constraints and Gotchas
 
+- `P900-A1` is the priority-escalated fix in this phase and intentionally has no
+  dependency on `P900-A2`/`P900-A3`/`P900-A4` beyond being scheduled first — it
+  could in principle land independently, but is kept in this phase per the
+  project owner's instruction to batch it alongside the three previously-found
+  spec-drift defects under one retrofit phase.
 - This phase's tasks intentionally do not touch `anvilml-server/src/handlers/mod.rs`
-  or `lib.rs`'s `build_router()` signature beyond what `P900-A1` requires to thread
+  or `lib.rs`'s `build_router()` signature beyond what `P900-A2` requires to thread
   the start time through — no new routes are added.
-- `P900-A1` is tagged `"breaking"` because it changes `health()`'s return type
-  from `StatusCode` to `Json<HealthResponse>` — any code written between Phase 1
-  and now that matched on the handler's old return type (none is expected to
-  exist) would need updating.
-- `P900-A2` and `P900-A3` are tagged `"refactor"` per `FORGE_TASK_AUTHORING_SPEC.md
+- `P900-A1` is tagged `"breaking"` because it changes `main()`'s startup sequence
+  and the binary's observable stderr behaviour for the first time. `P900-A2` is
+  tagged `"breaking"` because it changes `health()`'s return type from
+  `StatusCode` to `Json<HealthResponse>` — any code written between Phase 1 and
+  now that matched on the handler's old return type (none is expected to exist)
+  would need updating.
+- `P900-A3` and `P900-A4` are tagged `"refactor"` per `FORGE_TASK_AUTHORING_SPEC.md
   §13` — they make zero observable behaviour change; only a derive is added.
   Per `§9`'s narrow exemption, no live-instance Runnable Proof is required for
   these two individually, but the phase as a whole still provides one via
-  `P900-A1`, so the phase-level exemption does not apply here.
-- `P7-A1`'s `prereqs` have been updated to include `P900-A3` (in addition to its
-  existing `P3-A11` prereq) so that Phase 7 cannot begin until this phase
-  completes, per the project owner's explicit scheduling request — this is a
-  cross-phase edit made as part of authoring this phase, not a separate task.
+  `P900-A1`/`P900-A2`, so the phase-level exemption does not apply here.
+- `P7-A1`'s `prereqs` have been updated to reference `P900-A4` (in addition to its
+  existing `P3-A11` prereq), replacing the prior reference to `P900-A3` from
+  before this revision inserted the logging fix as the new first task — so that
+  Phase 7 cannot begin until this phase completes, per the project owner's
+  explicit scheduling request. This is a cross-phase edit made as part of
+  authoring this phase, not a separate task.
 
 ---
 
 ## docs/RUNNABLE_PROOF.md entry
 
 ```markdown
-## Phase 900 — Spec-Drift Retrofit: /health Body & Missing ToSchema
+## Phase 900 — Spec-Drift & Logging Retrofit: tracing-subscriber, /health Body & Missing ToSchema
 
-**Capability proved:** `GET /health` returns the `ANVILML_DESIGN.md §13.4`-specified
-JSON body (`status`, `version`, `uptime_s`) instead of a bare `200` with no body.
+**Capability proved:** The `anvilml` binary emits real log output honouring
+`ANVILML_LOG`/`RUST_LOG` (previously silent regardless of either variable), and
+`GET /health` returns the `ANVILML_DESIGN.md §13.4`-specified JSON body (`status`,
+`version`, `uptime_s`) instead of a bare `200` with no body.
 
 ```bash
 cargo build --release -p anvilml --features mock-hardware
-./target/release/anvilml &
+ANVILML_LOG=debug ./target/release/anvilml &
 sleep 1
 curl -s http://127.0.0.1:8488/health | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['status']=='ok' and isinstance(d['version'],str) and isinstance(d['uptime_s'],int)"
-# -> exits 0; status/version/uptime_s all present and correctly typed
+# -> exits 0; status/version/uptime_s all present and correctly typed; stderr
+#    shows real DEBUG-level output from the same run
 kill %1
 ```
 ```

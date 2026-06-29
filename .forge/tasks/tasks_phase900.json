@@ -1,31 +1,41 @@
 [
   {
     "id": "P900-A1",
-    "description": "anvilml-server: /health returns ANVILML_DESIGN.md §13.4 JSON body",
+    "description": "backend: wire tracing-subscriber, ANVILML_LOG/RUST_LOG never read",
     "phase": "900",
     "project": "anvilml",
-    "prereqs": ["P6-A9", "P6-B3", "P1-D1"],
-    "context": "Audit finding: P1-D1's context dropped the response body from ANVILML_DESIGN.md §13.4 (200 { status, version, uptime_s }), so health.rs returns bare StatusCode::OK with no body - a genuine spec/implementation mismatch, not deferred scope. Fix crates/anvilml-server/src/handlers/health.rs: add struct HealthResponse{status:String, version:String, uptime_s:u64} deriving Debug, Clone, Serialize. status always \"ok\". version = env!(\"CARGO_PKG_VERSION\"). uptime_s: capture a process-start Instant once at binary startup (backend/src/main.rs), pass into build_router() via axum::extract::State or a static OnceLock - real elapsed time, not hardcoded 0. Change handler to async fn health(...) -> Json<HealthResponse>. Add serde derive feature to anvilml-server/Cargo.toml if not already present transitively. Update health_tests.rs to assert the three JSON fields, not just status code. Acceptance: cargo test -p anvilml-server --test health_tests exits 0 with status/version/uptime_s assertions added.",
+    "prereqs": ["P1-A3"],
+    "context": "Audit finding: no task in Phases 1-6 added tracing-subscriber - backend/Cargo.toml has tracing (the facade) but Cargo.lock confirms tracing-subscriber is absent, so every tracing::info!/debug! call (P1-D1's listening log, P1-A3's shutdown log) is a silent no-op and ANVILML_LOG/RUST_LOG are never read. Fix: add tracing-subscriber = { version, features=[\"env-filter\"] } to backend/Cargo.toml (resolve version live via registry). In backend/src/main.rs, as the first statement in main(), call tracing_subscriber::fmt().with_env_filter(EnvFilter::try_from_env(\"ANVILML_LOG\").or_else(|_| EnvFilter::try_from_env(\"RUST_LOG\")).unwrap_or_else(|_| EnvFilter::new(\"info\"))).init() per ENVIRONMENT.md \u00a73.3 precedence. Acceptance: >=3 tests in backend/tests/logging_tests.rs spawning the built binary with ANVILML_LOG=debug and RUST_LOG=debug separately, asserting stderr is non-empty in both cases and ANVILML_LOG takes precedence when both set; cargo test -p anvilml --test logging_tests exits 0.",
     "tags": ["breaking"],
     "defers_to": []
   },
   {
     "id": "P900-A2",
-    "description": "anvilml-core: add missing ToSchema to Job/JobStatus/JobSettings",
+    "description": "anvilml-server: /health returns ANVILML_DESIGN.md \u00a713.4 JSON body",
     "phase": "900",
     "project": "anvilml",
-    "prereqs": ["P900-A1", "P3-A1"],
-    "context": "Audit finding: ANVILML_DESIGN.md §5.3 derives ToSchema on Job, JobStatus, and JobSettings, but P3-A1's context omitted it - job.rs has no utoipa import and no ToSchema on any of the three (P3-A3's ArtifactMeta, the very next task, correctly includes it, confirming this is an isolated omission). Fix: add `use utoipa::ToSchema;` to types/job.rs; append `, ToSchema` to the derive list on Job, JobStatus, JobSettings. Job/JobSettings keep current derives otherwise; JobStatus keeps Copy/PartialEq/Eq. No field, variant, or serde attribute changes - additive-derive-only. Debug+Clone are already present on all three, satisfying ToSchema's macro requirements. Acceptance: cargo test -p anvilml-core --test job_tests exits 0 (existing tests unaffected); cargo doc -p anvilml-core --no-deps exits 0 confirming the derive compiles.",
-    "tags": ["refactor"],
+    "prereqs": ["P900-A1", "P6-A9", "P6-B3", "P1-D1"],
+    "context": "Audit finding: P1-D1's context dropped the response body from ANVILML_DESIGN.md \u00a713.4 (200 { status, version, uptime_s }), so health.rs returns bare StatusCode::OK with no body - a genuine spec/implementation mismatch, not deferred scope. Fix crates/anvilml-server/src/handlers/health.rs: add struct HealthResponse{status:String, version:String, uptime_s:u64} deriving Debug, Clone, Serialize. status always \"ok\". version = env!(\"CARGO_PKG_VERSION\"). uptime_s: capture a process-start Instant once at binary startup (backend/src/main.rs), pass into build_router() via axum::extract::State or a static OnceLock - real elapsed time, not hardcoded 0. Change handler to async fn health(...) -> Json<HealthResponse>. Add serde derive feature to anvilml-server/Cargo.toml if not already present transitively. Update health_tests.rs to assert the three JSON fields, not just status code. Acceptance: cargo test -p anvilml-server --test health_tests exits 0 with status/version/uptime_s assertions added.",
+    "tags": ["breaking"],
     "defers_to": []
   },
   {
     "id": "P900-A3",
+    "description": "anvilml-core: add missing ToSchema to Job/JobStatus/JobSettings",
+    "phase": "900",
+    "project": "anvilml",
+    "prereqs": ["P900-A2", "P3-A1"],
+    "context": "Audit finding: ANVILML_DESIGN.md \u00a75.3 derives ToSchema on Job, JobStatus, and JobSettings, but P3-A1's context omitted it - job.rs has no utoipa import and no ToSchema on any of the three (P3-A3's ArtifactMeta, the very next task, correctly includes it, confirming this is an isolated omission). Fix: add `use utoipa::ToSchema;` to types/job.rs; append `, ToSchema` to the derive list on Job, JobStatus, JobSettings. Job/JobSettings keep current derives otherwise; JobStatus keeps Copy/PartialEq/Eq. No field, variant, or serde attribute changes - additive-derive-only. Debug+Clone are already present on all three, satisfying ToSchema's macro requirements. Acceptance: cargo test -p anvilml-core --test job_tests exits 0 (existing tests unaffected); cargo doc -p anvilml-core --no-deps exits 0 confirming the derive compiles.",
+    "tags": ["refactor"],
+    "defers_to": []
+  },
+  {
+    "id": "P900-A4",
     "description": "anvilml-core: add missing ToSchema to ModelMeta/ModelKind/ModelDtype/ModelFormat",
     "phase": "900",
     "project": "anvilml",
-    "prereqs": ["P900-A2", "P3-A2"],
-    "context": "Audit finding: ANVILML_DESIGN.md §5.4 derives ToSchema on ModelMeta, ModelKind, ModelDtype, ModelFormat, but P3-A2's context omitted it - model.rs has no utoipa import and no ToSchema on any of the four (same omission pattern as P900-A2's job.rs finding; isolated to model.rs and job.rs only - hardware.rs, worker.rs, node.rs, artifact.rs, events.rs all correctly include it). Fix: add `use utoipa::ToSchema;` to types/model.rs; append `, ToSchema` to the derive list on ModelMeta, ModelKind, ModelDtype, ModelFormat. No field, variant, or serde attribute changes (snake_case rename_all stays) - additive-derive-only. Acceptance: cargo test -p anvilml-core --test model_tests exits 0 (existing tests unaffected); cargo doc -p anvilml-core --no-deps exits 0; cargo test --workspace --features mock-hardware exits 0 as the phase-closing regression check.",
+    "prereqs": ["P900-A3", "P3-A2"],
+    "context": "Audit finding: ANVILML_DESIGN.md \u00a75.4 derives ToSchema on ModelMeta, ModelKind, ModelDtype, ModelFormat, but P3-A2's context omitted it - model.rs has no utoipa import and no ToSchema on any of the four (same omission pattern as P900-A3's job.rs finding; isolated to model.rs and job.rs only - hardware.rs, worker.rs, node.rs, artifact.rs, events.rs all correctly include it). Fix: add `use utoipa::ToSchema;` to types/model.rs; append `, ToSchema` to the derive list on ModelMeta, ModelKind, ModelDtype, ModelFormat. No field, variant, or serde attribute changes (snake_case rename_all stays) - additive-derive-only. Acceptance: cargo test -p anvilml-core --test model_tests exits 0 (existing tests unaffected); cargo doc -p anvilml-core --no-deps exits 0; cargo test --workspace --features mock-hardware exits 0 as the phase-closing regression check.",
     "tags": ["refactor"],
     "defers_to": []
   }
