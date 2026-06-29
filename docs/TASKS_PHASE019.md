@@ -56,7 +56,7 @@ the fixture-checkpoint convention is written down for Phase 20 to follow.
 ## Prerequisites
 
 `ModelStore::get()` must exist per Phase 6 (P6-A3). `JobScheduler`'s dispatch path
-must exist per Phase 14 (P14-A4). `worker_main.py`'s real/mock startup sequences and
+must exist per Phase 14 (P14-A5). `worker_main.py`'s real/mock startup sequences and
 `NodeContext`/`@register` must exist per Phases 9–10.
 
 ---

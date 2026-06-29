@@ -45,7 +45,7 @@ run any real Python code, since `worker_main.py` itself doesn't exist until Phas
 | B | Spawning | P8-B1 … P8-B3 | `WorkerEnv`, `spawn_worker()`, Windows Job Object orphan cleanup |
 | C | Demux & keepalive | P8-C1 … P8-C2 | `Demux` with mandatory `deregister()`, the ping/pong watchdog |
 | D | Respawn | P8-D1 | `RespawnPolicy` backoff and max-attempt guard |
-| E | Worker ownership | P8-E1 … P8-E2 | `WorkerHandle` (cheap, `Clone`-able), then `ManagedWorker::run()` |
+| E | Worker ownership | P8-E1 … P8-E3 | `WorkerHandle` (cheap, `Clone`-able), then its `set_status()` mutator, then `ManagedWorker::run()` |
 | F | Bridge | P8-F1 | The two independent reader/writer tasks against the split transport |
 | G | Pool | P8-G1 | `WorkerPool::spawn_all()`/`shutdown_all()` |
 | H | Closeout | P8-H1 | `lib.rs` re-export pass, 80-line check |
@@ -69,7 +69,7 @@ stub crate with the `mock-hardware` feature forwarded (Phase 1's P1-B4).
 | `ANVILML_DESIGN.md §9.7` | P8-B1 | Exact environment variable names injected into the worker subprocess |
 | `ANVILML_DESIGN.md §9.4` | P8-C1 | `register()`/`deregister()` mandatory pairing — the exact v3 regression this closes |
 | `ANVILML_DESIGN.md §19.4` | P8-D1 | `RespawnPolicy`'s default values and halt-after-max-attempts behavior |
-| `ANVILML_DESIGN.md §9.1` | P8-E1, P8-E2 | `WorkerHandle`/`ManagedWorker`'s exact ownership shape — read in full before either task |
+| `ANVILML_DESIGN.md §9.1` | P8-E1, P8-E2, P8-E3 | `WorkerHandle`/`ManagedWorker`'s exact ownership shape — read in full before any of the three tasks |
 | `ANVILML_DESIGN.md §9.6` | P8-F1 | The bridge's two-independent-tasks shape, reusing the already-split transport locks |
 | `ANVILML_DESIGN.md §9.2`–§9.3, §19.3 | P8-G1 | `WorkerPool`'s responsibilities and the graceful-shutdown timeout sequence |
 
@@ -274,8 +274,8 @@ worker struct itself.
   Arc<RwLock<WorkerStatus>>`, `shutdown_tx: Option<oneshot::Sender<()>>`,
   `join_handle: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>>`. Cloning shares the
   lock and sender, never the worker itself.
-- `ManagedWorker` (the type that actually owns `run()`) is the next task's scope —
-  this task is the handle alone.
+- This task is read-only on status — a write-side mutator and `ManagedWorker`
+  itself (the type that actually owns `run()`) are both separate, later tasks.
 
 **Acceptance criterion:**
 ```bash
@@ -283,7 +283,32 @@ cargo test -p anvilml-worker --test managed_tests
 # -> >=4 tests, exits 0
 ```
 
-#### P8-E2: anvilml-worker: ManagedWorker::run() owns full lifecycle task
+#### P8-E2: anvilml-worker: WorkerHandle::set_status() mutator
+
+**Goal:** Give `WorkerHandle` its one and only public status mutator — without
+this, no later phase has any way to ever transition a worker's status after
+construction, which would make `WorkerStatus::Busy`/`Idle` permanently unreachable
+in practice despite both being defined enum variants since Phase 3.
+
+**Files to create or modify:**
+- `crates/anvilml-worker/src/managed.rs` — adds `set_status()`.
+
+**Key implementation notes:**
+- This is the **only** public mutator on `WorkerHandle` — every later phase that
+  needs to change a worker's status (dispatch marking a worker `Busy` on
+  assignment, the event loop marking it `Idle` again on completion) goes through
+  this single method, never a second, parallel mutation path.
+- `set_status()`'s write lock and `status()`'s read lock must be independent
+  acquisitions — a concurrent reader must never block a writer indefinitely, or
+  vice versa.
+
+**Acceptance criterion:**
+```bash
+cargo test -p anvilml-worker --test managed_tests
+# -> >=8 tests total in the file, exits 0
+```
+
+#### P8-E3: anvilml-worker: ManagedWorker::run() owns full lifecycle task
 
 **Goal:** Implement `ManagedWorker::run()` as the single owner of a worker's entire
 lifecycle task, taking `self` by value for the duration of one `async fn` —
@@ -301,13 +326,13 @@ removing the ownership conflict that made `run()` uncallable in v3.
   `Initializing` timeout, and crash/`Dead` — not only the graceful path. This is the
   same mandatory pairing P8-C1 established at the demux level, now exercised from
   the worker lifecycle side.
-- This receives exactly the construction P8-E1 already completed — use that exact
-  `WorkerHandle` shape; do not re-derive it.
+- Uses exactly the `WorkerHandle` shape P8-E1/P8-E2 already completed — no
+  re-derivation.
 
 **Acceptance criterion:**
 ```bash
 cargo test -p anvilml-worker --test managed_tests
-# -> >=9 tests total in the file, exits 0
+# -> >=13 tests total in the file, exits 0
 ```
 
 ---
@@ -351,7 +376,7 @@ this phase together into the one object the scheduler phase will actually hold.
 
 **Key implementation notes:**
 - `spawn_all()` composes, per device: `WorkerEnv` (P8-B1) → subprocess spawn (P8-B2,
-  plus Windows Job Object via P8-B3) → a `ManagedWorker` (P8-E2) whose `run()` task
+  plus Windows Job Object via P8-B3) → a `ManagedWorker` (P8-E3) whose `run()` task
   is spawned → the resulting `WorkerHandle` registered into the pool.
 - `shutdown_all()` requests shutdown on every handle, awaits all join handles within
   a bounded timeout (default 30s per `ANVILML_DESIGN.md §19.3` step 3), and
@@ -423,7 +448,7 @@ cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu
 - The stress test (P8-A1) is not merely "another test" — it is the named gate for
   this entire phase and every later one. A regression here blocks all downstream
   work, by design.
-- `WorkerHandle`/`ManagedWorker`'s ownership split (P8-E1, P8-E2) and `Demux`'s
+- `WorkerHandle`/`ManagedWorker`'s ownership split (P8-E1, P8-E2, P8-E3) and `Demux`'s
   register/deregister pairing (P8-C1) are both specified exactly in the design
   document, each accompanied by the specific historical incident that produced the
   rule. Treat both as fixed contracts, not starting points for "improvement."

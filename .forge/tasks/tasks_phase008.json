@@ -75,17 +75,27 @@
     "phase": "8",
     "project": "anvilml",
     "prereqs": ["P8-C2", "P8-D1"],
-    "context": "Create crates/anvilml-worker/src/managed.rs (WorkerHandle lives here alongside ManagedWorker per §9.3's module layout, even though it's a distinct type). Define WorkerHandle per §9.1 EXACTLY - read §9.1 first, it documents a regression where run() was never callable: #[derive(Clone)] pub struct WorkerHandle{pub worker_id: String, status: Arc<RwLock<WorkerStatus>>, shutdown_tx: Option<oneshot::Sender<()>>, join_handle: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>>}. Cloning shares the status lock and shutdown sender, never the worker itself. Provide status(&self) -> WorkerStatus (read lock) and request_shutdown(&mut self) (takes the Option, sends on the oneshot if present). ManagedWorker itself (owning run()) is the next task. Acceptance: >=4 tests in tests/managed_tests.rs: clone shares status updates, request_shutdown is idempotent, status() needs no lock the run task holds; `cargo test -p anvilml-worker --test managed_tests` exits 0.",
+    "context": "Create crates/anvilml-worker/src/managed.rs (WorkerHandle lives here with ManagedWorker per §9.3's layout, even though distinct). Define WorkerHandle per §9.1 EXACTLY - read §9.1 first, it documents a regression where run() was never callable: #[derive(Clone)] pub struct WorkerHandle{pub worker_id: String, status: Arc<RwLock<WorkerStatus>>, shutdown_tx: Option<oneshot::Sender<()>>, join_handle: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>>}. Cloning shares the status lock and shutdown sender, never the worker. Provide status(&self) -> WorkerStatus (read lock) and request_shutdown(&mut self) (takes the Option, sends on the oneshot if present). A status MUTATOR is the next task - no setter here. ManagedWorker (owning run()) is separate, later. Acceptance: >=4 tests in tests/managed_tests.rs: clone shares status updates, request_shutdown is idempotent, status() needs no lock run holds; `cargo test -p anvilml-worker --test managed_tests` exits 0.",
     "tags": [],
     "defers_to": ["P8-E2"]
   },
   {
     "id": "P8-E2",
-    "description": "anvilml-worker: ManagedWorker::run() owns full lifecycle task",
+    "description": "anvilml-worker: WorkerHandle::set_status() mutator",
     "phase": "8",
     "project": "anvilml",
     "prereqs": ["P8-E1"],
-    "context": "Extend crates/anvilml-worker/src/managed.rs with ManagedWorker per §9.1 EXACTLY: pub async fn run(mut self, mut shutdown_rx: oneshot::Receiver<()>) - takes self BY VALUE, owns its entire lifecycle for this one async fn, calling demux.register() on entry and demux.deregister() on EVERY exit path (graceful shutdown via shutdown_rx, the 60s Initializing timeout, and crash/Dead) per §9.4's mandatory pairing - deregistering only on the graceful path is non-compliant. NO separate by-value shutdown(self) method exists - graceful shutdown lives entirely inside run()'s own tokio::select! loop. Receives the construction P8-E1 deferred; use exactly that WorkerHandle shape, do not re-derive it. Acceptance: >=5 tests in tests/managed_tests.rs (>=9 total in file): run() completes against a mock IPC backend, shutdown_rx triggers graceful exit, deregister called on graceful exit, on simulated crash, and on Initializing-timeout exit; `cargo test -p anvilml-worker --test managed_tests` exits 0.",
+    "context": "Extend WorkerHandle (crates/anvilml-worker/src/managed.rs) with pub fn set_status(&self, new: WorkerStatus) (write lock), the scope P8-E1 deferred. This is the ONLY public mutator on WorkerHandle and must exist before anvilml-scheduler (a downstream crate per the dependency graph) can ever transition a worker's status post-construction - without it, dispatch can never mark a worker Busy on assignment and event handling can never mark it Idle again on completion, both needed by later phases. set_status() and status() must use independent lock-acquisition paths so a reader never blocks a writer indefinitely or vice versa. Acceptance: >=4 new tests in tests/managed_tests.rs: set_status changes the value status() returns, the change is visible via an independently-held clone, concurrent status()/set_status() calls don't deadlock, set_status is callable repeatedly; `cargo test -p anvilml-worker --test managed_tests` exits 0 (>=8 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P8-E3",
+    "description": "anvilml-worker: ManagedWorker::run() owns full lifecycle task",
+    "phase": "8",
+    "project": "anvilml",
+    "prereqs": ["P8-E2"],
+    "context": "Extend crates/anvilml-worker/src/managed.rs with ManagedWorker per §9.1 EXACTLY: pub async fn run(mut self, mut shutdown_rx: oneshot::Receiver<()>) - takes self BY VALUE, owns its entire lifecycle for this one async fn, calling demux.register() on entry and demux.deregister() on EVERY exit path (graceful shutdown via shutdown_rx, the 60s Initializing timeout, and crash/Dead) per §9.4's mandatory pairing - deregistering only on the graceful path is non-compliant. NO separate by-value shutdown(self) method exists - graceful shutdown lives entirely inside run()'s own tokio::select! loop. Uses the WorkerHandle shape from P8-E1/P8-E2 exactly, no re-derivation. Acceptance: >=5 tests in tests/managed_tests.rs (>=13 total in file): run() completes against a mock IPC backend, shutdown_rx triggers graceful exit, deregister called on graceful exit, on simulated crash, and on Initializing-timeout exit; `cargo test -p anvilml-worker --test managed_tests` exits 0.",
     "tags": [],
     "defers_to": []
   },
@@ -94,7 +104,7 @@
     "description": "anvilml-worker: bridge.rs independent reader/writer tasks",
     "phase": "8",
     "project": "anvilml",
-    "prereqs": ["P8-E2"],
+    "prereqs": ["P8-E3"],
     "context": "Create crates/anvilml-worker/src/bridge.rs per ANVILML_DESIGN.md §9.6 EXACTLY: two separate tokio::spawn tasks, each locking only its own half of the already-split RouterTransport (Phase 7's P7-B2) - bridge.rs adds NO additional lock around either half. writer_task drains an mpsc::Receiver<WorkerMessage>, calls transport.send() per message. reader_task loops transport.recv(), routes each (worker_id, event) via Demux::route() (P8-C1). Both spawned together by pub fn spawn_bridge(transport: Arc<RouterTransport>, demux: Arc<Demux>) -> (mpsc::Sender<WorkerMessage>, JoinHandle<()>, JoinHandle<()>) returning the writer's input channel and both handles. Declare mod bridge; pub use bridge::spawn_bridge; in lib.rs. Acceptance: >=4 tests in tests/bridge_tests.rs: sent message reaches transport.send(), a recv()'d event reaches the right demux receiver, both tasks run concurrently without blocking; `cargo test -p anvilml-worker --test bridge_tests` exits 0.",
     "tags": [],
     "defers_to": []
@@ -105,7 +115,7 @@
     "phase": "8",
     "project": "anvilml",
     "prereqs": ["P8-F1", "P8-B3"],
-    "context": "Create crates/anvilml-worker/src/pool.rs per ANVILML_DESIGN.md §9.2-9.3: WorkerPool{handles: Vec<WorkerHandle>, transport: Arc<RouterTransport>}. spawn_all(&mut self, devices: &[GpuDevice], cfg: &ServerConfig) -> Result<(), AnvilError>: per device, builds WorkerEnv (P8-B1), spawns the subprocess (P8-B2, plus Windows job_object via P8-B3), constructs a ManagedWorker (P8-E2) and spawns its run() task, registers the resulting WorkerHandle. shutdown_all(&mut self, timeout: Duration) -> Result<(), AnvilError>: calls request_shutdown() on every handle, awaits join handles within the bounded timeout per §19.3 step 3 (30s default), force-kills any not exited per step 4. Declare mod pool; pub use pool::WorkerPool; in lib.rs. Acceptance: >=5 tests in tests/pool_tests.rs (mock-hardware, mock IPC): spawn_all creates one handle per device, shutdown_all awaits exit, force-kills a non-exiting handle; `cargo test -p anvilml-worker --features mock-hardware --test pool_tests` exits 0.",
+    "context": "Create crates/anvilml-worker/src/pool.rs per ANVILML_DESIGN.md §9.2-9.3: WorkerPool{handles: Vec<WorkerHandle>, transport: Arc<RouterTransport>}. spawn_all(&mut self, devices: &[GpuDevice], cfg: &ServerConfig) -> Result<(), AnvilError>: per device, builds WorkerEnv (P8-B1), spawns the subprocess (P8-B2, plus Windows job_object via P8-B3), constructs a ManagedWorker (P8-E3) and spawns its run() task, registers the resulting WorkerHandle. shutdown_all(&mut self, timeout: Duration) -> Result<(), AnvilError>: calls request_shutdown() on every handle, awaits join handles within the bounded timeout per §19.3 step 3 (30s default), force-kills any not exited per step 4. Declare mod pool; pub use pool::WorkerPool; in lib.rs. Acceptance: >=5 tests in tests/pool_tests.rs (mock-hardware, mock IPC): spawn_all creates one handle per device, shutdown_all awaits exit, force-kills a non-exiting handle; `cargo test -p anvilml-worker --features mock-hardware --test pool_tests` exits 0.",
     "tags": [],
     "defers_to": []
   },

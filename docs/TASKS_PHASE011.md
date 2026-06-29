@@ -52,7 +52,7 @@ normal server-start path yet (that integration is a later phase).
 ## Prerequisites
 
 `NodeTypeRegistry` must exist exactly as defined in Phase 3 (P3-A10).
-`ManagedWorker::run()` must exist and pass its own tests per Phase 8 (P8-E2), and
+`ManagedWorker::run()` must exist and pass its own tests per Phase 8 (P8-E3), and
 `worker_main.py`'s real and mock `Ready` events must both carry a (currently empty)
 `node_types` list per Phase 9/10 (P9-D2, P9-D3, P10-D1).
 

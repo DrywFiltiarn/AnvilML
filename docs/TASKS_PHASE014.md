@@ -42,7 +42,7 @@ a real (trivial) node, and observably reaches `Completed` — provable by pollin
 
 | Group | Subsystem | Tasks | Summary |
 |-------|-----------|-------|---------|
-| A | JobScheduler | P14-A1 … P14-A4 | `submit()`, `cancel()`/`get_job()`, the dispatch loop skeleton, then real worker selection |
+| A | JobScheduler | P14-A1 … P14-A5 | `submit()`, `cancel()`/`get_job()`, the dispatch loop skeleton, real worker selection, then marking the assigned worker `Busy` |
 | B | First concrete node | P14-B1 | `PassThrough` — the project's first real node file |
 | C | Server wiring | P14-C1 … P14-C2 | `AppState` gains scheduler/worker/db fields; `main.rs` spawns a real `WorkerPool` |
 | D | HTTP handlers | P14-D1 … P14-D2 | `POST /v1/jobs`, then `GET /v1/jobs` and `GET /v1/jobs/:id` |
@@ -64,7 +64,7 @@ be wired into `backend/main.rs` per Phase 13 (P13-C1).
 
 | Contract document | Relevant to tasks | What must match |
 |--------------------|--------------------|------------------|
-| `ANVILML_DESIGN.md §12.5` | P14-A3, P14-A4 | The exact 2-step worker selection algorithm, in order |
+| `ANVILML_DESIGN.md §12.5` | P14-A3, P14-A4, P14-A5 | The exact 2-step worker selection algorithm, in order, plus the resulting `Busy` status transition |
 | `ANVILML_DESIGN.md §12.2` | P14-A1 | An empty `NodeTypeRegistry` means every job submission returns `503 workers_unavailable` |
 | `ANVILML_DESIGN.md §10.6` | P14-B1 | The `REAL_PATH_VERIFIED`/`MOCK_PATH_VERIFIED` marker pair, exercised for the first time on a real node file |
 | `ANVILML_DESIGN.md §13.2`, §3.3 | P14-C1, P14-D1 | `AppState`'s field growth pattern; "no business logic in handler functions" |
@@ -147,7 +147,7 @@ cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests
 #### P14-A4: anvilml-scheduler: worker selection algorithm, real dispatch
 
 **Goal:** Replace the stub with the real, exact worker-selection algorithm from
-the design document, completing the dispatch loop.
+the design document, completing the dispatch loop's job-side responsibilities.
 
 **Files to create or modify:**
 - `crates/anvilml-scheduler/src/scheduler.rs` — replaces `dispatch_one()`'s stub.
@@ -160,11 +160,37 @@ the design document, completing the dispatch loop.
 - On a successful match: reserve VRAM via the ledger, transition the job to
   `Running`, persist, and send `WorkerMessage::Execute` — all four steps happen
   together, not as separable partial states.
+- Marking the assigned **worker's own** status `Busy` is explicitly deferred to the
+  next task — this task only selects and dispatches; it does not yet close the loop
+  on the worker's own status reflecting that it's now occupied.
 
 **Acceptance criterion:**
 ```bash
 cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests
 # -> >=17 tests total in the file, exits 0
+```
+
+#### P14-A5: anvilml-scheduler: dispatch_one marks the assigned worker Busy
+
+**Goal:** Close the gap P14-A4 left open — without this task, a worker's own
+`WorkerHandle` still reads `Idle` immediately after being assigned a job, which
+means a second dispatch cycle could select the **same** worker again before it
+finishes the first one.
+
+**Files to create or modify:**
+- `crates/anvilml-scheduler/src/scheduler.rs` — extends `dispatch_one()`.
+
+**Key implementation notes:**
+- Calls `worker_handle.set_status(WorkerStatus::Busy)` (Phase 8's `P8-E2`)
+  immediately after a successful selection, alongside the VRAM reservation.
+- `Idle` restoration on job completion, and waking the dispatch loop when that
+  happens, are both separate, later-phase concerns — this task closes only the
+  assignment-time half of the worker status lifecycle.
+
+**Acceptance criterion:**
+```bash
+cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests
+# -> >=21 tests total in the file, exits 0
 ```
 
 ---

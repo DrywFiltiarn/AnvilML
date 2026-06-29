@@ -44,7 +44,7 @@ real `PassThrough` job's `JobCompleted` event arrive live.
 
 | Group | Subsystem | Tasks | Summary |
 |-------|-----------|-------|---------|
-| A | Event loop completion | P16-A1 … P16-A2 | Map every `WorkerEvent` to `WsEvent` and publish; persist terminal job status + release VRAM |
+| A | Event loop completion | P16-A1 … P16-A3 | Map every `WorkerEvent` to `WsEvent` and publish; persist terminal job status + release VRAM; restore the worker to `Idle` and wake the dispatch loop |
 | B | Server state | P16-B1 | `AppState` gains `broadcaster`, shared with the scheduler's event loop |
 | C | WebSocket handler | P16-C1 … P16-C2 | Connection skeleton + initial frame, then the forward loop with lag handling |
 | D | Stats tick | P16-D1 | Periodic `SystemStats` background task |
@@ -65,6 +65,7 @@ real `PassThrough` job's `JobCompleted` event arrive live.
 | Contract document | Relevant to tasks | What must match |
 |--------------------|--------------------|------------------|
 | `ANVILML_DESIGN.md §12.4` | P16-A2 | VRAM ledger release on every terminal event |
+| `ANVILML_DESIGN.md §12.5` | P16-A3 | The worker-idle-triggered dispatch wake, completing the wake source `P14-A3` deferred |
 | `ANVILML_DESIGN.md §16.3` | P16-A1 | Mandatory DEBUG log point for job state transitions |
 | `ANVILML_DESIGN.md §13.6` | P16-C1, P16-C2 | The exact WebSocket connect sequence and the 1024-event lag/disconnect rule |
 | `ANVILML_DESIGN.md §13.1` | P16-C1, P16-D1 | `ws/` module layout — `mod.rs`, `handler.rs`, `stats_tick.rs` |
@@ -113,11 +114,43 @@ based on the worker's actual response.
   terminal-state logic existed to contradict it.
 - VRAM ledger release happens on **all three** terminal events, per
   `ANVILML_DESIGN.md §12.4` — a job that fails still must release its reservation.
+- Restoring the **worker's own** status to `Idle`, and waking the dispatch loop, are
+  both explicitly deferred to the next task — this task closes only the job-side
+  half of the terminal-event handling.
 
 **Acceptance criterion:**
 ```bash
 cargo test -p anvilml-scheduler --test event_loop_tests
 # -> >=15 tests total in the file, exits 0
+```
+
+#### P16-A3: anvilml-scheduler: event_loop restores Idle + wakes dispatch loop
+
+**Goal:** Close a real, previously-undetected starvation gap — without this task,
+a worker that finishes a job never returns to the `Idle` pool, and even if it did,
+nothing would ever wake the dispatch loop to give it more work.
+
+**Files to create or modify:**
+- `crates/anvilml-scheduler/src/event_loop.rs` — adds the `Idle` restoration and
+  wake call.
+
+**Key implementation notes:**
+- Phase 14's `P14-A5` marks a worker `Busy` on dispatch, but nothing reversed that
+  transition anywhere in the project until this task — a worker that finished its
+  job stayed `Busy` forever, becoming permanently ineligible for future dispatch.
+- Phase 14's `P14-A3` explicitly deferred the worker-idle-triggered wake source —
+  this task is what that deferred scope actually resolves to. Before this task, the
+  dispatch loop's only wake source was `submit()`, meaning a job that arrived while
+  every worker was busy could sit `Queued` indefinitely once the queue drained to
+  just that one job, with no other event ever prompting a re-check.
+- Both the status restoration and the `notify_one()` call happen on **all three**
+  terminal events (`Completed`/`Failed`/`Cancelled`) — a failed or cancelled job
+  frees its worker exactly as much as a completed one does.
+
+**Acceptance criterion:**
+```bash
+cargo test -p anvilml-scheduler --test event_loop_tests
+# -> >=20 tests total in the file, exits 0
 ```
 
 ---
@@ -266,6 +299,12 @@ cargo test --workspace --features mock-hardware
 - Before this phase, no job could ever be observed reaching a terminal status —
   this was a real, latent gap since Phase 14, not a regression introduced here.
   P16-A2 is what actually fixes it.
+- A second, separate gap existed alongside the first: nothing anywhere transitioned
+  a worker back to `Idle` after finishing a job, and nothing woke the dispatch loop
+  on that transition — a worker that finished its job stayed permanently `Busy`,
+  and a queued job with no other submission to trigger a wake could starve
+  indefinitely. `P16-A3` is what closes this — found on review, not introduced as
+  a regression here either.
 - `EventBroadcaster` must be the **same shared instance** between the scheduler's
   event loop and `AppState` — two independently constructed broadcasters would
   silently never communicate, with no error to surface the mistake.

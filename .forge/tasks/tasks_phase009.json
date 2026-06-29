@@ -4,18 +4,34 @@
     "description": "worker/: requirements/base.txt (no torch, core deps only)",
     "phase": "9",
     "project": "anvilml",
-    "prereqs": ["P8-H1"],
-    "context": "Create worker/requirements/base.txt per ANVILML_DESIGN.md §18.6 - torch MUST NEVER appear in this file, restated here because it is CI-breaking, not a style note. Include: diffusers, transformers, safetensors, pillow, msgpack, pyzmq, pytest (resolve every package's current version live via the PyPI registry MCP tool, not from memory - do not pin a version recalled from training data). This file installs cleanly with no GPU driver and no torch wheel index configured - that property is what lets worker-linux-mock/worker-windows-mock CI jobs run without ever touching a torch index. Create worker/requirements/cpu-linux-agent.txt and cpu-runner-reqs.txt as separate, currently-empty placeholder files (torch CPU wheel pins are added by a later task once real-mode tests exist to justify them - do not pre-pin torch speculatively in this task). Acceptance: `pip install --dry-run -r worker/requirements/base.txt` exits 0 in an environment with no torch index configured.",
+    "prereqs": [
+      "P8-H1"
+    ],
+    "context": "Create worker/requirements/base.txt per ANVILML_DESIGN.md \u00a718.6 - torch MUST NEVER appear in this file, restated here because it is CI-breaking, not a style note. Include: diffusers, transformers, safetensors, pillow, msgpack, pyzmq, pytest (resolve every package's current version live via the PyPI registry MCP tool, not from memory - do not pin a version recalled from training data). This file installs cleanly with no GPU driver and no torch wheel index configured - that property is what lets worker-linux-mock/worker-windows-mock CI jobs run without ever touching a torch index. Create worker/requirements/cpu-linux-agent.txt and cpu-runner-reqs.txt as separate, currently-empty placeholder files (torch CPU wheel pins are added by a later task once real-mode tests exist to justify them - do not pre-pin torch speculatively in this task). Acceptance: `pip install --dry-run -r worker/requirements/base.txt` exits 0 in an environment with no torch index configured.",
     "tags": [],
     "defers_to": []
   },
   {
     "id": "P9-A2",
+    "description": "worker/requirements/: real torch CPU wheel pin in cpu-* files",
+    "phase": "9",
+    "project": "anvilml",
+    "prereqs": [
+      "P9-A1"
+    ],
+    "context": "Populate worker/requirements/cpu-linux-agent.txt and cpu-runner-reqs.txt (Phase 9's P9-A1 - currently empty placeholders) with the real torch CPU wheel pin: torch (resolve the current stable version live via the PyPI registry MCP tool, CPU-only build via --index-url https://download.pytorch.org/whl/cpu or equivalent, never the default CUDA-bundled wheel). Both files get the identical pin - cpu-linux-agent.txt is consumed by this delivery's CI worker-test job (P9-F1), cpu-runner-reqs.txt is the same content under the name later real-mode tasks expect. Without this task, every real-mode test from P9-C1 onward has no torch to import, making `-m real_mode` runs fail wherever torch isn't already pre-installed. Acceptance: `pip install --dry-run -r worker/requirements/cpu-linux-agent.txt` exits 0, resolves to a CPU-only torch wheel (no CUDA/ROCm variant); both files are byte-identical.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P9-A3",
     "description": "worker/: pyproject.toml or pytest.ini with real_mode marker registered",
     "phase": "9",
     "project": "anvilml",
-    "prereqs": ["P9-A1"],
-    "context": "Create worker/pyproject.toml (preferred over pytest.ini for a single consolidated config) registering the real_mode pytest marker per ANVILML_DESIGN.md §18.3's convention: [tool.pytest.ini_options] markers = [\"real_mode: test requires real torch import, never runs under ANVILML_WORKER_MOCK=1\"]. A test with no marker is assumed mock-compatible and must not import torch unconditionally - only real_mode-marked tests may do so. This file is the single source of truth other tasks' test files reference when marking real-mode-only tests. Acceptance: `cd worker && python -m pytest --markers | grep real_mode` exits 0 and shows the registered marker description.",
+    "prereqs": [
+      "P9-A2"
+    ],
+    "context": "Create worker/pyproject.toml (preferred over pytest.ini for a single consolidated config) registering the real_mode pytest marker per ANVILML_DESIGN.md \u00a718.3's convention: [tool.pytest.ini_options] markers = [\"real_mode: test requires real torch import, never runs under ANVILML_WORKER_MOCK=1\"]. A test with no marker is assumed mock-compatible and must not import torch unconditionally - only real_mode-marked tests may do so. This file is the single source of truth other tasks' test files reference when marking real-mode-only tests. Acceptance: `cd worker && python -m pytest --markers | grep real_mode` exits 0 and shows the registered marker description.",
     "tags": [],
     "defers_to": []
   },
@@ -24,8 +40,10 @@
     "description": "worker/ipc.py: ZeroMQ DEALER transport + msgpack framing",
     "phase": "9",
     "project": "anvilml",
-    "prereqs": ["P9-A2"],
-    "context": "Create worker/ipc.py per ANVILML_DESIGN.md §14.4 EXACTLY (the module docstring and function signatures given there are normative, not illustrative - copy them verbatim, do not paraphrase). Module-level _ctx/_sock globals. connect(port: int, worker_id: str) -> None: creates zmq.Context.instance(), a zmq.DEALER socket, sets IDENTITY to worker_id.encode(), connects to tcp://127.0.0.1:{port}. send_event(data: dict) -> None: msgpack.packb(data, use_bin_type=True), raises RuntimeError if not connected. recv_message() -> dict: blocks on sock.recv(), msgpack.unpackb(raw=False), raises RuntimeError if not connected. Acceptance: >=5 tests in worker/tests/test_ipc.py: connect sets correct identity, send_event before connect raises RuntimeError, recv_message before connect raises RuntimeError, a real send/recv round trip against a test ROUTER socket in the same test process succeeds; `python -m pytest worker/tests/test_ipc.py -v` exits 0.",
+    "prereqs": [
+      "P9-A3"
+    ],
+    "context": "Create worker/ipc.py per ANVILML_DESIGN.md \u00a714.4 EXACTLY (the module docstring and function signatures given there are normative, not illustrative - copy them verbatim, do not paraphrase). Module-level _ctx/_sock globals. connect(port: int, worker_id: str) -> None: creates zmq.Context.instance(), a zmq.DEALER socket, sets IDENTITY to worker_id.encode(), connects to tcp://127.0.0.1:{port}. send_event(data: dict) -> None: msgpack.packb(data, use_bin_type=True), raises RuntimeError if not connected. recv_message() -> dict: blocks on sock.recv(), msgpack.unpackb(raw=False), raises RuntimeError if not connected. Acceptance: >=5 tests in worker/tests/test_ipc.py: connect sets correct identity, send_event before connect raises RuntimeError, recv_message before connect raises RuntimeError, a real send/recv round trip against a test ROUTER socket in the same test process succeeds; `python -m pytest worker/tests/test_ipc.py -v` exits 0.",
     "tags": [],
     "defers_to": []
   },
@@ -34,8 +52,10 @@
     "description": "worker/capability.py: probe_capabilities() real torch probe",
     "phase": "9",
     "project": "anvilml",
-    "prereqs": ["P9-A2"],
-    "context": "Create worker/capability.py per ANVILML_DESIGN.md §6.6 EXACTLY. def probe_capabilities(device_type: str, device_index: int) -> dict, returning {fp32,fp16,bf16,fp8,fp4,flash_attention: bool} matching InferenceCaps field names. Per the mechanical contract: fp16/bf16 probed by constructing a tiny torch.nn.Linear at that dtype on the target device and running one forward pass, catching the failure type; fp8 same pattern at torch.float8_e4m3fn (on CPU this MUST return False - NotImplementedError is correct, not a bug); flash_attention attempts the lightest available call path, False on any exception. A hardcoded True without running the actual probe is non-compliant. Real-mode only - never called when mock is active. Acceptance: >=6 tests in worker/tests/test_capability.py, marked @pytest.mark.real_mode: fp8 on cpu returns False, fp32 on cpu returns True, dict has exactly the 6 keys all bool, never raises for cpu; `python -m pytest worker/tests/test_capability.py -v -m real_mode` exits 0.",
+    "prereqs": [
+      "P9-A3"
+    ],
+    "context": "Create worker/capability.py per ANVILML_DESIGN.md \u00a76.6 EXACTLY. def probe_capabilities(device_type: str, device_index: int) -> dict, returning {fp32,fp16,bf16,fp8,fp4,flash_attention: bool} matching InferenceCaps field names. Per the mechanical contract: fp16/bf16 probed by constructing a tiny torch.nn.Linear at that dtype on the target device and running one forward pass, catching the failure type; fp8 same pattern at torch.float8_e4m3fn (on CPU this MUST return False - NotImplementedError is correct, not a bug); flash_attention attempts the lightest available call path, False on any exception. A hardcoded True without running the actual probe is non-compliant. Real-mode only - never called when mock is active. Acceptance: >=6 tests in worker/tests/test_capability.py, marked @pytest.mark.real_mode: fp8 on cpu returns False, fp32 on cpu returns True, dict has exactly the 6 keys all bool, never raises for cpu; `python -m pytest worker/tests/test_capability.py -v -m real_mode` exits 0.",
     "tags": [],
     "defers_to": []
   },
@@ -44,8 +64,10 @@
     "description": "worker_main.py: _mock_probe_capabilities() synthetic values",
     "phase": "9",
     "project": "anvilml",
-    "prereqs": ["P9-C1"],
-    "context": "Create worker/worker_main.py with ONLY this one function for now (full startup sequence is later tasks): def _mock_probe_capabilities() -> dict, returning fixed synthetic values (e.g. all True except fp4) per ANVILML_DESIGN.md §14.3. This function NEVER imports torch - it is inline in worker_main.py, not in capability.py, per ARCHITECTURE.md's note that the mock equivalent lives inline in worker_main.py while the real probe lives in its own capability.py module. Acceptance: >=3 tests in worker/tests/test_worker_main.py (no marker - mock-compatible, must not import torch): function returns the 6 required keys, all values are bool, calling it in a subprocess with `python -c \"import sys; assert 'torch' not in sys.modules\"` confirms torch was never imported as a side effect of importing worker_main at this stage; `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py -v` exits 0.",
+    "prereqs": [
+      "P9-C1"
+    ],
+    "context": "Create worker/worker_main.py with ONLY this one function for now (full startup sequence is later tasks): def _mock_probe_capabilities() -> dict, returning fixed synthetic values (e.g. all True except fp4) per ANVILML_DESIGN.md \u00a714.3. This function NEVER imports torch - it is inline in worker_main.py, not in capability.py, per ARCHITECTURE.md's note that the mock equivalent lives inline in worker_main.py while the real probe lives in its own capability.py module. Acceptance: >=3 tests in worker/tests/test_worker_main.py (no marker - mock-compatible, must not import torch): function returns the 6 required keys, all values are bool, calling it in a subprocess with `python -c \"import sys; assert 'torch' not in sys.modules\"` confirms torch was never imported as a side effect of importing worker_main at this stage; `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py -v` exits 0.",
     "tags": [],
     "defers_to": []
   },
@@ -54,17 +76,24 @@
     "description": "worker_main.py: real-mode connect+device-select+probe (no mock gate)",
     "phase": "9",
     "project": "anvilml",
-    "prereqs": ["P9-B1", "P9-C2"],
-    "context": "Extend worker/worker_main.py with the first half of the real-mode startup sequence per ANVILML_DESIGN.md §14.1-§14.2 EXACTLY: ipc.connect(ANVILML_IPC_PORT, ANVILML_WORKER_ID) -> import torch, select device via torch.cuda.set_device or rocm equivalent (cpu device_type skips device selection) -> capability.probe_capabilities(device_type, device_index) [REAL, P9-C1]. Node import and the Ready event are the next task's scope - do not add them here. ABSOLUTE RULE per §14.1: there is NO 'if ANVILML_WORKER_MOCK != \"1\": exit(1)' gate anywhere, ever, in this file - that exact pattern is the single largest defect in v3's history. Acceptance: >=3 tests in worker/tests/test_worker_main.py marked @pytest.mark.real_mode: connect+device-select+probe sequence runs against a CPU device without raising, probe_capabilities is actually invoked (not skipped), no mock-gate exit path exists in the file; `python -m pytest worker/tests/test_worker_main.py -v -m real_mode` exits 0.",
+    "prereqs": [
+      "P9-B1",
+      "P9-C2"
+    ],
+    "context": "Extend worker/worker_main.py with the first half of the real-mode startup sequence per ANVILML_DESIGN.md \u00a714.1-\u00a714.2 EXACTLY: ipc.connect(ANVILML_IPC_PORT, ANVILML_WORKER_ID) -> import torch, select device via torch.cuda.set_device or rocm equivalent (cpu device_type skips device selection) -> capability.probe_capabilities(device_type, device_index) [REAL, P9-C1]. Node import and the Ready event are the next task's scope - do not add them here. ABSOLUTE RULE per \u00a714.1: there is NO 'if ANVILML_WORKER_MOCK != \"1\": exit(1)' gate anywhere, ever, in this file - that exact pattern is the single largest defect in v3's history. Acceptance: >=3 tests in worker/tests/test_worker_main.py marked @pytest.mark.real_mode: connect+device-select+probe sequence runs against a CPU device without raising, probe_capabilities is actually invoked (not skipped), no mock-gate exit path exists in the file; `python -m pytest worker/tests/test_worker_main.py -v -m real_mode` exits 0.",
     "tags": [],
-    "defers_to": ["P9-D2"]
+    "defers_to": [
+      "P9-D2"
+    ]
   },
   {
     "id": "P9-D2",
     "description": "worker_main.py: real-mode node-import stub + Ready event + loop",
     "phase": "9",
     "project": "anvilml",
-    "prereqs": ["P9-D1"],
+    "prereqs": [
+      "P9-D1"
+    ],
     "context": "Complete worker_main.py's real-mode sequence, continuing past P9-D1's probe step: _import_nodes() [stub returning an empty list for now - real node import is Phase 10's scope, this task imports zero nodes and that is correct here] -> ipc.send_event(Ready{..., capabilities_source:\"pytorch\", node_types:[]}) -> a message dispatch loop placeholder (loops recv_message, currently just logs and continues - real dispatch is a later phase). This receives the scope P9-D1 explicitly deferred. Acceptance: >=4 new tests in worker/tests/test_worker_main.py marked @pytest.mark.real_mode: real startup sends a Ready event with capabilities_source=\"pytorch\", node_types is an empty list at this phase, function does not exit nonzero for a valid cpu device_type; `python -m pytest worker/tests/test_worker_main.py -v -m real_mode` exits 0 (>=7 real_mode tests total in file).",
     "tags": [],
     "defers_to": []
@@ -74,8 +103,10 @@
     "description": "worker_main.py: mock-mode startup sequence",
     "phase": "9",
     "project": "anvilml",
-    "prereqs": ["P9-D2"],
-    "context": "Extend worker/worker_main.py with the mock-mode startup sequence per ANVILML_DESIGN.md §14.3, as a branch selected when ANVILML_WORKER_MOCK=1 (checked once, at the top-level entry point, not deep inside helpers): ipc.connect(...) [identical to real mode] -> _mock_probe_capabilities() [P9-C2, never imports torch] -> _import_nodes() [same stub as P9-D2, empty list at this phase] -> ipc.send_event(Ready{..., capabilities_source:\"mock\", node_types:[]}) -> the same dispatch loop placeholder. Equally maintained, not a stand-in for an unwritten real branch - both branches exist from this phase, per §17.3's mandatory mock-AND-real rule. Acceptance: >=4 tests in worker/tests/test_worker_main.py (no marker): mock startup sends Ready with capabilities_source=\"mock\", torch is never imported (subprocess-isolated check per §17.4 rule 7); `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py -v` exits 0 (>=11 total across both modes).",
+    "prereqs": [
+      "P9-D2"
+    ],
+    "context": "Extend worker/worker_main.py with the mock-mode startup sequence per ANVILML_DESIGN.md \u00a714.3, as a branch selected when ANVILML_WORKER_MOCK=1 (checked once, at the top-level entry point, not deep inside helpers): ipc.connect(...) [identical to real mode] -> _mock_probe_capabilities() [P9-C2, never imports torch] -> _import_nodes() [same stub as P9-D2, empty list at this phase] -> ipc.send_event(Ready{..., capabilities_source:\"mock\", node_types:[]}) -> the same dispatch loop placeholder. Equally maintained, not a stand-in for an unwritten real branch - both branches exist from this phase, per \u00a717.3's mandatory mock-AND-real rule. Acceptance: >=4 tests in worker/tests/test_worker_main.py (no marker): mock startup sends Ready with capabilities_source=\"mock\", torch is never imported (subprocess-isolated check per \u00a717.4 rule 7); `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py -v` exits 0 (>=11 total across both modes).",
     "tags": [],
     "defers_to": []
   },
@@ -84,8 +115,10 @@
     "description": "anvilml-worker: integration test, real subprocess sends Ready",
     "phase": "9",
     "project": "anvilml",
-    "prereqs": ["P9-D3"],
-    "context": "Create crates/anvilml-worker/tests/real_startup_tests.rs (new test file, not added to an existing one, since this is the first test that spawns a REAL worker_main.py subprocess rather than a mock IPC backend). Test: bind a RouterTransport (Phase 7), spawn_worker() (Phase 8's P8-B2) targeting worker/worker_main.py with ANVILML_DEVICE_TYPE=cpu and ANVILML_WORKER_MOCK unset, await a Ready WorkerEvent via transport.recv() with an explicit timeout per the mandatory subprocess-IPC-timeout pattern, assert capabilities_source==\"pytorch\" and node_types is empty. This is THE real-mode proof that real startup (not mock) genuinely works end to end against a live subprocess - the explicit gap the Real Worker Startup phase exists to close per ANVILML_DESIGN.md §20. Acceptance: `cargo test -p anvilml-worker --test real_startup_tests -- --test-threads=1` exits 0 (single-threaded to avoid port/subprocess contention across test cases in this file).",
+    "prereqs": [
+      "P9-D3"
+    ],
+    "context": "Create crates/anvilml-worker/tests/real_startup_tests.rs (new test file, not added to an existing one, since this is the first test that spawns a REAL worker_main.py subprocess rather than a mock IPC backend). Test: bind a RouterTransport (Phase 7), spawn_worker() (Phase 8's P8-B2) targeting worker/worker_main.py with ANVILML_DEVICE_TYPE=cpu and ANVILML_WORKER_MOCK unset, await a Ready WorkerEvent via transport.recv() with an explicit timeout per the mandatory subprocess-IPC-timeout pattern, assert capabilities_source==\"pytorch\" and node_types is empty. This is THE real-mode proof that real startup (not mock) genuinely works end to end against a live subprocess - the explicit gap the Real Worker Startup phase exists to close per ANVILML_DESIGN.md \u00a720. Acceptance: `cargo test -p anvilml-worker --test real_startup_tests -- --test-threads=1` exits 0 (single-threaded to avoid port/subprocess contention across test cases in this file).",
     "tags": [],
     "defers_to": []
   },
@@ -94,8 +127,10 @@
     "description": "CI: wire worker-test job to real base.txt install + both test suites",
     "phase": "9",
     "project": "anvilml",
-    "prereqs": ["P9-E1"],
-    "context": "Update .github/workflows/ci.yml's worker-test job (placeholder since Phase 1's P1-E2): replace the echo placeholder with real steps per ANVILML_DESIGN.md §18.3: install worker/requirements/base.txt, then for mode=mock run `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests -v` (excluding real_mode-marked tests implicitly since they require torch which mock jobs never install), for mode=real run a mock-suite collection check (`pytest --collect-only -m \"not real_mode\"`) then install cpu-runner-reqs.txt then `python -m pytest worker/tests -v -m real_mode`. Same install order on both OS matrix legs - no platform-specific branch without a stated reason. Acceptance: `grep -c 'worker-test' .github/workflows/ci.yml` shows the job still exists with real (non-echo) steps; a pushed commit shows all 4 worker-test matrix entries (linux/windows x mock/real) green.",
+    "prereqs": [
+      "P9-E1"
+    ],
+    "context": "Update .github/workflows/ci.yml's worker-test job (placeholder since Phase 1's P1-E2): replace the echo placeholder with real steps per ANVILML_DESIGN.md \u00a718.3: install worker/requirements/base.txt, then for mode=mock run `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests -v` (excluding real_mode-marked tests implicitly since they require torch which mock jobs never install), for mode=real run a mock-suite collection check (`pytest --collect-only -m \"not real_mode\"`) then install cpu-runner-reqs.txt then `python -m pytest worker/tests -v -m real_mode`. Same install order on both OS matrix legs - no platform-specific branch without a stated reason. Acceptance: `grep -c 'worker-test' .github/workflows/ci.yml` shows the job still exists with real (non-echo) steps; a pushed commit shows all 4 worker-test matrix entries (linux/windows x mock/real) green.",
     "tags": [],
     "defers_to": []
   }

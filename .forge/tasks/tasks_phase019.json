@@ -4,8 +4,8 @@
     "description": "anvilml-scheduler: resolve model_id hashes to filesystem paths at dispatch",
     "phase": "19",
     "project": "anvilml",
-    "prereqs": ["P14-A4"],
-    "context": "Extend JobScheduler's dispatch_one() (crates/anvilml-scheduler/src/scheduler.rs, Phase 14's P14-A4) per ANVILML_DESIGN.md Appendix B.2: before sending WorkerMessage::Execute, walk the job's graph JSON and for every LoadModel/LoadVae/LoadClip node's inputs.model_id, resolve the SHA256 hash via ModelStore::get() (Phase 6's P6-A3) to its filesystem path, rewriting the field in the dispatched copy only (the persisted Job.graph in job_store keeps the original hash). An unknown hash fails the job (status=Failed, error=\"unknown_model_id: <hash>\") before sending Execute at all. Acceptance: >=5 tests in tests/scheduler_tests.rs: valid hashes for all three loader types are correctly rewritten to paths, an unknown hash fails the job before any IPC send (spy transport receives zero calls), persisted Job.graph keeps the original hash; `cargo test -p anvilml-scheduler --test scheduler_tests` exits 0.",
+    "prereqs": ["P14-A5"],
+    "context": "Extend JobScheduler's dispatch_one() (crates/anvilml-scheduler/src/scheduler.rs, Phase 14's P14-A4/P14-A5) per ANVILML_DESIGN.md Appendix B.2: before sending WorkerMessage::Execute, walk the job's graph JSON and for every LoadModel/LoadVae/LoadClip node's inputs.model_id, resolve the SHA256 hash via ModelStore::get() (Phase 6's P6-A3) to its filesystem path, rewriting the field in the dispatched copy only (the persisted Job.graph in job_store keeps the original hash). An unknown hash fails the job (status=Failed, error=\"unknown_model_id: <hash>\") before sending Execute at all. Acceptance: >=5 tests in tests/scheduler_tests.rs: valid hashes for all three loader types are correctly rewritten to paths, an unknown hash fails the job before any IPC send (spy transport receives zero calls), persisted Job.graph keeps the original hash; `cargo test -p anvilml-scheduler --test scheduler_tests` exits 0.",
     "tags": [],
     "defers_to": []
   },

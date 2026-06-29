@@ -42,7 +42,7 @@ CPU device with no nodes registered yet."
 
 | Group | Subsystem | Tasks | Summary |
 |-------|-----------|-------|---------|
-| A | Worker scaffolding | P9-A1 … P9-A2 | `requirements/base.txt` (no torch), the `real_mode` pytest marker registration |
+| A | Worker scaffolding | P9-A1 … P9-A3 | `requirements/base.txt` (no torch), the real torch CPU wheel pin, the `real_mode` pytest marker registration |
 | B | IPC | P9-B1 | `worker/ipc.py`'s DEALER transport, mirroring Phase 7's Rust-side `RouterTransport` |
 | C | Capability probing | P9-C1 … P9-C2 | The real torch probe, then the mock equivalent |
 | D | Startup sequences | P9-D1 … P9-D3 | Real-mode sequence split across two tasks, then the mock-mode sequence |
@@ -68,7 +68,7 @@ return dict's keys mirror that struct's field names exactly.
 | `ANVILML_DESIGN.md §14.2`–§14.3 | P9-D1, P9-D2, P9-D3 | The exact real-mode and mock-mode startup sequences, step by step |
 | `ANVILML_DESIGN.md §14.4` | P9-B1 | `worker/ipc.py`'s module docstring and function signatures — normative, copy verbatim |
 | `ANVILML_DESIGN.md §6.6` | P9-C1 | `probe_capabilities()`'s exact mechanical probing contract per capability |
-| `ANVILML_DESIGN.md §18.3` | P9-A2, P9-F1 | The `real_mode` pytest marker convention and the worker CI job's install order |
+| `ANVILML_DESIGN.md §18.3` | P9-A3, P9-F1 | The `real_mode` pytest marker convention and the worker CI job's install order |
 | `ANVILML_DESIGN.md §17.3` | P9-D1 … P9-D3 | Mock AND real are both mandatory in the same phase — never separate phases |
 
 ---
@@ -104,7 +104,36 @@ pip install --dry-run -r worker/requirements/base.txt
 # -> exit 0, no torch index touched
 ```
 
-#### P9-A2: worker/: pyproject.toml or pytest.ini with real_mode marker registered
+#### P9-A2: worker/requirements/: real torch CPU wheel pin in cpu-* files
+
+**Goal:** Populate the two CPU-specific requirement files P9-A1 left empty,
+closing a real gap: every real-mode test from this point in the project onward
+needs `torch` actually installable from these exact files, not assumed present
+from some other source.
+
+**Files to create or modify:**
+- `worker/requirements/cpu-linux-agent.txt`, `cpu-runner-reqs.txt` — both gain the
+  real `torch` CPU wheel pin.
+
+**Key implementation notes:**
+- Both files get the **identical** pin — `cpu-linux-agent.txt` is consumed by this
+  project's own CI `worker-test` job (P9-F1); `cpu-runner-reqs.txt` is the same
+  content under the name later real-mode tasks expect.
+- The CPU-only build comes from the official PyTorch CPU wheel index
+  (`https://download.pytorch.org/whl/cpu` or equivalent) — never the default
+  index, which would pull in a CUDA-bundled wheel unnecessarily.
+- Without this task, every real-mode test in every later phase (capability
+  probing, real startup, every architecture module's `-m real_mode` suite) has no
+  `torch` to import wherever an environment installs strictly from these files
+  rather than relying on a pre-existing system `torch`.
+
+**Acceptance criterion:**
+```bash
+pip install --dry-run -r worker/requirements/cpu-linux-agent.txt
+# -> exit 0, resolves to a CPU-only torch wheel (no CUDA/ROCm variant)
+```
+
+#### P9-A3: worker/: pyproject.toml or pytest.ini with real_mode marker registered
 
 **Goal:** Register the `real_mode` pytest marker convention before any test file in
 this phase uses it, establishing the single source of truth for what that marker
@@ -378,6 +407,13 @@ cargo test -p anvilml-worker --test real_startup_tests -- --test-threads=1
 - `worker/ipc.py`'s function signatures are copied verbatim from
   `ANVILML_DESIGN.md §14.4` — this is one of the few places in the spec where the
   code shown is meant to be transcribed exactly, not adapted.
+- `cpu-linux-agent.txt`/`cpu-runner-reqs.txt` must actually contain the real torch
+  CPU wheel pin (P9-A2) before any real-mode test in this phase or any later one
+  can be expected to pass in an environment that installs strictly from these
+  files — leaving them empty (which an earlier pass through this delivery did,
+  before being caught on review) would make every subsequent `-m real_mode`
+  pytest invocation in this project fail with an import error, despite every
+  later task's acceptance criterion assuming `torch` is simply available.
 
 ---
 

@@ -35,7 +35,17 @@
     "phase": "14",
     "project": "anvilml",
     "prereqs": ["P14-A3"],
-    "context": "Replace dispatch_one()'s always-false stub (P14-A3) with the real 2-step selection algorithm per ANVILML_DESIGN.md §12.5 EXACTLY: (1) if job.settings.device_preference matches an Idle worker, use it; (2) else rank Idle workers by vram_free_mib descending, pick the top; if none Idle, return false (leave queued, stop this iteration). On a match: reserve VRAM via ledger, transition Job to Running, persist via job_store, send WorkerMessage::Execute, return true. This receives the scope P14-A3 explicitly deferred. Acceptance: >=6 new tests in scheduler_tests.rs: device_preference match wins over vram ranking, vram ranking picks the highest-free Idle worker when no preference matches, no Idle workers leaves the job Queued without erroring, multiple queued jobs each get dispatched to a distinct worker in one wake cycle; `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests` exits 0 (>=17 tests total in file).",
+    "context": "Replace dispatch_one()'s always-false stub (P14-A3) with the real 2-step selection algorithm per ANVILML_DESIGN.md §12.5 EXACTLY: (1) if job.settings.device_preference matches an Idle worker, use it; (2) else rank Idle workers by vram_free_mib descending, pick the top; if none Idle, return false (leave queued). On a match: reserve VRAM via ledger, transition Job to Running, persist via job_store, send WorkerMessage::Execute, return true. Marking the assigned worker's own status Busy is the next task's scope - this task only selects and dispatches. Receives the scope P14-A3 deferred. Acceptance: >=6 new tests in scheduler_tests.rs: device_preference wins over vram ranking, vram ranking picks the highest-free Idle worker, no Idle workers leaves the job Queued without erroring, multiple queued jobs get distinct workers in one wake cycle; `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests` exits 0 (>=17 total).",
+    "tags": [],
+    "defers_to": ["P14-A5"]
+  },
+  {
+    "id": "P14-A5",
+    "description": "anvilml-scheduler: dispatch_one marks the assigned worker Busy",
+    "phase": "14",
+    "project": "anvilml",
+    "prereqs": ["P14-A4"],
+    "context": "Extend dispatch_one() (crates/anvilml-scheduler/src/scheduler.rs), the scope P14-A4 deferred: immediately after a successful worker selection (P14-A4's match branch, alongside the VRAM reservation), call worker_handle.set_status(WorkerStatus::Busy) (Phase 8's P8-E2). Without this, the WorkerHandle still reads Idle after assignment, so a second, concurrent dispatch_one() call (e.g. a second queued job in the same wake cycle) could select the SAME worker again before it finishes the first job - the exact bug this task closes. Idle restoration on completion and the dispatch-loop wake on that transition are separate, later-phase tasks. Acceptance: >=4 new tests: a dispatched worker's status reads Busy immediately after dispatch_one() returns true, two jobs in the same wake cycle never select the same worker twice, a Busy worker is excluded from the next cycle's ranking; `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests` exits 0 (>=21 total).",
     "tags": [],
     "defers_to": []
   },
@@ -54,7 +64,7 @@
     "description": "anvilml-server: AppState gains scheduler/workers/db fields",
     "phase": "14",
     "project": "anvilml",
-    "prereqs": ["P14-A4", "P14-B1"],
+    "prereqs": ["P14-A5", "P14-B1"],
     "context": "Extend AppState (crates/anvilml-server/src/state.rs, P11-B1) with: scheduler: Arc<JobScheduler>, workers: Arc<WorkerPool>, db: SqlitePool. node_registry already present from Phase 11 - do not duplicate. Remaining §13.2 fields (hardware, broadcaster, artifact_store, env_report) stay absent until a task actually needs them, per Phase 11's no-speculative-fields convention. Wiring backend/main.rs to construct and spawn a real WorkerPool is the next task's scope - this task is the struct shape only. Acceptance: >=3 tests in crates/anvilml-server/tests/state_tests.rs covering the new fields' construction and cloning; `cargo test -p anvilml-server --test state_tests` exits 0 (>=5 total in file).",
     "tags": [],
     "defers_to": ["P14-C2"]

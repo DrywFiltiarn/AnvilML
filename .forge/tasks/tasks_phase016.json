@@ -15,7 +15,17 @@
     "phase": "16",
     "project": "anvilml",
     "prereqs": ["P16-A1"],
-    "context": "Extend the event loop (crates/anvilml-scheduler/src/event_loop.rs) to persist status transitions alongside publishing: Completed -> status=Completed, completed_at=now, persist; Failed -> status=Failed, completed_at=now, error=event.error, persist; Cancelled -> status=Cancelled, completed_at=now, persist. This is what makes GET /v1/jobs/:id (Phase 14) observe terminal states correctly - before this task, dispatch only ever set Running, never a terminal state, since the scheduler never processed the worker's response. Also release the VRAM ledger reservation (Phase 13's VramLedger::release()) on all three terminal events per §12.4. Acceptance: >=5 new tests: Completed sets completed_at, Failed persists the error string, Cancelled persists correctly, all three release the ledger; `cargo test -p anvilml-scheduler --test event_loop_tests` exits 0 (>=15 total).",
+    "context": "Extend the event loop (crates/anvilml-scheduler/src/event_loop.rs) to persist status transitions alongside publishing: Completed -> status=Completed, completed_at=now, persist; Failed -> status=Failed, completed_at=now, error=event.error, persist; Cancelled -> status=Cancelled, completed_at=now, persist. This is what makes GET /v1/jobs/:id (Phase 14) observe terminal states correctly - before this task, dispatch only ever set Running, never a terminal state, since the scheduler never processed the worker's response. Also release the VRAM ledger reservation (Phase 13's VramLedger::release()) on all three terminal events per §12.4. Restoring the WORKER's own status to Idle, and waking the dispatch loop, are the next task's scope - do not add either here. Acceptance: >=5 new tests: Completed sets completed_at, Failed persists the error string, Cancelled persists correctly, all three release the ledger; `cargo test -p anvilml-scheduler --test event_loop_tests` exits 0 (>=15 total).",
+    "tags": [],
+    "defers_to": ["P16-A3"]
+  },
+  {
+    "id": "P16-A3",
+    "description": "anvilml-scheduler: event_loop restores Idle + wakes dispatch loop",
+    "phase": "16",
+    "project": "anvilml",
+    "prereqs": ["P16-A2"],
+    "context": "Extend the event loop (crates/anvilml-scheduler/src/event_loop.rs), the scope P16-A2 deferred: on all three terminal events (Completed/Failed/Cancelled), call the responsible worker's worker_handle.set_status(WorkerStatus::Idle) (Phase 8's P8-E2) then dispatch_notify.notify_one() (Phase 14's P14-A1). Without this, a worker that finishes a job stays marked Busy forever (P14-A5 marks it Busy on dispatch but nothing reverses that), and even if status were restored, a queued job waiting for a free worker would never be re-evaluated, since dispatch_notify is otherwise woken only by submit() - a real starvation bug under any load beyond one job at a time. Acceptance: >=5 tests: each terminal event restores Idle and wakes the dispatch loop (observable via a test hook), a queued second job is actually dispatched after the first job's worker frees up with no new submission; `cargo test -p anvilml-scheduler --test event_loop_tests` exits 0 (>=20 total).",
     "tags": [],
     "defers_to": []
   },
@@ -24,7 +34,7 @@
     "description": "anvilml-server: AppState gains broadcaster field, wired from main.rs",
     "phase": "16",
     "project": "anvilml",
-    "prereqs": ["P16-A2"],
+    "prereqs": ["P16-A3"],
     "context": "Extend AppState (crates/anvilml-server/src/state.rs, Phase 15's P15-A1) with broadcaster: Arc<EventBroadcaster> (anvilml-ipc, Phase 7's P7-C1). Update backend/main.rs's normal startup path to construct the EventBroadcaster once, pass the same Arc instance into both JobScheduler's spawn_event_loop() call (P16-A1) and AppState, so the scheduler's published events and the HTTP layer's subscribers share the identical broadcast channel. Remaining §13.2 fields (hardware, env_report) stay absent until a task needs them. Acceptance: >=2 new tests in crates/anvilml-server/tests/state_tests.rs covering broadcaster's construction and cloning; `cargo test -p anvilml-server --test state_tests` exits 0; `cargo build -p anvilml` exits 0.",
     "tags": [],
     "defers_to": []

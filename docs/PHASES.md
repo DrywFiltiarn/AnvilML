@@ -17,15 +17,15 @@ arbitrary target count.
 | 5 | Hardware Detection: Orchestration | 6 | `anvilml hw-probe` CLI subcommand prints real, valid `HardwareInfo` JSON via the full priority-ordered `detect_all_devices()` chain |
 | 6 | Model Registry & Artifacts | 12 | Not applicable - persistence-layer crates with no HTTP handler wired up yet |
 | 7 | IPC Foundations | 8 | Not applicable - IPC message types and transport in isolation; the real proof is Phase 8's stress test |
-| 8 | IPC Stress Gate & Worker Pool | 12 | The 1000-round-trip ROUTER/DEALER stress test passes with zero message loss - the explicit gate naming this entire roadmap group |
-| 9 | Real Worker Startup | 10 | A real `worker_main.py` subprocess connects over IPC, runs a real torch capability probe, and sends `Ready` with `capabilities_source: "pytorch"` |
+| 8 | IPC Stress Gate & Worker Pool | 13 | The 1000-round-trip ROUTER/DEALER stress test passes with zero message loss - the explicit gate naming this entire roadmap group |
+| 9 | Real Worker Startup | 11 | A real `worker_main.py` subprocess connects over IPC, runs a real torch capability probe, and sends `Ready` with `capabilities_source: "pytorch"` |
 | 10 | Generic Node Groundwork | 9 | Not applicable - node system scaffolding with zero concrete nodes/arch modules registered |
 | 11 | Dynamic Node System | 5 | The live binary serves `GET /v1/nodes` over real HTTP, backed by the dynamic `NodeTypeRegistry` (still empty - no worker spawned by the normal server-start path yet) |
 | 12 | Graph Validation | 7 | Not applicable - pure `validate_graph()` function with no HTTP handler wired up yet |
 | 13 | Job Queue | 6 | Not applicable - in-memory queue/ledger primitives and persistence with no HTTP handler yet |
-| 14 | Dispatch & Execute | 10 | A job submitted via `POST /v1/jobs`, using the real `PassThrough` node, is dispatched to a real spawned worker and reaches `Completed` - first genuine end-to-end real dispatch |
+| 14 | Dispatch & Execute | 11 | A job submitted via `POST /v1/jobs`, using the real `PassThrough` node, is dispatched to a real spawned worker and reaches `Completed` - first genuine end-to-end real dispatch |
 | 15 | Artifact Storage Wiring | 5 | `GET /v1/artifacts*` live over real HTTP, backed by Phase 6's `ArtifactStore` (correctly empty - no image-producing node exists yet) |
-| 16 | Live Events | 7 | A WebSocket client connected to `GET /v1/events` observes a real `JobCompleted` event for a `PassThrough` job, delivered live |
+| 16 | Live Events | 8 | A WebSocket client connected to `GET /v1/events` observes a real `JobCompleted` event for a `PassThrough` job, delivered live |
 | 17 | Cancellation | 7 | A `Queued` job's first cancel returns `202`; a second cancel on the same now-`Cancelled` job returns `409` |
 | 18 | HTTP/WebSocket Server Completion | 12 | `GET /v1/system` and `GET /v1/workers` live with real data - the complete REST surface now backed by real logic; `api/openapi.json` generated for real for the first time |
 | 19 | Model Loading Contract Groundwork | 7 | Not applicable - hash resolution, pipeline cache, and loader node skeletons with no concrete arch module yet |
@@ -41,7 +41,7 @@ arbitrary target count.
 | 29 | Documentation | 7 | A complete, seven-chapter mdBook documentation site builds cleanly with no broken links, every chapter sourced from exactly one authoritative project source |
 | 30 | v4 Roadmap Closeout: Final Compliance Sweep | 5 | The complete 29-phase delivery passes every project-wide compliance check this project defines, run at full project scope |
 
-**Total tasks authored across this delivery: 236.**
+**Total tasks authored across this delivery: 240.**
 
 **This delivery is complete - Phase 30 closes the full v4 roadmap.**
 
@@ -115,6 +115,37 @@ project-wide compliance sweep (Phase 30).
   offhand comment. One downstream prereq reference (Phase 13's P13-B1, which
   needed the registry crate's finalized lib.rs, not the devices.sql conversion)
   was corrected from the old P6-A8 to the new P6-A9 identity.
+- MISSING FUNCTIONAL CAPABILITY found and fixed (Phases 8, 14, 16) - a full audit
+  triggered by the devices.sql finding above surfaced a second, more serious gap:
+  WorkerHandle (Phase 8) exposed only a read-only status() getter, with no public
+  mutator anywhere in the crate; dispatch (Phase 14's original P14-A4) selected
+  only Idle workers but never marked the assigned one Busy; and the event loop
+  (Phase 16's original P16-A2) persisted a job's terminal status but never
+  restored the worker's own status to Idle or woke the dispatch loop. Combined,
+  this meant a worker that finished a job stayed permanently Busy, and a queued
+  job with no new submission to trigger a wake could starve indefinitely - a real
+  correctness bug under any load beyond one job at a time, not merely a missing
+  data file. Fixed with three new tasks: P8-E2 (WorkerHandle::set_status(), the
+  only public mutator, inserted between the original P8-E1 and P8-E2, which was
+  renumbered P8-E2 -> P8-E3); P14-A5 (dispatch marks the assigned worker Busy,
+  inserted after the original P14-A4); P16-A3 (the event loop restores Idle and
+  calls dispatch_notify.notify_one() on every terminal event, inserted after the
+  original P16-A2 - this is the exact wake source Phase 14's P14-A3 had
+  explicitly deferred without ever naming where it would land). Downstream prereq
+  citations in Phases 11 and 19 referencing the old P8-E2/P14-A4 identities were
+  corrected to P8-E3/P14-A5.
+- MISSING DEPENDENCY ARTIFACT found and fixed (Phase 9) - the same audit found
+  that worker/requirements/cpu-linux-agent.txt and cpu-runner-reqs.txt were
+  created as empty placeholders by P9-A1 with an explicit note that "torch CPU
+  wheel pins are added by a later task" - but no later task anywhere in the
+  delivery ever added that pin. Every real-mode pytest invocation from Phase 9
+  onward (every architecture phase's -m real_mode suite included) assumes torch
+  is importable, but the CI job and any from-scratch environment installing
+  strictly from these two files would have had no torch to import. Fixed by
+  inserting P9-A2 (the real torch CPU wheel pin, resolved live and installed via
+  the official CPU wheel index, never the default CUDA-bundled index) between the
+  original P9-A1 and P9-A2, which was renumbered P9-A2 -> P9-A3; downstream
+  prereq citations (P9-B1, P9-C1) were corrected accordingly.
 
 ## v4 roadmap status: COMPLETE
 
