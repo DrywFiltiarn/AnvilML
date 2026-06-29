@@ -9,4 +9,5 @@ pub mod store;
 pub use db::create_pool;
 pub use device_store::DeviceCapabilityStore;
 pub use scanner::ModelScanner;
+pub use seed_loader::SeedLoader;
 pub use store::ModelStore;

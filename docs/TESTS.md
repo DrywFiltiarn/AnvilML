@@ -1967,5 +1967,53 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Tests:** Calls `already_applied()` on a fresh pool (no `_seed_log` table) and verifies the method returns `Ok(false)`. Then queries `sqlite_master` directly to confirm the `_seed_log` table was created.
 **Mode:** both
 **Inputs:** `seed_name="devices.sql"`, `sha256="abc123"`.
-**Expected output:** `Ok(false)` and `_seed_log` table exists in `sqlite_master`.
-**Acceptance:** `cargo test -p anvilml-registry --test seed_loader_tests test_seed_log_created_on_first_use` exits 0.
+ **Expected output:** `Ok(false)` and `_seed_log` table exists in `sqlite_master`.
+ **Acceptance:** `cargo test -p anvilml-registry --test seed_loader_tests test_seed_log_created_on_first_use` exits 0.
+
+---
+
+## test_run_first_time_applies_and_records (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/seed_loader_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sha2`, `digest`, `futures-util`, `chrono`, and `sqlx` dependencies. A temp file is created with valid INSERT SQL.
+**Tests:** Calls `SeedLoader::run()` for the first time on a seed file with valid SQL. Verifies that the `_seed_log` table contains exactly one row with the seed name, the recorded hash matches the SHA256 of the file content, and a subsequent `already_applied()` call returns `true`.
+**Mode:** both
+**Inputs:** `seed_name="devices.sql"`, temp file with `INSERT INTO device_capabilities (...) VALUES ('test_device', 10de, 0, 16384);`.
+**Expected output:** `_seed_log` has one row with the correct SHA256 hash; `already_applied()` returns `true` for the same hash.
+**Acceptance:** `cargo test -p anvilml-registry --test seed_loader_tests test_run_first_time_applies_and_records` exits 0.
+
+---
+
+## test_run_skips_when_already_applied (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/seed_loader_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sha2`, `digest`, `futures-util`, `chrono`, and `sqlx` dependencies. A temp file is created with valid INSERT SQL.
+**Tests:** Calls `SeedLoader::run()` twice with the same seed file. The second call should detect the hash match and skip execution. Verifies that the `_seed_log` row count stays at 1 and the `applied_at` timestamp is unchanged.
+**Mode:** both
+**Inputs:** Same seed file passed to `run()` twice consecutively.
+**Expected output:** First run records hash+timestamp; second run returns `Ok(())` without changing the row or timestamp.
+**Acceptance:** `cargo test -p anvilml-registry --test seed_loader_tests test_run_skips_when_already_applied` exits 0.
+
+---
+
+## test_run_reapplies_on_changed_content (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/seed_loader_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sha2`, `digest`, `futures-util`, `chrono`, and `sqlx` dependencies. A temp file is created with initial INSERT SQL, then modified with different content.
+**Tests:** Calls `run()` with initial content, records the hash and timestamp, then modifies the file content and calls `run()` again. Verifies that the hash and `applied_at` timestamp in `_seed_log` both change.
+**Mode:** both
+**Inputs:** Seed file with `device_v1` content, then rewritten with `device_v2` content.
+**Expected output:** Both `sha256` and `applied_at` in `_seed_log` change after the second run.
+**Acceptance:** `cargo test -p anvilml-registry --test seed_loader_tests test_run_reapplies_on_changed_content` exits 0.
+
+---
+
+## test_run_malformed_sql_returns_err_no_partial_state (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/seed_loader_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `sha2`, `digest`, `futures-util`, `chrono`, and `sqlx` dependencies. A temp file is created with invalid SQL.
+**Tests:** Calls `SeedLoader::run()` on a seed file with invalid SQL (`INVALID SQL STATEMENT THAT WILL FAIL`). Verifies that `run()` returns an error, `_seed_log` has no row for the seed name (transaction rolled back), and `already_applied()` returns `false`.
+**Mode:** both
+**Inputs:** `seed_name="bad.sql"`, temp file with `INVALID SQL STATEMENT THAT WILL FAIL`.
+**Expected output:** `run()` returns `Err`; `_seed_log` has zero rows for the seed; `already_applied()` returns `false`.
+**Acceptance:** `cargo test -p anvilml-registry --test seed_loader_tests test_run_malformed_sql_returns_err_no_partial_state` exits 0.
