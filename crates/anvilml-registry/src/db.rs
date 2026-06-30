@@ -42,7 +42,16 @@ pub async fn create_pool(db_path: &Path) -> Result<SqlitePool, AnvilError> {
     // SQLite) is appropriate for a single-process application with SQLite storage.
     // Use SqliteConnectOptions to build the connection options from the Path,
     // then connect with the pool.
-    let connect_opts = SqliteConnectOptions::new().filename(db_path);
+    //
+    // `create_if_missing(true)` is required because sqlx's default flags are
+    // `SQLITE_OPEN_READWRITE` without `SQLITE_OPEN_CREATE`, which means SQLite
+    // will return SQLITE_CANTOPEN if the database file does not already exist.
+    // This is the exact failure mode seen when the binary runs with a fresh
+    // `db_path` — the file has not been created yet (only the parent directory
+    // was created by `create_dir_all` above).
+    let connect_opts = SqliteConnectOptions::new()
+        .filename(db_path)
+        .create_if_missing(true);
     let pool = SqlitePoolOptions::new().connect_with(connect_opts).await?;
 
     // Enable WAL mode for better concurrent read/write performance. SQLite's default

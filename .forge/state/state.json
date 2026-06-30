@@ -60,16 +60,17 @@
     "P900-A1",
     "P900-A2",
     "P900-A3",
-    "P900-A4"
+    "P900-A4",
+    "P900-A5"
   ],
-  "in_progress": "P900-A5",
+  "in_progress": "P900-A6",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "1. **Add `anvilml-registry` dependency to `backend/Cargo.toml`.**\n   Append `anvilml-registry = { path = \"../crates/anvilml-registry\" }` to the `[dependencies]` section, placing it after the existing `anvilml-server` entry. This follows the established pattern of workspace path dependencies already declared in the file.\n\n2. **Wire `create_pool()` into `main.rs`'s default startup path.**\n   In the `None` (default) arm of the subcommand match, after the match block closes and before `let start_time = Instant::now()`, insert:\n   ```rust\n   // Create the database pool and run migrations.\n   // This is called before binding the TCP listener so that a DB failure\n   // prevents the server from starting with no database \u2014 matching the\n   // config-load failure pattern (eprintln + exit 1).\n   let _pool = anvilml_registry::create_pool(&config.db_path)\n       .await\n       .map_err(|e| {\n           eprintln!(\"Failed to create database pool: {e}\");\n           std::process::exit(1);\n       })\n       .unwrap();\n   ```\n   The pool is bound to `_pool` (underscore-prefixed) to indicate it is intentionally unused in this task \u2014 it is kept alive for the duration of `main()` by being a local variable, which keeps the SQLite connection open. No `AppState` is constructed; the pool simply needs to exist in scope to prevent drop. The `_` prefix suppresses the dead-code warning without introducing a `#[allow(dead_code)]` annotation.\n\n3. **Create `backend/tests/db_startup_tests.rs`.**\n   Write an integration test file that spawns the built `anvilml` binary with `ANVILML_DB_PATH` set to a temp file, waits briefly for the binary to start (which triggers DB creation), then terminates the process and verifies the database file exists with the expected tables. The test uses `tokio::time::timeout` to bound the wait, mirroring the bounded-wait pattern established in the project's subprocess tests.\n\n   Test 1: `test_db_file_created_on_startup` \u2014 spawns the binary with a temp `db_path`, waits up to 5 seconds for the process to produce output (the \"listening\" log line), then asserts the `.db` file exists on disk.\n\n   Test 2: `test_migrations_create_required_tables` \u2014 spawns the binary with a temp `db_path`, waits briefly, terminates the process, then opens the `.db` file with `sqlx` and queries `sqlite_master` to verify both `models` and `device_capabilities` tables exist.\n\n   Both tests use `tempfile::NamedTempFile` to create a unique temp path per test, ensuring no cross-test shared state (no `#[serial]` needed for DB isolation).",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-30T15:05:42+0200",
-  "plan_approval_message_id": "1521500120024219688",
+  "last_updated": "2026-06-30T15:49:58+0200",
+  "plan_approval_message_id": "1521512367429652613",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1521500118337978439",
+  "plan_report_message_id": "1521512365869502516",
   "impl_report_message_id": null
 }

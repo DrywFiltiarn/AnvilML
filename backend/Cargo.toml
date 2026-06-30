@@ -1,6 +1,6 @@
 [package]
 name = "anvilml"
-version = "0.1.6"
+version = "0.1.7"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -13,6 +13,7 @@ anvilml-core = { path = "../crates/anvilml-core" }
 anvilml-hardware = { path = "../crates/anvilml-hardware" }
 anvilml-scheduler = { path = "../crates/anvilml-scheduler" }
 anvilml-server = { path = "../crates/anvilml-server" }
+anvilml-registry = { path = "../crates/anvilml-registry" }
 axum = "0.8.9"
 clap = { version = "4.6.1", features = ["derive"] }
 serde_json = "1.0"
@@ -22,3 +23,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [dev-dependencies]
 serial_test = "3.5.0"
+tempfile = "3.26"
+sqlx = { version = "0.9.0", features = ["sqlite", "runtime-tokio", "migrate", "chrono"] }

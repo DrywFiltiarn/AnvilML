@@ -6,6 +6,7 @@ use anvilml::shutdown;
 use anvilml_core::CliOverrides;
 use anvilml_core::config_load;
 use anvilml_hardware::detect_all_devices;
+use anvilml_registry::create_pool;
 use anvilml_server::build_router;
 use std::path::Path;
 use std::time::Instant;
@@ -99,6 +100,18 @@ async fn main() {
             // Default path: start the HTTP server.
         }
     }
+
+    // Create the database pool and run migrations.
+    // This is called before binding the TCP listener so that a DB failure
+    // prevents the server from starting with no database — matching the
+    // config-load failure pattern (eprintln + exit 1).
+    let _pool = create_pool(&config.db_path)
+        .await
+        .map_err(|e| {
+            eprintln!("Failed to create database pool: {e}");
+            std::process::exit(1);
+        })
+        .unwrap();
 
     // Capture process-start instant once, before binding, so the health
     // handler returns a real elapsed-time measurement.

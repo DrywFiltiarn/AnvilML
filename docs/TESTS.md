@@ -2233,3 +2233,27 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `--log-format invalid_value` and `hw-probe` passed to the binary.
 **Expected output:** Non-zero exit code (clap validation failure, exit code 2).
 **Acceptance:** `cargo test -p anvilml --test logging_tests -- test_log_format_invalid_exits_nonzero` exits 0.
+
+---
+
+## test_db_file_created_on_startup (backend)
+
+**File:** `backend/tests/db_startup_tests.rs`
+**Context:** The `anvilml` binary has been compiled (`cargo build -p anvilml`). The binary's default startup path now calls `create_pool()` from `anvilml-registry`, which creates the SQLite database and runs migrations before binding the TCP listener.
+**Tests:** Spawning the binary with `ANVILML_DB_PATH` set to a temp directory path and `ANVILML_PORT=0` (ephemeral port) triggers database creation. The test waits up to 5 seconds for the "listening" log line on stderr, then asserts the `.db` file exists on disk.
+**Mode:** both
+**Inputs:** `ANVILML_DB_PATH` = temp file path (unique per test via `tempfile::tempdir()`), `ANVILML_PORT=0`, no subcommand (default path).
+**Expected output:** `.db` file exists after binary starts; "listening" log line appears on stderr.
+**Acceptance:** `cargo test -p anvilml --test db_startup_tests -- test_db_file_created_on_startup` exits 0.
+
+---
+
+## test_migrations_create_required_tables (backend)
+
+**File:** `backend/tests/db_startup_tests.rs`
+**Context:** The `anvilml` binary has been compiled (`cargo build -p anvilml`). The `create_pool()` function runs all migrations from `database/migrations/`, which creates the `models` and `device_capabilities` tables.
+**Tests:** Spawning the binary with `ANVILML_DB_PATH` set to a temp directory path and `ANVILML_PORT=0` triggers database creation and migration. After confirming the "listening" log line, the test connects to the database with `sqlx` and queries `sqlite_master` to verify both `models` and `device_capabilities` tables exist.
+**Mode:** both
+**Inputs:** `ANVILML_DB_PATH` = temp file path (unique per test via `tempfile::tempdir()`), `ANVILML_PORT=0`, no subcommand (default path).
+**Expected output:** `sqlite_master` query returns both `models` and `device_capabilities` table names.
+**Acceptance:** `cargo test -p anvilml --test db_startup_tests -- test_migrations_create_required_tables` exits 0.
