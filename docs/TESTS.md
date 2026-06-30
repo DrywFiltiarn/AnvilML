@@ -2293,3 +2293,15 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `ANVILML_SEED_PATH=/tmp/nonexistent_seed.sql`, `ANVILML_PORT=0`, no subcommand (default path).
 **Expected output:** Process exits with non-zero code within 10 seconds; no "listening" log line produced.
 **Acceptance:** `cargo test -p anvilml --test db_startup_tests -- test_missing_seed_file_causes_startup_failure` exits 0.
+
+---
+
+## test_anvilml_log_precedence_over_rust_log (backend)
+
+**File:** `backend/tests/logging_tests.rs`
+**Context:** The `anvilml` binary has been compiled (`cargo build -p anvilml`). The binary's logging initialization checks `ANVILML_LOG` first, falling back to `RUST_LOG` when `ANVILML_LOG` is unset (per `ENVIRONMENT.md §3.3`).
+**Tests:** Sets both `ANVILML_LOG=debug` and `RUST_LOG=error`, spawns the binary with `hw-probe`, and asserts stderr is non-empty. `RUST_LOG=error` suppresses all debug-level tracing output; non-empty stderr proves `ANVILML_LOG` was the active filter, confirming the precedence rule.
+**Mode:** both
+**Inputs:** `ANVILML_LOG=debug`, `RUST_LOG=error`, `hw-probe` subcommand.
+**Expected output:** stderr is non-empty (debug-level tracing from hardware detection).
+**Acceptance:** `cargo test -p anvilml --test logging_tests -- test_anvilml_log_precedence_over_rust_log` exits 0.

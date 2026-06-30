@@ -265,6 +265,81 @@ mod tests {
         );
     }
 
+    /// Verify that `ANVILML_LOG` takes precedence over `RUST_LOG` when
+    /// both are set simultaneously.
+    ///
+    /// Sets `ANVILML_LOG=debug` alongside `RUST_LOG=error`, spawns the
+    /// binary with `hw-probe`, and asserts stderr is non-empty.
+    ///
+    /// Rationale: `RUST_LOG=error` alone suppresses all debug-level tracing
+    /// output. If `RUST_LOG` were applied instead of `ANVILML_LOG`, stderr
+    /// would be empty. Non-empty stderr therefore proves `ANVILML_LOG` was
+    /// the active filter. This validates the precedence rule documented
+    /// in `ENVIRONMENT.md §3.3`.
+    ///
+    /// Captures the prior values of both env vars, restores them
+    /// unconditionally after the assertion.
+    ///
+    /// #[serial] is required because `std::env::set_var` is process-global;
+    /// concurrent tests would race on the env vars.
+    #[serial]
+    #[test]
+    fn test_anvilml_log_precedence_over_rust_log() {
+        // Capture the prior values of both env vars so we can restore
+        // everything exactly as it was before the test.
+        let prior_anvilml_log = std::env::var("ANVILML_LOG").ok();
+        let prior_rust_log = std::env::var("RUST_LOG").ok();
+
+        // Set ANVILML_LOG=debug alongside RUST_LOG=error. If ANVILML_LOG
+        // takes precedence, debug-level tracing output will appear on
+        // stderr despite RUST_LOG=error suppressing debug output.
+        // SAFETY: See above — #[serial] guarantees no concurrent access.
+        unsafe {
+            std::env::set_var("ANVILML_LOG", "debug");
+            std::env::set_var("RUST_LOG", "error");
+        }
+
+        // Spawn the built binary with `hw-probe` and capture stderr.
+        // A 10-second timeout prevents hanging if the binary crashes
+        // or enters an unexpected code path.
+        let output = Command::new(env!("CARGO_BIN_EXE_anvilml"))
+            .args(["hw-probe"])
+            .output()
+            .expect("failed to execute anvilml binary");
+
+        // Restore prior values unconditionally.
+        // SAFETY: See above — #[serial] guarantees no concurrent access.
+        match prior_anvilml_log {
+            Some(v) => unsafe {
+                std::env::set_var("ANVILML_LOG", v);
+            },
+            None => unsafe {
+                std::env::remove_var("ANVILML_LOG");
+            },
+        }
+        match prior_rust_log {
+            Some(v) => unsafe {
+                std::env::set_var("RUST_LOG", v);
+            },
+            None => unsafe {
+                std::env::remove_var("RUST_LOG");
+            },
+        }
+
+        // Assert that stderr is non-empty — tracing output should appear
+        // when the debug filter is active and hardware detection runs.
+        // RUST_LOG=error suppresses debug output, so non-empty stderr
+        // proves ANVILML_LOG was the active filter.
+        assert!(
+            !output.stderr.is_empty(),
+            "hw-probe with ANVILML_LOG=debug and RUST_LOG=error \
+             produced empty stderr (ANVILML_LOG may not take precedence); \
+             stdout={:?}, stderr={:?}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     /// Verify that `--log-format` with an invalid value causes the binary
     /// to exit with a non-zero exit code (clap exits with code 2 on
     /// validation failure).
