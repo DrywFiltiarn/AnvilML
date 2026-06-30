@@ -2197,3 +2197,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `RUST_LOG=debug` env var set; `ANVILML_LOG` unset; `hw-probe` subcommand passed to the binary.
 **Expected output:** `output.stderr` is non-empty (contains at least one tracing-formatted log line from hardware detection).
 **Acceptance:** `cargo test -p anvilml --test logging_tests -- test_rust_log_debug_yields_stderr` exits 0.
+
+---
+
+## test_log_format_json_produces_json_lines (backend)
+
+**File:** `backend/tests/logging_tests.rs`
+**Context:** The `anvilml` binary has been compiled (`cargo build -p anvilml`). The `tracing-subscriber` crate has the `json` feature enabled (`backend/Cargo.toml`), and `--log-format` is a valid CLI flag.
+**Tests:** Setting `ANVILML_LOG=debug` and passing `--log-format json` causes the spawned `anvilml` binary to emit newline-delimited JSON lines on stderr. Each non-empty stderr line is parsed as JSON and verified to contain at least a `level` or `msg` field (fields that tracing-subscriber always emits in JSON mode).
+**Mode:** both
+**Inputs:** `ANVILML_LOG=debug` env var set; `--log-format json` and `hw-probe` passed to the binary.
+**Expected output:** `output.stderr` is non-empty; every non-empty line parses as valid JSON with a `level` or `msg` field.
+**Acceptance:** `cargo test -p anvilml --test logging_tests -- test_log_format_json_produces_json_lines` exits 0.
+
+---
+
+## test_log_format_plain_produces_text_lines (backend)
+
+**File:** `backend/tests/logging_tests.rs`
+**Context:** The `anvilml` binary has been compiled (`cargo build -p anvilml`). The `--log-format plain` flag is valid and produces the default plain-text output.
+**Tests:** Setting `ANVILML_LOG=debug` and passing `--log-format plain` causes the spawned `anvilml` binary to emit plain-text (non-JSON) lines on stderr. At least one non-empty stderr line is verified to NOT be valid JSON, confirming the plain-text formatter is active.
+**Mode:** both
+**Inputs:** `ANVILML_LOG=debug` env var set; `--log-format plain` and `hw-probe` passed to the binary.
+**Expected output:** `output.stderr` is non-empty; at least one line is NOT valid JSON (plain-text format like `2024-01-01T00:00:00.000Z  INFO ...`).
+**Acceptance:** `cargo test -p anvilml --test logging_tests -- test_log_format_plain_produces_text_lines` exits 0.
+
+---
+
+## test_log_format_invalid_exits_nonzero (backend)
+
+**File:** `backend/tests/logging_tests.rs`
+**Context:** The `anvilml` binary has been compiled (`cargo build -p anvilml`). The `--log-format` flag accepts only `"plain"` or `"json"`; clap exits with code 2 on validation failure.
+**Tests:** Passing `--log-format invalid_value` causes the binary to exit with a non-zero exit code (clap code 2), because the value is not one of the validated alternatives.
+**Mode:** both
+**Inputs:** `--log-format invalid_value` and `hw-probe` passed to the binary.
+**Expected output:** Non-zero exit code (clap validation failure, exit code 2).
+**Acceptance:** `cargo test -p anvilml --test logging_tests -- test_log_format_invalid_exits_nonzero` exits 0.

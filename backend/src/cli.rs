@@ -47,6 +47,29 @@ pub struct Cli {
     /// Path to the TOML configuration file.
     #[arg(long)]
     pub config: Option<String>,
+
+    /// Log output format: "plain" for human-readable text or "json" for
+    /// newline-delimited JSON.
+    ///
+    /// Defaults to "plain". Any other value causes clap to exit with usage
+    /// information and exit code 2, matching the existing CLI error convention.
+    #[arg(long, default_value = "plain", value_parser = validate_log_format)]
+    pub log_format: String,
+}
+
+/// Validate that the log format string is one of the supported values.
+///
+/// Returns the input string unchanged if it is "plain" or "json";
+/// otherwise returns an error, which clap converts to an exit-with-code-2 message.
+fn validate_log_format(s: &str) -> Result<String, String> {
+    match s {
+        // Both "plain" and "json" are valid — return the string unchanged.
+        "plain" | "json" => Ok(s.to_owned()),
+        // Invalid value: clap will print this error + usage and exit with code 2.
+        other => Err(format!(
+            "invalid log format '{other}': expected 'plain' or 'json'"
+        )),
+    }
 }
 
 /// Parse CLI arguments from the process environment.

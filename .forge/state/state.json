@@ -59,16 +59,17 @@
     "P7-C1",
     "P900-A1",
     "P900-A2",
-    "P900-A3"
+    "P900-A3",
+    "P900-A4"
   ],
-  "in_progress": "P900-A4",
+  "in_progress": "P900-A5",
   "plan_approved": true,
-  "current_plan": "1. **Add the utoipa import.** In `crates/anvilml-core/src/types/model.rs`, add `use utoipa::ToSchema;` on its own line immediately after the existing `use std::path::PathBuf;` import (line 3), maintaining alphabetical ordering of imports: `chrono`, `serde`, `std`, `utoipa`.\n\n2. **Append `ToSchema` to `ModelMeta`'s derive list.** Change line 11 from:\n   ```rust\n   #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]\n   ```\n   to:\n   ```rust\n   #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]\n   ```\n\n3. **Append `ToSchema` to `ModelKind`'s derive list.** Change line 38 from:\n   ```rust\n   #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]\n   ```\n   to:\n   ```rust\n   #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]\n   ```\n\n4. **Append `ToSchema` to `ModelDtype`'s derive list.** Change line 61 from:\n   ```rust\n   #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]\n   ```\n   to:\n   ```rust\n   #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]\n   ```\n\n5. **Append `ToSchema` to `ModelFormat`'s derive list.** Change line 83 from:\n   ```rust\n   #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]\n   ```\n   to:\n   ```rust\n   #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]\n   ```\n\n6. **Verify tests pass.** Run `cargo test -p anvilml-core --test model_tests` \u2014 all existing serde roundtrip tests must exit 0.\n\n7. **Verify documentation builds.** Run `cargo doc -p anvilml-core --no-deps` \u2014 must exit 0, confirming the new `ToSchema` impls compile and are documented.\n\nRationale: This is a mechanically identical change to the pattern established in `job.rs` (P900-A3). The derive list order follows the existing convention: `Debug, Clone, PartialEq, Eq, Serialize, Deserialize` then `ToSchema` last. No field or attribute changes are needed because `ToSchema` works with the existing derive set \u2014 `serde` handles serialization format and `utoipa` reads the same type metadata at compile time.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-30T14:24:02+0200",
-  "plan_approval_message_id": "1521488486199464019",
+  "last_updated": "2026-06-30T15:05:42+0200",
+  "plan_approval_message_id": "1521500120024219688",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1521488483456253962",
+  "plan_report_message_id": "1521500118337978439",
   "impl_report_message_id": null
 }

@@ -27,22 +27,35 @@ use tokio::net::TcpListener;
 /// before binding any socket or running hardware detection.
 #[tokio::main]
 async fn main() {
+    // Parse CLI arguments first — we need the `log_format` value to
+    // choose the subscriber output format (plain or json).
+    let cli = cli::parse();
+
     // Initialize the tracing subscriber as the very first startup step.
     // Reads filter from ANVILML_LOG (primary) or RUST_LOG (fallback),
     // defaulting to "info" when neither is set — matching the precedence
     // documented in ENVIRONMENT.md §3.3.
+    // Output format is controlled by --log-format (plain or json), not by
+    // an environment variable, per ENVIRONMENT.md §3.3.
     // Write to stderr so tracing output does not mix with stdout data
     // (e.g. `hw-probe` JSON output goes to stdout, logs go to stderr).
-    tracing_subscriber::fmt()
+    let builder = tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_env("ANVILML_LOG")
                 .or_else(|_| EnvFilter::try_from_env("RUST_LOG"))
                 .unwrap_or_else(|_| EnvFilter::new("info")),
         )
-        .with_writer(std::io::stderr)
-        .init();
+        .with_writer(std::io::stderr);
 
-    let cli = cli::parse();
+    // Branch on the parsed log_format value.
+    // "plain" keeps the default text formatter; "json" switches to
+    // newline-delimited JSON via the tracing-subscriber json feature.
+    // The EnvFilter precedence is identical in both branches.
+    match cli.log_format.as_str() {
+        "json" => builder.json().init(),
+        // "plain" — default text formatter.
+        _ => builder.init(),
+    };
 
     // Build `CliOverrides` from the parsed CLI fields.
     // `host` and `port` are `Option` — `None` means the caller did not
