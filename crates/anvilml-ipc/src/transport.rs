@@ -7,11 +7,13 @@
 
 use std::sync::Arc;
 
+use bytes::Bytes;
 use tokio::sync::Mutex;
 use zeromq::prelude::*;
-use zeromq::{Endpoint, RouterRecvHalf, RouterSendHalf, RouterSocket};
+use zeromq::{Endpoint, RouterRecvHalf, RouterSendHalf, RouterSocket, ZmqMessage};
 
 use crate::IpcError;
+use crate::messages::{WorkerEvent, WorkerMessage};
 
 /// The Rust-side ZeroMQ ROUTER socket wrapper.
 ///
@@ -21,15 +23,6 @@ use crate::IpcError;
 /// The send and receive halves are split into independent `tokio::sync::Mutex` guards
 /// at construction time — this is the fix for a v3 shutdown deadlock where a blocked
 /// `recv()` held the same lock a concurrent `send()` needed.
-///
-/// `send()` and `recv()` methods are deferred to task P7-B2, which implements the
-/// split-lock send/recv methods that operate on these guards.
-#[allow(dead_code)]
-// Fields `sender` and `receiver` are not read by this task's code. They are
-// populated by bind() and consumed by the send()/recv() methods deferred to
-// task P7-B2. The compiler cannot see the deferred code, so it warns about
-// the unused fields here. This suppression is legitimate because the fields
-// are genuinely used by a future task that adds the methods.
 pub struct RouterTransport {
     /// The send half of the ROUTER socket, protected by its own `Arc<Mutex<>>`.
     ///
@@ -42,10 +35,6 @@ pub struct RouterTransport {
     ///
     /// This is a separate mutex from `sender` so that a blocked `send()` on the
     /// send half cannot prevent `recv()` from acquiring the lock.
-    #[allow(dead_code)]
-    // `receiver` is not read by this task's code. It is consumed by the recv()
-    // method deferred to task P7-B2. Same justification as the `dead_code`
-    // suppression on the struct itself.
     receiver: Arc<Mutex<RouterRecvHalf>>,
 
     /// The TCP port the ROUTER socket is bound on.
@@ -106,5 +95,111 @@ impl RouterTransport {
             receiver: Arc::new(Mutex::new(recv_half)),
             port,
         })
+    }
+
+    /// Send a `WorkerMessage` to a worker identified by `worker_id`.
+    ///
+    /// Serializes the message via msgpack (`rmp_serde::to_vec_named`), builds a
+    /// 3-frame ZeroMQ ROUTER multipart message (`[worker_id, "", payload]`), and
+    /// sends it over the locked send half.
+    ///
+    /// This method acquires only `self.sender` — it never touches `self.receiver`,
+    /// which is the structural fix for the v3 shutdown deadlock.
+    ///
+    /// # Errors
+    ///
+    /// Returns `IpcError::SerializationFailed` if msgpack serialization fails, or
+    /// `IpcError::SendFailed` if the socket send operation fails.
+    #[tracing::instrument(skip(self, msg), fields(worker_id = %worker_id))]
+    pub async fn send(&self, worker_id: &str, msg: &WorkerMessage) -> Result<(), IpcError> {
+        // Serialize the message to msgpack bytes. to_vec_named produces a flat
+        // dict with a "_type" discriminator, matching the Python msgpack decoder.
+        let payload = rmp_serde::to_vec_named(msg)
+            .map_err(|e| IpcError::SerializationFailed(e.to_string()))?;
+
+        // Build a 3-frame ROUTER multipart message:
+        //   Frame 0: worker_id (identity — tells ROUTER which DEALER to route to)
+        //   Frame 1: empty delimiter (ROUTER protocol marker)
+        //   Frame 2: msgpack payload (the actual message)
+        //
+        // ZmqMessage::from(worker_id) creates a 1-frame message with worker_id
+        // as frame 0. Then push_back adds frames to the back.
+        let mut message = ZmqMessage::from(worker_id);
+        message.push_back(Bytes::from("")); // frame 1: empty delimiter
+        message.push_back(Bytes::from(payload)); // frame 2: payload
+
+        // Acquire only the sender lock — never touches receiver.
+        // This is the structural deadlock fix: recv() holds a separate lock.
+        let mut send_half = self.sender.lock().await;
+
+        // Send the 3-frame message over the ROUTER socket. The SocketSend trait
+        // is provided by zeromq::prelude::* and implemented on RouterSendHalf.
+        send_half
+            .send(message)
+            .await
+            .map_err(|e| IpcError::SendFailed(e.to_string()))?;
+
+        tracing::debug!(worker_id = %worker_id, "message sent");
+        Ok(())
+    }
+
+    /// Receive a `WorkerEvent` from a worker, returning its identity and the event.
+    ///
+    /// Receives a 3-frame ROUTER multipart message, validates the frame count,
+    /// extracts the worker identity (frame 0) and payload (frame 2), and
+    /// deserializes the payload via msgpack into a `WorkerEvent`.
+    ///
+    /// This method acquires only `self.receiver` — it never touches `self.sender`,
+    /// which is the structural fix for the v3 shutdown deadlock.
+    ///
+    /// # Errors
+    ///
+    /// Returns `IpcError::RecvFailed` if the socket receive fails, the frame count
+    /// is not exactly 3, the identity frame is not valid UTF-8, or the payload
+    /// fails msgpack deserialization.
+    #[tracing::instrument(skip(self))]
+    pub async fn recv(&self) -> Result<(String, WorkerEvent), IpcError> {
+        // Acquire only the receiver lock — never touches sender.
+        // This is the structural deadlock fix: send() holds a separate lock.
+        let mut recv_half = self.receiver.lock().await;
+
+        // Receive a 3-frame ROUTER multipart message. The SocketRecv trait
+        // is provided by zeromq::prelude::* and implemented on RouterRecvHalf.
+        let message = recv_half
+            .recv()
+            .await
+            .map_err(|e| IpcError::RecvFailed(e.to_string()))?;
+
+        // Convert the message into individual frames.
+        // ROUTER always returns: [identity, delimiter, payload].
+        let frames = message.into_vec();
+
+        // Validate frame count — ROUTER multipart messages must have exactly 3
+        // frames: worker identity, empty delimiter, msgpack payload.
+        // A wrong count indicates a protocol violation or a partial message.
+        if frames.len() != 3 {
+            return Err(IpcError::RecvFailed(format!(
+                "expected 3 frames, got {}",
+                frames.len()
+            )));
+        }
+
+        // Extract the worker identity from frame 0.
+        // This is the string the worker registered with as its ZeroMQ DEALER identity.
+        let identity = String::from_utf8(frames[0].to_vec())
+            .map_err(|e| IpcError::RecvFailed(format!("invalid UTF-8 identity: {e}")))?;
+
+        // Extract the msgpack payload from frame 2, skipping frame 1 (empty delimiter).
+        // The delimiter is a ROUTER protocol marker with no semantic information.
+        let payload = &frames[2];
+
+        // Deserialize the msgpack payload into a WorkerEvent.
+        // from_slice reads the flat dict and dispatches on the "_type" field
+        // to construct the correct enum variant.
+        let event = rmp_serde::from_slice(payload)
+            .map_err(|e| IpcError::RecvFailed(format!("deserialization failed: {e}")))?;
+
+        tracing::debug!(worker_id = %identity, event_type = ?event, "message received");
+        Ok((identity, event))
     }
 }

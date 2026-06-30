@@ -2593,3 +2593,63 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** None — the transport binds on `tcp://127.0.0.1:0` and the test connects to the returned port.
 **Expected output:** `TcpStream::connect` succeeds, confirming the port is listening.
 **Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_bind_port_is_listening` exits 0.
+
+---
+
+## test_send_recv_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `zeromq` (v0.6.0, features `tokio-runtime` and `all-transport`), `bytes` (v1.12), `rmp-serde` (v1.3.1), and `tracing` (v0.1) dependencies. The `transport` module provides `RouterTransport::send()` and `RouterTransport::recv()`.
+**Tests:** A `WorkerMessage::Ping { seq: 42 }` is sent via `send("gpu:0", &msg)`, and the matching `WorkerEvent::Pong { seq: 42 }` is received via `recv()`. A background DEALER socket connects to the router with identity `"gpu:0"`, sends a Pong event back, and the test verifies the identity and event content match.
+**Mode:** both
+**Inputs:** `send()` called with `worker_id = "gpu:0"` and `WorkerMessage::Ping { seq: 42 }`.
+**Expected output:** `recv()` returns `("gpu:0", WorkerEvent::Pong { seq: 42 })`.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_send_recv_roundtrip` exits 0.
+
+---
+
+## test_concurrent_send_recv_does_not_block (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `zeromq` (v0.6.0, features `tokio-runtime` and `all-transport`), `bytes`, `rmp-serde`, and `tracing` dependencies. The `transport` module provides `RouterTransport::send()` and `RouterTransport::recv()`.
+**Tests:** `recv()` is spawned in a background task (blocks waiting for a message), then `send()` is called from the main task. The send must complete within a 3-second timeout without waiting for recv to unblock — proving the sender and receiver locks are independent (the v3 shutdown deadlock regression test).
+**Mode:** both
+**Inputs:** `send()` called with `worker_id = "gpu:0"` and `WorkerMessage::Ping { seq: 99 }` while `recv()` is blocked.
+**Expected output:** `send()` completes within 3 seconds; `recv()` is aborted cleanly.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_concurrent_send_recv_does_not_block` exits 0.
+
+---
+
+## test_send_ping_then_recv_pong (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `zeromq` (v0.6.0, features `tokio-runtime` and `all-transport`), `bytes`, `rmp-serde`, and `tracing` dependencies. The `transport` module provides `RouterTransport::send()` and `RouterTransport::recv()`.
+**Tests:** A `WorkerMessage::Ping { seq: 1 }` is sent via `send("worker-1", &msg)`, and the corresponding `WorkerEvent::Pong { seq: 1 }` is received via `recv()`. A background DEALER socket with identity `"worker-1"` sends the Pong back. The test verifies the identity is `"worker-1"` and the seq field is preserved.
+**Mode:** both
+**Inputs:** `send()` called with `worker_id = "worker-1"` and `WorkerMessage::Ping { seq: 1 }`.
+**Expected output:** `recv()` returns `("worker-1", WorkerEvent::Pong { seq: 1 })`.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_send_ping_then_recv_pong` exits 0.
+
+---
+
+## test_send_execute_message_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `zeromq` (v0.6.0, features `tokio-runtime` and `all-transport`), `bytes`, `rmp-serde`, `tracing`, `serde_json`, and `uuid` dependencies. The `transport` module provides `RouterTransport::send()` and `RouterTransport::recv()`.
+**Tests:** A complex `WorkerMessage::Execute` with all four fields (`job_id: Uuid`, `graph: serde_json::Value`, `settings: JobSettings`, `device_index: u32`) is sent via `send("gpu:2", &msg)`, and the corresponding `WorkerEvent::Pong { seq: 7 }` is received. The test verifies the identity is `"gpu:2"` and the seq field is preserved, exercising the most complex message variant through the wire protocol.
+**Mode:** both
+**Inputs:** `send()` called with `worker_id = "gpu:2"` and a full `WorkerMessage::Execute` with UUID job_id, empty graph, `JobSettings { device_preference: None }`, and `device_index: 2`.
+**Expected output:** `recv()` returns `("gpu:2", WorkerEvent::Pong { seq: 7 })`.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_send_execute_message_roundtrip` exits 0.
+
+---
+
+## test_recv_malformed_frames_returns_error (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `zeromq` (v0.6.0, features `tokio-runtime` and `all-transport`), `bytes`, `rmp-serde`, and `tracing` dependencies. The `transport` module provides `RouterTransport::send()` and `RouterTransport::recv()`.
+**Tests:** A DEALER socket sends a single-frame message (no delimiter) to the router. The router receives only 2 frames (identity + payload) instead of the expected 3. The test verifies that `recv()` returns `IpcError::RecvFailed` with an error message containing "expected 3 frames".
+**Mode:** both
+**Inputs:** A 1-frame message sent from DEALER (router sees 2 frames: identity + payload).
+**Expected output:** `recv()` returns `Err(IpcError::RecvFailed("expected 3 frames, got 2"))`.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_recv_malformed_frames_returns_error` exits 0.

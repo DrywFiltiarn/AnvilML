@@ -141,14 +141,16 @@ dependencies = [
 
 [[package]]
 name = "anvilml-ipc"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anvilml-core",
+ "bytes",
  "rmp-serde",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "uuid",
  "zeromq",
 ]
