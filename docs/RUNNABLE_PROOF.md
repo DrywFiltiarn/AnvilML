@@ -1006,23 +1006,40 @@ consistent.
 
 ---
 
-## Phase 900 — Spec-Drift Retrofit: /health Body & Missing ToSchema
+## Phase 900 — Spec-Drift & Logging Retrofit: tracing-subscriber, /health Body, Missing ToSchema & DB Wiring
 
-**Capability proved:** `GET /health` returns the `ANVILML_DESIGN.md §13.4`-specified
-JSON body (`status`, `version`, `uptime_s`) instead of a bare `200` with no body.
+**Capability proved:** The `anvilml` binary emits real log output honouring
+`ANVILML_LOG`/`RUST_LOG`, selectable as plain text or JSON via `--log-format`
+(previously silent regardless of either variable, and the flag did not exist);
+`GET /health` returns the `ANVILML_DESIGN.md §13.4`-specified JSON body
+(`status`, `version`, `uptime_s`) instead of a bare `200` with no body; and the
+binary now creates its SQLite database, runs migrations, and loads the
+device-capability seed data on every real startup (previously no `.db` file was
+ever produced, despite the pool/migration/seed code existing and passing its own
+unit tests since Phase 6).
 
 ```bash
+rm -f /tmp/anvilml-proof.db
 cargo build --release -p anvilml --features mock-hardware
-./target/release/anvilml &
+ANVILML_LOG=debug ANVILML_DB_PATH=/tmp/anvilml-proof.db ./target/release/anvilml --log-format json &
 sleep 1
 curl -s http://127.0.0.1:8488/health | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['status']=='ok' and isinstance(d['version'],str) and isinstance(d['uptime_s'],int)"
-# -> exits 0; status/version/uptime_s all present and correctly typed
+# -> exits 0; status/version/uptime_s all present and correctly typed; stderr
+#    shows real DEBUG-level output as JSON from the same run
 kill %1
+sleep 1
+test -f /tmp/anvilml-proof.db
+sqlite3 /tmp/anvilml-proof.db "SELECT COUNT(*) FROM device_capabilities;" | grep -qv '^0$'
+# -> both exit 0; the .db file exists and device_capabilities has at least one
+#    row — previously no .db file was ever created by the running binary
 ```
 
 ```powershell
+Remove-Item -Path "$env:TEMP\anvilml-proof.db" -ErrorAction SilentlyContinue
 cargo build --release -p anvilml --features mock-hardware
-$proc = Start-Process -FilePath .\target\release\anvilml.exe -PassThru
+$env:ANVILML_LOG = "debug"
+$env:ANVILML_DB_PATH = "$env:TEMP\anvilml-proof.db"
+$proc = Start-Process -FilePath .\target\release\anvilml.exe -ArgumentList "--log-format","json" -PassThru
 Start-Sleep -Seconds 1
 $health = (Invoke-WebRequest -Uri http://127.0.0.1:8488/health -UseBasicParsing).Content | ConvertFrom-Json
 if ($health.status -ne "ok") { throw "status mismatch" }
@@ -1030,4 +1047,8 @@ if ($health.version -isnot [string]) { throw "version is not a string" }
 if ($health.uptime_s -isnot [int] -and $health.uptime_s -isnot [long]) { throw "uptime_s is not an integer" }
 # -> no exception thrown; status/version/uptime_s all present and correctly typed
 Stop-Process -Id $proc.Id
+Start-Sleep -Seconds 1
+if (-not (Test-Path "$env:TEMP\anvilml-proof.db")) { throw "db file was not created" }
+# -> no exception thrown; the .db file exists — previously no .db file was ever
+#    created by the running binary
 ```

@@ -4,9 +4,13 @@
     "description": "backend: wire tracing-subscriber, ANVILML_LOG/RUST_LOG never read",
     "phase": "900",
     "project": "anvilml",
-    "prereqs": ["P1-A3"],
-    "context": "Audit finding: no task in Phases 1-6 added tracing-subscriber - backend/Cargo.toml has tracing (the facade) but Cargo.lock confirms tracing-subscriber is absent, so every tracing::info!/debug! call (P1-D1's listening log, P1-A3's shutdown log) is a silent no-op and ANVILML_LOG/RUST_LOG are never read. Fix: add tracing-subscriber = { version, features=[\"env-filter\"] } to backend/Cargo.toml (resolve version live via registry). In backend/src/main.rs, as the first statement in main(), call tracing_subscriber::fmt().with_env_filter(EnvFilter::try_from_env(\"ANVILML_LOG\").or_else(|_| EnvFilter::try_from_env(\"RUST_LOG\")).unwrap_or_else(|_| EnvFilter::new(\"info\"))).init() per ENVIRONMENT.md \u00a73.3 precedence. Acceptance: >=3 tests in backend/tests/logging_tests.rs spawning the built binary with ANVILML_LOG=debug and RUST_LOG=debug separately, asserting stderr is non-empty in both cases and ANVILML_LOG takes precedence when both set; cargo test -p anvilml --test logging_tests exits 0.",
-    "tags": ["breaking"],
+    "prereqs": [
+      "P1-A3"
+    ],
+    "context": "Audit finding: no task in Phases 1-6 added tracing-subscriber - tracing is a dependency but tracing-subscriber is absent from Cargo.lock, so every tracing::info!/debug! call is a silent no-op. Fix: add tracing-subscriber (env-filter feature) to backend/Cargo.toml. As main()'s first statement, init tracing_subscriber::fmt().with_env_filter(EnvFilter::try_from_env(\"ANVILML_LOG\").or_else(|_| EnvFilter::try_from_env(\"RUST_LOG\")).unwrap_or_else(|_| EnvFilter::new(\"info\"))).init(). For tests, mirror backend/tests/hw_probe_help_test.rs's pattern exactly: Command::new(env!(\"CARGO_BIN_EXE_anvilml\")), .args([\"hw-probe\"]), .env(\"ANVILML_LOG\",\"debug\"), assert !output.stderr.is_empty(). Do NOT use target/debug or target/release paths directly; do NOT pass --features to cargo test expecting it to reach the spawned binary. Acceptance: >=2 tests in backend/tests/logging_tests.rs (ANVILML_LOG and RUST_LOG each independently yield non-empty stderr); cargo test -p anvilml --test logging_tests exits 0.",
+    "tags": [
+      "breaking"
+    ],
     "defers_to": []
   },
   {
@@ -14,9 +18,16 @@
     "description": "anvilml-server: /health returns ANVILML_DESIGN.md \u00a713.4 JSON body",
     "phase": "900",
     "project": "anvilml",
-    "prereqs": ["P900-A1", "P6-A9", "P6-B3", "P1-D1"],
+    "prereqs": [
+      "P900-A1",
+      "P6-A9",
+      "P6-B3",
+      "P1-D1"
+    ],
     "context": "Audit finding: P1-D1's context dropped the response body from ANVILML_DESIGN.md \u00a713.4 (200 { status, version, uptime_s }), so health.rs returns bare StatusCode::OK with no body - a genuine spec/implementation mismatch, not deferred scope. Fix crates/anvilml-server/src/handlers/health.rs: add struct HealthResponse{status:String, version:String, uptime_s:u64} deriving Debug, Clone, Serialize. status always \"ok\". version = env!(\"CARGO_PKG_VERSION\"). uptime_s: capture a process-start Instant once at binary startup (backend/src/main.rs), pass into build_router() via axum::extract::State or a static OnceLock - real elapsed time, not hardcoded 0. Change handler to async fn health(...) -> Json<HealthResponse>. Add serde derive feature to anvilml-server/Cargo.toml if not already present transitively. Update health_tests.rs to assert the three JSON fields, not just status code. Acceptance: cargo test -p anvilml-server --test health_tests exits 0 with status/version/uptime_s assertions added.",
-    "tags": ["breaking"],
+    "tags": [
+      "breaking"
+    ],
     "defers_to": []
   },
   {
@@ -24,9 +35,14 @@
     "description": "anvilml-core: add missing ToSchema to Job/JobStatus/JobSettings",
     "phase": "900",
     "project": "anvilml",
-    "prereqs": ["P900-A2", "P3-A1"],
+    "prereqs": [
+      "P900-A2",
+      "P3-A1"
+    ],
     "context": "Audit finding: ANVILML_DESIGN.md \u00a75.3 derives ToSchema on Job, JobStatus, and JobSettings, but P3-A1's context omitted it - job.rs has no utoipa import and no ToSchema on any of the three (P3-A3's ArtifactMeta, the very next task, correctly includes it, confirming this is an isolated omission). Fix: add `use utoipa::ToSchema;` to types/job.rs; append `, ToSchema` to the derive list on Job, JobStatus, JobSettings. Job/JobSettings keep current derives otherwise; JobStatus keeps Copy/PartialEq/Eq. No field, variant, or serde attribute changes - additive-derive-only. Debug+Clone are already present on all three, satisfying ToSchema's macro requirements. Acceptance: cargo test -p anvilml-core --test job_tests exits 0 (existing tests unaffected); cargo doc -p anvilml-core --no-deps exits 0 confirming the derive compiles.",
-    "tags": ["refactor"],
+    "tags": [
+      "refactor"
+    ],
     "defers_to": []
   },
   {
@@ -34,9 +50,14 @@
     "description": "anvilml-core: add missing ToSchema to ModelMeta/ModelKind/ModelDtype/ModelFormat",
     "phase": "900",
     "project": "anvilml",
-    "prereqs": ["P900-A3", "P3-A2"],
+    "prereqs": [
+      "P900-A3",
+      "P3-A2"
+    ],
     "context": "Audit finding: ANVILML_DESIGN.md \u00a75.4 derives ToSchema on ModelMeta, ModelKind, ModelDtype, ModelFormat, but P3-A2's context omitted it - model.rs has no utoipa import and no ToSchema on any of the four (same omission pattern as P900-A3's job.rs finding; isolated to model.rs and job.rs only - hardware.rs, worker.rs, node.rs, artifact.rs, events.rs all correctly include it). Fix: add `use utoipa::ToSchema;` to types/model.rs; append `, ToSchema` to the derive list on ModelMeta, ModelKind, ModelDtype, ModelFormat. No field, variant, or serde attribute changes (snake_case rename_all stays) - additive-derive-only. Acceptance: cargo test -p anvilml-core --test model_tests exits 0 (existing tests unaffected); cargo doc -p anvilml-core --no-deps exits 0.",
-    "tags": ["refactor"],
+    "tags": [
+      "refactor"
+    ],
     "defers_to": []
   },
   {
@@ -44,9 +65,55 @@
     "description": "backend: add --log-format plain|json CLI flag per ENVIRONMENT.md \u00a73.3",
     "phase": "900",
     "project": "anvilml",
-    "prereqs": ["P900-A1", "P900-A4"],
+    "prereqs": [
+      "P900-A1",
+      "P900-A4"
+    ],
     "context": "Audit finding: ENVIRONMENT.md \u00a73.3 documents a --log-format plain|json CLI flag (default plain) controlling tracing output format, but no task in any phase ever added it - cli.rs has no log_format field and P900-A1 wires only the plain-text fmt() layer. Fix: add log_format: Option<String> to Cli in backend/src/cli.rs via #[arg(long, default_value=\"plain\")], validated against exactly \"plain\"|\"json\" (clap value_parser or post-parse match, exit 2 with usage on any other value). In backend/src/main.rs, branch the P900-A1 subscriber build: \"plain\" keeps fmt() as-is, \"json\" adds .json() on the same builder before .init() - same EnvFilter precedence either way. Acceptance: >=4 tests in backend/tests/logging_tests.rs (extend P900-A1's file): --log-format=json produces valid-JSON stderr lines, plain default unaffected, invalid value exits non-zero; cargo test -p anvilml --test logging_tests exits 0; cargo test --workspace --features mock-hardware exits 0 as the phase-closing regression check.",
-    "tags": ["breaking"],
+    "tags": [
+      "breaking"
+    ],
+    "defers_to": []
+  },
+  {
+    "id": "P900-A6",
+    "description": "backend: wire create_pool() into server startup, no AppState yet",
+    "phase": "900",
+    "project": "anvilml",
+    "prereqs": [
+      "P900-A1",
+      "P6-B3"
+    ],
+    "context": "Audit finding: Phase 6 built create_pool() (migration runner included), unit-tested, but backend/Cargo.toml has no dependency on anvilml-registry - main.rs's default server path never creates a SqlitePool or runs migrations, so no DB file is ever created at runtime. Fix: add anvilml-registry to backend/Cargo.toml. In main.rs's default (non-hw-probe) path, after config load and before binding the TCP listener, call anvilml_registry::create_pool(&config.db_path).await; on Err, eprintln and exit 1, matching config-load's existing failure pattern. Keep the pool local to main() - do NOT introduce AppState; per ANVILML_DESIGN.md \u00a713.2 AppState is a far larger struct that doesn't exist until later phases. Acceptance: >=2 tests in backend/tests/db_startup_tests.rs spawning the built binary against a temp db_path, asserting the .db file is created and both models/device_capabilities tables exist; cargo test -p anvilml --test db_startup_tests exits 0.",
+    "tags": [
+      "breaking"
+    ],
+    "defers_to": []
+  },
+  {
+    "id": "P900-A7",
+    "description": "backend: wire SeedLoader::run() for database/seeds/devices.sql at startup",
+    "phase": "900",
+    "project": "anvilml",
+    "prereqs": [
+      "P900-A6"
+    ],
+    "context": "Audit finding: Phase 6 built SeedLoader fully (hash-gated, idempotent, unit-tested), but nothing outside anvilml-registry's own tests ever calls it - device_capabilities stays empty even once P900-A6's pool/migrations run. Fix: in main.rs, immediately after P900-A6's create_pool() call, construct SeedLoader::new(pool.clone()) and call .run(\"devices.sql\", Path::new(\"database/seeds/devices.sql\")).await; log applied/skipped at INFO. On Err, eprintln and exit 1. Acceptance: >=3 tests in backend/tests/db_startup_tests.rs (extend P900-A6's file): first run populates device_capabilities (row count > 0 matching devices.sql's INSERT count), second run is idempotent (no duplicate rows, no error), malformed/missing seed file causes startup to exit non-zero; cargo test -p anvilml --test db_startup_tests exits 0; cargo test --workspace --features mock-hardware exits 0 as the regression check.",
+    "tags": [
+      "breaking"
+    ],
+    "defers_to": []
+  },
+  {
+    "id": "P900-A8",
+    "description": "backend: verify ANVILML_LOG precedence over RUST_LOG (P900-A1 companion)",
+    "phase": "900",
+    "project": "anvilml",
+    "prereqs": [
+      "P900-A1"
+    ],
+    "context": "Companion to P900-A1's subscriber wiring: confirm ANVILML_LOG takes precedence over RUST_LOG per ENVIRONMENT.md \u00a73.3 when both are set. Add one test to backend/tests/logging_tests.rs (same file P900-A1 created), following its exact Command::new(env!(\"CARGO_BIN_EXE_anvilml\")) + .args([\"hw-probe\"]) pattern: set both .env(\"ANVILML_LOG\",\"debug\") and .env(\"RUST_LOG\",\"error\") on the same Command, run, assert output.stderr is non-empty (RUST_LOG=error alone would normally suppress debug-level output, so non-empty stderr here proves ANVILML_LOG=\"debug\" was the filter actually applied, not RUST_LOG=\"error\"). No production code changes - P900-A1's filter chain already implements this precedence; this task only adds the missing verification. Acceptance: backend/tests/logging_tests.rs now has >=3 tests total; cargo test -p anvilml --test logging_tests exits 0.",
+    "tags": [],
     "defers_to": []
   }
 ]
