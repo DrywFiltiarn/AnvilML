@@ -4,17 +4,23 @@
     "description": "anvilml-scheduler: JobScheduler::cancel() dispatches by current status",
     "phase": "17",
     "project": "anvilml",
-    "prereqs": ["P16-A2"],
+    "prereqs": [
+      "P16-A2"
+    ],
     "context": "Extend JobScheduler::cancel() (crates/anvilml-scheduler/src/scheduler.rs, Phase 14's P14-A2 - currently a thin delegate to queue.cancel() only) to branch on the job's current status: if Queued, queue.cancel() (Phase 13's O(1) lazy-removal) is sufficient - the job never reaches a worker, set status=Cancelled and persist immediately, no IPC. If Running, this task only updates the return contract - returns Ok(true), defers the actual IPC send to the next task (do not send CancelJob here). If any terminal state already, return Ok(false) - cancelling a finished job is a no-op, not an error. Acceptance: >=5 tests in tests/scheduler_tests.rs: cancel on Queued sets Cancelled immediately with no IPC, cancel on Running returns Ok(true) without yet sending IPC (spy/mock transport), cancel on an already-terminal job returns Ok(false), cancel on unknown id returns Ok(false); `cargo test -p anvilml-scheduler --test scheduler_tests` exits 0.",
     "tags": [],
-    "defers_to": ["P17-A2"]
+    "defers_to": [
+      "P17-A2"
+    ]
   },
   {
     "id": "P17-A2",
     "description": "anvilml-scheduler: cancel() sends WorkerMessage::CancelJob for Running jobs",
     "phase": "17",
     "project": "anvilml",
-    "prereqs": ["P17-A1"],
+    "prereqs": [
+      "P17-A1"
+    ],
     "context": "Complete JobScheduler::cancel()'s Running branch (crates/anvilml-scheduler/src/scheduler.rs), the IPC send P17-A1 deferred: send WorkerMessage::CancelJob{job_id} (anvilml-ipc, Phase 7's P7-A2) to the job's assigned worker_id. Cooperative, not forceful - the worker decides when it's safe to stop (checking ctx.cancel_flag, Phase 10's NodeContext field, between steps); the scheduler does not kill the process or assume immediate effect. status remains Running until the worker emits Cancelled (handled by Phase 16's event_loop) - cancel() itself does not set status=Cancelled for the Running case. Acceptance: >=4 new tests: cancel on Running sends exactly one CancelJob to the correct worker_id, status stays Running right after cancel() returns, a Running job with no assigned worker_id errors rather than panicking; `cargo test -p anvilml-scheduler --test scheduler_tests` exits 0 (>=9 total).",
     "tags": [],
     "defers_to": []
@@ -24,27 +30,61 @@
     "description": "worker/executor.py: topological sort of node graph",
     "phase": "17",
     "project": "anvilml",
-    "prereqs": ["P9-B1"],
-    "context": "Create worker/executor.py per ANVILML_DESIGN.md §14 (graph topological sort + node execution loop - did not exist before this phase, since PassThrough's single-node execute() in Phase 14 was called directly without an executor). Implement topo_sort(graph: dict) -> list[dict]: Kahn's-algorithm-style ordering of the graph's nodes by edge dependencies (a separate Python implementation, not shared code across the language boundary with anvilml-scheduler's Rust validate_graph, Phase 12 - conceptually similar, not literally reused). Execution itself (calling each node's execute(), cancel_flag checks) is the next task's scope - this task is sort-only. Acceptance: >=4 tests in worker/tests/test_executor.py: a linear chain sorts correctly, a graph with parallel branches produces a valid (any correct) topological order, a single-node graph returns that node alone; `python -m pytest worker/tests/test_executor.py -v` exits 0.",
+    "prereqs": [
+      "P9-B1"
+    ],
+    "context": "Create worker/executor.py per ANVILML_DESIGN.md \u00a714 (graph topological sort + node execution loop - did not exist before this phase, since PassThrough's single-node execute() in Phase 14 was called directly without an executor). Implement topo_sort(graph: dict) -> list[dict]: Kahn's-algorithm-style ordering of the graph's nodes by edge dependencies (a separate Python implementation, not shared code across the language boundary with anvilml-scheduler's Rust validate_graph, Phase 12 - conceptually similar, not literally reused). Execution itself (calling each node's execute(), cancel_flag checks) is the next task's scope - this task is sort-only. Acceptance: >=4 tests in worker/tests/test_executor.py: a linear chain sorts correctly, a graph with parallel branches produces a valid (any correct) topological order, a single-node graph returns that node alone; `python -m pytest worker/tests/test_executor.py -v` exits 0.",
     "tags": [],
-    "defers_to": ["P17-B2"]
+    "defers_to": [
+      "P17-B2"
+    ]
   },
   {
     "id": "P17-B2",
     "description": "worker/executor.py: execute_graph loop with cancel_flag check",
     "phase": "17",
     "project": "anvilml",
-    "prereqs": ["P17-B1"],
+    "prereqs": [
+      "P17-B1"
+    ],
     "context": "Extend worker/executor.py with execute_graph(graph: dict, ctx_factory) -> dict, the scope P17-B1 deferred: uses topo_sort()'s ordering, then executes nodes in order, checking ctx.cancel_flag.is_set() BEFORE starting each node's execute() call (cooperative - a node already mid-execute() is not interrupted mid-step, only between steps). On a set cancel_flag, stop and return a result indicating cancellation rather than completion. Acceptance: >=5 tests in test_executor.py: cancel_flag set before any node runs skips all execution, cancel_flag set after the first node's execute() but before the second stops there, a graph with no cancel_flag set runs to completion, execution order matches the topo_sort from P17-B1; `python -m pytest worker/tests/test_executor.py -v` exits 0 (>=9 total).",
     "tags": [],
     "defers_to": []
   },
   {
     "id": "P17-B3",
+    "description": "worker/worker_main.py: dispatch loop handles WorkerMessage::Execute, success path",
+    "phase": "17",
+    "project": "anvilml",
+    "prereqs": [
+      "P17-B2"
+    ],
+    "context": "Audit finding: worker_main.py's dispatch loop (P9-D2 placeholder) is only extended once, by P17-B3, exclusively for CancelJob - no task handles WorkerMessage::Execute, so execute_graph() (P17-B2) is never called for a real job, despite Rust sending Execute (P14-A4) and the event loop handling Completed (P16-A1/A2). Fix: extend the dispatch loop with an Execute handler: build a NodeContext-producing ctx_factory bound to this job_id (P10-A3), call execute_graph(msg[\"graph\"], ctx_factory) (P17-B2) on a background thread so the loop stays responsive to CancelJob while a job runs. On success, send WorkerEvent::Completed{job_id, elapsed_ms}. Failure-path is the next task's scope, deferred here. Acceptance: >=4 tests in test_worker_main.py: Execute triggers execute_graph() with a job-scoped ctx_factory, success sends Completed with real elapsed_ms, loop stays responsive to CancelJob during execution; `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py -v` exits 0.",
+    "tags": [
+      "breaking"
+    ],
+    "defers_to": []
+  },
+  {
+    "id": "P17-B4",
+    "description": "worker/worker_main.py: Execute handler failure path sends WorkerEvent::Failed",
+    "phase": "17",
+    "project": "anvilml",
+    "prereqs": [
+      "P17-B3"
+    ],
+    "context": "Receives the failure-path scope the prior task deferred: when execute_graph() (or its background thread) raises an unhandled exception during a real job, worker_main.py's dispatch loop catches it and sends WorkerEvent::Failed{job_id, error: str(exc), traceback: Some(formatted traceback)} instead of leaving the job hung with no terminal event - the exact failure mode this whole gap produced before being found. Does not change execute_graph()'s own per-node error handling, only the dispatch loop's outer catch around the background thread. Acceptance: >=3 tests in test_worker_main.py: a node raising inside execute_graph() results in Failed being sent (not Completed, not silence), error contains the exception message, traceback is populated and non-empty; `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py -v` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P17-B5",
     "description": "worker/worker_main.py: dispatch loop handles WorkerMessage::CancelJob",
     "phase": "17",
     "project": "anvilml",
-    "prereqs": ["P17-B2"],
+    "prereqs": [
+      "P17-B4"
+    ],
     "context": "Extend worker_main.py's message dispatch loop placeholder (Phase 9's P9-D2/P9-D3, currently just logs and continues) to handle CancelJob for real: on {\"_type\": \"CancelJob\", \"job_id\": ...}, if job_id matches the currently-executing job, set that job's NodeContext.cancel_flag (threading.Event, Phase 10's P10-A3) so executor.py's loop (P17-B2) observes it. If job_id does not match (already completed, or a stale message), log DEBUG and ignore - not an error. On the executor stopping due to a set cancel_flag, send WorkerEvent::Cancelled{job_id} back to the supervisor. Acceptance: >=4 tests in worker/tests/test_worker_main.py (no marker): CancelJob for the current job sets its flag, CancelJob for a non-matching job_id is ignored without error, a cancelled execution sends Cancelled; `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py -v` exits 0.",
     "tags": [],
     "defers_to": []
@@ -54,8 +94,11 @@
     "description": "anvilml-server: POST /v1/jobs/:id/cancel handler",
     "phase": "17",
     "project": "anvilml",
-    "prereqs": ["P17-A2", "P17-B3"],
-    "context": "Extend crates/anvilml-server/src/handlers/jobs.rs per ANVILML_DESIGN.md §13.4: async fn cancel_job(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<StatusCode, AnvilError>: delegates entirely to state.scheduler.cancel(id), no business logic per §3.3. Returns 202 on Ok(true), 409 on Ok(false) (per §13.5: job not cancellable - already terminal), 404 via AnvilError::JobNotFound if the id does not exist at all. NOTE: cancel() (P17-A1/A2) must distinguish 'not found' from 'found but terminal' for this 404-vs-409 split to work - confirm this distinction exists before wiring the handler; flag as a Deviation and adjust cancel()'s return type if it currently conflates the two. Update build_router(). Acceptance: >=5 tests in jobs_tests.rs: cancel a Queued job returns 202, cancel an already-Completed job returns 409, cancel an unknown id returns 404, cancel a Running job returns 202; `cargo test -p anvilml-server --test jobs_tests` exits 0 (>=14 total).",
+    "prereqs": [
+      "P17-A2",
+      "P17-B5"
+    ],
+    "context": "Extend crates/anvilml-server/src/handlers/jobs.rs per ANVILML_DESIGN.md \u00a713.4: async fn cancel_job(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<StatusCode, AnvilError>: delegates entirely to state.scheduler.cancel(id), no business logic per \u00a73.3. Returns 202 on Ok(true), 409 on Ok(false) (per \u00a713.5: job not cancellable - already terminal), 404 via AnvilError::JobNotFound if the id does not exist at all. NOTE: cancel() (P17-A1/A2) must distinguish 'not found' from 'found but terminal' for this 404-vs-409 split to work - confirm this distinction exists before wiring the handler; flag as a Deviation and adjust cancel()'s return type if it currently conflates the two. Update build_router(). Acceptance: >=5 tests in jobs_tests.rs: cancel a Queued job returns 202, cancel an already-Completed job returns 409, cancel an unknown id returns 404, cancel a Running job returns 202; `cargo test -p anvilml-server --test jobs_tests` exits 0 (>=14 total).",
     "tags": [],
     "defers_to": []
   },
@@ -64,9 +107,13 @@
     "description": "Runnable Proof: cancelling a Queued job returns 202 then 409 on retry",
     "phase": "17",
     "project": "anvilml",
-    "prereqs": ["P17-C1"],
+    "prereqs": [
+      "P17-C1"
+    ],
     "context": "No new source files. Run the built binary under mock-hardware with ANVILML_MOCK_NODE_DELAY_MS set high enough to keep a job Queued/Running briefly, submit it, immediately call POST /v1/jobs/:id/cancel and assert 202, then cancel again on the same now-Cancelled job and assert 409 - the success path and idempotent-cancel rejection together, live. Record the literal terminal output in the implementation report. Acceptance: build+run the binary, POST a PassThrough job, POST .../cancel and confirm http_code 202, POST .../cancel again on the same id and confirm http_code 409; kill the background process after.",
-    "tags": ["manual"],
+    "tags": [
+      "manual"
+    ],
     "defers_to": []
   }
 ]

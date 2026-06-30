@@ -34,6 +34,31 @@ At the end: cancelling a `Queued` job is immediate and IPC-free; cancelling a
 between node steps; cancelling an already-terminal job is a no-op, not an error; and
 `POST /v1/jobs/:id/cancel` returns the correct status code for each case.
 
+This revision adds `P17-B3`/`P17-B4` to the phase's original task set, found by
+a forward trace of `execute_graph()` (`P17-B2`) against every later phase's task
+`context` for an actual call site — the same method that found the
+`create_pool()`/`SeedLoader` gap in Phase 6 and the `RespawnPolicy` gap in
+Phase 8. The finding: `worker_main.py`'s message dispatch loop, left as a
+placeholder by Phase 9's `P9-D2` ("logs and continues"), was originally only
+ever extended once in this phase's own task set — by the `CancelJob` handler
+(now `P17-B5`, originally authored as this phase's third task), exclusively for
+`CancelJob`. No task anywhere handled `WorkerMessage::Execute`, despite the
+Rust scheduler genuinely sending it (Phase 14's `P14-A4`) and the Rust event
+loop genuinely being ready to receive `WorkerEvent::Completed`/`Failed` for it
+(Phase 16's `P16-A1`/`P16-A2`). As originally authored, every later phase's
+`POST /v1/jobs`-based Runnable Proof (`P24-F1`, `P25-F1`, `P26-D1`) would have
+submitted a job that dispatched correctly on the Rust side and then hung in
+`Running` forever, since the Python worker never called any node's `execute()`
+for it. `P17-B3` wires the `Execute` message to `execute_graph()` on a
+background thread and sends `Completed` on success; `P17-B4` adds the
+companion failure path, sending `Failed` instead of leaving the job silently
+hung. The original `CancelJob` handler task was renumbered from `P17-B3` to
+`P17-B5` to make room — its `prereqs` were updated from `P17-B2` to `P17-B4`
+accordingly, since cancellation only makes sense once a job can actually be
+running with a terminal-event path already in place. `P17-C1`'s `prereqs` were
+updated to reference `P17-B5` (its original dependency, just renumbered), not
+the new `P17-B3`.
+
 ---
 
 ## Group Reference
@@ -41,7 +66,7 @@ between node steps; cancelling an already-terminal job is a no-op, not an error;
 | Group | Subsystem | Tasks | Summary |
 |-------|-----------|-------|---------|
 | A | Scheduler-side cancel | P17-A1 … P17-A2 | Status-branching `cancel()`, then the IPC `CancelJob` send for `Running` jobs |
-| B | Worker-side cancel | P17-B1 … P17-B3 | `executor.py`'s topological sort, then its cancel-checking execution loop, then `worker_main.py`'s `CancelJob` handling |
+| B | Worker-side cancel | P17-B1 … P17-B5 | `executor.py`'s topological sort, its cancel-checking execution loop, the `Execute`-message handler (success then failure path), then `worker_main.py`'s `CancelJob` handling |
 | C | HTTP handler | P17-C1 | `POST /v1/jobs/:id/cancel` |
 | D | Proof | P17-D1 | The phase's Runnable Proof |
 
@@ -162,14 +187,83 @@ python -m pytest worker/tests/test_executor.py -v
 # -> >=9 tests total in the file, exits 0
 ```
 
-#### P17-B3: worker/worker_main.py: dispatch loop handles WorkerMessage::CancelJob
+#### P17-B3: worker/worker_main.py: dispatch loop handles WorkerMessage::Execute, success path
+
+**Goal:** Close an audit-found gap — `execute_graph()` (`P17-B2`) is never called
+for a real job anywhere in the original task set. The Rust side genuinely sends
+`WorkerMessage::Execute` (Phase 14's `P14-A4`) and the Rust event loop genuinely
+handles `WorkerEvent::Completed` (Phase 16's `P16-A1`/`P16-A2`), but nothing on
+the Python side ever receives `Execute` and calls `execute_graph()` — the
+dispatch loop placeholder `P9-D2` left behind was only ever extended once in
+the original task set, by this phase's `CancelJob` handler (`P17-B5` below),
+and exclusively for `CancelJob`.
+
+**Files to create or modify:**
+- `worker/worker_main.py` — adds an `Execute` branch to the dispatch loop.
+
+**Key implementation notes:**
+- Build a `NodeContext`-producing `ctx_factory` bound to this job's `job_id`
+  (Phase 10's `P10-A3`) and call `execute_graph(msg["graph"], ctx_factory)`
+  (`P17-B2`) on a background thread — the dispatch loop itself must stay
+  responsive to an incoming `CancelJob` while a job is running, which a
+  synchronous call would block.
+- On success, send `WorkerEvent::Completed{job_id, elapsed_ms}`.
+- Failure-path handling (an unhandled exception escaping `execute_graph()`) is
+  `P17-B4`'s scope, deferred here — do not add a catch-all `except` clause in
+  this task.
+- Does not change `execute_graph()`'s own signature or `cancel_flag` behavior —
+  `P17-B1`/`P17-B2` are unmodified by this task.
+
+**Acceptance criterion:**
+```bash
+ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py -v
+# -> >=4 tests, exits 0: Execute triggers execute_graph() with a job-scoped
+#    ctx_factory, success sends Completed with a real elapsed_ms, the dispatch
+#    loop stays responsive to CancelJob sent during execution
+```
+
+#### P17-B4: worker/worker_main.py: Execute handler failure path sends WorkerEvent::Failed
+
+**Goal:** Complete the `Execute` handler with the failure path `P17-B3`
+deferred — without this, a node that raises during a real job leaves it hung
+forever with no terminal event, which is the exact failure mode the audit
+finding describes.
+
+**Files to create or modify:**
+- `worker/worker_main.py` — adds an outer exception catch around `P17-B3`'s
+  background-thread execution.
+
+**Key implementation notes:**
+- When `execute_graph()` (or its background thread) raises an unhandled
+  exception, catch it at the dispatch loop's outer level and send
+  `WorkerEvent::Failed{job_id, error: str(exc), traceback: <formatted
+  traceback>}` instead of leaving the job silently hung.
+- Does not change `execute_graph()`'s own per-node error handling — only the
+  dispatch loop's outer catch around the background thread `P17-B3`
+  introduced.
+
+**Acceptance criterion:**
+```bash
+ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py -v
+# -> >=3 new tests (>=7 total in file): a node raising inside execute_graph()
+#    results in Failed being sent (not Completed, not silence), error contains
+#    the exception message, traceback is populated and non-empty
+```
+
+#### P17-B5: worker/worker_main.py: dispatch loop handles WorkerMessage::CancelJob
 
 **Goal:** Connect the supervisor's `CancelJob` message to the executor's
 `cancel_flag`, completing the worker side of the cooperative cancellation chain.
+Sequenced after `P17-B3`/`P17-B4` since cancellation only makes sense once a
+job can actually be running (`P17-B3`'s `Execute` handler) with a terminal-event
+path already in place (`P17-B4`'s failure handling) — cancel itself sends a
+third terminal event, `Cancelled`, into the same dispatch loop these two tasks
+established.
 
 **Files to create or modify:**
-- `worker/worker_main.py` — replaces the dispatch loop's log-and-continue
-  placeholder for `CancelJob`.
+- `worker/worker_main.py` — extends the dispatch loop's `CancelJob` branch
+  (the placeholder `P9-D2` left, distinct from the `Execute` branch `P17-B3`
+  added).
 
 **Key implementation notes:**
 - A `CancelJob` for a `job_id` that doesn't match the currently-executing job is
@@ -181,7 +275,7 @@ python -m pytest worker/tests/test_executor.py -v
 **Acceptance criterion:**
 ```bash
 ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py -v
-# -> >=4 tests, exits 0
+# -> >=4 new tests (>=11 total in file)
 ```
 
 ---
@@ -275,6 +369,24 @@ python -m pytest worker/tests -v -m real_mode
 - A `CancelJob` for a non-matching `job_id` is expected, normal behavior (a race
   between job completion and the cancel message), not an error condition to log at
   `WARN` or above.
+- **`P17-D1`'s own Runnable Proof was, until `P17-B3`/`P17-B4` were added,
+  silently broken by the gap those two tasks fix** — not exempt from it. Its
+  acceptance criterion sets `ANVILML_MOCK_NODE_DELAY_MS` specifically to keep
+  the job briefly `Running` before cancelling, and per `ENVIRONMENT.md §10.6`,
+  mock mode is not a separate, simpler code path — `ANVILML_WORKER_MOCK`
+  selects between two equally-maintained branches of the same `execute_graph()`
+  call, both of which need the `Execute`-message handler `P17-B3` adds to ever
+  run at all. As originally authored (before this revision), `P17-D1`'s job
+  would never have reached `Running` in any observable sense — the dispatch
+  loop would have logged and continued on the incoming `Execute` message,
+  leaving the job permanently `Queued` in the worker's view even though the
+  Rust scheduler believed it had been dispatched, and the cancel call would
+  likely still have returned `202` (since `JobScheduler::cancel()`, Phase 17's
+  own `P17-A1`/`P17-A2`, only checks the Rust-side `Job.status`, not whether
+  the Python worker is actually processing it) without ever proving the
+  underlying execution path was real. This is exactly the kind of
+  internally-consistent-but-not-actually-exercising-the-real-path failure mode
+  this document's verification methodology exists to catch.
 
 ---
 
