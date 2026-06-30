@@ -2125,3 +2125,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** No artifacts saved; empty `artifacts` table.
 **Expected output:** `list(None)` returns an empty `Vec` (`len() == 0`).
 **Acceptance:** `cargo test -p anvilml-artifacts --test store_tests test_list_empty_table_returns_empty_vec` exits 0.
+
+---
+
+## test_publish_zero_subscribers (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `anvilml-core` and `tokio` (sync feature) dependencies.
+**Tests:** `publish()` with zero subscribers does not panic — the internal `send()` returns `Err(SendError)` which `publish()` silently discards.
+**Mode:** both
+**Inputs:** `WsEvent::JobQueued { job_id: Uuid::new_v4(), queue_position: 1 }` published to a fresh `EventBroadcaster` with no subscribers.
+**Expected output:** `publish()` returns without panic (SendError silently ignored).
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_publish_zero_subscribers` exits 0.
+
+---
+
+## test_publish_one_subscriber_delivers (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `anvilml-core` and `tokio` (sync, macros, rt-multi-thread features) dependencies.
+**Tests:** `publish()` with one subscriber delivers the event — the subscriber's `recv().await` returns the exact event that was published.
+**Mode:** both
+**Inputs:** `WsEvent::JobStarted { job_id, worker_id: "gpu:0" }` published to an `EventBroadcaster` with one active subscriber.
+**Expected output:** `receiver.recv().await` returns `Ok(event)` equal to the published event.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_publish_one_subscriber_delivers` exits 0.
+
+---
+
+## test_publish_multiple_subscribers_independent_copies (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `anvilml-core` and `tokio` (sync, macros, rt-multi-thread features) dependencies.
+**Tests:** Multiple subscribers each receive their own independent copy of the event — publishing one event to two subscribers results in both receivers getting the event.
+**Mode:** both
+**Inputs:** `WsEvent::JobCompleted { job_id, elapsed_ms: 42 }` published to an `EventBroadcaster` with two active subscribers.
+**Expected output:** Both `recv().await` calls return `Ok(event)` equal to the published event.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_publish_multiple_subscribers_independent_copies` exits 0.
+
+---
+
+## test_subscribe_returns_valid_receiver (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `anvilml-core` and `tokio` (sync, macros, rt-multi-thread features) dependencies.
+**Tests:** `subscribe()` returns a receiver that is valid — calling `recv().await` does not immediately return `RecvError::Closed` before any publish occurs.
+**Mode:** both
+**Inputs:** None (structural test — creates `EventBroadcaster::new()` and calls `subscribe()`).
+**Expected output:** `recv().await` does not return `RecvError::Closed` immediately; the receiver is open and waiting for events.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_subscribe_returns_valid_receiver` exits 0.

@@ -54,16 +54,17 @@
     "P6-A8",
     "P6-A9",
     "P6-B1",
-    "P6-B2"
+    "P6-B2",
+    "P6-B3"
   ],
-  "in_progress": "P6-B3",
+  "in_progress": "P7-C1",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "1. **Update `Cargo.toml`**: Add `tokio = { version = \"1.47.0\", features = [\"sync\"] }` to `[dependencies]`. This is the only dependency change needed \u2014 `anvilml-core` is already listed and provides `WsEvent`.\n\n2. **Create `ws/mod.rs`**: A single-line module declaration (`pub mod broadcaster;`). No additional content.\n\n3. **Create `ws/broadcaster.rs`**: Implement `EventBroadcaster` as a newtype wrapping `tokio::sync::broadcast::Sender<WsEvent>`:\n   - `pub fn new() -> Self` \u2014 calls `Sender::new(1024)` to create the broadcast channel with the 1024-event buffer capacity specified in `ANVILML_DESIGN.md \u00a713.6`. Add a `///` doc comment describing the struct and the buffer capacity.\n   - `pub fn publish(&self, event: WsEvent)` \u2014 calls `self.0.send(event)` and ignores the `Result` (both `Ok(count)` and `Err(SendError)` when there are zero subscribers are normal). Add a `///` doc comment explaining the `SendError`-ignoring behaviour.\n   - `pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<WsEvent>` \u2014 calls `self.0.subscribe()` and returns the receiver directly. Add a `///` doc comment.\n\n   The struct uses a tuple struct (`pub struct EventBroadcaster(Sender<WsEvent>)`) to keep the implementation minimal and to avoid accidental direct field access. All three methods are synchronous (`fn`, not `async fn`) because `tokio::sync::broadcast::Sender::send()` and `subscribe()` are synchronous methods \u2014 no `.await` needed.\n\n4. **Update `lib.rs`**: Add `pub mod ws;` and `pub use ws::broadcaster::EventBroadcaster;` below the existing `//!` doc comment. The file will remain well under the 80-line hard cap (approximately 3\u20135 lines total).\n\n5. **Create `tests/roundtrip_tests.rs`**: Write \u22654 integration tests:\n   - `test_publish_zero_subscribers` \u2014 creates an `EventBroadcaster`, publishes a `WsEvent` without any subscriber, asserts no panic (the `publish()` call ignores the `SendError`).\n   - `test_publish_one_subscriber_delivers` \u2014 creates an `EventBroadcaster`, subscribes to get a `Receiver`, publishes a `WsEvent`, then calls `receiver.recv().await` and asserts the received event equals the published event.\n   - `test_publish_multiple_subscribers_independent_copies` \u2014 creates an `EventBroadcaster`, subscribes twice to get two independent `Receiver`s, publishes one `WsEvent`, then calls `recv().await` on both receivers and asserts each received an equal copy.\n   - `test_subscribe_returns_receiver` \u2014 creates an `EventBroadcaster`, calls `subscribe()`, and asserts the returned receiver is valid (e.g., `recv().await` does not return `RecvError::Closed` immediately).\n\n   All tests use `#[tokio::test]` for async test support. The `tokio` dependency with `full` features is available in dev-dependencies via the `anvilml-core` transitive path, but since `tokio` is now a direct dependency of `anvilml-ipc` with only `sync`, the tests need `tokio` as a dev-dependency too \u2014 add `tokio = { version = \"1.47.0\", features = [\"sync\", \"macros\", \"rt-multi-thread\"] }` to `[dev-dependencies]` in `Cargo.toml` for test async support.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-30T07:26:38+0200",
-  "plan_approval_message_id": "1521292910346244227",
+  "last_updated": "2026-06-30T08:27:32+0200",
+  "plan_approval_message_id": "1521398153918546010",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1521292908618317966",
+  "plan_report_message_id": "1521398152178040955",
   "impl_report_message_id": null
 }
