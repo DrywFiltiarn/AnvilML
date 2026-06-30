@@ -379,3 +379,89 @@ fn test_cancelled_roundtrip() {
 
     assert_eq!(event, decoded, "Cancelled roundtrip must preserve job_id");
 }
+
+// ---------------------------------------------------------------------------
+// RouterTransport bind() tests
+// ---------------------------------------------------------------------------
+
+use anvilml_ipc::RouterTransport;
+
+/// `RouterTransport::bind()` succeeds and returns a port number greater than zero.
+///
+/// Constructs a `RouterTransport` by binding a ZeroMQ ROUTER socket on
+/// `tcp://127.0.0.1:0` (OS-assigned port) and verifies the port field is
+/// a valid, non-zero TCP port.
+#[tokio::test]
+async fn test_bind_returns_nonzero_port() {
+    let transport = RouterTransport::bind().await.expect("bind should succeed");
+
+    assert!(
+        transport.port > 0,
+        "bind should return a nonzero port, got {}",
+        transport.port
+    );
+}
+
+/// Two concurrent `RouterTransport::bind()` calls produce different port numbers.
+///
+/// Spawns two binds in parallel via `tokio::task::spawn` and verifies their
+/// ports differ — proving the OS assigns distinct ports for concurrent binds.
+#[tokio::test]
+async fn test_two_binds_get_different_ports() {
+    let (handle_a, handle_b) = tokio::join!(
+        tokio::task::spawn(async {
+            RouterTransport::bind()
+                .await
+                .expect("bind A should succeed")
+        }),
+        tokio::task::spawn(async {
+            RouterTransport::bind()
+                .await
+                .expect("bind B should succeed")
+        })
+    );
+
+    let transport_a = handle_a.expect("spawn A should not panic");
+    let transport_b = handle_b.expect("spawn B should not panic");
+
+    assert!(
+        transport_a.port != transport_b.port,
+        "two concurrent binds should produce different ports; got {} and {}",
+        transport_a.port,
+        transport_b.port
+    );
+}
+
+/// The port returned by `RouterTransport::bind()` is actually listening on TCP.
+///
+/// Constructs a `RouterTransport`, then attempts a `TcpStream::connect` to
+/// `127.0.0.1:{port}`. A successful connection proves the port is actually listening.
+/// The transport is kept alive during the connection attempt (its `Drop`
+/// closes the socket after the test ends).
+#[tokio::test]
+async fn test_bind_port_is_listening() {
+    let transport = RouterTransport::bind().await.expect("bind should succeed");
+
+    // Attempt a TCP connection to the bound port using tokio's async TcpStream.
+    // A successful connection proves the port is actually listening.
+    // The transport stays alive during the connect, keeping the socket bound.
+    let connect_result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        tokio::net::TcpStream::connect(format!("127.0.0.1:{}", transport.port)),
+    )
+    .await;
+
+    // The connect should succeed within 2 seconds — the port is bound and listening.
+    assert!(
+        connect_result.is_ok(),
+        "TcpStream::connect to port {} should succeed within 2s; timeout may indicate bind did not actually listen",
+        transport.port
+    );
+
+    // The connection should not error — the port is actively listening.
+    assert!(
+        connect_result.unwrap().is_ok(),
+        "TcpStream::connect to port {} should not error; the port is not listening",
+        transport.port
+    );
+}

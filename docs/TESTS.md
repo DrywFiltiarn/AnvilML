@@ -2557,3 +2557,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `WorkerEvent::Cancelled { job_id: Uuid::new_v4() }`.
 **Expected output:** Roundtripped `WorkerEvent::Cancelled` equals original; job_id preserved.
 **Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_cancelled_roundtrip` exits 0.
+
+---
+
+## test_bind_returns_nonzero_port (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with the `zeromq` dependency (v0.6.0, features `tokio-runtime` and `all-transport`), and the `transport` module providing `RouterTransport::bind()`.
+**Tests:** `RouterTransport::bind()` binds a ZeroMQ ROUTER socket on `tcp://127.0.0.1:0` (OS-assigned port), splits the socket into independent send/recv halves, and returns a `RouterTransport` with the assigned port. The test asserts `port > 0`.
+**Mode:** both
+**Inputs:** None — `bind()` uses the `tcp://127.0.0.1:0` address which requests an OS-assigned port.
+**Expected output:** `RouterTransport` with `port > 0`.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_bind_returns_nonzero_port` exits 0.
+
+---
+
+## test_two_binds_get_different_ports (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with the `zeromq` dependency (v0.6.0, features `tokio-runtime` and `all-transport`), and the `transport` module providing `RouterTransport::bind()`.
+**Tests:** Two `RouterTransport::bind()` calls are spawned concurrently via `tokio::task::spawn`. The test asserts that their `port` fields differ — proving the OS assigns distinct ports for concurrent binds.
+**Mode:** both
+**Inputs:** None — both binds use `tcp://127.0.0.1:0`.
+**Expected output:** Two `RouterTransport` instances with different `port` values.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_two_binds_get_different_ports` exits 0.
+
+---
+
+## test_bind_port_is_listening (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with the `zeromq` dependency (v0.6.0, features `tokio-runtime` and `all-transport`), and the `transport` module providing `RouterTransport::bind()`.
+**Tests:** `RouterTransport::bind()` is called, then a `TcpStream::connect` is attempted to `127.0.0.1:{port}`. A successful connection proves the port is actually listening. The bind is wrapped in a 2-second timeout to prevent indefinite hangs.
+**Mode:** both
+**Inputs:** None — the transport binds on `tcp://127.0.0.1:0` and the test connects to the returned port.
+**Expected output:** `TcpStream::connect` succeeds, confirming the port is listening.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_bind_port_is_listening` exits 0.
