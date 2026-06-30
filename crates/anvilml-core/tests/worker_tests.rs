@@ -80,8 +80,8 @@ fn test_worker_status_serde_snake_case() {
 fn test_provisioning_state_serde_snake_case() {
     let variants: [(ProvisioningState, &str); 4] = [
         (ProvisioningState::NotStarted, "not_started"),
-        (ProvisioningState::InProgress, "in_progress"),
-        (ProvisioningState::Complete, "complete"),
+        (ProvisioningState::Provisioning, "provisioning"),
+        (ProvisioningState::Ready, "ready"),
         (ProvisioningState::Failed, "failed"),
     ];
 

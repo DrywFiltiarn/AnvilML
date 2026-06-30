@@ -90,9 +90,9 @@ pub enum ProvisioningState {
     /// Dependencies have not yet been installed for this worker.
     NotStarted,
     /// The provisioning process is currently running.
-    InProgress,
+    Provisioning,
     /// All required dependencies are installed and verified.
-    Complete,
+    Ready,
     /// The provisioning process failed (e.g. pip install error).
     Failed,
 }

@@ -848,10 +848,10 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 **File:** `crates/anvilml-core/tests/worker_tests.rs`
 **Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, and `utoipa` dependencies, and the `types` submodule providing `ProvisioningState`.
-**Tests:** Each of the four `ProvisioningState` variants (`NotStarted`, `InProgress`, `Complete`, `Failed`) serialises to a lowercase snake_case JSON string and deserialises back to an equal value.
+**Tests:** Each of the four `ProvisioningState` variants (`NotStarted`, `Provisioning`, `Ready`, `Failed`) serialises to a lowercase snake_case JSON string and deserialises back to an equal value.
 **Mode:** both
 **Inputs:** All four `ProvisioningState` variants.
-**Expected output:** Each variant roundtrips correctly; JSON strings are `"not_started"`, `"in_progress"`, `"complete"`, `"failed"`.
+**Expected output:** Each variant roundtrips correctly; JSON strings are `"not_started"`, `"provisioning"`, `"ready"`, `"failed"`.
 **Acceptance:** `cargo test -p anvilml-core --test worker_tests test_provisioning_state_serde_snake_case` exits 0.
 
 ---
