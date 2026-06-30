@@ -1,6 +1,7 @@
 //! ZeroMQ ROUTER transport + message types. No process management.
 
 pub mod error;
+pub mod messages;
 pub mod ws;
 
 pub use error::IpcError;

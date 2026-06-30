@@ -2389,3 +2389,63 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** All six `IpcError` variants: `BindFailed`, `SendFailed`, `RecvFailed`, `SerializationFailed`, `PayloadTooLarge { actual: 1024, max: 512 }`, `UnknownWorker`.
 **Expected output:** Each variant converts to `AnvilError::Ipc(msg)` where `msg` matches the variant's `Display` output.
 **Acceptance:** `cargo test -p anvilml-ipc --test error_tests test_from_ipc_error_to_anvil_error` exits 0.
+
+---
+
+## test_ping_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `rmp-serde` and `uuid` (v4, serde) dev-dependencies, and the `messages` module providing `WorkerMessage`.
+**Tests:** `WorkerMessage::Ping { seq: 42 }` serialises via `rmp_serde::to_vec_named()` and roundtrips to an equal value. The msgpack dict contains `"_type": "Ping"` and `"seq": 42`.
+**Mode:** both
+**Inputs:** `WorkerMessage::Ping { seq: 42 }`.
+**Expected output:** Roundtripped `WorkerMessage::Ping { seq: 42 }` equals original.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_ping_roundtrip` exits 0.
+
+---
+
+## test_shutdown_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `rmp-serde` and `uuid` (v4, serde) dev-dependencies, and the `messages` module providing `WorkerMessage`.
+**Tests:** `WorkerMessage::Shutdown` (unit variant, no fields) roundtrips via `rmp_serde::to_vec_named()`. The msgpack dict contains only `"_type": "Shutdown"`.
+**Mode:** both
+**Inputs:** `WorkerMessage::Shutdown`.
+**Expected output:** Roundtripped `WorkerMessage::Shutdown` equals original.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_shutdown_roundtrip` exits 0.
+
+---
+
+## test_execute_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `rmp-serde`, `uuid` (v4, serde), and `serde_json` dev-dependencies, and the `messages` module providing `WorkerMessage`. The `anvilml-core` crate provides `JobSettings`.
+**Tests:** `WorkerMessage::Execute { job_id, graph, settings, device_index }` roundtrips via `rmp_serde::to_vec_named()`. All four fields (`job_id`, `graph`, `settings`, `device_index`) are preserved with correct types (Uuid→string, Value→dict, JobSettings→dict, u32→int).
+**Mode:** both
+**Inputs:** `WorkerMessage::Execute { job_id: Uuid::new_v4(), graph: serde_json::json!({}), settings: JobSettings { device_preference: None }, device_index: 0 }`.
+**Expected output:** Roundtripped `WorkerMessage::Execute` equals original; all four fields preserved.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_execute_roundtrip` exits 0.
+
+---
+
+## test_cancel_job_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `rmp-serde` and `uuid` (v4, serde) dev-dependencies, and the `messages` module providing `WorkerMessage`.
+**Tests:** `WorkerMessage::CancelJob { job_id }` roundtrips via `rmp_serde::to_vec_named()`. The `job_id` field is preserved correctly across serialisation.
+**Mode:** both
+**Inputs:** `WorkerMessage::CancelJob { job_id: Uuid::new_v4() }`.
+**Expected output:** Roundtripped `WorkerMessage::CancelJob` equals original; `job_id` preserved.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_cancel_job_roundtrip` exits 0.
+
+---
+
+## test_memory_query_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `rmp-serde` dev-dependencies, and the `messages` module providing `WorkerMessage`.
+**Tests:** `WorkerMessage::MemoryQuery` (unit variant, no fields) roundtrips via `rmp_serde::to_vec_named()`. The msgpack dict contains only `"_type": "MemoryQuery"`.
+**Mode:** both
+**Inputs:** `WorkerMessage::MemoryQuery`.
+**Expected output:** Roundtripped `WorkerMessage::MemoryQuery` equals original.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_memory_query_roundtrip` exits 0.

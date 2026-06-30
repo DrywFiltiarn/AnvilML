@@ -93,3 +93,85 @@ async fn test_subscribe_returns_valid_receiver() {
         result
     );
 }
+
+// ---------------------------------------------------------------------------
+// WorkerMessage msgpack roundtrip tests
+// ---------------------------------------------------------------------------
+
+use anvilml_core::JobSettings;
+use anvilml_ipc::messages::WorkerMessage;
+
+/// `WorkerMessage::Ping { seq: 42 }` serialises via rmp-serde and roundtrips
+/// to an equal value. The msgpack dict contains `"_type": "Ping"` and
+/// `"seq": 42`.
+#[test]
+fn test_ping_roundtrip() {
+    let msg = WorkerMessage::Ping { seq: 42 };
+
+    let bytes = rmp_serde::to_vec_named(&msg).expect("serialize Ping");
+    let decoded: WorkerMessage = rmp_serde::from_slice(&bytes).expect("deserialize Ping");
+
+    assert_eq!(msg, decoded, "Ping roundtrip must preserve seq");
+}
+
+/// `WorkerMessage::Shutdown` (unit variant, no fields) roundtrips via
+/// rmp-serde. The msgpack dict contains only `"_type": "Shutdown"`.
+#[test]
+fn test_shutdown_roundtrip() {
+    let msg = WorkerMessage::Shutdown;
+
+    let bytes = rmp_serde::to_vec_named(&msg).expect("serialize Shutdown");
+    let decoded: WorkerMessage = rmp_serde::from_slice(&bytes).expect("deserialize Shutdown");
+
+    assert_eq!(msg, decoded, "Shutdown roundtrip must be identity");
+}
+
+/// `WorkerMessage::Execute { job_id, graph, settings, device_index }` roundtrips
+/// via rmp-serde. All four fields (`job_id`, `graph`, `settings`, `device_index`)
+/// are preserved with correct types (Uuid→string, Value→dict, JobSettings→dict,
+/// u32→int).
+#[test]
+fn test_execute_roundtrip() {
+    let msg = WorkerMessage::Execute {
+        job_id: Uuid::new_v4(),
+        graph: serde_json::json!({}),
+        settings: JobSettings {
+            device_preference: None,
+        },
+        device_index: 0,
+    };
+
+    let bytes = rmp_serde::to_vec_named(&msg).expect("serialize Execute");
+    let decoded: WorkerMessage = rmp_serde::from_slice(&bytes).expect("deserialize Execute");
+
+    assert_eq!(
+        msg, decoded,
+        "Execute roundtrip must preserve all four fields"
+    );
+}
+
+/// `WorkerMessage::CancelJob { job_id }` roundtrips via rmp-serde. The
+/// `job_id` field is preserved correctly across serialisation.
+#[test]
+fn test_cancel_job_roundtrip() {
+    let msg = WorkerMessage::CancelJob {
+        job_id: Uuid::new_v4(),
+    };
+
+    let bytes = rmp_serde::to_vec_named(&msg).expect("serialize CancelJob");
+    let decoded: WorkerMessage = rmp_serde::from_slice(&bytes).expect("deserialize CancelJob");
+
+    assert_eq!(msg, decoded, "CancelJob roundtrip must preserve job_id");
+}
+
+/// `WorkerMessage::MemoryQuery` (unit variant, no fields) roundtrips via
+/// rmp-serde. The msgpack dict contains only `"_type": "MemoryQuery"`.
+#[test]
+fn test_memory_query_roundtrip() {
+    let msg = WorkerMessage::MemoryQuery;
+
+    let bytes = rmp_serde::to_vec_named(&msg).expect("serialize MemoryQuery");
+    let decoded: WorkerMessage = rmp_serde::from_slice(&bytes).expect("deserialize MemoryQuery");
+
+    assert_eq!(msg, decoded, "MemoryQuery roundtrip must be identity");
+}
