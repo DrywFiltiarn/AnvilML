@@ -1,11 +1,12 @@
 [package]
 name = "anvilml-ipc"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 anvilml-core = { path = "../anvilml-core" }
+thiserror = "2.0.18"
 tokio = { version = "1.47.0", features = ["sync"] }
 
 [dev-dependencies]

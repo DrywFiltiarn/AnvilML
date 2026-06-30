@@ -2305,3 +2305,87 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `ANVILML_LOG=debug`, `RUST_LOG=error`, `hw-probe` subcommand.
 **Expected output:** stderr is non-empty (debug-level tracing from hardware detection).
 **Acceptance:** `cargo test -p anvilml --test logging_tests -- test_anvilml_log_precedence_over_rust_log` exits 0.
+
+---
+
+## test_bind_failed_display (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/error_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `thiserror` (derive feature) providing `#[derive(thiserror::Error)]` on `IpcError`. The `IpcError::BindFailed(String)` variant carries a `#[error("bind failed: {0}")]` attribute.
+**Tests:** Constructs `IpcError::BindFailed("address already in use")` and asserts its `Display` output matches `"bind failed: address already in use"`.
+**Mode:** both
+**Inputs:** `IpcError::BindFailed("address already in use".to_string())`.
+**Expected output:** `to_string()` returns `"bind failed: address already in use"`.
+**Acceptance:** `cargo test -p anvilml-ipc --test error_tests test_bind_failed_display` exits 0.
+
+---
+
+## test_send_failed_display (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/error_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `thiserror` (derive feature). The `IpcError::SendFailed(String)` variant carries a `#[error("send failed: {0}")]` attribute.
+**Tests:** Constructs `IpcError::SendFailed("connection closed")` and asserts its `Display` output matches `"send failed: connection closed"`.
+**Mode:** both
+**Inputs:** `IpcError::SendFailed("connection closed".to_string())`.
+**Expected output:** `to_string()` returns `"send failed: connection closed"`.
+**Acceptance:** `cargo test -p anvilml-ipc --test error_tests test_send_failed_display` exits 0.
+
+---
+
+## test_recv_failed_display (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/error_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `thiserror` (derive feature). The `IpcError::RecvFailed(String)` variant carries a `#[error("recv failed: {0}")]` attribute.
+**Tests:** Constructs `IpcError::RecvFailed("timeout")` and asserts its `Display` output matches `"recv failed: timeout"`.
+**Mode:** both
+**Inputs:** `IpcError::RecvFailed("timeout".to_string())`.
+**Expected output:** `to_string()` returns `"recv failed: timeout"`.
+**Acceptance:** `cargo test -p anvilml-ipc --test error_tests test_recv_failed_display` exits 0.
+
+---
+
+## test_serialization_failed_display (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/error_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `thiserror` (derive feature). The `IpcError::SerializationFailed(String)` variant carries a `#[error("serialization failed: {0}")]` attribute.
+**Tests:** Constructs `IpcError::SerializationFailed("unsupported type")` and asserts its `Display` output matches `"serialization failed: unsupported type"`.
+**Mode:** both
+**Inputs:** `IpcError::SerializationFailed("unsupported type".to_string())`.
+**Expected output:** `to_string()` returns `"serialization failed: unsupported type"`.
+**Acceptance:** `cargo test -p anvilml-ipc --test error_tests test_serialization_failed_display` exits 0.
+
+---
+
+## test_payload_too_large_display (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/error_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `thiserror` (derive feature). The `IpcError::PayloadTooLarge` struct variant carries `#[error("payload too large: {actual} > {max}")]` attribute with named struct fields.
+**Tests:** Constructs `IpcError::PayloadTooLarge { actual: 1024, max: 512 }` and asserts its `Display` output includes both values in the format `"payload too large: 1024 > 512"`.
+**Mode:** both
+**Inputs:** `IpcError::PayloadTooLarge { actual: 1024, max: 512 }`.
+**Expected output:** `to_string()` returns `"payload too large: 1024 > 512"`.
+**Acceptance:** `cargo test -p anvilml-ipc --test error_tests test_payload_too_large_display` exits 0.
+
+---
+
+## test_unknown_worker_display (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/error_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `thiserror` (derive feature). The `IpcError::UnknownWorker(String)` variant carries a `#[error("unknown worker: {0}")]` attribute.
+**Tests:** Constructs `IpcError::UnknownWorker("gpu:3")` and asserts its `Display` output matches `"unknown worker: gpu:3"`.
+**Mode:** both
+**Inputs:** `IpcError::UnknownWorker("gpu:3".to_string())`.
+**Expected output:** `to_string()` returns `"unknown worker: gpu:3"`.
+**Acceptance:** `cargo test -p anvilml-ipc --test error_tests test_unknown_worker_display` exits 0.
+
+---
+
+## test_from_ipc_error_to_anvil_error (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/error_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `anvilml-core` (path dependency) providing `AnvilError::Ipc(String)`. The `IpcError` enum implements `From<IpcError> for AnvilError` via `AnvilError::Ipc(err.to_string())`.
+**Tests:** Converts all six `IpcError` variants to `AnvilError` via `From` and asserts each produces `AnvilError::Ipc(_)` with the correct message matching the variant's `Display` output.
+**Mode:** both
+**Inputs:** All six `IpcError` variants: `BindFailed`, `SendFailed`, `RecvFailed`, `SerializationFailed`, `PayloadTooLarge { actual: 1024, max: 512 }`, `UnknownWorker`.
+**Expected output:** Each variant converts to `AnvilError::Ipc(msg)` where `msg` matches the variant's `Display` output.
+**Acceptance:** `cargo test -p anvilml-ipc --test error_tests test_from_ipc_error_to_anvil_error` exits 0.
