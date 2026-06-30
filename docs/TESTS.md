@@ -2257,3 +2257,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `ANVILML_DB_PATH` = temp file path (unique per test via `tempfile::tempdir()`), `ANVILML_PORT=0`, no subcommand (default path).
 **Expected output:** `sqlite_master` query returns both `models` and `device_capabilities` table names.
 **Acceptance:** `cargo test -p anvilml --test db_startup_tests -- test_migrations_create_required_tables` exits 0.
+
+---
+
+## test_seed_populates_device_capabilities (backend)
+
+**File:** `backend/tests/db_startup_tests.rs`
+**Context:** The `anvilml` binary has been compiled (`cargo build -p anvilml`). The binary's default startup path now calls `SeedLoader::run()` from `anvilml-registry` after `create_pool()`, loading device capability seed data from `database/seeds/devices.sql` (353 INSERT statements).
+**Tests:** Spawning the binary with `ANVILML_DB_PATH` set to a temp directory path and `ANVILML_PORT=0` triggers database creation, migrations, and seed loading. After confirming the "listening" log line, the test connects to the database with `sqlx` and queries `SELECT COUNT(*) FROM device_capabilities`, asserting the count is greater than 0 (should be 353 matching the INSERT count in devices.sql).
+**Mode:** both
+**Inputs:** `ANVILML_DB_PATH` = temp file path (unique per test via `tempfile::tempdir()`), `ANVILML_PORT=0`, no subcommand (default path).
+**Expected output:** `device_capabilities` table contains 353 rows after startup; "listening" log line appears on stderr.
+**Acceptance:** `cargo test -p anvilml --test db_startup_tests -- test_seed_populates_device_capabilities` exits 0.
+
+---
+
+## test_seed_idempotent_second_run (backend)
+
+**File:** `backend/tests/db_startup_tests.rs`
+**Context:** The `anvilml` binary has been compiled (`cargo build -p anvilml`). The `SeedLoader::run()` method is hash-gated: it computes a SHA256 hash of the seed file, checks `_seed_log` for a matching hash, and skips re-application if found.
+**Tests:** Spawns the binary twice with the same temp `db_path` and `ANVILML_PORT=0`. After each spawn, it connects to the database and records the `device_capabilities` row count. Asserts the counts are equal, proving the seed is idempotent (no duplicate rows on second run).
+**Mode:** both
+**Inputs:** Same temp `db_path` for both spawns (via `tempfile::tempdir()`), `ANVILML_PORT=0`, no subcommand (default path).
+**Expected output:** Row count after second run equals row count after first run (no duplicates).
+**Acceptance:** `cargo test -p anvilml --test db_startup_tests -- test_seed_idempotent_second_run` exits 0.
+
+---
+
+## test_missing_seed_file_causes_startup_failure (backend)
+
+**File:** `backend/tests/db_startup_tests.rs`
+**Context:** The `anvilml` binary has been compiled (`cargo build -p anvilml`). The `SeedLoader::run()` method calls `std::fs::read()` on the seed path and returns `AnvilError::Io` on file-not-found. The `main()` function handles this error with `eprintln!` + `std::process::exit(1)`.
+**Tests:** Spawns the binary with `ANVILML_SEED_PATH` set to `/tmp/nonexistent_seed.sql` (a path that does not exist) and `ANVILML_PORT=0`. Asserts the process exits with a non-zero code within 10 seconds. This test does NOT wait for the "listening" log line — the binary should never reach TCP bind with a missing seed.
+**Mode:** both
+**Inputs:** `ANVILML_SEED_PATH=/tmp/nonexistent_seed.sql`, `ANVILML_PORT=0`, no subcommand (default path).
+**Expected output:** Process exits with non-zero code within 10 seconds; no "listening" log line produced.
+**Acceptance:** `cargo test -p anvilml --test db_startup_tests -- test_missing_seed_file_causes_startup_failure` exits 0.

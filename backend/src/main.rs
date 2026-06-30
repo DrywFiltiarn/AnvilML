@@ -113,6 +113,33 @@ async fn main() {
         })
         .unwrap();
 
+    // Load device capability seed data from the checked-in SQL file.
+    // The seed is hash-gated and idempotent — if the file hasn't changed
+    // since last run, this is a no-op. On failure, exit before binding
+    // any socket, matching the create_pool() error pattern.
+    //
+    // The seed path can be overridden via ANVILML_SEED_PATH for testing
+    // (e.g. pointing to a temp file or a non-existent path).
+    // Resolve the seed file path: use ANVILML_SEED_PATH env var override if set,
+    // otherwise fall back to the checked-in seed path relative to CWD.
+    // Using PathBuf to own the path data (the env var string must live long enough).
+    let seed_path: std::path::PathBuf = match std::env::var("ANVILML_SEED_PATH") {
+        Ok(path) => Path::new(&path).to_path_buf(),
+        Err(_) => Path::new("database/seeds/devices.sql").to_path_buf(),
+    };
+
+    tracing::info!(seed_path = %seed_path.display(), "loading device capabilities seed");
+
+    let loader = anvilml_registry::SeedLoader::new(_pool.clone());
+    loader
+        .run("devices.sql", &seed_path)
+        .await
+        .map_err(|e| {
+            eprintln!("Failed to apply device capabilities seed: {e}");
+            std::process::exit(1);
+        })
+        .unwrap();
+
     // Capture process-start instant once, before binding, so the health
     // handler returns a real elapsed-time measurement.
     let start_time = Instant::now();
