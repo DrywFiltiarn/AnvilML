@@ -1,12 +1,13 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 /// The lifecycle status of a generation job.
 ///
 /// Jobs progress through this state machine:
 /// `Queued` → `Running` → (`Completed` | `Failed`) | `Cancelled` (at any point).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum JobStatus {
     /// Job is waiting in the queue for a worker to pick it up.
@@ -22,7 +23,7 @@ pub enum JobStatus {
 }
 
 /// Optional settings that control how a job is executed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct JobSettings {
     /// Requested device. None = auto-select by VRAM.
     pub device_preference: Option<String>,
@@ -35,7 +36,7 @@ pub struct JobSettings {
 /// and the current status. Fields that are only populated after the job
 /// enters a later lifecycle stage (`started_at`, `completed_at`, `worker_id`,
 /// `error`, `queue_position`) are `Option` types.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Job {
     /// Stable unique identifier for this job (UUID v4).
     pub id: Uuid,
