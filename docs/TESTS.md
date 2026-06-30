@@ -2173,3 +2173,27 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** None (structural test — creates `EventBroadcaster::new()` and calls `subscribe()`).
 **Expected output:** `recv().await` does not return `RecvError::Closed` immediately; the receiver is open and waiting for events.
 **Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_subscribe_returns_valid_receiver` exits 0.
+
+---
+
+## test_anvilml_log_debug_yields_stderr (backend)
+
+**File:** `backend/tests/logging_tests.rs`
+**Context:** The `anvilml` binary has been compiled (`cargo build -p anvilml`). The `tracing-subscriber` crate is present and initialized in `main()` before CLI parsing.
+**Tests:** Setting `ANVILML_LOG=debug` causes the spawned `anvilml` binary to emit non-empty stderr when running `hw-probe`, because hardware detection code paths contain `tracing::debug!()` calls that become visible at debug level.
+**Mode:** both
+**Inputs:** `ANVILML_LOG=debug` env var set; `hw-probe` subcommand passed to the binary.
+**Expected output:** `output.stderr` is non-empty (contains at least one tracing-formatted log line from hardware detection).
+**Acceptance:** `cargo test -p anvilml --test logging_tests -- test_anvilml_log_debug_yields_stderr` exits 0.
+
+---
+
+## test_rust_log_debug_yields_stderr (backend)
+
+**File:** `backend/tests/logging_tests.rs`
+**Context:** The `anvilml` binary has been compiled (`cargo build -p anvilml`). The `tracing-subscriber` crate is present and initialized in `main()` before CLI parsing. `ANVILML_LOG` must not be set so that `RUST_LOG` is the active filter source.
+**Tests:** Setting `RUST_LOG=debug` (when `ANVILML_LOG` is unset) causes the spawned `anvilml` binary to emit non-empty stderr, proving the fallback chain (`ANVILML_LOG` → `RUST_LOG` → `"info"`) works correctly per `ENVIRONMENT.md §3.3`.
+**Mode:** both
+**Inputs:** `RUST_LOG=debug` env var set; `ANVILML_LOG` unset; `hw-probe` subcommand passed to the binary.
+**Expected output:** `output.stderr` is non-empty (contains at least one tracing-formatted log line from hardware detection).
+**Acceptance:** `cargo test -p anvilml --test logging_tests -- test_rust_log_debug_yields_stderr` exits 0.

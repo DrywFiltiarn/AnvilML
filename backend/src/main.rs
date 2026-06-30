@@ -1,5 +1,7 @@
 mod cli;
 
+use tracing_subscriber::EnvFilter;
+
 use anvilml::shutdown;
 use anvilml_core::CliOverrides;
 use anvilml_core::config_load;
@@ -24,6 +26,21 @@ use tokio::net::TcpListener;
 /// before binding any socket or running hardware detection.
 #[tokio::main]
 async fn main() {
+    // Initialize the tracing subscriber as the very first startup step.
+    // Reads filter from ANVILML_LOG (primary) or RUST_LOG (fallback),
+    // defaulting to "info" when neither is set — matching the precedence
+    // documented in ENVIRONMENT.md §3.3.
+    // Write to stderr so tracing output does not mix with stdout data
+    // (e.g. `hw-probe` JSON output goes to stdout, logs go to stderr).
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_env("ANVILML_LOG")
+                .or_else(|_| EnvFilter::try_from_env("RUST_LOG"))
+                .unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+
     let cli = cli::parse();
 
     // Build `CliOverrides` from the parsed CLI fields.
