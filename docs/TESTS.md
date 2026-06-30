@@ -2665,3 +2665,89 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `RouterTransport::bind()` on loopback TCP; simulated DEALER with identity `"stress-worker"` sending `WorkerEvent::Pong { seq: 1..=1000 }`; main task sending `WorkerMessage::Ping { seq: 1..=1000 }`.
 **Expected output:** All 1000 round trips complete with matching seq values; zero assertion failures; background DEALER task exits cleanly.
 **Acceptance:** `cargo test -p anvilml-ipc --test stress_test test_1000_roundtrips` exits 0.
+
+---
+
+## test_build_all_vars_present (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/env_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `anvilml-core` providing `DeviceType`. `WorkerEnv::build()` is called with `ipc_port=5555, worker_id="0", device_index=1, device_type=Cuda, mock=false, log_level=debug, max_ipc_payload_mib=512`.
+**Tests:** All six builder-set env vars are present with correct string values: `ANVILML_IPC_PORT="5555"`, `ANVILML_WORKER_ID="0"`, `ANVILML_DEVICE_INDEX="1"`, `ANVILML_DEVICE_TYPE="cuda"`, `ANVILML_LOG_LEVEL="debug"`, `ANVILML_MAX_IPC_PAYLOAD_MIB="512"`.
+**Mode:** both
+**Inputs:** `WorkerEnv::build(5555, "0", 1, DeviceType::Cuda, false, "debug", 512)`.
+**Expected output:** `HashMap` contains exactly 6 entries with all correct key-value pairs.
+**Acceptance:** `cargo test -p anvilml-worker --test env_tests -- test_build_all_vars_present` exits 0.
+
+---
+
+## test_worker_mock_absent_when_false (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/env_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `anvilml-core` providing `DeviceType`. `WorkerEnv::build()` is called with `mock=false`.
+**Tests:** `ANVILML_WORKER_MOCK` key is absent from the map when `mock=false` — its absence signals real-mode hardware execution to the Python worker.
+**Mode:** both
+**Inputs:** `WorkerEnv::build(5555, "0", 0, DeviceType::Cpu, false, "info", 256)`.
+**Expected output:** `"ANVILML_WORKER_MOCK"` not in map keys.
+**Acceptance:** `cargo test -p anvilml-worker --test env_tests -- test_worker_mock_absent_when_false` exits 0.
+
+---
+
+## test_worker_mock_present_when_true (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/env_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `anvilml-core` providing `DeviceType`. `WorkerEnv::build()` is called with `mock=true`.
+**Tests:** `ANVILML_WORKER_MOCK="1"` when `mock=true` — this is the primary mechanism by which the supervisor tells the Python worker to use mock hardware instead of real torch-level probing.
+**Mode:** both
+**Inputs:** `WorkerEnv::build(5555, "0", 0, DeviceType::Cpu, true, "info", 256)`.
+**Expected output:** `"ANVILML_WORKER_MOCK"` maps to `"1"`.
+**Acceptance:** `cargo test -p anvilml-worker --test env_tests -- test_worker_mock_present_when_true` exits 0.
+
+---
+
+## test_device_type_cuda (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/env_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `anvilml-core` providing `DeviceType`. `WorkerEnv::build()` is called with `device_type=Cuda`.
+**Tests:** `DeviceType::Cuda` maps to `"cuda"` in `ANVILML_DEVICE_TYPE`.
+**Mode:** both
+**Inputs:** `WorkerEnv::build(5555, "0", 0, DeviceType::Cuda, false, "info", 256)`.
+**Expected output:** `"ANVILML_DEVICE_TYPE"` maps to `"cuda"`.
+**Acceptance:** `cargo test -p anvilml-worker --test env_tests -- test_device_type_cuda` exits 0.
+
+---
+
+## test_device_type_rocm (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/env_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `anvilml-core` providing `DeviceType`. `WorkerEnv::build()` is called with `device_type=Rocm`.
+**Tests:** `DeviceType::Rocm` maps to `"rocm"` in `ANVILML_DEVICE_TYPE`.
+**Mode:** both
+**Inputs:** `WorkerEnv::build(5555, "0", 0, DeviceType::Rocm, false, "info", 256)`.
+**Expected output:** `"ANVILML_DEVICE_TYPE"` maps to `"rocm"`.
+**Acceptance:** `cargo test -p anvilml-worker --test env_tests -- test_device_type_rocm` exits 0.
+
+---
+
+## test_device_type_cpu (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/env_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `anvilml-core` providing `DeviceType`. `WorkerEnv::build()` is called with `device_type=Cpu`.
+**Tests:** `DeviceType::Cpu` maps to `"cpu"` in `ANVILML_DEVICE_TYPE`.
+**Mode:** both
+**Inputs:** `WorkerEnv::build(5555, "0", 0, DeviceType::Cpu, false, "info", 256)`.
+**Expected output:** `"ANVILML_DEVICE_TYPE"` maps to `"cpu"`.
+**Acceptance:** `cargo test -p anvilml-worker --test env_tests -- test_device_type_cpu` exits 0.
+
+---
+
+## test_force_worker_mock_absent (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/env_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `anvilml-core` providing `DeviceType`. `WorkerEnv::build()` is called with all parameters including `mock=true`.
+**Tests:** `ANVILML_FORCE_WORKER_MOCK` is never set by the builder, even when `mock=true`. That variable is handled separately by the caller (the supervisor) as an independent runtime trigger.
+**Mode:** both
+**Inputs:** `WorkerEnv::build(5555, "1", 2, DeviceType::Rocm, true, "trace", 1024)`.
+**Expected output:** `"ANVILML_FORCE_WORKER_MOCK"` not in map keys.
+**Acceptance:** `cargo test -p anvilml-worker --test env_tests -- test_force_worker_mock_absent` exits 0.
+
+---
