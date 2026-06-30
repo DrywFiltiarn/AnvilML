@@ -8,6 +8,7 @@ use anvilml_core::config_load;
 use anvilml_hardware::detect_all_devices;
 use anvilml_server::build_router;
 use std::path::Path;
+use std::time::Instant;
 use tokio::net::TcpListener;
 
 /// Entry point for the AnvilML server binary.
@@ -86,7 +87,10 @@ async fn main() {
         }
     }
 
-    let router = build_router();
+    // Capture process-start instant once, before binding, so the health
+    // handler returns a real elapsed-time measurement.
+    let start_time = Instant::now();
+    let router = build_router(start_time);
     let listener = TcpListener::bind(format!("{}:{}", config.host, config.port))
         .await
         .unwrap();

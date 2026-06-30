@@ -55,11 +55,11 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 ## test_health_returns_200 (anvilml-server)
 
 **File:** `crates/anvilml-server/tests/health_tests.rs`
-**Context:** The `anvilml-server` crate has been compiled (`cargo test -p anvilml-server`).
-**Tests:** `GET /health` returns `200 OK` via in-process router call — constructs a `GET /health` request, sends it through `build_router()`, and asserts the response status is `StatusCode::OK`.
+**Context:** The `anvilml-server` crate has been compiled with `serde` (derive) and `serde_json` dev-dependency. `build_router()` accepts an `Instant` argument for uptime tracking.
+**Tests:** `GET /health` returns `200 OK` with a JSON body matching `ANVILML_DESIGN.md §13.4` — constructs a `GET /health` request, sends it through `build_router(start)`, asserts status is `StatusCode::OK`, then parses the body as JSON and asserts `status == "ok"`, `version` is a string, and `uptime_s` is a valid non-negative integer.
 **Mode:** both
-**Inputs:** `GET /health` with empty body.
-**Expected output:** `StatusCode::OK`.
+**Inputs:** `GET /health` with empty body; `build_router()` called with a freshly-captured `Instant`.
+**Expected output:** `StatusCode::OK`; JSON body `{ "status": "ok", "version": "<semver>", "uptime_s": <uint> }`.
 **Acceptance:** `cargo test -p anvilml-server --test health_tests` exits 0.
 
 ---
