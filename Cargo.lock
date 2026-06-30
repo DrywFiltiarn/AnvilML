@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-artifacts"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anvilml-core",
  "chrono",
@@ -1517,6 +1517,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -1583,6 +1584,7 @@ dependencies = [
  "sqlx-core",
  "thiserror",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1618,6 +1620,7 @@ dependencies = [
  "stringprep",
  "thiserror",
  "tracing",
+ "uuid",
  "whoami",
 ]
 
@@ -1644,6 +1647,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]

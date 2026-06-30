@@ -346,3 +346,170 @@ async fn test_get_after_duplicate_save_returns_original_content() {
         "get(hash2) should return the second PNG's content, not the first's"
     );
 }
+
+/// `list(Some(job_id))` returns only artifacts matching the given job ID.
+///
+/// Creates a tempdir and `ArtifactStore`, saves two artifacts under different
+/// job IDs, then calls `list(Some(job_id_a))` and verifies only the artifact
+/// with the matching job ID is returned.
+#[tokio::test]
+async fn test_list_with_job_id_filter() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let pool = make_pool().await;
+    let store = ArtifactStore::new(tempdir.path().to_path_buf(), pool);
+
+    // Generate two distinct job IDs.
+    let job_id_a = uuid::Uuid::new_v4();
+    let job_id_b = uuid::Uuid::new_v4();
+
+    // Save one artifact under job_id_a.
+    let meta_a = ArtifactMeta {
+        hash: "placeholder_a".to_string(),
+        job_id: job_id_a,
+        width: 64,
+        height: 64,
+        seed: 42,
+        steps: 20,
+        created_at: Utc::now(),
+        file_path: PathBuf::from("/tmp/artifacts/a.png"),
+    };
+    store
+        .save(TEST_PNG, &meta_a)
+        .await
+        .expect("first save should succeed");
+
+    // Save one artifact under job_id_b.
+    let meta_b = ArtifactMeta {
+        hash: "placeholder_b".to_string(),
+        job_id: job_id_b,
+        width: 64,
+        height: 64,
+        seed: 42,
+        steps: 20,
+        created_at: Utc::now(),
+        file_path: PathBuf::from("/tmp/artifacts/b.png"),
+    };
+    store
+        .save(TEST_PNG_WHITE, &meta_b)
+        .await
+        .expect("second save should succeed");
+
+    // List with job_id_a filter — should return exactly 1 row.
+    let results = store
+        .list(Some(job_id_a))
+        .await
+        .expect("list with job_id filter should succeed");
+    assert_eq!(
+        results.len(),
+        1,
+        "list(Some(job_id_a)) should return exactly 1 artifact, got {}",
+        results.len()
+    );
+    assert_eq!(
+        results[0].job_id, job_id_a,
+        "the returned artifact should have job_id_a"
+    );
+}
+
+/// `list(None)` returns all artifact rows regardless of job ID.
+///
+/// Creates a tempdir and `ArtifactStore`, saves three artifacts under
+/// two different job IDs, then calls `list(None)` and verifies all
+/// three rows are returned.
+#[tokio::test]
+async fn test_list_without_filter_returns_all() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let pool = make_pool().await;
+    let store = ArtifactStore::new(tempdir.path().to_path_buf(), pool);
+
+    let job_id_a = uuid::Uuid::new_v4();
+    let job_id_b = uuid::Uuid::new_v4();
+
+    // Save three artifacts under two different job IDs — use three unique
+    // byte slices so each produces a different hash (same-content saves are
+    // idempotent via INSERT OR IGNORE, so we need distinct content for 3 rows).
+    let meta_a1 = ArtifactMeta {
+        hash: "placeholder_a1".to_string(),
+        job_id: job_id_a,
+        width: 64,
+        height: 64,
+        seed: 42,
+        steps: 20,
+        created_at: Utc::now(),
+        file_path: PathBuf::from("/tmp/artifacts/a1.png"),
+    };
+    store
+        .save(TEST_PNG, &meta_a1)
+        .await
+        .expect("first save should succeed");
+
+    let meta_a2 = ArtifactMeta {
+        hash: "placeholder_a2".to_string(),
+        job_id: job_id_a,
+        width: 64,
+        height: 64,
+        seed: 137,
+        steps: 30,
+        created_at: Utc::now(),
+        file_path: PathBuf::from("/tmp/artifacts/a2.png"),
+    };
+    store
+        .save(TEST_PNG_WHITE, &meta_a2)
+        .await
+        .expect("second save should succeed");
+
+    // Create a third unique byte slice by modifying TEST_PNG — flipping a
+    // byte ensures a different SHA-256 hash while keeping the same format.
+    let mut modified_png = TEST_PNG.to_vec();
+    modified_png[10] ^= 0xff;
+
+    let meta_b = ArtifactMeta {
+        hash: "placeholder_b".to_string(),
+        job_id: job_id_b,
+        width: 64,
+        height: 64,
+        seed: 42,
+        steps: 20,
+        created_at: Utc::now(),
+        file_path: PathBuf::from("/tmp/artifacts/b.png"),
+    };
+    store
+        .save(&modified_png, &meta_b)
+        .await
+        .expect("third save should succeed");
+
+    // List without filter — should return all 3 rows.
+    let results = store
+        .list(None)
+        .await
+        .expect("list without filter should succeed");
+    assert_eq!(
+        results.len(),
+        3,
+        "list(None) should return all 3 artifacts, got {}",
+        results.len()
+    );
+}
+
+/// `list(None)` on an empty table returns an empty `Vec`, not an error.
+///
+/// Creates a tempdir and `ArtifactStore` with no saves, then calls
+/// `list(None)` and verifies the result is an empty vector with
+/// `len() == 0`.
+#[tokio::test]
+async fn test_list_empty_table_returns_empty_vec() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let pool = make_pool().await;
+    let store = ArtifactStore::new(tempdir.path().to_path_buf(), pool);
+
+    // No saves — the artifacts table is empty.
+    let results = store
+        .list(None)
+        .await
+        .expect("list on empty table should not error");
+    assert!(
+        results.is_empty(),
+        "list(None) on empty table should return an empty Vec, got {} rows",
+        results.len()
+    );
+}

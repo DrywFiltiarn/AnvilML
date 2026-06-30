@@ -11,8 +11,10 @@
 
 use anvilml_core::{AnvilError, ArtifactMeta};
 use sha2::{Digest, Sha256};
+use sqlx::Row;
 use sqlx::SqlitePool;
 use std::path::PathBuf;
+use uuid::Uuid;
 
 /// Content-addressed PNG artifact storage backed by SQLite metadata.
 ///
@@ -228,4 +230,100 @@ impl ArtifactStore {
             }
         }
     }
+
+    /// List artifact metadata, optionally filtered by job ID.
+    ///
+    /// Queries the `artifacts` table and returns all rows, or only rows
+    /// matching the given `job_id` when `Some(job_id)` is provided.
+    /// Returns an empty vector when no rows match (not an error).
+    ///
+    /// # Arguments
+    ///
+    /// * `job_id` — Optional job UUID to filter by. `None` returns all rows.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<ArtifactMeta>` containing all matching artifact metadata rows,
+    /// or an empty vector if no rows match.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AnvilError::Db` if the database query fails.
+    #[tracing::instrument(fields(artifact_dir = %self.artifact_dir.display()), skip(self))]
+    pub async fn list(&self, job_id: Option<Uuid>) -> Result<Vec<ArtifactMeta>, AnvilError> {
+        // Ensure the artifacts table exists before querying.
+        // This is necessary because list() can be called without any prior save(),
+        // and ensure_artifacts_table() is only called during save().
+        self.ensure_artifacts_table().await?;
+
+        // Build the SQL query: SELECT all artifact columns from the artifacts table.
+        // When job_id is Some, add a WHERE clause to filter by that job.
+        // The WHERE clause uses parameter binding (? placeholder) to prevent SQL injection.
+        // We use query() + manual mapping because ArtifactMeta contains PathBuf,
+        // which is not a native sqlx SQLite type.
+        let rows = if let Some(jid) = job_id {
+            // Filter by job_id — the WHERE clause uses a bound parameter (?)
+            // so the UUID is safely serialised as a TEXT value.
+            sqlx::query(
+                "SELECT hash, job_id, width, height, seed, steps, created_at, file_path \
+                 FROM artifacts WHERE job_id = ?",
+            )
+            .bind(jid.to_string())
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(|row| map_row(&row))
+            .collect::<Result<Vec<_>, _>>()?
+        } else {
+            // No filter — return all rows.
+            sqlx::query(
+                "SELECT hash, job_id, width, height, seed, steps, created_at, file_path \
+                 FROM artifacts",
+            )
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(|row| map_row(&row))
+            .collect::<Result<Vec<_>, _>>()?
+        };
+
+        tracing::debug!(count = rows.len(), job_id = ?job_id, "list completed");
+        Ok(rows)
+    }
+}
+
+/// Map a sqlx SQLite row to an `ArtifactMeta`.
+///
+/// This is a helper used by `list()` to convert raw database rows into
+/// the domain type. Each column is fetched by name and converted to the
+/// appropriate Rust type (TEXT → String, INTEGER → u32/i64, etc.).
+fn map_row(row: &sqlx::sqlite::SqliteRow) -> Result<ArtifactMeta, sqlx::Error> {
+    // Fetch each column by name. sqlx's try_get handles the native
+    // type mapping (TEXT → String, INTEGER → u32/i64, etc.).
+    // PathBuf is converted from the TEXT column via String::into().
+    let hash: String = row.try_get("hash")?;
+    let job_id_str: String = row.try_get("job_id")?;
+    let job_id: Uuid = job_id_str
+        .parse()
+        .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+    let width: u32 = row.try_get("width")?;
+    let height: u32 = row.try_get("height")?;
+    let seed: i64 = row.try_get("seed")?;
+    let steps: u32 = row.try_get("steps")?;
+    let created_at_str: String = row.try_get("created_at")?;
+    let created_at: chrono::DateTime<chrono::Utc> = created_at_str
+        .parse()
+        .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+    let file_path: PathBuf = row.try_get::<String, _>("file_path")?.into();
+
+    Ok(ArtifactMeta {
+        hash,
+        job_id,
+        width,
+        height,
+        seed,
+        steps,
+        created_at,
+        file_path,
+    })
 }

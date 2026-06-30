@@ -2089,3 +2089,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** 64×64 black PNG (225 bytes, seed 42) and 64×64 white PNG (203 bytes, seed 137).
 **Expected output:** `get(hash1)` returns the black PNG bytes, `get(hash2)` returns the white PNG bytes — each hash maps to its own file content.
 **Acceptance:** `cargo test -p anvilml-artifacts --test store_tests test_get_after_duplicate_save_returns_original_content` exits 0.
+
+---
+
+## test_list_with_job_id_filter (anvilml-artifacts)
+
+**File:** `crates/anvilml-artifacts/tests/store_tests.rs`
+**Context:** The `anvilml-artifacts` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono, uuid features), `chrono` (serde feature), `uuid` (v4 feature), and `tokio` dev-dependency. Two artifacts are saved under different job IDs via `save()`.
+**Tests:** `list(Some(job_id_a))` returns only the artifact whose `job_id` matches the given filter — proves the WHERE clause correctly filters by the bound UUID parameter.
+**Mode:** both
+**Inputs:** Two artifacts saved under distinct `Uuid` values (job_id_a, job_id_b).
+**Expected output:** `list(Some(job_id_a))` returns a `Vec` with exactly 1 `ArtifactMeta` whose `job_id` equals `job_id_a`.
+**Acceptance:** `cargo test -p anvilml-artifacts --test store_tests test_list_with_job_id_filter` exits 0.
+
+---
+
+## test_list_without_filter_returns_all (anvilml-artifacts)
+
+**File:** `crates/anvilml-artifacts/tests/store_tests.rs`
+**Context:** The `anvilml-artifacts` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono, uuid features), `chrono` (serde feature), `uuid` (v4 feature), and `tokio` dev-dependency. Three artifacts are saved under two different job IDs using three distinct PNG byte slices (TEST_PNG, TEST_PNG_WHITE, and a modified copy of TEST_PNG).
+**Tests:** `list(None)` returns all three artifact rows regardless of job ID — proves the unfiltered SELECT returns every row in the table.
+**Mode:** both
+**Inputs:** Three artifacts saved with distinct content under two job IDs (job_id_a: 2 artifacts, job_id_b: 1 artifact).
+**Expected output:** `list(None)` returns a `Vec` with exactly 3 `ArtifactMeta` entries.
+**Acceptance:** `cargo test -p anvilml-artifacts --test store_tests test_list_without_filter_returns_all` exits 0.
+
+---
+
+## test_list_empty_table_returns_empty_vec (anvilml-artifacts)
+
+**File:** `crates/anvilml-artifacts/tests/store_tests.rs`
+**Context:** The `anvilml-artifacts` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono, uuid features), `chrono` (serde feature), `uuid` (v4 feature), and `tokio` dev-dependency. No artifacts are saved — the `artifacts` table is created on first `list()` call via `ensure_artifacts_table()`.
+**Tests:** `list(None)` on an empty table returns an empty `Vec` (not `None` or an error) — proves the method handles the zero-row case gracefully.
+**Mode:** both
+**Inputs:** No artifacts saved; empty `artifacts` table.
+**Expected output:** `list(None)` returns an empty `Vec` (`len() == 0`).
+**Acceptance:** `cargo test -p anvilml-artifacts --test store_tests test_list_empty_table_returns_empty_vec` exits 0.
