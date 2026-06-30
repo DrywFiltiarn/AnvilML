@@ -277,3 +277,105 @@ fn test_memory_report_roundtrip() {
         "MemoryReport roundtrip must preserve vram_used_mib and ram_used_mib"
     );
 }
+
+/// `WorkerEvent::Progress { job_id, step: 3, total_steps: 20, preview_b64: Some(...) }`
+/// roundtrips via rmp-serde. All four fields (`job_id`, `step`, `total_steps`,
+/// `preview_b64`) are preserved with correct types. The msgpack dict contains
+/// `"_type": "Progress"` plus all field keys.
+#[test]
+fn test_progress_roundtrip() {
+    let event = WorkerEvent::Progress {
+        job_id: Uuid::new_v4(),
+        step: 3,
+        total_steps: 20,
+        preview_b64: Some("iVBORw0KGgo...".into()),
+    };
+
+    let bytes = rmp_serde::to_vec_named(&event).expect("serialize Progress");
+    let decoded: WorkerEvent = rmp_serde::from_slice(&bytes).expect("deserialize Progress");
+
+    assert_eq!(
+        event, decoded,
+        "Progress roundtrip must preserve all four fields"
+    );
+}
+
+/// `WorkerEvent::ImageReady { job_id, image_b64, width: 512, height: 512,
+/// format: "png", seed: 42, steps: 20 }` roundtrips via rmp-serde. All seven
+/// fields (`job_id`, `image_b64`, `width`, `height`, `format`, `seed`, `steps`)
+/// are preserved with correct types. The msgpack dict contains `"_type":
+/// "ImageReady"` plus all field keys.
+#[test]
+fn test_image_ready_roundtrip() {
+    let event = WorkerEvent::ImageReady {
+        job_id: Uuid::new_v4(),
+        image_b64: "iVBORw0KGgo...".into(),
+        width: 512,
+        height: 512,
+        format: "png".into(),
+        seed: 42,
+        steps: 20,
+    };
+
+    let bytes = rmp_serde::to_vec_named(&event).expect("serialize ImageReady");
+    let decoded: WorkerEvent = rmp_serde::from_slice(&bytes).expect("deserialize ImageReady");
+
+    assert_eq!(
+        event, decoded,
+        "ImageReady roundtrip must preserve all seven fields"
+    );
+}
+
+/// `WorkerEvent::Completed { job_id, elapsed_ms: 5432 }` roundtrips via
+/// rmp-serde. The msgpack dict contains `"_type": "Completed"` plus the
+/// `job_id` and `elapsed_ms` fields.
+#[test]
+fn test_completed_roundtrip() {
+    let event = WorkerEvent::Completed {
+        job_id: Uuid::new_v4(),
+        elapsed_ms: 5432,
+    };
+
+    let bytes = rmp_serde::to_vec_named(&event).expect("serialize Completed");
+    let decoded: WorkerEvent = rmp_serde::from_slice(&bytes).expect("deserialize Completed");
+
+    assert_eq!(
+        event, decoded,
+        "Completed roundtrip must preserve job_id and elapsed_ms"
+    );
+}
+
+/// `WorkerEvent::Failed { job_id, error: "CUDA out of memory",
+/// traceback: Some("Traceback...") }` roundtrips via rmp-serde. All three
+/// fields (`job_id`, `error`, `traceback`) are preserved with correct types.
+/// The msgpack dict contains `"_type": "Failed"` plus all field keys.
+#[test]
+fn test_failed_roundtrip() {
+    let event = WorkerEvent::Failed {
+        job_id: Uuid::new_v4(),
+        error: "CUDA out of memory".into(),
+        traceback: Some("Traceback...".into()),
+    };
+
+    let bytes = rmp_serde::to_vec_named(&event).expect("serialize Failed");
+    let decoded: WorkerEvent = rmp_serde::from_slice(&bytes).expect("deserialize Failed");
+
+    assert_eq!(
+        event, decoded,
+        "Failed roundtrip must preserve job_id, error, and traceback"
+    );
+}
+
+/// `WorkerEvent::Cancelled { job_id }` roundtrips via rmp-serde. The
+/// msgpack dict contains `"_type": "Cancelled"` and the `job_id` field.
+#[test]
+fn test_cancelled_roundtrip() {
+    let event = WorkerEvent::Cancelled {
+        job_id: Uuid::new_v4(),
+    };
+
+    let bytes = rmp_serde::to_vec_named(&event).expect("serialize Cancelled");
+    let decoded: WorkerEvent = rmp_serde::from_slice(&bytes).expect("deserialize Cancelled");
+
+    assert_eq!(event, decoded, "Cancelled roundtrip must preserve job_id");
+}

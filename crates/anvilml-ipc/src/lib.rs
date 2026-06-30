@@ -5,4 +5,5 @@ pub mod messages;
 pub mod ws;
 
 pub use error::IpcError;
+pub use messages::{WorkerEvent, WorkerMessage};
 pub use ws::broadcaster::EventBroadcaster;

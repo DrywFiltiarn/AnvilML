@@ -69,8 +69,10 @@ pub enum WorkerMessage {
 /// Serialised as msgpack flat dicts with a `"_type"` discriminator field.
 /// The Rust supervisor dispatches on `"_type"` to route to the handler.
 ///
-/// Job-lifecycle variants (`Progress`, `ImageReady`, `Completed`, `Failed`,
-/// `Cancelled`) are deferred to task P7-A4.
+/// Event categories: startup reports (`Ready`), keepalive pongs (`Pong`),
+/// memory reports (`MemoryReport`), job-lifecycle events (`Progress`,
+/// `ImageReady`, `Completed`, `Failed`, `Cancelled`), and termination
+/// notifications (`Dying`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "_type")]
 pub enum WorkerEvent {
@@ -131,5 +133,79 @@ pub enum WorkerEvent {
         vram_used_mib: u32,
         /// Current system RAM usage in mebibytes.
         ram_used_mib: u64,
+    },
+
+    /// Job execution progress report — sent periodically during generation.
+    ///
+    /// Carries the current step number and an optional base64-encoded preview
+    /// image (e.g. a low-res latent decode at this step). The `total_steps`
+    /// field lets clients render a progress bar.
+    Progress {
+        /// Stable unique identifier for this job (UUID v4).
+        job_id: Uuid,
+        /// Current step number (1-indexed).
+        step: u32,
+        /// Total number of steps for this job.
+        total_steps: u32,
+        /// Optional base64-encoded preview image at this step (`None` when
+        /// no preview is available yet).
+        preview_b64: Option<String>,
+    },
+
+    /// Generated image is ready — sent after a successful decode step.
+    ///
+    /// Carries the full base64-encoded image, its dimensions, format, and the
+    /// generation parameters that produced it. The client stores this as an
+    /// artifact and associates it with `job_id`.
+    ImageReady {
+        /// Stable unique identifier for this job (UUID v4).
+        job_id: Uuid,
+        /// Base64-encoded image bytes (PNG or equivalent).
+        image_b64: String,
+        /// Image width in pixels.
+        width: u32,
+        /// Image height in pixels.
+        height: u32,
+        /// Image format string (e.g. `"png"`, `"webp"`).
+        format: String,
+        /// Random seed used for generation (for reproducibility).
+        seed: i64,
+        /// Number of diffusion steps executed.
+        steps: u32,
+    },
+
+    /// Job completed successfully.
+    ///
+    /// Sent after `ImageReady` (or when the job produces no image output).
+    /// The client may transition the job to a terminal state.
+    Completed {
+        /// Stable unique identifier for this job (UUID v4).
+        job_id: Uuid,
+        /// Total wall-clock time in milliseconds from job start to completion.
+        elapsed_ms: u64,
+    },
+
+    /// Job failed with an error.
+    ///
+    /// Sent when the worker encounters a non-recoverable error during
+    /// execution. The `traceback` field is present when the worker was
+    /// able to capture a full Python traceback.
+    Failed {
+        /// Stable unique identifier for this job (UUID v4).
+        job_id: Uuid,
+        /// Human-readable error description (e.g. `"CUDA out of memory"`).
+        error: String,
+        /// Optional full traceback string (present when the worker captured
+        /// a Python exception traceback).
+        traceback: Option<String>,
+    },
+
+    /// Job was cancelled by the client.
+    ///
+    /// Sent when the worker received a `CancelJob` message and stopped
+    /// execution at the next cancellation checkpoint.
+    Cancelled {
+        /// Stable unique identifier for this job (UUID v4).
+        job_id: Uuid,
     },
 }

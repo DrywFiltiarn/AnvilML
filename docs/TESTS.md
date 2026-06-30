@@ -2497,3 +2497,63 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `WorkerEvent::MemoryReport { vram_used_mib: 4096, ram_used_mib: 8589934592 }`.
 **Expected output:** Roundtripped `WorkerEvent::MemoryReport` equals original; both `vram_used_mib` and `ram_used_mib` preserved.
 **Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_memory_report_roundtrip` exits 0.
+
+---
+
+## test_progress_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `rmp-serde` dev-dependencies, and the `messages` module providing `WorkerEvent` with the `Progress` variant (added by P7-A4).
+**Tests:** `WorkerEvent::Progress { job_id: Uuid::new_v4(), step: 3, total_steps: 20, preview_b64: Some("iVBORw0KGgo...") }` roundtrips via `rmp_serde::to_vec_named()`. The msgpack dict contains `"_type": "Progress"`, `"job_id"` (UUID string), `"step": 3`, `"total_steps": 20`, and `"preview_b64": "iVBORw0KGgo..."`. Verifies all four fields including the `Option<String>` field are preserved correctly across serialisation.
+**Mode:** both
+**Inputs:** `WorkerEvent::Progress { job_id: Uuid::new_v4(), step: 3, total_steps: 20, preview_b64: Some("iVBORw0KGgo...".into()) }`.
+**Expected output:** Roundtripped `WorkerEvent::Progress` equals original; all four fields preserved.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_progress_roundtrip` exits 0.
+
+---
+
+## test_image_ready_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `rmp-serde` dev-dependencies, and the `messages` module providing `WorkerEvent` with the `ImageReady` variant (added by P7-A4).
+**Tests:** `WorkerEvent::ImageReady { job_id, image_b64: "iVBORw0KGgo...", width: 512, height: 512, format: "png", seed: 42, steps: 20 }` roundtrips via `rmp_serde::to_vec_named()`. The msgpack dict contains `"_type": "ImageReady"` plus all seven field keys. Verifies `i64` (seed), `u32` (width/height/steps), and `String` fields (image_b64, format) are preserved correctly.
+**Mode:** both
+**Inputs:** `WorkerEvent::ImageReady { job_id: Uuid::new_v4(), image_b64: "iVBORw0KGgo...".into(), width: 512, height: 512, format: "png".into(), seed: 42, steps: 20 }`.
+**Expected output:** Roundtripped `WorkerEvent::ImageReady` equals original; all seven fields preserved.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_image_ready_roundtrip` exits 0.
+
+---
+
+## test_completed_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `rmp-serde` dev-dependencies, and the `messages` module providing `WorkerEvent` with the `Completed` variant (added by P7-A4).
+**Tests:** `WorkerEvent::Completed { job_id, elapsed_ms: 5432 }` roundtrips via `rmp_serde::to_vec_named()`. The msgpack dict contains `"_type": "Completed"`, `"job_id"` (UUID string), and `"elapsed_ms": 5432`. Verifies the `u64` elapsed_ms field is preserved correctly across serialisation.
+**Mode:** both
+**Inputs:** `WorkerEvent::Completed { job_id: Uuid::new_v4(), elapsed_ms: 5432 }`.
+**Expected output:** Roundtripped `WorkerEvent::Completed` equals original; job_id and elapsed_ms preserved.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_completed_roundtrip` exits 0.
+
+---
+
+## test_failed_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `rmp-serde` dev-dependencies, and the `messages` module providing `WorkerEvent` with the `Failed` variant (added by P7-A4).
+**Tests:** `WorkerEvent::Failed { job_id, error: "CUDA out of memory", traceback: Some("Traceback...") }` roundtrips via `rmp_serde::to_vec_named()`. The msgpack dict contains `"_type": "Failed"`, `"job_id"`, `"error": "CUDA out of memory"`, and `"traceback": "Traceback..."`. Verifies the `Option<String>` field is preserved correctly.
+**Mode:** both
+**Inputs:** `WorkerEvent::Failed { job_id: Uuid::new_v4(), error: "CUDA out of memory".into(), traceback: Some("Traceback...".into()) }`.
+**Expected output:** Roundtripped `WorkerEvent::Failed` equals original; job_id, error, and traceback preserved.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_failed_roundtrip` exits 0.
+
+---
+
+## test_cancelled_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `rmp-serde` dev-dependencies, and the `messages` module providing `WorkerEvent` with the `Cancelled` variant (added by P7-A4).
+**Tests:** `WorkerEvent::Cancelled { job_id }` roundtrips via `rmp_serde::to_vec_named()`. The msgpack dict contains `"_type": "Cancelled"` and `"job_id"` (UUID string). Verifies the single `job_id` field is preserved correctly across serialisation.
+**Mode:** both
+**Inputs:** `WorkerEvent::Cancelled { job_id: Uuid::new_v4() }`.
+**Expected output:** Roundtripped `WorkerEvent::Cancelled` equals original; job_id preserved.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_cancelled_roundtrip` exits 0.
