@@ -71,16 +71,17 @@
     "P7-A2",
     "P7-A3",
     "P7-A4",
-    "P7-B1"
+    "P7-B1",
+    "P7-B2"
   ],
-  "in_progress": "P7-B2",
+  "in_progress": "P7-D1",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "This task requires no code changes. The approach is a mechanical verification pass:\n\n1. **Read existing `lib.rs`** (already done at step 3 of inspection). Confirm it contains:\n   - `pub mod error;`\n   - `pub mod messages;`\n   - `pub mod transport;`\n   - `pub mod ws;`\n   - `pub use error::IpcError;`\n   - `pub use messages::{WorkerEvent, WorkerMessage};`\n   - `pub use transport::RouterTransport;`\n   - `pub use ws::broadcaster::EventBroadcaster;`\n\n2. **Verify each re-export resolves to the correct module-level public type** by\n   confirming the target modules exist and export the expected public items:\n   - `error.rs` is a `pub mod` that defines `pub enum IpcError` (confirmed by reading)\n   - `messages.rs` is a `pub mod` that defines `pub enum WorkerMessage` and\n     `pub enum WorkerEvent` (confirmed by reading)\n   - `transport.rs` is a `pub mod` that defines `pub struct RouterTransport` (confirmed)\n   - `ws/mod.rs` is a `pub mod` that re-exports `broadcaster` as `pub mod broadcaster`\n     (confirmed by reading); `broadcaster.rs` defines `pub struct EventBroadcaster`\n     (confirmed by reading)\n\n3. **Run `wc -l crates/anvilml-ipc/src/lib.rs`** and confirm the output is \u2264 80.\n   Current line count is 11 \u2014 well within the cap.\n\n4. **Run `cargo test -p anvilml-ipc`** (full crate suite including both\n   `roundtrip_tests.rs` and `error_tests.rs`) and confirm exit 0.\n\n5. **Phase-closing audit** (P7-D1 is the last task in Phase 7):\n\n   **\u00a79a procedure** (defers_to verification for tasks with non-empty defers_to):\n   No task in Phase 7 has a non-empty `defers_to` field. All eight tasks (P7-A1\n   through P7-D1) declare `\"defers_to\": []`. Zero entries to verify.\n\n   **\u00a79a.1 Unmarked-stub sweep:**\n   ```bash\n   grep -rn \"NotImplementedError\\|unimplemented!\\|todo!\\|# TODO\\|// TODO\" \\\n     crates/anvilml-ipc/src/\n   ```\n   Result: `0 findings` (grep exit code 1 = no matches). No unmarked stubs.\n\n   **\u00a79a.2 Dual-mode parity-marker sweep:**\n   The REAL_PATH_VERIFIED/MOCK_PATH_VERIFIED convention (ANVILML_DESIGN.md \u00a710.6)\n   applies only to Python worker node functions in `worker/nodes/` \u2014 specifically\n   `execute()`, `load()`, `sample()`, `decode()`, and `compute_latent_shape()` methods.\n   The `anvilml-ipc` crate contains no Python code and no functions in scope of this\n   convention. Zero findings.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-06-30T22:33:24+0200",
-  "plan_approval_message_id": "1521614603090399324",
+  "last_updated": "2026-06-30T23:39:59+0200",
+  "plan_approval_message_id": "1521629276775125112",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1521614600963887227",
+  "plan_report_message_id": "1521629274837221519",
   "impl_report_message_id": null
 }
