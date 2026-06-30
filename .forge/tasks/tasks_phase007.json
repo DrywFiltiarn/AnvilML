@@ -4,7 +4,7 @@
     "description": "anvilml-ipc: IPC-specific error types",
     "phase": "7",
     "project": "anvilml",
-    "prereqs": ["P3-A11", "P900-A8"],
+    "prereqs": ["P3-A11", "P900-A10"],
     "context": "Create crates/anvilml-ipc/src/error.rs per ANVILML_DESIGN.md §8.4's module layout. Define IpcError (thiserror::Error derive) covering: BindFailed(String), SendFailed(String), RecvFailed(String), SerializationFailed(String), PayloadTooLarge{actual: usize, max: usize}, UnknownWorker(String). Implement From<IpcError> for AnvilError mapping to AnvilError::Ipc(String) (the existing variant from Phase 2's P2-A1 - do not invent a new AnvilError variant, reuse the existing one). Add thiserror to crates/anvilml-ipc/Cargo.toml (resolve version live via registry). Declare mod error; pub use error::IpcError; in lib.rs. Acceptance: >=5 tests in crates/anvilml-ipc/tests/error_tests.rs covering each variant's Display output and the From<IpcError> for AnvilError conversion; `cargo test -p anvilml-ipc --test error_tests` exits 0.",
     "tags": [],
     "defers_to": []

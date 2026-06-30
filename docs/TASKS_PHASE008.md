@@ -35,6 +35,20 @@ load, and a complete `WorkerPool` can spawn, supervise, gracefully shut down, an
 respawn-on-crash a set of worker subprocesses — though those subprocesses don't yet
 run any real Python code, since `worker_main.py` itself doesn't exist until Phase 9.
 
+`P8-E4`/`P8-E5`, appended to this phase by a later audit (tracing `RespawnPolicy`
+forward from `P8-D1` to confirm it was actually invoked, rather than only checking
+it compiled and passed its own unit tests), close a gap in the phase's original
+task set: `P8-D1` built `RespawnPolicy` and `P8-E3`'s original scope built
+`ManagedWorker::run()`'s three exit paths (graceful shutdown, the 60-second
+`Initializing` timeout, crash), but nothing in the original task set ever called
+`should_respawn()`/`next_delay()` or re-spawned a crashed worker's subprocess —
+`ANVILML_DESIGN.md §9.2`'s "a crashed worker is automatically respawned" and
+§9.5's `Dead → Respawning → Initializing` state transition were both
+unimplemented as originally authored, despite this document's own Overview above
+already (incorrectly) claiming respawn-on-crash as a phase-end capability.
+`P8-E4`/`P8-E5` close that gap without modifying `P8-E3`'s own scope, which
+remains correct and complete as stated for its three covered exit paths.
+
 ---
 
 ## Group Reference
@@ -45,7 +59,7 @@ run any real Python code, since `worker_main.py` itself doesn't exist until Phas
 | B | Spawning | P8-B1 … P8-B3 | `WorkerEnv`, `spawn_worker()`, Windows Job Object orphan cleanup |
 | C | Demux & keepalive | P8-C1 … P8-C2 | `Demux` with mandatory `deregister()`, the ping/pong watchdog |
 | D | Respawn | P8-D1 | `RespawnPolicy` backoff and max-attempt guard |
-| E | Worker ownership | P8-E1 … P8-E3 | `WorkerHandle` (cheap, `Clone`-able), then its `set_status()` mutator, then `ManagedWorker::run()` |
+| E | Worker ownership | P8-E1 … P8-E5 | `WorkerHandle` (cheap, `Clone`-able), `set_status()` mutator, `ManagedWorker::run()`'s exit paths, then crash-attempt tracking and the actual respawn loop |
 | F | Bridge | P8-F1 | The two independent reader/writer tasks against the split transport |
 | G | Pool | P8-G1 | `WorkerPool::spawn_all()`/`shutdown_all()` |
 | H | Closeout | P8-H1 | `lib.rs` re-export pass, 80-line check |
@@ -70,6 +84,7 @@ stub crate with the `mock-hardware` feature forwarded (Phase 1's P1-B4).
 | `ANVILML_DESIGN.md §9.4` | P8-C1 | `register()`/`deregister()` mandatory pairing — the exact v3 regression this closes |
 | `ANVILML_DESIGN.md §19.4` | P8-D1 | `RespawnPolicy`'s default values and halt-after-max-attempts behavior |
 | `ANVILML_DESIGN.md §9.1` | P8-E1, P8-E2, P8-E3 | `WorkerHandle`/`ManagedWorker`'s exact ownership shape — read in full before any of the three tasks |
+| `ANVILML_DESIGN.md §9.2`, §9.5, §19.4 | P8-E4, P8-E5 | "A crashed worker is automatically respawned"; the `Dead → Respawning → Initializing` state transition; `RespawnPolicy`'s gating behavior |
 | `ANVILML_DESIGN.md §9.6` | P8-F1 | The bridge's two-independent-tasks shape, reusing the already-split transport locks |
 | `ANVILML_DESIGN.md §9.2`–§9.3, §19.3 | P8-G1 | `WorkerPool`'s responsibilities and the graceful-shutdown timeout sequence |
 
@@ -337,6 +352,69 @@ cargo test -p anvilml-worker --test managed_tests
 
 ---
 
+#### P8-E4: anvilml-worker: ManagedWorker tracks crash attempt_history, consults RespawnPolicy
+
+**Goal:** Wire the decision point `RespawnPolicy` (`P8-D1`) was built for but
+that nothing in the phase's original task set ever called — confirm whether a
+crashed worker should be respawned, before `P8-E5` actually does it.
+
+**Files to create or modify:**
+- `crates/anvilml-worker/src/managed.rs` — adds an `attempt_history` field and
+  the `should_respawn()` call on the crash exit path.
+- `crates/anvilml-worker/tests/managed_tests.rs` — adds the new coverage.
+
+**Key implementation notes:**
+- Add `attempt_history: Vec<Instant>` to `ManagedWorker`, appended with the
+  current time on each crash/`Dead` transition specifically — not on graceful
+  shutdown and not on the 60-second `Initializing` timeout, both of which
+  `P8-E3` already exits `run()` for permanently and unconditionally.
+- On crash, call `self.respawn_policy.should_respawn(&self.attempt_history)`
+  and log the returned boolean at `INFO`. This task only wires the decision
+  point — acting on a `true` result (sleeping, re-spawning, looping) is
+  `P8-E5`'s scope, deferred here.
+
+**Acceptance criterion:**
+```bash
+cargo test -p anvilml-worker --test managed_tests
+# -> >=16 tests total in the file, exits 0
+```
+
+---
+
+#### P8-E5: anvilml-worker: ManagedWorker executes respawn (re-spawn subprocess, loop)
+
+**Goal:** Complete the respawn path `P8-E4` decided on — actually restart a
+crashed worker's subprocess and resume `run()`'s loop, closing
+`ANVILML_DESIGN.md §9.2`'s "a crashed worker is automatically respawned" and
+§9.5's `Dead → Respawning → Initializing` transition.
+
+**Files to create or modify:**
+- `crates/anvilml-worker/src/managed.rs` — extends the crash-exit branch from
+  a permanent `return` into a conditional respawn-and-continue.
+- `crates/anvilml-worker/tests/managed_tests.rs` — adds the new coverage.
+
+**Key implementation notes:**
+- When `P8-E4`'s `should_respawn()` call returns `true`: sleep
+  `self.respawn_policy.next_delay()`, re-spawn the subprocess via `spawn.rs`'s
+  `Command` construction (`P8-B2`), call `demux.register()` again (`P8-C1`),
+  and continue `run()`'s own loop — returning to `Initializing` — instead of
+  returning from the function.
+- When `should_respawn()` returns `false`: `run()` returns immediately,
+  exactly as `P8-E3` originally specified — the worker stays `Dead` until a
+  manual restart, per `§9.2`.
+- `WorkerHandle`'s status must read `Respawning` during the delay, then
+  `Initializing` once the new subprocess is spawned, matching `§9.5`'s state
+  diagram exactly — these are two distinct, observable status values, not a
+  single combined transition.
+
+**Acceptance criterion:**
+```bash
+cargo test -p anvilml-worker --test managed_tests
+# -> >=20 tests total in the file, exits 0
+```
+
+---
+
 ### Group F — Bridge
 
 #### P8-F1: anvilml-worker: bridge.rs independent reader/writer tasks
@@ -462,6 +540,13 @@ cargo check --workspace --features mock-hardware --target x86_64-pc-windows-gnu
   targets `worker/worker_main.py`, a file that doesn't exist until Phase 9. Tests in
   this phase use mock IPC backends and simulated process exits, not a real
   subprocess round trip.
+- `P8-E4`/`P8-E5` were appended to this phase's original task set by an audit that
+  traced `RespawnPolicy` (`P8-D1`) forward and found nothing called it —
+  `P8-E3`'s original scope (still correct and unmodified) only covered `run()`'s
+  three exit paths, not the respawn loop the design doc and this very document's
+  own Overview already claimed as a phase-end capability. `P8-F1`'s `prereqs`
+  changed from `P8-E3` to `P8-E5` accordingly, so the bridge task lands only
+  after the full crash-respawn path is wired, not just the exit-path detection.
 
 ---
 

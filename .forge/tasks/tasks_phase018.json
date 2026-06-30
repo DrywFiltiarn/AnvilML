@@ -4,8 +4,10 @@
     "description": "anvilml-server: AppState gains hardware, env_report fields (final)",
     "phase": "18",
     "project": "anvilml",
-    "prereqs": ["P17-C1"],
-    "context": "Extend AppState (crates/anvilml-server/src/state.rs, Phase 16's P16-B1) with the final two §13.2 fields: hardware: Arc<RwLock<HardwareInfo>> (populated once at startup via detect_all_devices(), Phase 5, then refreshed only by a later VRAM-refresh path if one exists - this task just wires the initial populate), env_report: Arc<RwLock<EnvReport>> (EnvReport from anvilml-core, Phase 3's P3-A6 - populated from the preflight checks ENVIRONMENT.md §5 describes: interpreter path exists, python version, torch import success/failure - this task wires a best-effort initial populate at startup, not a full preflight implementation if one doesn't already exist elsewhere). AppState now has every field §13.2 specifies. Update backend/main.rs accordingly. Acceptance: >=3 new tests in crates/anvilml-server/tests/state_tests.rs covering both fields' construction; `cargo test -p anvilml-server --test state_tests` exits 0; `cargo build -p anvilml` exits 0.",
+    "prereqs": [
+      "P17-C1"
+    ],
+    "context": "Extend AppState (crates/anvilml-server/src/state.rs, Phase 16's P16-B1) with the final two \u00a713.2 fields: hardware: Arc<RwLock<HardwareInfo>> (populated once at startup via detect_all_devices(), Phase 5, then refreshed only by a later VRAM-refresh path if one exists - this task just wires the initial populate), env_report: Arc<RwLock<EnvReport>> (EnvReport from anvilml-core, Phase 3's P3-A6 - populated from the preflight checks ENVIRONMENT.md \u00a75 describes: interpreter path exists, python version, torch import success/failure - this task wires a best-effort initial populate at startup, not a full preflight implementation if one doesn't already exist elsewhere). AppState now has every field \u00a713.2 specifies. Update backend/main.rs accordingly. Acceptance: >=3 new tests in crates/anvilml-server/tests/state_tests.rs covering both fields' construction; `cargo test -p anvilml-server --test state_tests` exits 0; `cargo build -p anvilml` exits 0.",
     "tags": [],
     "defers_to": []
   },
@@ -14,8 +16,10 @@
     "description": "anvilml-server: GET /v1/system, /v1/system/env handlers",
     "phase": "18",
     "project": "anvilml",
-    "prereqs": ["P18-A1"],
-    "context": "Create crates/anvilml-server/src/handlers/system.rs per ANVILML_DESIGN.md §13.4: async fn get_system(State(state): State<AppState>) -> Json<HardwareInfo> reads state.hardware (read lock, clone out). async fn get_system_env(State(state): State<AppState>) -> Json<EnvReport> reads state.env_report likewise. Both are one-line delegations, no business logic, per §3.3. /v1/system/versions (ComponentVersions) is the next task's scope - do not add it here. Update handlers/mod.rs and build_router() to register both routes. Acceptance: >=4 tests in crates/anvilml-server/tests/system_tests.rs: /v1/system returns 200 with the current HardwareInfo, /v1/system/env returns 200 with the current EnvReport, both reflect updates made to the underlying RwLock between requests; `cargo test -p anvilml-server --test system_tests` exits 0.",
+    "prereqs": [
+      "P18-A1"
+    ],
+    "context": "Create crates/anvilml-server/src/handlers/system.rs per ANVILML_DESIGN.md \u00a713.4: async fn get_system(State(state): State<AppState>) -> Json<HardwareInfo> reads state.hardware (read lock, clone out). async fn get_system_env(State(state): State<AppState>) -> Json<EnvReport> reads state.env_report likewise. Both are one-line delegations, no business logic, per \u00a73.3. /v1/system/versions (ComponentVersions) is the next task's scope - do not add it here. Update handlers/mod.rs and build_router() to register both routes. Acceptance: >=4 tests in crates/anvilml-server/tests/system_tests.rs: /v1/system returns 200 with the current HardwareInfo, /v1/system/env returns 200 with the current EnvReport, both reflect updates made to the underlying RwLock between requests; `cargo test -p anvilml-server --test system_tests` exits 0.",
     "tags": [],
     "defers_to": []
   },
@@ -24,8 +28,10 @@
     "description": "anvilml-server: GET /v1/system/versions handler + ComponentVersions type",
     "phase": "18",
     "project": "anvilml",
-    "prereqs": ["P18-B1"],
-    "context": "Extend crates/anvilml-server/src/handlers/system.rs with get_system_versions per §13.4. Define ComponentVersions (new struct in this file, not anvilml-core - HTTP-response-layer concern) {anvilml_version: String, rust_version: String, python_version: Option<String>, torch_version: Option<String>}: anvilml_version from env!(\"CARGO_PKG_VERSION\"), rust_version from a build-time constant (resolve the mechanism live, e.g. rustc_version_runtime, version resolved via registry not memory), python_version/torch_version from state.env_report (populated by P18-A1). Update build_router() for GET /v1/system/versions. Acceptance: >=3 new tests in system_tests.rs: response has a non-empty anvilml_version, python/torch versions reflect env_report's current values incl. None when unset; `cargo test -p anvilml-server --test system_tests` exits 0 (>=7 total).",
+    "prereqs": [
+      "P18-B1"
+    ],
+    "context": "Extend crates/anvilml-server/src/handlers/system.rs with get_system_versions per \u00a713.4. Define ComponentVersions (new struct in this file, not anvilml-core - HTTP-response-layer concern) {anvilml_version: String, rust_version: String, python_version: Option<String>, torch_version: Option<String>}: anvilml_version from env!(\"CARGO_PKG_VERSION\"), rust_version from a build-time constant (resolve the mechanism live, e.g. rustc_version_runtime, version resolved via registry not memory), python_version/torch_version from state.env_report (populated by P18-A1). Update build_router() for GET /v1/system/versions. Acceptance: >=3 new tests in system_tests.rs: response has a non-empty anvilml_version, python/torch versions reflect env_report's current values incl. None when unset; `cargo test -p anvilml-server --test system_tests` exits 0 (>=7 total).",
     "tags": [],
     "defers_to": []
   },
@@ -34,18 +40,36 @@
     "description": "anvilml-server: AppState gains model_store; GET /v1/models, /v1/models/:id",
     "phase": "18",
     "project": "anvilml",
-    "prereqs": ["P18-A1"],
-    "context": "Extend AppState with model_store: Arc<ModelStore> (anvilml-registry, Phase 6's P6-A3 - no prior phase wired this in). Create crates/anvilml-server/src/handlers/models.rs per §13.4: list_models(State, Query<ListModelsParams{kind: Option<ModelKind>}>) -> Json<Vec<ModelMeta>> delegates to model_store.list(). get_model(State, Path<String>) -> Result<Json<ModelMeta>, AnvilError> delegates to model_store.get(), 404 via AnvilError::ModelNotFound if absent. POST /v1/models/rescan is the next task's scope - do not add it here. Update handlers/mod.rs and build_router() for the two GET routes. Acceptance: >=4 tests in crates/anvilml-server/tests/models_tests.rs: list with/without kind filter, get on existing id returns 200, get on unknown id returns 404; `cargo test -p anvilml-server --test models_tests` exits 0.",
+    "prereqs": [
+      "P18-A1"
+    ],
+    "context": "Extend AppState with model_store: Arc<ModelStore> (anvilml-registry, Phase 6's P6-A3 - no prior phase wired this in). Create crates/anvilml-server/src/handlers/models.rs per \u00a713.4: list_models(State, Query<ListModelsParams{kind: Option<ModelKind>}>) -> Json<Vec<ModelMeta>> delegates to model_store.list(). get_model(State, Path<String>) -> Result<Json<ModelMeta>, AnvilError> delegates to model_store.get(), 404 via AnvilError::ModelNotFound if absent. POST /v1/models/rescan is the next task's scope - do not add it here. Update handlers/mod.rs and build_router() for the two GET routes. Acceptance: >=4 tests in crates/anvilml-server/tests/models_tests.rs: list with/without kind filter, get on existing id returns 200, get on unknown id returns 404; `cargo test -p anvilml-server --test models_tests` exits 0.",
     "tags": [],
-    "defers_to": ["P18-C2"]
+    "defers_to": [
+      "P18-C2"
+    ]
   },
   {
     "id": "P18-C2",
     "description": "anvilml-server: POST /v1/models/rescan handler",
     "phase": "18",
     "project": "anvilml",
-    "prereqs": ["P18-C1"],
+    "prereqs": [
+      "P18-C1"
+    ],
     "context": "Extend crates/anvilml-server/src/handlers/models.rs with rescan_models(State(state): State<AppState>) -> StatusCode, deferred by P18-C1: triggers ModelScanner::scan_dir() (Phase 6's P6-A4) for each configured model_dir (ServerConfig.model_dirs, Phase 2's P2-A3) by spawning a tokio task, returning 202 immediately without blocking on scan completion. Update build_router() for POST /v1/models/rescan. Acceptance: >=2 new tests in models_tests.rs: rescan returns 202 immediately (test asserts response time is not gated on scan completion, e.g. via a slow-scan test double), a completed background scan updates model_store's contents observable on a subsequent list call; `cargo test -p anvilml-server --test models_tests` exits 0 (>=6 total).",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P18-C3",
+    "description": "backend: trigger model scan on server startup",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-C2"
+    ],
+    "context": "Audit finding: ModelScanner::scan_dir() (Phase 6) is only invoked by P18-C2's POST /v1/models/rescan handler - no task triggers a scan at startup, so a fresh server's model registry stays empty until a client manually calls /v1/models/rescan. Per project owner: models must always be scanned on startup. Fix: in backend/src/main.rs's default (non-hw-probe) path, after AppState construction (P18-A1) and before binding the TCP listener, trigger the same background scan P18-C2's handler spawns - reuse its internal trigger function, do not duplicate the tokio::spawn + scan_dir() call. Do not block startup on completion, matching P18-C2's non-blocking contract. Log scan start at INFO. Acceptance: >=2 tests in backend/tests/startup_scan_tests.rs: spawning the built binary against a temp model_dir with a planted model file lists that model via GET /v1/models within a bounded poll window, with no rescan call made; cargo test -p anvilml --test startup_scan_tests exits 0.",
     "tags": [],
     "defers_to": []
   },
@@ -54,17 +78,23 @@
     "description": "anvilml-server: GET /v1/workers list handler",
     "phase": "18",
     "project": "anvilml",
-    "prereqs": ["P18-A1"],
-    "context": "Create crates/anvilml-server/src/handlers/workers.rs per §13.4: list_workers(State(state): State<AppState>) -> Json<Vec<WorkerInfo>> delegates to state.workers (WorkerPool, Phase 14's P14-C1) via a list()-equivalent method (reuse one if Phase 16's P16-D1 stats_tick already added one to WorkerPool - do not duplicate; add it here only if genuinely absent). POST /v1/workers/:id/restart is the next task's scope - do not add it here. Update handlers/mod.rs and build_router() for the GET route. Acceptance: >=3 tests in crates/anvilml-server/tests/workers_tests.rs: list returns the current pool state, list with zero workers returns an empty array not an error, response shape matches WorkerInfo's serde representation; `cargo test -p anvilml-server --features mock-hardware --test workers_tests` exits 0.",
+    "prereqs": [
+      "P18-A1"
+    ],
+    "context": "Create crates/anvilml-server/src/handlers/workers.rs per \u00a713.4: list_workers(State(state): State<AppState>) -> Json<Vec<WorkerInfo>> delegates to state.workers (WorkerPool, Phase 14's P14-C1) via a list()-equivalent method (reuse one if Phase 16's P16-D1 stats_tick already added one to WorkerPool - do not duplicate; add it here only if genuinely absent). POST /v1/workers/:id/restart is the next task's scope - do not add it here. Update handlers/mod.rs and build_router() for the GET route. Acceptance: >=3 tests in crates/anvilml-server/tests/workers_tests.rs: list returns the current pool state, list with zero workers returns an empty array not an error, response shape matches WorkerInfo's serde representation; `cargo test -p anvilml-server --features mock-hardware --test workers_tests` exits 0.",
     "tags": [],
-    "defers_to": ["P18-D2"]
+    "defers_to": [
+      "P18-D2"
+    ]
   },
   {
     "id": "P18-D2",
     "description": "anvilml-server: POST /v1/workers/:id/restart via existing respawn machinery",
     "phase": "18",
     "project": "anvilml",
-    "prereqs": ["P18-D1"],
+    "prereqs": [
+      "P18-D1"
+    ],
     "context": "Extend crates/anvilml-server/src/handlers/workers.rs with restart_worker(State, Path<String>) -> Result<StatusCode, AnvilError>, deferred by P18-D1: looks up the WorkerHandle by worker_id, calls request_shutdown() (Phase 8's P8-E1) to trigger a graceful restart via the EXISTING respawn machinery (Phase 8's P8-D1) - needs NO new restart logic, graceful shutdown plus the pool's existing respawn-on-exit path already produces a restart; confirm this composition works rather than building a separate code path. 404 via AnvilError::WorkerNotFound if the id is unknown. Update build_router() for POST /v1/workers/:id/restart. Acceptance: >=3 new tests in workers_tests.rs: restart on a known worker_id returns 202 and triggers shutdown (observable via handle status), restart on an unknown id returns 404, the respawned worker reaches Idle with no new restart-specific code path; `cargo test -p anvilml-server --features mock-hardware --test workers_tests` exits 0 (>=6 total).",
     "tags": [],
     "defers_to": []
@@ -74,18 +104,24 @@
     "description": "anvilml-server: DELETE /v1/jobs/:id single-job delete handler",
     "phase": "18",
     "project": "anvilml",
-    "prereqs": ["P18-A1"],
-    "context": "Extend crates/anvilml-server/src/handlers/jobs.rs per §13.4: delete_job(State, Path<Uuid>) -> Result<StatusCode, AnvilError>: only permitted on a terminal-status job (Completed/Failed/Cancelled) - 409 if Queued/Running, per the existing conflict-on-non-terminal pattern from Phase 17's cancel handler. 404 via AnvilError::JobNotFound if the id doesn't exist. On success, deletes the job row via job_store and its associated artifacts via artifact_store, returns 204. Bulk clear is the next task's scope - do not add it here. Update build_router() for DELETE /v1/jobs/:id. Acceptance: >=4 tests in crates/anvilml-server/tests/jobs_tests.rs: delete on a terminal job succeeds with 204 and removes its artifacts, delete on a non-terminal job returns 409, delete on an unknown id returns 404; `cargo test -p anvilml-server --test jobs_tests` exits 0 (>=18 total).",
+    "prereqs": [
+      "P18-A1"
+    ],
+    "context": "Extend crates/anvilml-server/src/handlers/jobs.rs per \u00a713.4: delete_job(State, Path<Uuid>) -> Result<StatusCode, AnvilError>: only permitted on a terminal-status job (Completed/Failed/Cancelled) - 409 if Queued/Running, per the existing conflict-on-non-terminal pattern from Phase 17's cancel handler. 404 via AnvilError::JobNotFound if the id doesn't exist. On success, deletes the job row via job_store and its associated artifacts via artifact_store, returns 204. Bulk clear is the next task's scope - do not add it here. Update build_router() for DELETE /v1/jobs/:id. Acceptance: >=4 tests in crates/anvilml-server/tests/jobs_tests.rs: delete on a terminal job succeeds with 204 and removes its artifacts, delete on a non-terminal job returns 409, delete on an unknown id returns 404; `cargo test -p anvilml-server --test jobs_tests` exits 0 (>=18 total).",
     "tags": [],
-    "defers_to": ["P18-E2"]
+    "defers_to": [
+      "P18-E2"
+    ]
   },
   {
     "id": "P18-E2",
     "description": "anvilml-server: DELETE /v1/jobs bulk clear handler",
     "phase": "18",
     "project": "anvilml",
-    "prereqs": ["P18-E1"],
-    "context": "Extend crates/anvilml-server/src/handlers/jobs.rs with bulk_clear_jobs(State, Query<BulkClearParams{status: String}>) -> Result<Json<RemovedCount>, AnvilError>, deferred by P18-E1, per §13.4: status is one of \"completed\"|\"failed\"|\"cancelled\"|\"all\" (400 on an unrecognized value), deletes all matching terminal jobs plus their artifacts (reusing P18-E1's per-job delete logic, not a divergent implementation), returns {removed: u32}. Update build_router() for DELETE /v1/jobs. Acceptance: >=4 new tests in jobs_tests.rs: bulk_clear with each of the 4 valid status values works correctly, bulk_clear with an invalid status value returns 400; `cargo test -p anvilml-server --test jobs_tests` exits 0 (>=22 total).",
+    "prereqs": [
+      "P18-E1"
+    ],
+    "context": "Extend crates/anvilml-server/src/handlers/jobs.rs with bulk_clear_jobs(State, Query<BulkClearParams{status: String}>) -> Result<Json<RemovedCount>, AnvilError>, deferred by P18-E1, per \u00a713.4: status is one of \"completed\"|\"failed\"|\"cancelled\"|\"all\" (400 on an unrecognized value), deletes all matching terminal jobs plus their artifacts (reusing P18-E1's per-job delete logic, not a divergent implementation), returns {removed: u32}. Update build_router() for DELETE /v1/jobs. Acceptance: >=4 new tests in jobs_tests.rs: bulk_clear with each of the 4 valid status values works correctly, bulk_clear with an invalid status value returns 400; `cargo test -p anvilml-server --test jobs_tests` exits 0 (>=22 total).",
     "tags": [],
     "defers_to": []
   },
@@ -94,8 +130,12 @@
     "description": "anvilml-openapi: real OpenAPI generation from utoipa annotations",
     "phase": "18",
     "project": "anvilml",
-    "prereqs": ["P18-C2", "P18-D2", "P18-E2"],
-    "context": "Update crates/anvilml-openapi/src/main.rs (Phase 1's P1-B6 stub) to real generation: add #[utoipa::path(...)] annotations to every handler function across handlers/*.rs (health, system, jobs, models, workers, artifacts, nodes - all of them, a workspace-wide pass, not one file), derive utoipa::OpenApi on a struct listing every path and every ToSchema-deriving response type (already ToSchema from Phase 3), then call ApiDoc::openapi().to_pretty_json() and write to api/openapi.json, replacing the stub print. First time api/openapi.json has real content - the openapi-drift CI gate (Phase 1 placeholder) becomes meaningful from this task on. Acceptance: `cargo run -p anvilml-openapi` exits 0, produces a valid non-empty api/openapi.json with every §13.4 route; a second run produces an identical file (idempotent).",
+    "prereqs": [
+      "P18-C3",
+      "P18-D2",
+      "P18-E2"
+    ],
+    "context": "Update crates/anvilml-openapi/src/main.rs (Phase 1's P1-B6 stub) to real generation: add #[utoipa::path(...)] annotations to every handler function across handlers/*.rs (health, system, jobs, models, workers, artifacts, nodes - all of them, a workspace-wide pass, not one file), derive utoipa::OpenApi on a struct listing every path and every ToSchema-deriving response type (already ToSchema from Phase 3), then call ApiDoc::openapi().to_pretty_json() and write to api/openapi.json, replacing the stub print. First time api/openapi.json has real content - the openapi-drift CI gate (Phase 1 placeholder) becomes meaningful from this task on. Acceptance: `cargo run -p anvilml-openapi` exits 0, produces a valid non-empty api/openapi.json with every \u00a713.4 route; a second run produces an identical file (idempotent).",
     "tags": [],
     "defers_to": []
   },
@@ -104,8 +144,10 @@
     "description": "CI: wire openapi-drift job to real generation + diff check",
     "phase": "18",
     "project": "anvilml",
-    "prereqs": ["P18-F1"],
-    "context": "Update .github/workflows/ci.yml's openapi-drift job (placeholder echo since Phase 1's P1-E2): replace with the real gate per ENVIRONMENT.md Gate 2: `cargo run -p anvilml-openapi && git diff --exit-code api/openapi.json`. Commit the now-real api/openapi.json to the repository (a generated-but-committed artifact per §3.1's layout, not gitignored). Acceptance: `grep -c 'openapi-drift' .github/workflows/ci.yml` shows the job exists with real (non-echo) steps; `cargo run -p anvilml-openapi && git diff --exit-code api/openapi.json` exits 0 locally; a pushed commit shows the job green.",
+    "prereqs": [
+      "P18-F1"
+    ],
+    "context": "Update .github/workflows/ci.yml's openapi-drift job (placeholder echo since Phase 1's P1-E2): replace with the real gate per ENVIRONMENT.md Gate 2: `cargo run -p anvilml-openapi && git diff --exit-code api/openapi.json`. Commit the now-real api/openapi.json to the repository (a generated-but-committed artifact per \u00a73.1's layout, not gitignored). Acceptance: `grep -c 'openapi-drift' .github/workflows/ci.yml` shows the job exists with real (non-echo) steps; `cargo run -p anvilml-openapi && git diff --exit-code api/openapi.json` exits 0 locally; a pushed commit shows the job green.",
     "tags": [],
     "defers_to": []
   },
@@ -114,9 +156,13 @@
     "description": "Runnable Proof: live binary serves /v1/system and /v1/workers with real data",
     "phase": "18",
     "project": "anvilml",
-    "prereqs": ["P18-F2"],
-    "context": "No new source files. Run the built binary under mock-hardware and confirm GET /v1/system returns 200 with the real (mock-detected) HardwareInfo populated at startup, and GET /v1/workers returns 200 with the current pool state - closing out the full REST surface from §13.4, every route now backed by real (non-stub) logic. Record the literal terminal output in the implementation report. Acceptance: build+run the binary with ANVILML_MOCK_DEVICE_TYPE=cuda, confirm GET /v1/system's JSON has >=1 gpu entry, confirm GET /v1/workers returns a JSON array (possibly empty); kill the background process after.",
-    "tags": ["manual"],
+    "prereqs": [
+      "P18-F2"
+    ],
+    "context": "No new source files. Run the built binary under mock-hardware and confirm GET /v1/system returns 200 with the real (mock-detected) HardwareInfo populated at startup, and GET /v1/workers returns 200 with the current pool state - closing out the full REST surface from \u00a713.4, every route now backed by real (non-stub) logic. Record the literal terminal output in the implementation report. Acceptance: build+run the binary with ANVILML_MOCK_DEVICE_TYPE=cuda, confirm GET /v1/system's JSON has >=1 gpu entry, confirm GET /v1/workers returns a JSON array (possibly empty); kill the background process after.",
+    "tags": [
+      "manual"
+    ],
     "defers_to": []
   }
 ]

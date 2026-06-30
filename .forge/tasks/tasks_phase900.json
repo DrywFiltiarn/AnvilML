@@ -115,5 +115,34 @@
     "context": "Companion to P900-A1's subscriber wiring: confirm ANVILML_LOG takes precedence over RUST_LOG per ENVIRONMENT.md \u00a73.3 when both are set. Add one test to backend/tests/logging_tests.rs (same file P900-A1 created), following its exact Command::new(env!(\"CARGO_BIN_EXE_anvilml\")) + .args([\"hw-probe\"]) pattern: set both .env(\"ANVILML_LOG\",\"debug\") and .env(\"RUST_LOG\",\"error\") on the same Command, run, assert output.stderr is non-empty (RUST_LOG=error alone would normally suppress debug-level output, so non-empty stderr here proves ANVILML_LOG=\"debug\" was the filter actually applied, not RUST_LOG=\"error\"). No production code changes - P900-A1's filter chain already implements this precedence; this task only adds the missing verification. Acceptance: backend/tests/logging_tests.rs now has >=3 tests total; cargo test -p anvilml --test logging_tests exits 0.",
     "tags": [],
     "defers_to": []
+  },
+  {
+    "id": "P900-A9",
+    "description": "anvilml-core: fix EnvReport's field shape to match ANVILML_DESIGN.md",
+    "phase": "900",
+    "project": "anvilml",
+    "prereqs": [
+      "P900-A1",
+      "P3-A6"
+    ],
+    "context": "Audit finding: P3-A6's EnvReport has only 3 fields (python_version: String, torch_version: Option<String>, torch_importable: bool), but ANVILML_DESIGN.md's type definitions specify 7: python_path: Option<String>, python_version: Option<String>, torch_version: Option<String>, provisioning: ProvisioningState, preflight_ok: bool, reason: Option<String>, node_types: Vec<NodeTypeDescriptor>. Two later tasks (P18-A1, P28-B1) already assume the doc shape exists; P28-B1 will not compile against the current struct. Fix crates/anvilml-core/src/types/worker.rs: rewrite EnvReport to the 7-field doc shape exactly (python_version/torch_version become Option<String>). NodeTypeDescriptor already exists (P3-A7). Update worker_tests.rs's EnvReport roundtrip test for the new shape - do not remove it. ProvisioningState's own variant mismatch is companion task P900-A10's scope, not this one's. Acceptance: cargo test -p anvilml-core --test worker_tests exits 0; cargo doc -p anvilml-core --no-deps exits 0.",
+    "tags": [
+      "breaking"
+    ],
+    "defers_to": []
+  },
+  {
+    "id": "P900-A10",
+    "description": "anvilml-core: fix ProvisioningState's variant names to match ANVILML_DESIGN.md",
+    "phase": "900",
+    "project": "anvilml",
+    "prereqs": [
+      "P900-A9"
+    ],
+    "context": "Companion to P900-A9: ProvisioningState's variants {NotStarted, InProgress, Complete, Failed} do not match ANVILML_DESIGN.md's doc-specified {Ready, Provisioning, Failed, NotStarted}. Fix crates/anvilml-core/src/types/worker.rs: rename InProgress -> Provisioning, Complete -> Ready (keep NotStarted, Failed as-is). This is a renumbering of variant names only - the enum's role (provisioning subsystem's state, gated by P28-A1's startup check) is unchanged. Update worker_tests.rs's ProvisioningState roundtrip test for the renamed variants and their new snake_case JSON strings (\"ready\", \"provisioning\") - do not remove the test. P900-A9 must land first since it adds EnvReport's provisioning: ProvisioningState field this task's variants populate. Acceptance: cargo test -p anvilml-core --test worker_tests exits 0; cargo doc -p anvilml-core --no-deps exits 0.",
+    "tags": [
+      "breaking"
+    ],
+    "defers_to": []
   }
 ]

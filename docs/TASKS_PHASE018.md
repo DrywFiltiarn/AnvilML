@@ -34,6 +34,24 @@ and backed by real logic, `api/openapi.json` is generated from real `utoipa`
 annotations on every handler, and the `openapi-drift` CI gate actually checks
 something.
 
+`P18-C3`, appended to this phase by a later audit, closes a gap in the model
+registry's reachability that the phase's original `P18-C1`/`P18-C2` left open:
+`ModelScanner::scan_dir()` (Phase 6) was only ever invoked by `P18-C2`'s
+`POST /v1/models/rescan` handler — no task triggered a scan at server startup,
+so a fresh server's model registry stayed empty until a client manually called
+the rescan endpoint, even though `ServerConfig.model_dirs` is already
+configured by that point. Per the project owner, models must always be scanned
+on startup, so `P18-C3` wires that trigger into `backend/main.rs` directly,
+reusing `P18-C2`'s own internal trigger function rather than duplicating it.
+Separately, the same audit pass that found this confirmed `P18-D2`'s premise —
+that "the pool's existing respawn-on-exit path (also Phase 8) already produces
+exactly the restart behavior needed" — was not actually true when `P18-D2` was
+authored: Phase 8's original task set never wired `RespawnPolicy` into a real
+respawn loop. That gap is now closed by `P900`-adjacent additions to Phase 8
+itself (`P8-E4`/`P8-E5`, inserted before Phase 8 executes), so `P18-D2`'s own
+text requires no change — it will simply become true once Phase 8 runs with
+its corrected task set, rather than needing its own retrofit here.
+
 ---
 
 ## Group Reference
@@ -42,7 +60,7 @@ something.
 |-------|-----------|-------|---------|
 | A | Final AppState fields | P18-A1 | `hardware`, `env_report` |
 | B | System handlers | P18-B1 … P18-B2 | `/v1/system`, `/v1/system/env`, then `/v1/system/versions` |
-| C | Model handlers | P18-C1 … P18-C2 | `model_store` field + list/get, then rescan |
+| C | Model handlers | P18-C1 … P18-C3 | `model_store` field + list/get, rescan, then startup auto-scan |
 | D | Worker handlers | P18-D1 … P18-D2 | List, then restart via existing respawn machinery |
 | E | Job deletion | P18-E1 … P18-E2 | Single-job delete, then bulk clear |
 | F | OpenAPI | P18-F1 … P18-F2 | Real generation, then the CI gate |
@@ -181,6 +199,35 @@ than blocking on the scan.
 ```bash
 cargo test -p anvilml-server --test models_tests
 # -> >=6 tests total in the file, exits 0
+```
+
+---
+
+#### P18-C3: backend: trigger model scan on server startup
+
+**Goal:** Close an audit-found gap — `ModelScanner::scan_dir()` (Phase 6) was
+only ever reachable through `P18-C2`'s rescan endpoint, so a fresh server's
+model registry stayed empty until a client manually triggered a rescan. Per
+the project owner: models must always be scanned on startup.
+
+**Files to create or modify:**
+- `backend/src/main.rs` — triggers a background scan in the default
+  (non-`hw-probe`) startup path.
+
+**Key implementation notes:**
+- Trigger after `AppState` construction (`P18-A1`, so `model_store` exists)
+  and before binding the TCP listener. Reuse `P18-C2`'s internal trigger
+  function rather than duplicating its `tokio::spawn` + `scan_dir()` call —
+  the same non-blocking, fire-and-forget contract applies here: startup must
+  not wait on scan completion.
+- Log scan start at `INFO`.
+
+**Acceptance criterion:**
+```bash
+cargo test -p anvilml --test startup_scan_tests
+# -> exits 0; >=2 tests: spawning the built binary against a temp model_dir
+#    with a planted model file lists that model via GET /v1/models within a
+#    bounded poll window, with no /v1/models/rescan call made
 ```
 
 ---

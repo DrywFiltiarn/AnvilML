@@ -97,6 +97,32 @@ after. Both deliberately avoid introducing any part of `AppState` — per
 begins building incrementally; constructing a partial stand-in now would itself
 become a second instance of the spec-drift this phase exists to close.
 
+A fourth, independent check — tracing every type built in Phases 1–6 forward to
+confirm later tasks' assumptions about its shape actually hold, rather than only
+auditing each task against the design doc at the point it was authored — found
+that `P3-A6`'s `EnvReport` has only 3 fields (`python_version: String`,
+`torch_version: Option<String>`, `torch_importable: bool`), where
+`ANVILML_DESIGN.md`'s type definitions specify 7: `python_path`,
+`python_version` (as `Option<String>`, not `String`), `torch_version`,
+`provisioning: ProvisioningState`, `preflight_ok`, `reason`, and
+`node_types: Vec<NodeTypeDescriptor>`. `ProvisioningState` itself exists as a
+type but the current `EnvReport` never references it — dead code as
+implemented — and its variant names (`NotStarted`, `InProgress`, `Complete`,
+`Failed`) don't match the doc's (`Ready`, `Provisioning`, `Failed`,
+`NotStarted`) either. Two already-authored later tasks already assume the
+doc's shape: `P18-A1` states "`AppState` now has every field §13.2 specifies,"
+relying on `EnvReport` correctly carrying provisioning/preflight data, and
+`P28-B1` explicitly instructs populating "`EnvReport`'s
+`python_version/torch_version/preflight_ok/reason`" — fields that do not exist
+on the struct `P3-A6` actually built; `P28-B1` would fail to compile against
+the current struct once it executes. `P900-A9` rewrites `EnvReport` to the
+doc-correct 7-field shape; `P900-A10` is a small companion fixing
+`ProvisioningState`'s variant names, sequenced after `P900-A9` since it
+populates the field that task adds. Neither task is on the critical path to
+Phase 7 — `P7-A1` continues to point at `P900-A5` — but both must land before
+Phase 18 and Phase 28 execute, since those phases' already-authored tasks
+depend on the corrected shape.
+
 This phase is scheduled after Phase 6 completes and before Phase 7 begins. None of
 the original five fixes has a functional dependency on Phase 6's registry/artifacts
 work — they touch `backend`'s entry point, `anvilml-server`'s health handler, and
@@ -124,7 +150,7 @@ seed data on every real startup.
 
 | Group | Subsystem | Tasks | Summary |
 |-------|-----------|-------|---------|
-| A | Spec-drift, logging & DB-wiring fixes | P900-A1 … P900-A8 | `tracing-subscriber` wiring, `/health` JSON body, `Job`-family `ToSchema`, `Model`-family `ToSchema`, `--log-format` flag, `create_pool()` wiring, `SeedLoader` wiring, `ANVILML_LOG` precedence verification |
+| A | Spec-drift, logging & DB-wiring fixes | P900-A1 … P900-A10 | `tracing-subscriber` wiring, `/health` JSON body, `Job`-family `ToSchema`, `Model`-family `ToSchema`, `--log-format` flag, `create_pool()` wiring, `SeedLoader` wiring, `ANVILML_LOG` precedence verification, `EnvReport` field shape, `ProvisioningState` variant names |
 
 ---
 
@@ -149,7 +175,10 @@ and `SeedLoader` (`P6-A7`) to exist exactly as Phase 6 left them — fully
 implemented and unit-tested, but not yet referenced by `backend` or
 `anvilml-server`'s `Cargo.toml` dependency graph. `database/seeds/devices.sql`
 (`P6-A8`) must already contain the converted PCI-ID rows `P900-A7`'s test
-asserts against.
+asserts against. `P900-A9` and `P900-A10` require `crates/anvilml-core/src/types/worker.rs`
+to exist exactly as `P3-A6` left it (Phase 3) — `EnvReport` with 3 fields,
+`ProvisioningState` with its current 4 variants — and `NodeTypeDescriptor`
+(`P3-A7`) to already exist, since `P900-A9`'s corrected `EnvReport` references it.
 
 ---
 
@@ -164,6 +193,8 @@ asserts against.
 | `ENVIRONMENT.md §3.3` | P900-A5 | `--log-format plain\|json` CLI flag, default `plain`, no env-var equivalent |
 | `ANVILML_DESIGN.md §7.1`/§7.5 | P900-A6, P900-A7 | `create_pool()`'s migration runner; `SeedLoader`'s hash-gated idempotent apply |
 | `ANVILML_DESIGN.md §13.2` | P900-A6, P900-A7 | `AppState` is explicitly out of scope for both tasks — confirms the field list neither task may introduce yet |
+| `ANVILML_DESIGN.md` type definitions (§9) | P900-A9 | `EnvReport`'s 7-field shape: `python_path`, `python_version`, `torch_version`, `provisioning`, `preflight_ok`, `reason`, `node_types` |
+| `ANVILML_DESIGN.md` type definitions (§9) | P900-A10 | `ProvisioningState`'s variants: `Ready`, `Provisioning`, `Failed`, `NotStarted` |
 
 ---
 
@@ -474,6 +505,75 @@ cargo test -p anvilml --test logging_tests
 
 ---
 
+#### P900-A9: anvilml-core: fix EnvReport's field shape to match ANVILML_DESIGN.md
+
+**Goal:** Fix a third independent context-field-drops-spec-detail defect, found
+by tracing Phase 3's `EnvReport` forward to confirm later tasks' assumptions
+about its shape actually hold. `P3-A6`'s implemented `EnvReport` has only 3
+fields; the design doc specifies 7. Two already-authored later tasks (`P18-A1`,
+`P28-B1`) assume the doc's shape — `P28-B1` will not compile against the
+current struct once it executes.
+
+**Files to create or modify:**
+- `crates/anvilml-core/src/types/worker.rs` — rewrite `EnvReport`'s field list.
+- `crates/anvilml-core/tests/worker_tests.rs` — update (not remove) the
+  `EnvReport` roundtrip test for the new shape.
+
+**Key implementation notes:**
+- The doc-correct shape is `EnvReport { python_path: Option<String>,
+  python_version: Option<String>, torch_version: Option<String>, provisioning:
+  ProvisioningState, preflight_ok: bool, reason: Option<String>, node_types:
+  Vec<NodeTypeDescriptor> }` — note `python_version` changes from `String` to
+  `Option<String>` (the current type is also wrong, not just incomplete).
+- `NodeTypeDescriptor` already exists from `P3-A7`, the task immediately after
+  the one that introduced this gap — no new dependency is needed.
+- `ProvisioningState`'s own variant-name mismatch against the design doc is
+  `P900-A10`'s scope, not this task's — do not rename any variants here, only
+  add the `provisioning: ProvisioningState` field using the type as it
+  currently exists.
+
+**Acceptance criterion:**
+```bash
+cargo test -p anvilml-core --test worker_tests
+# -> exits 0, EnvReport's roundtrip test updated for all 7 fields
+cargo doc -p anvilml-core --no-deps
+# -> exits 0
+```
+
+---
+
+#### P900-A10: anvilml-core: fix ProvisioningState's variant names to match ANVILML_DESIGN.md
+
+**Goal:** Companion to `P900-A9` — `ProvisioningState`'s variants don't match
+the design doc either, and since `P900-A9` just wired the type into `EnvReport`
+as a real field, the mismatch is no longer just dead-code drift.
+
+**Files to create or modify:**
+- `crates/anvilml-core/src/types/worker.rs` — rename two variants.
+- `crates/anvilml-core/tests/worker_tests.rs` — update (not remove) the
+  `ProvisioningState` roundtrip test for the renamed variants.
+
+**Key implementation notes:**
+- Rename `InProgress` → `Provisioning` and `Complete` → `Ready`; keep
+  `NotStarted` and `Failed` as-is. This is a pure rename — the enum's role
+  (tracked by `P28-A1`'s startup provisioning check) is unchanged.
+- The `#[serde(rename_all = "snake_case")]` attribute means the JSON wire
+  values change too: `"in_progress"` → `"provisioning"`, `"complete"` →
+  `"ready"` — update the test's expected strings accordingly.
+- `P900-A9` must land first — this task's renamed variants populate the
+  `provisioning` field `P900-A9` adds to `EnvReport`.
+
+**Acceptance criterion:**
+```bash
+cargo test -p anvilml-core --test worker_tests
+# -> exits 0, ProvisioningState's roundtrip test updated for the renamed
+#    variants and their new snake_case JSON strings
+cargo doc -p anvilml-core --no-deps
+# -> exits 0
+```
+
+---
+
 ## Phase Acceptance Criteria
 
 ```bash
@@ -559,6 +659,12 @@ sqlite3 /tmp/anvilml-proof.db "SELECT COUNT(*) FROM device_capabilities;" | grep
 - `P900-A8` makes no production-code change — it exists solely because `P900-A1`'s
   acceptance criterion had to be narrowed from three tests to two to fit the
   1000-character `context` cap once the `CARGO_BIN_EXE` correction was added.
+- `P900-A9` and `P900-A10` were found by tracing Phase 3's types forward to their
+  later consumers rather than by re-auditing Phase 3 against the design doc in
+  isolation — the same method that found the `create_pool()`/`SeedLoader` gap
+  (`P900-A6`/`P900-A7`). `P28-B1`, as currently authored, will not compile until
+  `P900-A9` lands; this is flagged here so a future session executing Phase 28
+  does not mistake the resulting compile error for a new defect.
 
 ---
 
