@@ -2653,3 +2653,15 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** A 1-frame message sent from DEALER (router sees 2 frames: identity + payload).
 **Expected output:** `recv()` returns `Err(IpcError::RecvFailed("expected 3 frames, got 2"))`.
 **Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_recv_malformed_frames_returns_error` exits 0.
+
+---
+
+## test_1000_roundtrips (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/stress_test.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `zeromq` (v0.6.0, features `tokio-runtime` and `all-transport`), `bytes`, `rmp-serde`, `tokio` (with `macros` and `rt-multi-thread` features), and `tracing` dependencies. `RouterTransport::bind()` creates a ROUTER socket on a loopback TCP port; `WorkerMessage::Ping { seq }` and `WorkerEvent::Pong { seq }` are msgpack-serialisable via `rmp_serde::to_vec_named` / `from_slice`.
+**Tests:** Binds a `RouterTransport`, spawns a simulated DEALER worker with peer identity `"stress-worker"`, and performs 1000 sequential Ping→Pong round trips over loopback TCP. Verifies: (1) all 1000 messages are received (zero loss), (2) sequence numbers arrive in ascending order 1..=1000 (zero reordering), (3) worker identity matches `"stress-worker"` on every round trip, (4) every message completes within the 5-second per-message timeout. The simulated DEALER echoes each Ping back as a Pong with the same sequence number, exercising the full msgpack serialisation/deserialisation path 1000 times.
+**Mode:** both
+**Inputs:** `RouterTransport::bind()` on loopback TCP; simulated DEALER with identity `"stress-worker"` sending `WorkerEvent::Pong { seq: 1..=1000 }`; main task sending `WorkerMessage::Ping { seq: 1..=1000 }`.
+**Expected output:** All 1000 round trips complete with matching seq values; zero assertion failures; background DEALER task exits cleanly.
+**Acceptance:** `cargo test -p anvilml-ipc --test stress_test test_1000_roundtrips` exits 0.
