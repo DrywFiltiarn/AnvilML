@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use utoipa::ToSchema;
 
 /// Metadata about a discovered model file.
 ///
@@ -8,13 +9,14 @@ use std::path::PathBuf;
 /// the stable identity, location, architecture family, data type, file
 /// format, size, modification time, and scan timestamp of a single
 /// model file on disk.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ModelMeta {
     /// Stable identifier: SHA256 hex of the first 1 MiB of the file.
     pub id: String,
     /// Human-readable model name.
     pub name: String,
     /// Filesystem path to the model file.
+    #[schema(value_type = String)]
     pub path: PathBuf,
     /// The model's architecture family.
     pub kind: ModelKind,
@@ -35,7 +37,7 @@ pub struct ModelMeta {
 /// Each variant names a distinct role a model plays in the AnvilML
 /// computation graph — diffusion base model, text encoder, VAE, LoRA
 /// adapter, ControlNet, or upscaler.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelKind {
     /// A diffusion base model (UNet or transformer).
@@ -58,7 +60,7 @@ pub enum ModelKind {
 ///
 /// This enum covers the most common weight precisions encountered in
 /// generative-AI model files, from full FP32 through FP4 quantisation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelDtype {
     /// 32-bit floating point.
@@ -80,7 +82,7 @@ pub enum ModelDtype {
 /// Each variant names a file format used to serialise model weights
 /// on disk. The `Unknown` variant is used when the file extension or
 /// header does not match any recognised format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelFormat {
     /// Safetensors — zero-code execution, memory-mapped loading.
