@@ -175,3 +175,105 @@ fn test_memory_query_roundtrip() {
 
     assert_eq!(msg, decoded, "MemoryQuery roundtrip must be identity");
 }
+
+// ---------------------------------------------------------------------------
+// WorkerEvent msgpack roundtrip tests
+// ---------------------------------------------------------------------------
+
+use anvilml_core::NodeTypeDescriptor;
+use anvilml_ipc::messages::WorkerEvent;
+
+/// `WorkerEvent::Ready` with all 13 fields roundtrips via rmp-serde.
+///
+/// Constructs a realistic Ready event with representative GPU capability
+/// values, two registered node types, and verifies the deserialised event
+/// is byte-for-byte equal to the original. The msgpack dict contains
+/// `"_type": "Ready"` plus all 13 field keys.
+#[test]
+fn test_ready_roundtrip() {
+    let event = WorkerEvent::Ready {
+        worker_id: "gpu:0".to_string(),
+        device_index: 0,
+        device_name: "NVIDIA RTX 4090".to_string(),
+        device_type: "cuda".to_string(),
+        vram_total_mib: 24576,
+        vram_free_mib: 20480,
+        torch_version: "2.5.1+cu124".to_string(),
+        fp16: true,
+        bf16: true,
+        fp8: true,
+        flash_attention: true,
+        capabilities_source: "pytorch".to_string(),
+        node_types: vec![
+            NodeTypeDescriptor {
+                type_name: "LoadModel".to_string(),
+                display_name: "Load Checkpoint".to_string(),
+                category: "loaders".to_string(),
+                description: "Loads a model checkpoint from disk.".to_string(),
+                inputs: vec![],
+                outputs: vec![],
+            },
+            NodeTypeDescriptor {
+                type_name: "KSampler".to_string(),
+                display_name: "K-Sampler".to_string(),
+                category: "sampling".to_string(),
+                description: "Samples from a latent space using a diffusion model.".to_string(),
+                inputs: vec![],
+                outputs: vec![],
+            },
+        ],
+    };
+
+    let bytes = rmp_serde::to_vec_named(&event).expect("serialize Ready");
+    let decoded: WorkerEvent = rmp_serde::from_slice(&bytes).expect("deserialize Ready");
+
+    assert_eq!(
+        event, decoded,
+        "Ready roundtrip must preserve all 13 fields"
+    );
+}
+
+/// `WorkerEvent::Pong { seq: 42 }` roundtrips via rmp-serde.
+/// The msgpack dict contains `"_type": "Pong"` and `"seq": 42`.
+#[test]
+fn test_pong_roundtrip() {
+    let event = WorkerEvent::Pong { seq: 42 };
+
+    let bytes = rmp_serde::to_vec_named(&event).expect("serialize Pong");
+    let decoded: WorkerEvent = rmp_serde::from_slice(&bytes).expect("deserialize Pong");
+
+    assert_eq!(event, decoded, "Pong roundtrip must preserve seq");
+}
+
+/// `WorkerEvent::Dying { reason: "OOM" }` roundtrips via rmp-serde.
+/// The msgpack dict contains `"_type": "Dying"` and `"reason": "OOM"`.
+#[test]
+fn test_dying_roundtrip() {
+    let event = WorkerEvent::Dying {
+        reason: "OOM".to_string(),
+    };
+
+    let bytes = rmp_serde::to_vec_named(&event).expect("serialize Dying");
+    let decoded: WorkerEvent = rmp_serde::from_slice(&bytes).expect("deserialize Dying");
+
+    assert_eq!(event, decoded, "Dying roundtrip must preserve reason");
+}
+
+/// `WorkerEvent::MemoryReport { vram_used_mib: 4096, ram_used_mib: 8589934592 }`
+/// roundtrips via rmp-serde. The msgpack dict contains `"_type": "MemoryReport"`
+/// plus the two memory fields.
+#[test]
+fn test_memory_report_roundtrip() {
+    let event = WorkerEvent::MemoryReport {
+        vram_used_mib: 4096,
+        ram_used_mib: 8589934592,
+    };
+
+    let bytes = rmp_serde::to_vec_named(&event).expect("serialize MemoryReport");
+    let decoded: WorkerEvent = rmp_serde::from_slice(&bytes).expect("deserialize MemoryReport");
+
+    assert_eq!(
+        event, decoded,
+        "MemoryReport roundtrip must preserve vram_used_mib and ram_used_mib"
+    );
+}

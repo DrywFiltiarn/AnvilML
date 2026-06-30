@@ -2449,3 +2449,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `WorkerMessage::MemoryQuery`.
 **Expected output:** Roundtripped `WorkerMessage::MemoryQuery` equals original.
 **Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_memory_query_roundtrip` exits 0.
+
+---
+
+## test_ready_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `rmp-serde` and `uuid` (v4, serde) dev-dependencies, and the `messages` module providing `WorkerMessage` and `WorkerEvent`. The `anvilml-core` crate provides `NodeTypeDescriptor`.
+**Tests:** `WorkerEvent::Ready` with all 13 fields roundtrips via `rmp_serde::to_vec_named()`. Constructs a realistic Ready event with worker_id="gpu:0", device_index=0, device_name="NVIDIA RTX 4090", device_type="cuda", vram_total_mib=24576, vram_free_mib=20480, torch_version="2.5.1+cu124", fp16=true, bf16=true, fp8=true, flash_attention=true, capabilities_source="pytorch", and two `NodeTypeDescriptor` entries (LoadModel, KSampler). Verifies the deserialised event equals the original.
+**Mode:** both
+**Inputs:** Full `WorkerEvent::Ready` with all 13 fields at representative values.
+**Expected output:** Roundtripped `WorkerEvent::Ready` equals original; all 13 fields preserved including `node_types` vec with two entries.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_ready_roundtrip` exits 0.
+
+---
+
+## test_pong_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `rmp-serde` dev-dependencies, and the `messages` module providing `WorkerEvent`.
+**Tests:** `WorkerEvent::Pong { seq: 42 }` roundtrips via `rmp_serde::to_vec_named()`. The msgpack dict contains `"_type": "Pong"` and `"seq": 42`.
+**Mode:** both
+**Inputs:** `WorkerEvent::Pong { seq: 42 }`.
+**Expected output:** Roundtripped `WorkerEvent::Pong { seq: 42 }` equals original.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_pong_roundtrip` exits 0.
+
+---
+
+## test_dying_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `rmp-serde` dev-dependencies, and the `messages` module providing `WorkerEvent`.
+**Tests:** `WorkerEvent::Dying { reason: "OOM" }` roundtrips via `rmp_serde::to_vec_named()`. The msgpack dict contains `"_type": "Dying"` and `"reason": "OOM"`.
+**Mode:** both
+**Inputs:** `WorkerEvent::Dying { reason: "OOM" }`.
+**Expected output:** Roundtripped `WorkerEvent::Dying { reason: "OOM" }` equals original.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_dying_roundtrip` exits 0.
+
+---
+
+## test_memory_report_roundtrip (anvilml-ipc)
+
+**File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
+**Context:** The `anvilml-ipc` crate has been compiled with `rmp-serde` dev-dependencies, and the `messages` module providing `WorkerEvent`.
+**Tests:** `WorkerEvent::MemoryReport { vram_used_mib: 4096, ram_used_mib: 8589934592 }` roundtrips via `rmp_serde::to_vec_named()`. The msgpack dict contains `"_type": "MemoryReport"`, `"vram_used_mib": 4096`, and `"ram_used_mib": 8589934592`. Verifies the `u32` and `u64` fields are preserved correctly across serialisation.
+**Mode:** both
+**Inputs:** `WorkerEvent::MemoryReport { vram_used_mib: 4096, ram_used_mib: 8589934592 }`.
+**Expected output:** Roundtripped `WorkerEvent::MemoryReport` equals original; both `vram_used_mib` and `ram_used_mib` preserved.
+**Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_memory_report_roundtrip` exits 0.
