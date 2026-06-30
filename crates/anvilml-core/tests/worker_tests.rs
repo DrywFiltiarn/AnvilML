@@ -1,5 +1,5 @@
-//! Tests for `WorkerStatus`, `WorkerInfo`, `EnvReport`, and `ProvisioningState`
-//! serde roundtrips.
+//! Tests for `WorkerStatus`, `WorkerInfo`, `EnvReport`, `ProvisioningState`,
+//! and `NodeTypeDescriptor` serde roundtrips.
 //!
 //! All tests construct types via the public API, serialise to JSON,
 //! deserialise back, and assert equality. No I/O or env vars are used.
@@ -104,16 +104,28 @@ fn test_provisioning_state_serde_snake_case() {
     }
 }
 
-/// An `EnvReport` with all fields set serialises to JSON and roundtrips
+/// An `EnvReport` with all 7 fields set serialises to JSON and roundtrips
 /// back to an equal value. The JSON payload is also parsed to verify all
-/// three field names (`python_version`, `torch_version`, `torch_importable`)
-/// appear with the correct types.
+/// seven field names (`python_path`, `python_version`, `torch_version`,
+/// `provisioning`, `preflight_ok`, `reason`, `node_types`) appear with
+/// the correct types.
 #[test]
 fn test_env_report_serde_roundtrip() {
     let report = EnvReport {
-        python_version: "3.12.3".to_string(),
+        python_path: Some("/usr/bin/python3".to_string()),
+        python_version: Some("3.12.3".to_string()),
         torch_version: Some("2.5.1".to_string()),
-        torch_importable: true,
+        provisioning: ProvisioningState::NotStarted,
+        preflight_ok: true,
+        reason: None,
+        node_types: vec![NodeTypeDescriptor {
+            type_name: "LoadModel".to_string(),
+            display_name: "Load Model".to_string(),
+            category: "loaders".to_string(),
+            description: "Loads a model checkpoint.".to_string(),
+            inputs: vec![],
+            outputs: vec![],
+        }],
     };
 
     let json = serde_json::to_string(&report).expect("failed to serialise EnvReport");
@@ -125,9 +137,19 @@ fn test_env_report_serde_roundtrip() {
         "roundtripped EnvReport does not equal original"
     );
 
-    // Verify the JSON contains the expected field names.
+    // Verify the JSON contains all seven expected field names with correct types.
     let parsed: serde_json::Value = serde_json::from_str(&json).expect("json is valid");
+    assert!(parsed["python_path"].is_string());
+    assert_eq!(parsed["python_path"], "/usr/bin/python3");
+    assert!(parsed["python_version"].is_string());
     assert_eq!(parsed["python_version"], "3.12.3");
+    assert!(parsed["torch_version"].is_string());
     assert_eq!(parsed["torch_version"], "2.5.1");
-    assert_eq!(parsed["torch_importable"], true);
+    assert!(parsed["provisioning"].is_string());
+    assert_eq!(parsed["provisioning"], "not_started");
+    assert!(parsed["preflight_ok"].is_boolean());
+    assert_eq!(parsed["preflight_ok"], true);
+    assert!(parsed["reason"].is_null());
+    assert!(parsed["node_types"].is_array());
+    assert_eq!(parsed["node_types"].as_array().unwrap().len(), 1);
 }

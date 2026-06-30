@@ -859,11 +859,11 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 ## test_env_report_serde_roundtrip (anvilml-core)
 
 **File:** `crates/anvilml-core/tests/worker_tests.rs`
-**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, and `utoipa` dependencies, and the `types` submodule providing `EnvReport`.
-**Tests:** An `EnvReport` with all fields set (`python_version="3.12.3"`, `torch_version=Some("2.5.1")`, `torch_importable=true`) serialises to JSON and deserialises back to an equal value. The JSON payload is also parsed to verify all three field names appear with the correct types.
+**Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, `utoipa`, and `uuid` dependencies, and the `types` submodule providing `EnvReport`, `ProvisioningState`, and `NodeTypeDescriptor`.
+**Tests:** An `EnvReport` with all 7 fields set (`python_path=Some("/usr/bin/python3")`, `python_version=Some("3.12.3")`, `torch_version=Some("2.5.1")`, `provisioning=NotStarted`, `preflight_ok=true`, `reason=None`, `node_types=[LoadModel]`) serialises to JSON and deserialises back to an equal value. The JSON payload is also parsed to verify all seven field names (`python_path`, `python_version`, `torch_version`, `provisioning`, `preflight_ok`, `reason`, `node_types`) appear with the correct types.
 **Mode:** both
-**Inputs:** `EnvReport` constructed with all fields at non-default values.
-**Expected output:** Roundtripped `EnvReport` equals original; JSON contains `"python_version": "3.12.3"`, `"torch_version": "2.5.1"`, `"torch_importable": true`.
+**Inputs:** `EnvReport` constructed with all 7 fields at non-default values.
+**Expected output:** Roundtripped `EnvReport` equals original; JSON contains `"python_path": "/usr/bin/python3"`, `"python_version": "3.12.3"`, `"torch_version": "2.5.1"`, `"provisioning": "not_started"`, `"preflight_ok": true`, `"reason": null`, `"node_types": [...]`.
 **Acceptance:** `cargo test -p anvilml-core --test worker_tests test_env_report_serde_roundtrip` exits 0.
 
 ---
