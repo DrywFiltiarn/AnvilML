@@ -20,11 +20,18 @@ use super::node::NodeTypeDescriptor;
 /// Workers transition through these states as the scheduler spawns, assigns jobs,
 /// and eventually shuts them down. The scheduler uses this enum to decide which
 /// workers are eligible for job assignment.
+///
+/// State machine (per `ANVILML_DESIGN.md §5.7`):
+/// ```text
+/// Initializing → Idle ↔ Busy → Dying → Dead → Respawning → Initializing
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkerStatus {
-    /// The worker process is being spawned but has not yet sent a `Ready` event.
-    Spawning,
+    /// The worker process has been spawned and is initializing (loading models,
+    /// connecting IPC). The scheduler waits up to 60 seconds for a `Ready` event;
+    /// if none arrives, the worker is declared `Dead`.
+    Initializing,
     /// The worker is ready and waiting for a job assignment.
     Idle,
     /// The worker is currently executing a job.
@@ -34,6 +41,9 @@ pub enum WorkerStatus {
     Dying,
     /// The worker process has terminated and is no longer tracked.
     Dead,
+    /// The worker is being respawned after a `Dead` transition. The next state
+    /// is `Initializing` — the same as a fresh spawn.
+    Respawning,
 }
 
 /// Metadata the scheduler uses for worker selection and job assignment.

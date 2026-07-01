@@ -143,6 +143,43 @@ impl RouterTransport {
         Ok(())
     }
 
+    /// Send raw bytes to a worker identified by `worker_id`.
+    ///
+    /// Builds a 3-frame ZeroMQ ROUTER multipart message (`[worker_id, "", payload]`)
+    /// and sends it over the locked send half. This is used by tests to send
+    /// `WorkerEvent` payloads directly without going through `WorkerMessage` serialization.
+    ///
+    /// # Arguments
+    ///
+    /// * `worker_id` — The worker identity to route to.
+    /// * `payload` — Raw msgpack bytes to send as frame 2.
+    ///
+    /// # Errors
+    ///
+    /// Returns `IpcError::SendFailed` if the socket send operation fails.
+    pub async fn send_raw(&self, worker_id: &str, payload: &[u8]) -> Result<(), IpcError> {
+        // Build a 3-frame ROUTER multipart message:
+        //   Frame 0: worker_id (identity)
+        //   Frame 1: empty delimiter
+        //   Frame 2: raw payload bytes
+        let mut message = ZmqMessage::from(worker_id);
+        message.push_back(Bytes::from("")); // frame 1: empty delimiter
+        // copy_from_slice copies the bytes into a new Bytes allocation (static lifetime).
+        message.push_back(Bytes::copy_from_slice(payload)); // frame 2: payload
+
+        // Acquire only the sender lock — never touches receiver.
+        let mut send_half = self.sender.lock().await;
+
+        // Send the 3-frame message over the ROUTER socket.
+        send_half
+            .send(message)
+            .await
+            .map_err(|e| IpcError::SendFailed(e.to_string()))?;
+
+        tracing::debug!(worker_id = %worker_id, "raw message sent");
+        Ok(())
+    }
+
     /// Receive a `WorkerEvent` from a worker, returning its identity and the event.
     ///
     /// Receives a 3-frame ROUTER multipart message, validates the frame count,

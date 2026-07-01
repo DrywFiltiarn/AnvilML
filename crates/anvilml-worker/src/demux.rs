@@ -90,6 +90,24 @@ impl Demux {
         map.remove(worker_id).is_some()
     }
 
+    /// Queries whether a worker is currently registered in the routing table.
+    ///
+    /// This is a read-only check — it does not insert or modify any entry.
+    /// Used by tests and the pool to verify deregistration after `run()` exits.
+    ///
+    /// # Arguments
+    /// * `worker_id` — The worker identity to look up.
+    ///
+    /// # Returns
+    /// `true` if a sender for this worker_id exists in the map, `false` otherwise.
+    pub fn registered(&self, worker_id: &str) -> bool {
+        let map = self
+            .inner
+            .lock()
+            .expect("mutex poisoned — this should never happen");
+        map.contains_key(worker_id)
+    }
+
     /// Routes an event to the worker identified by `worker_id`.
     ///
     /// Looks up the worker in the routing table, clones the sender, unlocks the

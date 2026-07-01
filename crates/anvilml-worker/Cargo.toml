@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-worker"
-version = "0.1.7"
+version = "0.1.8"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -18,6 +18,12 @@ windows = { version = "0.58", features = [
     "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }
+
+[dev-dependencies]
+serial_test = "3"
+rmp-serde = "1"
+zeromq = { version = "0.6", default-features = false, features = ["tokio-runtime"] }
+bytes = "1"
 
 [features]
 mock-hardware = ["anvilml-hardware/mock-hardware"]

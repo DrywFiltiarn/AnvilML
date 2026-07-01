@@ -908,7 +908,7 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 **File:** `crates/anvilml-core/tests/worker_tests.rs`
 **Context:** The `anvilml-core` crate has been compiled with `serde` (derive), `serde_json`, and `utoipa` dependencies, and the `types` submodule providing `WorkerStatus`.
-**Tests:** Each of the five `WorkerStatus` variants (`Spawning`, `Idle`, `Busy`, `Dying`, `Dead`) serialises to a lowercase snake_case JSON string and deserialises back to an equal value.
+**Tests:** Each of the six `WorkerStatus` variants (`Initializing`, `Idle`, `Busy`, `Dying`, `Dead`, `Respawning`) serialises to a lowercase snake_case JSON string and deserialises back to an equal value.
 **Mode:** both
 **Inputs:** All five `WorkerStatus` variants.
 **Expected output:** Each variant roundtrips correctly; JSON strings are `"spawning"`, `"idle"`, `"busy"`, `"dying"`, `"dead"`.
@@ -3094,10 +3094,10 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 **File:** `crates/anvilml-worker/tests/managed_tests.rs`
 **Context:** The `anvilml-worker` crate has been compiled with `tokio` (rt, sync features) and `anvilml-core` dependencies. The `WorkerHandle` struct is available via `anvilml_worker::WorkerHandle`.
-**Tests:** Constructing a handle with status set to `Spawning` and calling `status()` returns `Spawning`, proving the read path works correctly for non-default states.
+**Tests:** Constructing a handle with status set to `Initializing` and calling `status()` returns `Initializing`, proving the read path works correctly for non-default states.
 **Mode:** both
-**Inputs:** Shared `Arc<RwLock<WorkerStatus>>` set to `WorkerStatus::Spawning`.
-**Expected output:** `handle.status().await` returns `WorkerStatus::Spawning`.
+**Inputs:** Shared `Arc<RwLock<WorkerStatus>>` set to `WorkerStatus::Initializing`.
+**Expected output:** `handle.status().await` returns `WorkerStatus::Initializing`.
 **Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_status_returns_current_value` exits 0.
 
 ---
@@ -3130,7 +3130,7 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 **File:** `crates/anvilml-worker/tests/managed_tests.rs`
 **Context:** The `anvilml-worker` crate has been compiled with `tokio` (rt, sync, time features) and `anvilml-core` dependencies. The `WorkerHandle` struct is available via `anvilml_worker::WorkerHandle`. The `set_status()` method is available as the public mutator.
-**Tests:** Spawning two concurrent tasks — one loops `status().await` 100 times, the other loops `set_status()` alternating between `Busy` and `Idle` 100 times. Both tasks must complete within 5 seconds (bounded wait per ENVIRONMENT.md §11.5), proving no deadlock between read and write lock paths.
+**Tests:** Spawning two concurrent tasks — one loops `status().await` 100 times, the other loops `set_status()` alternating between `Busy` and `Idle` 100 times. Both tasks must complete within 5 seconds (bounded wait per ENVIRONMENT.md §11.5), proving no deadlock between read and write lock paths. (Note: "Spawning" here refers to spawning concurrent tasks, not the `WorkerStatus::Spawning` variant.)
 **Mode:** both
 **Inputs:** Handle with `WorkerStatus::Idle`, 100 iterations of reads + alternating writes in separate tasks.
 **Expected output:** Both tasks complete within 5s without deadlock.
@@ -3142,8 +3142,68 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 **File:** `crates/anvilml-worker/tests/managed_tests.rs`
 **Context:** The `anvilml-worker` crate has been compiled with `tokio` (rt, sync features) and `anvilml-core` dependencies. The `WorkerHandle` struct is available via `anvilml_worker::WorkerHandle`. The `set_status()` method is available as the public mutator.
-**Tests:** Calling `set_status()` four times in sequence with `Spawning → Idle → Busy → Dying`, asserting each value after the call. This verifies the method can be called repeatedly without side effects or state corruption.
+**Tests:** Calling `set_status()` five times in sequence with `Initializing → Idle → Busy → Dying → Dead`, asserting each value after the call. This verifies the method can be called repeatedly without side effects or state corruption.
 **Mode:** both
-**Inputs:** Handle with `WorkerStatus::Idle`, sequential calls: `Spawning`, `Idle`, `Busy`, `Dying`.
+**Inputs:** Handle with `WorkerStatus::Idle`, sequential calls: `Initializing`, `Idle`, `Busy`, `Dying`, `Dead`.
 **Expected output:** Each `status()` call after `set_status()` returns the expected value.
 **Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_set_status_callable_repeatedly` exits 0.
+
+---
+
+## test_run_completes_on_ready_event (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (rt, sync, time features), `anvilml-ipc` (ZeroMQ ROUTER transport), and `anvilml-core` dependencies. Uses in-process ZeroMQ ROUTER/DEALER sockets to simulate a Python worker.
+**Tests:** `ManagedWorker::run()` transitions from Initializing → Idle when a Ready event is received, then exits cleanly on shutdown signal.
+**Mode:** mock
+**Inputs:** ZeroMQ ROUTER bound on `tcp://127.0.0.1:0`, `ManagedWorker` spawned with `run()`, `Ready` event serialized as msgpack bytes and sent via `send_raw()`, then shutdown signal via `oneshot::Sender`.
+**Expected output:** Worker task completes within 5s; `Ready` event is received and processed.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_run_completes_on_ready_event` exits 0.
+
+---
+
+## test_shutdown_rx_triggers_graceful_exit (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** Same as `test_run_completes_on_ready_event`.
+**Tests:** `shutdown_rx` being triggered causes `run()` to exit cleanly — even before a Ready event arrives — and deregister.
+**Mode:** mock
+**Inputs:** `ManagedWorker` spawned with `run()`, shutdown signal sent immediately (no Ready event).
+**Expected output:** Worker task completes within 5s; no Initializing timeout fires.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_shutdown_rx_triggers_graceful_exit` exits 0.
+
+---
+
+## test_deregister_called_on_graceful_exit (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** Same as above.
+**Tests:** On graceful shutdown path, `demux.deregister(worker_id)` is called, confirmed by `demux.registered(worker_id)` returning `false` after `run()` returns.
+**Mode:** mock
+**Inputs:** Worker pre-registered with demux (simulating pool behavior), Ready event sent, then shutdown signal.
+**Expected output:** `demux.registered("test-worker")` returns `true` after Ready, `false` after shutdown exit.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_deregister_called_on_graceful_exit` exits 0.
+
+---
+
+## test_deregister_called_on_crash (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** Same as above.
+**Tests:** On Dying event path (simulated crash), `demux.deregister(worker_id)` is called.
+**Mode:** mock
+**Inputs:** Worker pre-registered, Ready event sent, then `Dying { reason: "simulated crash" }` event sent via `send_raw()`.
+**Expected output:** Worker task exits within 5s; `demux.registered("test-worker")` returns `false`.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_deregister_called_on_crash` exits 0.
+
+---
+
+## test_deregister_called_on_initializing_timeout (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** Same as above. Uses `#[serial]` to prevent concurrent tests from interfering with the 60s timeout.
+**Tests:** When no Ready event arrives within the Initializing timeout, `run()` exits and calls `deregister()`.
+**Mode:** mock
+**Inputs:** Worker pre-registered, no events sent for 60 seconds.
+**Expected output:** Worker task completes within 65s (60s timeout + 5s buffer); `demux.registered("test-worker")` returns `false`.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_deregister_called_on_initializing_timeout` exits 0.

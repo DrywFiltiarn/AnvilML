@@ -43,16 +43,17 @@ fn test_worker_info_construction_and_serde_roundtrip() {
     assert_eq!(parsed["current_job_id"], job_id.to_string());
 }
 
-/// Each of the five `WorkerStatus` variants serialises to the correct
+/// Each of the six `WorkerStatus` variants serialises to the correct
 /// `snake_case` JSON string and roundtrips back to an equal value.
 #[test]
 fn test_worker_status_serde_snake_case() {
-    let variants: [(WorkerStatus, &str); 5] = [
-        (WorkerStatus::Spawning, "spawning"),
+    let variants: [(WorkerStatus, &str); 6] = [
+        (WorkerStatus::Initializing, "initializing"),
         (WorkerStatus::Idle, "idle"),
         (WorkerStatus::Busy, "busy"),
         (WorkerStatus::Dying, "dying"),
         (WorkerStatus::Dead, "dead"),
+        (WorkerStatus::Respawning, "respawning"),
     ];
 
     for (status, expected_json) in variants {

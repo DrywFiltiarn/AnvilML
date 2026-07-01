@@ -112,7 +112,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-core"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "axum",
  "chrono",
@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-ipc"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anvilml-core",
  "bytes",
@@ -209,14 +209,18 @@ dependencies = [
 
 [[package]]
 name = "anvilml-worker"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
  "anvilml-ipc",
+ "bytes",
+ "rmp-serde",
+ "serial_test",
  "tokio",
  "tracing",
  "windows",
+ "zeromq",
 ]
 
 [[package]]

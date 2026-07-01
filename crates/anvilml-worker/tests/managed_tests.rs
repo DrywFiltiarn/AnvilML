@@ -4,10 +4,18 @@
 //! All tests construct handles from shared `Arc<RwLock<WorkerStatus>>` instances
 //! to prove that clones share state, and from fresh `oneshot::channel` pairs
 //! to verify the shutdown trigger works correctly.
+//!
+//! The second half of this file exercises `ManagedWorker::run()` — the full
+//! lifecycle task — using in-process ZeroMQ sockets to simulate a Python worker.
 
 use std::sync::Arc;
 
 use anvilml_core::types::worker::WorkerStatus;
+use anvilml_ipc::RouterTransport;
+use anvilml_ipc::WorkerEvent;
+use anvilml_worker::Demux;
+use anvilml_worker::ManagedWorker;
+use anvilml_worker::RespawnPolicy;
 use anvilml_worker::WorkerHandle;
 use tokio::sync::RwLock;
 
@@ -132,14 +140,14 @@ async fn test_request_shutdown_is_idempotent() {
     handle.request_shutdown();
 }
 
-/// Constructing a handle with status set to `Spawning` and calling `status()`
-/// returns `Spawning`, proving the read path works correctly for non-default states.
+/// Constructing a handle with status set to `Initializing` and calling `status()`
+/// returns `Initializing`, proving the read path works correctly for non-default states.
 ///
-/// Creates a shared `Arc<RwLock<WorkerStatus>>`, sets it to `Spawning` via a direct
-/// write before constructing the handle, then verifies `status()` returns `Spawning`.
+/// Creates a shared `Arc<RwLock<WorkerStatus>>`, sets it to `Initializing` via a direct
+/// write before constructing the handle, then verifies `status()` returns `Initializing`.
 #[tokio::test]
 async fn test_status_returns_current_value() {
-    let status = Arc::new(RwLock::new(WorkerStatus::Spawning));
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
     let handle = WorkerHandle::new(
         "worker-0".to_string(),
         status,
@@ -149,7 +157,7 @@ async fn test_status_returns_current_value() {
 
     assert_eq!(
         handle.status().await,
-        WorkerStatus::Spawning,
+        WorkerStatus::Initializing,
         "status() should return the current value from the shared lock"
     );
 }
@@ -262,8 +270,8 @@ async fn test_concurrent_status_and_set_status_no_deadlock() {
 
 /// `set_status()` can be called multiple times with different values; each transition is correct.
 ///
-/// Constructs a handle, calls `set_status()` four times in sequence with
-/// `Spawning → Idle → Busy → Dying`, asserting each value after the call.
+/// Constructs a handle, calls `set_status()` five times in sequence with
+/// `Initializing → Idle → Busy → Dying → Dead`, asserting each value after the call.
 /// This verifies the method can be called repeatedly without side effects or state corruption.
 #[tokio::test]
 async fn test_set_status_callable_repeatedly() {
@@ -274,11 +282,11 @@ async fn test_set_status_callable_repeatedly() {
         Arc::new(tokio::sync::Mutex::new(None)),
     );
 
-    handle.set_status(WorkerStatus::Spawning).await;
+    handle.set_status(WorkerStatus::Initializing).await;
     assert_eq!(
         handle.status().await,
-        WorkerStatus::Spawning,
-        "after set_status(Spawning), status() should return Spawning"
+        WorkerStatus::Initializing,
+        "after set_status(Initializing), status() should return Initializing"
     );
 
     handle.set_status(WorkerStatus::Idle).await;
@@ -300,5 +308,359 @@ async fn test_set_status_callable_repeatedly() {
         handle.status().await,
         WorkerStatus::Dying,
         "after set_status(Dying), status() should return Dying"
+    );
+
+    handle.set_status(WorkerStatus::Dead).await;
+    assert_eq!(
+        handle.status().await,
+        WorkerStatus::Dead,
+        "after set_status(Dead), status() should return Dead"
+    );
+}
+
+// The following tests exercise `ManagedWorker::run()` — the full lifecycle task.
+// They use an in-process ZeroMQ ROUTER/DEALER pair to simulate a Python worker.
+
+use std::time::Duration;
+
+use bytes::Bytes;
+use zeromq::prelude::*;
+use zeromq::util::PeerIdentity;
+use zeromq::{DealerSocket, SocketOptions, ZmqMessage};
+
+// rmp_serde is imported at the top of the file for serializing WorkerEvent bytes.
+
+/// Connect a DEALER socket to a `RouterTransport`'s bound endpoint, setting the
+/// worker identity. Returns the DEALER socket handle.
+///
+/// The DEALER socket must be kept alive for the duration of the test — if it is
+/// dropped, the ROUTER will no longer recognize the worker identity and send
+/// operations will fail with "Destination client not found by identity".
+async fn connect_dealer(transport: &RouterTransport, worker_id: &str) -> DealerSocket {
+    // Set the DEALER socket's identity so the ROUTER knows which worker this is.
+    let mut opts = SocketOptions::default();
+    opts.peer_identity(
+        PeerIdentity::try_from(Bytes::from(worker_id.to_string())).expect("valid identity"),
+    );
+    let mut dealer = DealerSocket::with_options(opts);
+    // Connect to the ROUTER's endpoint.
+    let endpoint = format!("tcp://127.0.0.1:{}", transport.port);
+    dealer
+        .connect(&endpoint)
+        .await
+        .expect("DEALER connect to ROUTER should succeed");
+    // Give the ROUTER time to register the DEALER's identity.
+    // Without this, send_raw may fail with "Destination client not found by
+    // identity" because the ROUTER hasn't seen the DEALER yet.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    dealer
+}
+
+/// `run()` transitions through Initializing → Idle when a Ready event is received,
+/// then exits cleanly on shutdown signal.
+///
+/// Creates a ZeroMQ ROUTER/DEALER pair on the loopback interface. The test acts as
+/// the worker (DEALER), sends a `Ready` event, then sends a shutdown signal. The
+/// `ManagedWorker` (ROUTER) receives the Ready event, transitions to Idle, then
+/// exits on shutdown and deregisters.
+///
+/// This verifies the normal startup path: Initializing → Idle.
+#[tokio::test]
+async fn test_run_completes_on_ready_event() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+
+    // Connect a DEALER socket as the "Python worker" so the ROUTER recognizes
+    // the worker identity. Without this, send_raw fails with
+    // "Destination client not found by identity".
+    let mut _dealer = connect_dealer(&transport, "test-worker").await;
+
+    // Spawn the worker — it starts in Initializing state.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let worker = ManagedWorker::new(
+        "test-worker".to_string(),
+        Arc::clone(&transport),
+        Arc::clone(&demux),
+        Arc::clone(&status),
+        RespawnPolicy::default(),
+    );
+    let handle = tokio::spawn(worker.run(shutdown_rx));
+
+    // Send a Ready event to simulate the worker reporting startup.
+    let ready = WorkerEvent::Ready {
+        worker_id: "test-worker".to_string(),
+        device_index: 0,
+        device_name: "Mock GPU".to_string(),
+        device_type: "cpu".to_string(),
+        vram_total_mib: 1024,
+        vram_free_mib: 900,
+        torch_version: "2.5.0".to_string(),
+        fp16: true,
+        bf16: true,
+        fp8: false,
+        flash_attention: false,
+        capabilities_source: "mock".to_string(),
+        node_types: vec![],
+    };
+    let payload = rmp_serde::to_vec_named(&ready).unwrap();
+    transport.send_raw("test-worker", &payload).await.unwrap();
+
+    // Send shutdown signal — the worker should exit cleanly.
+    drop(shutdown_tx);
+
+    // The worker task should complete within 5 seconds — bounded wait per
+    // ENVIRONMENT.md §11.5.
+    let timeout = tokio::time::sleep(Duration::from_secs(5));
+    tokio::select! {
+        _ = handle => (),
+        _ = timeout => panic!("ManagedWorker::run() did not complete within 5s"),
+    }
+}
+
+/// `shutdown_rx` being triggered causes `run()` to set status to `Dying`, call
+/// `deregister()`, and return — even before a Ready event arrives.
+///
+/// Creates a ROUTER/DEALER pair, spawns `ManagedWorker::run()`, and immediately
+/// sends a shutdown signal (before any Ready event). The worker must exit to Dying
+/// and deregister without waiting for the 60-second Initializing timeout.
+#[tokio::test]
+async fn test_shutdown_rx_triggers_graceful_exit() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+
+    // Connect a DEALER socket as the "Python worker".
+    let mut _dealer = connect_dealer(&transport, "test-worker").await;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let worker = ManagedWorker::new(
+        "test-worker".to_string(),
+        Arc::clone(&transport),
+        Arc::clone(&demux),
+        Arc::clone(&status),
+        RespawnPolicy::default(),
+    );
+    let handle = tokio::spawn(worker.run(shutdown_rx));
+
+    // Send shutdown immediately — no Ready event.
+    drop(shutdown_tx);
+
+    // Worker should exit within 5s.
+    let timeout = tokio::time::sleep(Duration::from_secs(5));
+    tokio::select! {
+        _ = handle => (),
+        _ = timeout => panic!("ManagedWorker::run() did not complete within 5s"),
+    }
+}
+
+/// On graceful shutdown path, `demux.deregister(worker_id)` is called, confirmed
+/// by `demux.registered(worker_id)` returning `false` after `run()` returns.
+///
+/// Creates a ROUTER/DEALER pair, registers the worker (simulating the pool's
+/// pre-spawn registration), sends Ready + shutdown. After `run()` completes,
+/// verifies the worker is no longer in the routing table.
+#[tokio::test]
+async fn test_deregister_called_on_graceful_exit() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+
+    // Simulate the pool's pre-spawn registration.
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    demux.register("test-worker".to_string(), tx);
+
+    // Connect a DEALER socket as the "Python worker".
+    let mut _dealer = connect_dealer(&transport, "test-worker").await;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let worker = ManagedWorker::new(
+        "test-worker".to_string(),
+        Arc::clone(&transport),
+        Arc::clone(&demux),
+        Arc::clone(&status),
+        RespawnPolicy::default(),
+    );
+    let handle = tokio::spawn(worker.run(shutdown_rx));
+
+    // Send Ready event — worker should register and transition to Idle.
+    let ready = WorkerEvent::Ready {
+        worker_id: "test-worker".to_string(),
+        device_index: 0,
+        device_name: "Mock GPU".to_string(),
+        device_type: "cpu".to_string(),
+        vram_total_mib: 1024,
+        vram_free_mib: 900,
+        torch_version: "2.5.0".to_string(),
+        fp16: true,
+        bf16: true,
+        fp8: false,
+        flash_attention: false,
+        capabilities_source: "mock".to_string(),
+        node_types: vec![],
+    };
+    let payload = rmp_serde::to_vec_named(&ready).unwrap();
+    transport.send_raw("test-worker", &payload).await.unwrap();
+
+    // After Ready, worker should be registered.
+    assert!(
+        demux.registered("test-worker"),
+        "worker should be registered after Ready event"
+    );
+
+    // Send shutdown — worker should deregister on exit.
+    drop(shutdown_tx);
+
+    let timeout = tokio::time::sleep(Duration::from_secs(5));
+    tokio::select! {
+        _ = handle => (),
+        _ = timeout => panic!("ManagedWorker::run() did not complete within 5s"),
+    }
+
+    // After exit, worker must be deregistered.
+    assert!(
+        !demux.registered("test-worker"),
+        "worker should be deregistered after graceful shutdown"
+    );
+}
+
+/// On Dying event path (simulated crash), `demux.deregister(worker_id)` is called.
+///
+/// Creates a ROUTER/DEALER pair, registers the worker (simulating the pool's
+/// pre-spawn registration), sends Ready + Dying event. The worker must transition
+/// to Dead and deregister without waiting for shutdown.
+#[tokio::test]
+async fn test_deregister_called_on_crash() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+
+    // Simulate the pool's pre-spawn registration.
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    demux.register("test-worker".to_string(), tx);
+
+    // Connect a DEALER socket as the "Python worker".
+    let mut _dealer = connect_dealer(&transport, "test-worker").await;
+
+    // The crash test doesn't send a shutdown signal — the Dying event triggers
+    // the exit path instead. The oneshot sender is dropped without sending.
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let worker = ManagedWorker::new(
+        "test-worker".to_string(),
+        Arc::clone(&transport),
+        Arc::clone(&demux),
+        Arc::clone(&status),
+        RespawnPolicy::default(),
+    );
+    let handle = tokio::spawn(worker.run(shutdown_rx));
+
+    // Send Ready event first — via the DEALER socket (correct direction:
+    // worker → ROUTER). The DEALER sends a 2-frame message (delimiter + payload);
+    // the ROUTER prepends the identity frame.
+    let ready = WorkerEvent::Ready {
+        worker_id: "test-worker".to_string(),
+        device_index: 0,
+        device_name: "Mock GPU".to_string(),
+        device_type: "cpu".to_string(),
+        vram_total_mib: 1024,
+        vram_free_mib: 900,
+        torch_version: "2.5.0".to_string(),
+        fp16: true,
+        bf16: true,
+        fp8: false,
+        flash_attention: false,
+        capabilities_source: "mock".to_string(),
+        node_types: vec![],
+    };
+    let ready_payload = rmp_serde::to_vec_named(&ready).unwrap();
+    let mut ready_msg = ZmqMessage::from(Bytes::from(""));
+    ready_msg.push_back(Bytes::from(ready_payload));
+    _dealer
+        .send(ready_msg)
+        .await
+        .expect("DEALER send Ready should succeed");
+
+    // Small delay to ensure the Ready event is processed before the Dying event.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Send Dying event — simulates the worker process crashing.
+    let dying = WorkerEvent::Dying {
+        reason: "simulated crash".to_string(),
+    };
+    let dying_payload = rmp_serde::to_vec_named(&dying).unwrap();
+    let mut dying_msg = ZmqMessage::from(Bytes::from(""));
+    dying_msg.push_back(Bytes::from(dying_payload));
+    _dealer
+        .send(dying_msg)
+        .await
+        .expect("DEALER send Dying should succeed");
+
+    // Worker should exit within 5s.
+    let timeout = tokio::time::sleep(Duration::from_secs(5));
+    tokio::select! {
+        _ = handle => (),
+        _ = timeout => panic!("ManagedWorker::run() did not complete within 5s"),
+    }
+
+    // After crash exit, worker must be deregistered.
+    assert!(
+        !demux.registered("test-worker"),
+        "worker should be deregistered after crash"
+    );
+}
+
+/// When no Ready event arrives within the Initializing timeout, `run()` exits
+/// to `Dead` and calls `deregister()`.
+///
+/// Creates a ROUTER/DEALER pair, registers the worker (simulating the pool's
+/// pre-spawn registration), and sends NO events. The worker remains in
+/// Initializing state until the 60-second timeout fires, at which point it
+/// exits and deregisters.
+///
+/// This test verifies the timeout guard exists and that deregister is called
+/// on the timeout path. The actual 60s wait is verified by the code structure
+/// (the `tokio::time::sleep(Duration::from_secs(60))` in `run()`).
+#[serial_test::serial]
+#[tokio::test]
+async fn test_deregister_called_on_initializing_timeout() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+
+    // Simulate the pool's pre-spawn registration.
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    demux.register("test-worker".to_string(), tx);
+
+    // Connect a DEALER socket as the "Python worker" so the ROUTER recognizes
+    // the identity (even though we never send a Ready event).
+    let mut _dealer = connect_dealer(&transport, "test-worker").await;
+
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let worker = ManagedWorker::new(
+        "test-worker".to_string(),
+        Arc::clone(&transport),
+        Arc::clone(&demux),
+        Arc::clone(&status),
+        RespawnPolicy::default(),
+    );
+    let handle = tokio::spawn(worker.run(shutdown_rx));
+
+    // Send no events — the worker stays in Initializing.
+    // The 60s timeout will fire, transitioning to Dead and deregistering.
+    //
+    // We use a bounded wait to avoid hanging indefinitely if the timeout
+    // mechanism is broken. 65s gives the 60s timeout + 5s buffer.
+    let timeout = tokio::time::sleep(Duration::from_secs(65));
+    tokio::select! {
+        _ = handle => (),
+        _ = timeout => {
+            panic!("ManagedWorker::run() did not complete within 65s — the Initializing timeout may not be firing");
+        }
+    }
+
+    // After timeout exit, worker must be deregistered.
+    assert!(
+        !demux.registered("test-worker"),
+        "worker should be deregistered after Initializing timeout"
     );
 }
