@@ -46,9 +46,8 @@ impl JobObjectGuard {
         // CreateJobObjectW returns Result<HANDLE> — Err on failure.
         // We pass None for security attributes and None for the name (anonymous).
         let handle = unsafe {
-            CreateJobObjectW(None, None).map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::Other, "CreateJobObjectW failed")
-            })?
+            CreateJobObjectW(None, None)
+                .map_err(|_| std::io::Error::other("CreateJobObjectW failed"))?
         };
 
         // Configure the job object to kill all assigned processes when the job
@@ -72,14 +71,13 @@ impl JobObjectGuard {
             )
         };
 
-        if !success.is_ok() {
+        if success.is_err() {
             // SetInformationJobObject failed — convert the Win32 error to
             // std::io::Error, then to AnvilError::Io.
             let win_err = windows::core::Error::from_win32();
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("SetInformationJobObject failed: {win_err}"),
-            )
+            return Err(std::io::Error::other(format!(
+                "SetInformationJobObject failed: {win_err}"
+            ))
             .into());
         }
 
@@ -134,11 +132,7 @@ impl JobObjectGuard {
         };
 
         if let Err(e) = dup_result {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("DuplicateHandle failed: {e}"),
-            )
-            .into());
+            return Err(std::io::Error::other(format!("DuplicateHandle failed: {e}")).into());
         }
 
         // Assign the duplicated process handle to the job object.
@@ -151,12 +145,11 @@ impl JobObjectGuard {
         // longer needed. This prevents handle leaks.
         let _ = unsafe { CloseHandle(duplicated) };
 
-        if !success.is_ok() {
+        if success.is_err() {
             let win_err = windows::core::Error::from_win32();
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("AssignProcessToJobObject failed: {win_err}"),
-            )
+            return Err(std::io::Error::other(format!(
+                "AssignProcessToJobObject failed: {win_err}"
+            ))
             .into());
         }
 
