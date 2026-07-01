@@ -142,7 +142,7 @@ fn test_assigned_child_terminated_on_drop() {
         .build()
         .expect("failed to build tokio runtime");
 
-    let child = rt.block_on(cmd.spawn()).expect("failed to spawn child");
+    let child = cmd.spawn().expect("failed to spawn child");
 
     // Create the job object and assign the child to it.
     let guard = JobObjectGuard::new().expect("JobObjectGuard::new() should succeed");
@@ -199,9 +199,7 @@ fn test_double_assignment_fails_cleanly() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let child1 = rt
-        .block_on(cmd1.spawn())
-        .expect("failed to spawn first child");
+    let child1 = cmd1.spawn().expect("failed to spawn first child");
 
     let guard = JobObjectGuard::new().expect("JobObjectGuard::new() should succeed");
     guard
@@ -214,9 +212,7 @@ fn test_double_assignment_fails_cleanly() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let child2 = rt
-        .block_on(cmd2.spawn())
-        .expect("failed to spawn second child");
+    let child2 = cmd2.spawn().expect("failed to spawn second child");
 
     // The second assignment should fail because the first child is already
     // in the job. `AssignProcessToJobObject` returns `ERROR_ACCESS_DENIED`
