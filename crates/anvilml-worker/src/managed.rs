@@ -94,6 +94,18 @@ impl WorkerHandle {
         *self.status.read().await
     }
 
+    /// Set the worker's lifecycle state.
+    ///
+    /// Acquires a write lock on the shared status, overwrites the stored value,
+    /// and releases the lock. This is the only public mutator on `WorkerHandle`.
+    ///
+    /// # Arguments
+    ///
+    /// * `new` — The new `WorkerStatus` value to set.
+    pub async fn set_status(&self, new: WorkerStatus) {
+        *self.status.write().await = new;
+    }
+
     /// Request the worker to shut down gracefully.
     ///
     /// Takes the `oneshot::Sender` from `shutdown_tx` and sends `()` to the receiver.

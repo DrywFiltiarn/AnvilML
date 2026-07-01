@@ -3099,3 +3099,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Shared `Arc<RwLock<WorkerStatus>>` set to `WorkerStatus::Spawning`.
 **Expected output:** `handle.status().await` returns `WorkerStatus::Spawning`.
 **Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_status_returns_current_value` exits 0.
+
+---
+
+## test_set_status_changes_value (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (rt, sync features) and `anvilml-core` dependencies. The `WorkerHandle` struct is available via `anvilml_worker::WorkerHandle`. The `set_status()` method is available as the public mutator.
+**Tests:** Constructing a handle with `WorkerStatus::Idle`, calling `set_status(WorkerStatus::Busy)`, then verifying `status().await` returns `WorkerStatus::Busy`. This exercises the write lock path and confirms the mutation is visible to subsequent reads.
+**Mode:** both
+**Inputs:** Handle constructed with `WorkerStatus::Idle`, `set_status(WorkerStatus::Busy)` call.
+**Expected output:** `status().await` returns `WorkerStatus::Busy` after the call.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_set_status_changes_value` exits 0.
+
+---
+
+## test_set_status_visible_across_clone (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (rt, sync features) and `anvilml-core` dependencies. The `WorkerHandle` struct is available via `anvilml_worker::WorkerHandle`. The `set_status()` method is available as the public mutator.
+**Tests:** Constructing a handle, cloning it, calling `set_status(WorkerStatus::Dying)` on the original, then calling `status().await` on the clone and asserting it returns `WorkerStatus::Dying`. This proves the shared `Arc<RwLock<WorkerStatus>>` is correctly shared across clones.
+**Mode:** both
+**Inputs:** Handle with `WorkerStatus::Idle`, cloned handle, `set_status(WorkerStatus::Dying)` on original.
+**Expected output:** Clone's `status().await` returns `WorkerStatus::Dying`.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_set_status_visible_across_clone` exits 0.
+
+---
+
+## test_concurrent_status_and_set_status_no_deadlock (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (rt, sync, time features) and `anvilml-core` dependencies. The `WorkerHandle` struct is available via `anvilml_worker::WorkerHandle`. The `set_status()` method is available as the public mutator.
+**Tests:** Spawning two concurrent tasks — one loops `status().await` 100 times, the other loops `set_status()` alternating between `Busy` and `Idle` 100 times. Both tasks must complete within 5 seconds (bounded wait per ENVIRONMENT.md §11.5), proving no deadlock between read and write lock paths.
+**Mode:** both
+**Inputs:** Handle with `WorkerStatus::Idle`, 100 iterations of reads + alternating writes in separate tasks.
+**Expected output:** Both tasks complete within 5s without deadlock.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_concurrent_status_and_set_status_no_deadlock` exits 0.
+
+---
+
+## test_set_status_callable_repeatedly (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (rt, sync features) and `anvilml-core` dependencies. The `WorkerHandle` struct is available via `anvilml_worker::WorkerHandle`. The `set_status()` method is available as the public mutator.
+**Tests:** Calling `set_status()` four times in sequence with `Spawning → Idle → Busy → Dying`, asserting each value after the call. This verifies the method can be called repeatedly without side effects or state corruption.
+**Mode:** both
+**Inputs:** Handle with `WorkerStatus::Idle`, sequential calls: `Spawning`, `Idle`, `Busy`, `Dying`.
+**Expected output:** Each `status()` call after `set_status()` returns the expected value.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_set_status_callable_repeatedly` exits 0.

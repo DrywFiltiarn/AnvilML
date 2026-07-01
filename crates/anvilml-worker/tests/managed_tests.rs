@@ -153,3 +153,152 @@ async fn test_status_returns_current_value() {
         "status() should return the current value from the shared lock"
     );
 }
+
+/// Calling `set_status()` overwrites the stored status and `status()` returns the new value.
+///
+/// Constructs a handle with `WorkerStatus::Idle`, calls `set_status(WorkerStatus::Busy)`,
+/// then verifies `status().await` returns `WorkerStatus::Busy`. This exercises the write
+/// lock path and confirms the mutation is visible to subsequent reads.
+#[tokio::test]
+async fn test_set_status_changes_value() {
+    let handle = WorkerHandle::new(
+        "worker-0".to_string(),
+        Arc::new(RwLock::new(WorkerStatus::Idle)),
+        None,
+        Arc::new(tokio::sync::Mutex::new(None)),
+    );
+
+    assert_eq!(
+        handle.status().await,
+        WorkerStatus::Idle,
+        "initial status should be Idle"
+    );
+
+    handle.set_status(WorkerStatus::Busy).await;
+
+    assert_eq!(
+        handle.status().await,
+        WorkerStatus::Busy,
+        "status() should return the value set by set_status()"
+    );
+}
+
+/// Mutating status on one handle is observable via an independently-cloned handle.
+///
+/// Constructs a handle, clones it, calls `set_status(WorkerStatus::Dying)` on the original,
+/// then calls `status().await` on the clone and asserts it returns `WorkerStatus::Dying`.
+/// This proves the shared `Arc<RwLock<WorkerStatus>>` is correctly shared across clones.
+#[tokio::test]
+async fn test_set_status_visible_across_clone() {
+    let handle = WorkerHandle::new(
+        "worker-0".to_string(),
+        Arc::new(RwLock::new(WorkerStatus::Idle)),
+        None,
+        Arc::new(tokio::sync::Mutex::new(None)),
+    );
+    let clone = handle.clone();
+
+    // Mutate the original handle's status.
+    handle.set_status(WorkerStatus::Dying).await;
+
+    // The clone should see the updated value.
+    assert_eq!(
+        clone.status().await,
+        WorkerStatus::Dying,
+        "clone should see the status changed by the original handle"
+    );
+}
+
+/// Concurrent `status()` reads and `set_status()` writes complete without deadlock.
+///
+/// Constructs a handle with `WorkerStatus::Idle`, spawns two concurrent tasks:
+/// one loops `status().await` 100 times, the other loops `set_status()` alternating
+/// between `Busy` and `Idle` 100 times. Both tasks must complete within 5 seconds
+/// (bounded wait per ENVIRONMENT.md §11.5), proving no deadlock between read and
+/// write lock paths.
+#[tokio::test]
+async fn test_concurrent_status_and_set_status_no_deadlock() {
+    let handle = WorkerHandle::new(
+        "worker-0".to_string(),
+        Arc::new(RwLock::new(WorkerStatus::Idle)),
+        None,
+        Arc::new(tokio::sync::Mutex::new(None)),
+    );
+
+    let handle_read = handle.clone();
+    let handle_write = handle.clone();
+
+    let read_task = tokio::spawn(async move {
+        for _ in 0..100 {
+            let _ = handle_read.status().await;
+        }
+    });
+
+    let write_task = tokio::spawn(async move {
+        for i in 0..100 {
+            if i % 2 == 0 {
+                handle_write.set_status(WorkerStatus::Busy).await;
+            } else {
+                handle_write.set_status(WorkerStatus::Idle).await;
+            }
+        }
+    });
+
+    // Both tasks must complete within 5 seconds — bounded wait per ENVIRONMENT.md §11.5.
+    let timeout = tokio::time::Duration::from_secs(5);
+    tokio::select! {
+        _ = read_task => (),
+        _ = tokio::time::sleep(timeout) => {
+            panic!("reader task timed out after 5s — possible deadlock");
+        }
+    }
+    tokio::select! {
+        _ = write_task => (),
+        _ = tokio::time::sleep(timeout) => {
+            panic!("writer task timed out after 5s — possible deadlock");
+        }
+    }
+}
+
+/// `set_status()` can be called multiple times with different values; each transition is correct.
+///
+/// Constructs a handle, calls `set_status()` four times in sequence with
+/// `Spawning → Idle → Busy → Dying`, asserting each value after the call.
+/// This verifies the method can be called repeatedly without side effects or state corruption.
+#[tokio::test]
+async fn test_set_status_callable_repeatedly() {
+    let handle = WorkerHandle::new(
+        "worker-0".to_string(),
+        Arc::new(RwLock::new(WorkerStatus::Idle)),
+        None,
+        Arc::new(tokio::sync::Mutex::new(None)),
+    );
+
+    handle.set_status(WorkerStatus::Spawning).await;
+    assert_eq!(
+        handle.status().await,
+        WorkerStatus::Spawning,
+        "after set_status(Spawning), status() should return Spawning"
+    );
+
+    handle.set_status(WorkerStatus::Idle).await;
+    assert_eq!(
+        handle.status().await,
+        WorkerStatus::Idle,
+        "after set_status(Idle), status() should return Idle"
+    );
+
+    handle.set_status(WorkerStatus::Busy).await;
+    assert_eq!(
+        handle.status().await,
+        WorkerStatus::Busy,
+        "after set_status(Busy), status() should return Busy"
+    );
+
+    handle.set_status(WorkerStatus::Dying).await;
+    assert_eq!(
+        handle.status().await,
+        WorkerStatus::Dying,
+        "after set_status(Dying), status() should return Dying"
+    );
+}
