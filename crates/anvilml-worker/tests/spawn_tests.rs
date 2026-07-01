@@ -195,39 +195,36 @@ fn test_double_assignment_fails_cleanly() {
         .build()
         .expect("failed to build tokio runtime");
 
-    // Spawn first child and assign it to the job object.
-    let mut cmd1 = tokio::process::Command::new("cmd");
-    cmd1.args(["/c", "timeout", "999"])
+    // Spawn a single child and assign it to the first job object.
+    let mut cmd = tokio::process::Command::new("cmd");
+    cmd.args(["/c", "timeout", "999"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let child1 = cmd1.spawn().expect("failed to spawn first child");
+    let mut child = cmd.spawn().expect("failed to spawn child");
 
-    let guard = JobObjectGuard::new().expect("JobObjectGuard::new() should succeed");
-    guard
-        .assign_process(&child1)
-        .expect("assign_process should succeed for first child");
+    let guard1 = JobObjectGuard::new().expect("first JobObjectGuard::new() should succeed");
+    guard1
+        .assign_process(&child)
+        .expect("assign_process should succeed for the child's first job");
 
-    // Spawn second child and attempt to assign it to the same job.
-    let mut cmd2 = tokio::process::Command::new("cmd");
-    cmd2.args(["/c", "timeout", "999"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child2 = cmd2.spawn().expect("failed to spawn second child");
-
-    // The second assignment should fail because the first child is already
-    // in the job. `AssignProcessToJobObject` returns `ERROR_ACCESS_DENIED`
-    // when a process is already in another job.
-    let result = guard.assign_process(&child2);
+    // Attempt to assign the SAME already-assigned child to a second,
+    // unrelated job object. A process can belong to only one job outside of
+    // an explicit nested-job hierarchy, so this reassignment must fail with
+    // ERROR_ACCESS_DENIED — unlike assigning a *different*, not-yet-assigned
+    // process to the same job, which succeeds because a single job object
+    // can legitimately hold many processes.
+    let guard2 = JobObjectGuard::new().expect("second JobObjectGuard::new() should succeed");
+    let result = guard2.assign_process(&child);
     assert!(
         result.is_err(),
-        "assign_process should fail for second child — process is already in another job"
+        "assign_process should fail when reassigning an already-assigned process to a second job"
     );
 
-    // Clean up: drop the guard (kills child1), then wait for child2 to exit.
-    drop(guard);
+    // Clean up: drop both guards (guard1's kill-on-close limit kills the
+    // child), then wait for it to exit.
+    drop(guard1);
+    drop(guard2);
 
-    let _ =
-        rt.block_on(async { tokio::time::timeout(Duration::from_secs(5), child2.wait()).await });
+    let _ = rt.block_on(async { tokio::time::timeout(Duration::from_secs(5), child.wait()).await });
 }
