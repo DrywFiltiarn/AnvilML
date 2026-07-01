@@ -3039,3 +3039,63 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Policy with `max_attempts=1`, empty slice `&[]`.
 **Expected output:** `should_respawn` returns `true` (0 < 1).
 **Acceptance:** `cargo test -p anvilml-worker --test respawn_tests test_empty_history_allows_respawn` exits 0.
+
+---
+
+## test_clone_shares_status (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (rt, sync features) and `anvilml-core` dependencies. The `WorkerHandle` struct is available via `anvilml_worker::WorkerHandle`. Two handles are constructed from the same `Arc<RwLock<WorkerStatus>>` set to `Idle`.
+**Tests:** Constructing two `WorkerHandle`s from the same `Arc<RwLock<WorkerStatus>>` and calling `status()` on both returns the same value, proving clones share the status lock.
+**Mode:** both
+**Inputs:** Shared `Arc<RwLock<WorkerStatus>>` set to `WorkerStatus::Idle`, two handles with different `worker_id` values.
+**Expected output:** Both `handle1.status().await` and `handle2.status().await` return `WorkerStatus::Idle`.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_clone_shares_status` exits 0.
+
+---
+
+## test_clone_independent_worker_id (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (rt, sync features) and `anvilml-core` dependencies. The `WorkerHandle` struct is available via `anvilml_worker::WorkerHandle`.
+**Tests:** Cloning a handle copies the `worker_id` String — same value but independent allocation. Modifying the original's `worker_id` does not affect the clone.
+**Mode:** both
+**Inputs:** Handle with `worker_id = "gpu:0"`.
+**Expected output:** Clone has `worker_id == "gpu:0"`; after mutating original to `"modified"`, clone still has `"gpu:0"`.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_clone_independent_worker_id` exits 0.
+
+---
+
+## test_request_shutdown_sends_signal (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (rt, sync features) and `anvilml-core` dependencies. The `WorkerHandle` struct is available via `anvilml_worker::WorkerHandle`.
+**Tests:** Constructing a handle with a fresh `oneshot::channel` and calling `request_shutdown()` delivers `()` to the receiver side, proving the shutdown trigger works.
+**Mode:** both
+**Inputs:** Fresh `oneshot::channel()`, handle with the sender, background task awaiting the receiver.
+**Expected output:** Receiver gets `Ok(())` confirming the shutdown signal was delivered.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_request_shutdown_sends_signal` exits 0.
+
+---
+
+## test_request_shutdown_is_idempotent (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (rt, sync features) and `anvilml-core` dependencies. The `WorkerHandle` struct is available via `anvilml_worker::WorkerHandle`.
+**Tests:** Calling `request_shutdown()` twice on the same handle does not panic — the second call operates on `None` (the `Option` was already `take()`n) and returns cleanly, proving idempotency.
+**Mode:** both
+**Inputs:** Handle with a `oneshot::Sender`.
+**Expected output:** No panic; both calls complete successfully.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_request_shutdown_is_idempotent` exits 0.
+
+---
+
+## test_status_returns_current_value (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (rt, sync features) and `anvilml-core` dependencies. The `WorkerHandle` struct is available via `anvilml_worker::WorkerHandle`.
+**Tests:** Constructing a handle with status set to `Spawning` and calling `status()` returns `Spawning`, proving the read path works correctly for non-default states.
+**Mode:** both
+**Inputs:** Shared `Arc<RwLock<WorkerStatus>>` set to `WorkerStatus::Spawning`.
+**Expected output:** `handle.status().await` returns `WorkerStatus::Spawning`.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_status_returns_current_value` exits 0.

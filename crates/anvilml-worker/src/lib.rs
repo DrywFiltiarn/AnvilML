@@ -17,5 +17,8 @@ mod job_object;
 #[cfg(windows)]
 pub use job_object::JobObjectGuard;
 
+mod managed;
+pub use managed::WorkerHandle;
+
 mod respawn;
 pub use respawn::RespawnPolicy;
