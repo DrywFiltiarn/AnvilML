@@ -208,23 +208,40 @@ fn test_double_assignment_fails_cleanly() {
         .assign_process(&child)
         .expect("assign_process should succeed for the child's first job");
 
-    // Attempt to assign the SAME already-assigned child to a second,
-    // unrelated job object. A process can belong to only one job outside of
-    // an explicit nested-job hierarchy, so this reassignment must fail with
-    // ERROR_ACCESS_DENIED — unlike assigning a *different*, not-yet-assigned
-    // process to the same job, which succeeds because a single job object
-    // can legitimately hold many processes.
+    // Attempt to assign the SAME already-assigned child to a second job
+    // object. Per MSDN, since Windows 8, AssignProcessToJobObject only
+    // rejects a second-job assignment if that target job is non-empty and
+    // outside the caller's existing nesting hierarchy — an *empty* target
+    // job always accepts the process via implicit nesting. So guard2 must
+    // already hold an unrelated process before the conflicting assignment
+    // will actually fail with ERROR_ACCESS_DENIED.
+    let mut filler_cmd = tokio::process::Command::new("cmd");
+    filler_cmd
+        .args(["/c", "timeout", "999"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut filler_child = filler_cmd.spawn().expect("failed to spawn filler child");
+
     let guard2 = JobObjectGuard::new().expect("second JobObjectGuard::new() should succeed");
+    guard2
+        .assign_process(&filler_child)
+        .expect("assign_process should succeed for filler child into empty guard2");
+
+    // Now guard2 is non-empty and unrelated to guard1's hierarchy — assigning
+    // the already-assigned `child` here must fail.
     let result = guard2.assign_process(&child);
     assert!(
         result.is_err(),
-        "assign_process should fail when reassigning an already-assigned process to a second job"
+        "assign_process should fail when reassigning an already-assigned process into a non-empty, unrelated second job"
     );
 
-    // Clean up: drop both guards (guard1's kill-on-close limit kills the
-    // child), then wait for it to exit.
+    // Clean up: drop both guards (kills child + filler_child via their
+    // respective kill-on-close limits), then wait for both to exit.
     drop(guard1);
     drop(guard2);
 
     let _ = rt.block_on(async { tokio::time::timeout(Duration::from_secs(5), child.wait()).await });
+    let _ = rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(5), filler_child.wait()).await
+    });
 }
