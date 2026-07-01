@@ -2823,3 +2823,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Acceptance:** `cargo test -p anvilml-worker --test env_tests -- test_force_worker_mock_absent` exits 0.
 
 ---
+
+## test_job_object_creation_succeeds (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/spawn_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process feature), `tracing`, `anvilml-core`, and the `windows` crate (target-conditional `cfg(windows)` with `Win32_Foundation`, `Win32_System_JobObjects`, `Win32_System_Threading` features).
+**Tests:** `JobObjectGuard::new()` creates a Win32 Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` enabled without error.
+**Mode:** both
+**Inputs:** None.
+**Expected output:** `Ok(JobObjectGuard { handle })`.
+**Acceptance:** `cargo test -p anvilml-worker --test spawn_tests test_job_object_creation_succeeds` exits 0 (on Windows target).
+
+---
+
+## test_assigned_child_terminated_on_drop (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/spawn_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process feature), `tracing`, `anvilml-core`, and the `windows` crate (target-conditional `cfg(windows)`). The test spawns a long-running `cmd /c timeout 999` subprocess and assigns it to a `JobObjectGuard`.
+**Tests:** A child process assigned to a job object is killed when the `JobObjectGuard` drops, confirming the orphan-prevention guarantee. The test uses a bounded 5-second wait on the subprocess exit (per ENVIRONMENT.md §11.5) to prevent indefinite hangs.
+**Mode:** both
+**Inputs:** `cmd /c timeout 999` subprocess.
+**Expected output:** Child process exits within 5 seconds of guard drop.
+**Acceptance:** `cargo test -p anvilml-worker --test spawn_tests test_assigned_child_terminated_on_drop` exits 0 (on Windows target, with `--test-threads=1` to prevent race with other subprocess tests).
+
+---
+
+## test_double_assignment_fails_cleanly (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/spawn_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process feature), `tracing`, `anvilml-core`, and the `windows` crate (target-conditional `cfg(windows)`). The test spawns two long-running subprocesses and attempts to assign both to the same job object.
+**Tests:** Assigning a second child to a job object that already has a first child returns `Err(AnvilError::Io(_))` cleanly — no panic, no resource leak. The `AssignProcessToJobObject` Win32 API returns `ERROR_ACCESS_DENIED` when a process is already in another job.
+**Mode:** both
+**Inputs:** Two `cmd /c timeout 999` subprocesses.
+**Expected output:** Second `assign_process()` call returns `Err(AnvilError::Io(_))`.
+**Acceptance:** `cargo test -p anvilml-worker --test spawn_tests test_double_assignment_fails_cleanly` exits 0 (on Windows target, with `--test-threads=1`).
+
+---

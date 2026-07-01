@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-worker"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -10,6 +10,14 @@ anvilml-hardware = { path = "../anvilml-hardware" }
 anvilml-core = { path = "../anvilml-core" }
 tokio = { version = "1.52.3", features = ["process"] }
 tracing = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [features]
 mock-hardware = ["anvilml-hardware/mock-hardware"]

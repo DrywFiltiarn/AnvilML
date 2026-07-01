@@ -75,16 +75,17 @@
     "P7-B2",
     "P7-D1",
     "P8-A1",
-    "P8-B1"
+    "P8-B1",
+    "P8-B2"
   ],
-  "in_progress": "P8-B2",
+  "in_progress": "P8-B3",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "1. **Add `windows` dependency to `Cargo.toml`.** In `crates/anvilml-worker/Cargo.toml`, add a target-conditional dependency:\n   ```toml\n   [target.'cfg(windows)'.dependencies]\n   windows = { version = \"0.58\", features = [\n       \"Win32_Foundation\",\n       \"Win32_System_JobObjects\",\n       \"Win32_System_Threading\",\n   ]}\n   ```\n   Rationale: Using `0.58` (caret) keeps the version compatible with the workspace lockfile's existing 0.58.0 while allowing patch updates. The feature flags are minimal \u2014 only what's needed for job objects, plus `Win32_Foundation` (required transitively for `HANDLE` and `BOOL` types).\n\n2. **Create `crates/anvilml-worker/src/job_object.rs`.** The module contains:\n   - `JobObjectGuard` struct holding the `HANDLE` to the job object.\n   - `impl JobObjectGuard`:\n     - `pub fn new() -> Result<Self, AnvilError>`: Creates a named or anonymous job object via `CreateJobObjectW(None, 0)`. If creation fails, converts the `windows::core::Error` to `AnvilError::Io`. Configures the `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` limit by populating a `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` struct (setting `BasicLimitInformation.LimitFlags` to `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`), then calling `SetInformationJobObject` with `JobObjectExtendedLimitInformation`. Emits a DEBUG log on success.\n     - `pub fn assign_process(&self, child: &tokio::process::Child) -> Result<(), AnvilError>`: Uses `std::os::windows::process::ChildExt::as_raw_handle()` to get the child's raw Windows HANDLE. Duplicates the handle via `DuplicateHandle` (current process \u2192 current process, because `AssignProcessToJobObject` requires a handle with `PROCESS_ALL_ACCESS` and the raw handle from `as_raw_handle()` may not have sufficient access). Calls `AssignProcessToJobObject` with the duplicated handle and the job object's `HANDLE`. Closes the duplicated handle via `CloseHandle` regardless of success/failure (to avoid handle leaks). On error, converts to `AnvilError::Io`. Emits a DEBUG log on success.\n   - The entire module is gated with `#[cfg(windows)]` at the top of the file.\n   - Inline comments explain: why `DuplicateHandle` is needed (Win32 job objects require a process handle with sufficient access rights), and why the duplicated handle is closed after assignment (the job object holds its own reference).\n\n3. **Wire `job_object` module into `lib.rs`.** Add `#[cfg(windows)] mod job_object;` and `#[cfg(windows)] pub use job_object::JobObjectGuard;` after the existing `mod spawn;` / `pub use spawn` lines. Keep `lib.rs` under 80 lines (currently 7 lines, adding ~4 more is fine).\n\n4. **Write integration tests in `tests/spawn_tests.rs`.** Add three `#[cfg(windows)]`-gated tests:\n   - `test_job_object_creation_succeeds`: Calls `JobObjectGuard::new()` and asserts `Ok`. Verifies the job object was created without error.\n   - `test_assigned_child_terminated_on_drop`: Creates a long-running child process (`cmd /c timeout 999` on Windows), assigns it to the job object, then drops the guard. Asserts the child process has exited within a bounded timeout (5 seconds). If the timeout fires, captures the child's exit status and includes it in the failure message. This tests the core orphan-prevention guarantee.\n   - `test_double_assignment_fails_cleanly`: Creates a job object, assigns one child, then attempts to assign a second child to the same job. Asserts the second assignment returns an error (Win32 `AssignProcessToJobObject` returns `ERROR_ACCESS_DENIED` when a process is already in another job). Verifies the error is converted to `AnvilError::Io` cleanly \u2014 no panic, no resource leak.\n\n5. **Verify compilation.** Run `cargo check -p anvilml-worker --features mock-hardware --target x86_64-pc-windows-gnu` to confirm the `#[cfg(windows)]` module compiles on the cross-check target (per ENVIRONMENT.md \u00a77).",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-01T07:49:03+0200",
-  "plan_approval_message_id": "1521750624474103829",
+  "last_updated": "2026-07-01T08:40:44+0200",
+  "plan_approval_message_id": "1521763535154053130",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1521750622725079061",
+  "plan_report_message_id": "1521763533124141076",
   "impl_report_message_id": null
 }
