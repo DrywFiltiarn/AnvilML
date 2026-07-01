@@ -133,8 +133,8 @@ fn test_assigned_child_terminated_on_drop() {
 
     // Spawn a long-running child process for orphan-cleanup testing.
     // `cmd /c timeout 999` runs for ~999 seconds (≈16 minutes).
-    let mut cmd = tokio::process::Command::new("cmd")
-        .args(["/c", "timeout", "999"])
+    let mut cmd = tokio::process::Command::new("cmd");
+    cmd.args(["/c", "timeout", "999"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -142,7 +142,7 @@ fn test_assigned_child_terminated_on_drop() {
         .build()
         .expect("failed to build tokio runtime");
 
-    let child = cmd.spawn().expect("failed to spawn child");
+    let mut child = cmd.spawn().expect("failed to spawn child");
 
     // Create the job object and assign the child to it.
     let guard = JobObjectGuard::new().expect("JobObjectGuard::new() should succeed");
@@ -194,8 +194,8 @@ fn test_double_assignment_fails_cleanly() {
         .expect("failed to build tokio runtime");
 
     // Spawn first child and assign it to the job object.
-    let mut cmd1 = tokio::process::Command::new("cmd")
-        .args(["/c", "timeout", "999"])
+    let mut cmd1 = tokio::process::Command::new("cmd");
+    cmd1.args(["/c", "timeout", "999"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -207,12 +207,12 @@ fn test_double_assignment_fails_cleanly() {
         .expect("assign_process should succeed for first child");
 
     // Spawn second child and attempt to assign it to the same job.
-    let mut cmd2 = tokio::process::Command::new("cmd")
-        .args(["/c", "timeout", "999"])
+    let mut cmd2 = tokio::process::Command::new("cmd");
+    cmd2.args(["/c", "timeout", "999"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let child2 = cmd2.spawn().expect("failed to spawn second child");
+    let mut child2 = cmd2.spawn().expect("failed to spawn second child");
 
     // The second assignment should fail because the first child is already
     // in the job. `AssignProcessToJobObject` returns `ERROR_ACCESS_DENIED`
