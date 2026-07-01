@@ -1,5 +1,8 @@
 //! Spawns/supervises Python worker subprocesses.
 
+mod demux;
+pub use demux::Demux;
+
 mod env;
 pub use env::WorkerEnv;
 

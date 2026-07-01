@@ -2859,3 +2859,63 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Acceptance:** `cargo test -p anvilml-worker --test spawn_tests test_double_assignment_fails_cleanly` exits 0 (on Windows target, with `--test-threads=1`).
 
 ---
+
+---
+
+## test_register_and_route_delivers (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/demux_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process + sync features), `anvilml-ipc`, and `anvilml-core` dependencies. The `Demux` struct provides a mutex-protected map from worker ID to `tokio::sync::mpsc::Sender<WorkerEvent>`.
+**Tests:** `Demux::register()` inserts a sender, `Demux::route()` delivers an event through the channel, and the receiver gets the exact event that was sent.
+**Mode:** both
+**Inputs:** A fresh `tokio::sync::mpsc::channel()` (16 capacity), a `WorkerEvent::Ready` with mock capabilities.
+**Expected output:** `route()` returns `Ok(())`, `rx.recv()` returns the identical event.
+**Acceptance:** `cargo test -p anvilml-worker --test demux_tests test_register_and_route_delivers` exits 0.
+
+---
+
+## test_route_worker_not_found (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/demux_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process + sync features), `anvilml-ipc`, and `anvilml-core` dependencies. The `Demux` struct returns `AnvilError::WorkerNotFound` when routing to an unregistered worker.
+**Tests:** `Demux::route()` called without a prior `register()` returns the correct error variant.
+**Mode:** both
+**Inputs:** An unregistered worker ID `"worker-99"`, any `WorkerEvent::Ready`.
+**Expected output:** `route()` returns `Err(AnvilError::WorkerNotFound("worker-99".to_string()))`.
+**Acceptance:** `cargo test -p anvilml-worker --test demux_tests test_route_worker_not_found` exits 0.
+
+---
+
+## test_deregister_removes_entry (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/demux_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process + sync features), `anvilml-ipc`, and `anvilml-core` dependencies. This is the mandatory deregistration test per `ANVILML_DESIGN.md §9.4`.
+**Tests:** `Demux::deregister()` actually removes the worker entry, causing subsequent `route()` calls to fail with `AnvilError::WorkerNotFound`.
+**Mode:** both
+**Inputs:** A registered worker, a `WorkerEvent::Ready`, then `deregister()` followed by another `route()`.
+**Expected output:** First `route()` succeeds, `deregister()` returns `true`, second `route()` returns `Err(AnvilError::WorkerNotFound("worker-0"))`.
+**Acceptance:** `cargo test -p anvilml-worker --test demux_tests test_deregister_removes_entry` exits 0.
+
+---
+
+## test_double_deregister_is_safe (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/demux_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process + sync features), `anvilml-ipc`, and `anvilml-core` dependencies. `Demux::deregister()` is safe to call on absent entries.
+**Tests:** Calling `deregister()` twice for the same worker ID: first returns `true`, second returns `false`, no panic.
+**Mode:** both
+**Inputs:** A registered worker, two consecutive `deregister()` calls with the same ID.
+**Expected output:** First call returns `true`, second returns `false`.
+**Acceptance:** `cargo test -p anvilml-worker --test demux_tests test_double_deregister_is_safe` exits 0.
+
+---
+
+## test_register_overwrites (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/demux_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process + sync features), `anvilml-ipc`, and `anvilml-core` dependencies. `Demux::register()` is idempotent — re-registering the same worker ID overwrites the old sender.
+**Tests:** After registering worker A then worker B for the same ID, events are routed to B's channel, not A's.
+**Mode:** both
+**Inputs:** Two separate `tokio::sync::mpsc::channel()` pairs, same worker ID, one `WorkerEvent::Ready`.
+**Expected output:** Event arrives on B's receiver; A's receiver is empty.
+**Acceptance:** `cargo test -p anvilml-worker --test demux_tests test_register_overwrites` exits 0.
