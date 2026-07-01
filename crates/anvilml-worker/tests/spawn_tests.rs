@@ -139,6 +139,7 @@ fn test_assigned_child_terminated_on_drop() {
         .stderr(Stdio::piped());
 
     let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
         .build()
         .expect("failed to build tokio runtime");
 
@@ -190,6 +191,7 @@ fn test_double_assignment_fails_cleanly() {
     use anvilml_worker::JobObjectGuard;
 
     let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
         .build()
         .expect("failed to build tokio runtime");
 
