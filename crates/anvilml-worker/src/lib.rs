@@ -16,3 +16,6 @@ pub use spawn::{build_command, spawn_worker};
 mod job_object;
 #[cfg(windows)]
 pub use job_object::JobObjectGuard;
+
+mod respawn;
+pub use respawn::RespawnPolicy;

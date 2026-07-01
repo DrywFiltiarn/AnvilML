@@ -2967,3 +2967,75 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `MockTransport::new_err(IpcError::SendFailed(...))`, 50ms interval, 100ms timeout, no pongs sent.
 **Expected output:** Death signal sent immediately after the first ping failure.
 **Acceptance:** `cargo test -p anvilml-worker --test keepalive_tests test_transport_send_failure_triggers_dead_signal` exits 0.
+
+---
+
+## test_defaults_match_documented_values (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/respawn_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process, sync, time features) and `tracing` dependencies. The `RespawnPolicy` struct is available via `anvilml_worker::RespawnPolicy`.
+**Tests:** `RespawnPolicy::default()` produces the documented defaults: 2000ms delay, 5 max attempts, 300s window.
+**Mode:** both
+**Inputs:** `RespawnPolicy::default()`.
+**Expected output:** `next_delay() == Duration::from_millis(2000)`; `should_respawn(&[]) == true`.
+**Acceptance:** `cargo test -p anvilml-worker --test respawn_tests test_defaults_match_documented_values` exits 0.
+
+---
+
+## test_under_limit_allows_respawn (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/respawn_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled. The `RespawnPolicy` struct is available via `anvilml_worker::RespawnPolicy`.
+**Tests:** `should_respawn` returns `true` when the attempt count is strictly below `max_attempts` within the trailing window.
+**Mode:** both
+**Inputs:** Policy with `max_attempts=3`, 2 `Instant` values within the 300s default window.
+**Expected output:** `should_respawn` returns `true` (2 < 3).
+**Acceptance:** `cargo test -p anvilml-worker --test respawn_tests test_under_limit_allows_respawn` exits 0.
+
+---
+
+## test_at_limit_blocks_respawn (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/respawn_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled. The `RespawnPolicy` struct is available via `anvilml_worker::RespawnPolicy`.
+**Tests:** `should_respawn` returns `false` when the attempt count equals `max_attempts` within the trailing window — the boundary condition where respawn halts.
+**Mode:** both
+**Inputs:** Policy with `max_attempts=3`, exactly 3 `Instant` values within the 300s default window.
+**Expected output:** `should_respawn` returns `false` (3 >= 3).
+**Acceptance:** `cargo test -p anvilml-worker --test respawn_tests test_at_limit_blocks_respawn` exits 0.
+
+---
+
+## test_attempts_outside_window_dont_count (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/respawn_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled. The `RespawnPolicy` struct is available via `anvilml_worker::RespawnPolicy`.
+**Tests:** Attempts older than `respawn_window_s` are excluded from the count — the trailing window is enforced correctly.
+**Mode:** both
+**Inputs:** Policy with `max_attempts=2`, `window=1` second, 2 `Instant` values 2-3 seconds old (outside the 1s window).
+**Expected output:** `should_respawn` returns `true` (0 in-window < 2 max_attempts).
+**Acceptance:** `cargo test -p anvilml-worker --test respawn_tests test_attempts_outside_window_dont_count` exits 0.
+
+---
+
+## test_next_delay_returns_correct_duration (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/respawn_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled. The `RespawnPolicy` struct is available via `anvilml_worker::RespawnPolicy`.
+**Tests:** `next_delay()` returns the configured delay as a `Duration`.
+**Mode:** both
+**Inputs:** Policy with custom delay of 5000ms.
+**Expected output:** `next_delay() == Duration::from_millis(5000)`.
+**Acceptance:** `cargo test -p anvilml-worker --test respawn_tests test_next_delay_returns_correct_duration` exits 0.
+
+---
+
+## test_empty_history_allows_respawn (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/respawn_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled. The `RespawnPolicy` struct is available via `anvilml_worker::RespawnPolicy`.
+**Tests:** An empty attempt history always allows respawn, since zero attempts is strictly below any `max_attempts` threshold.
+**Mode:** both
+**Inputs:** Policy with `max_attempts=1`, empty slice `&[]`.
+**Expected output:** `should_respawn` returns `true` (0 < 1).
+**Acceptance:** `cargo test -p anvilml-worker --test respawn_tests test_empty_history_allows_respawn` exits 0.
