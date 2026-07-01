@@ -2919,3 +2919,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Two separate `tokio::sync::mpsc::channel()` pairs, same worker ID, one `WorkerEvent::Ready`.
 **Expected output:** Event arrives on B's receiver; A's receiver is empty.
 **Acceptance:** `cargo test -p anvilml-worker --test demux_tests test_register_overwrites` exits 0.
+
+---
+
+## test_pong_within_timeout_keeps_alive (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/keepalive_tests.rs`
+**Context:** The `anvilml-worker` crate has the `time` feature enabled on tokio. The `KeepaliveWatchdog` type is constructed with a `MockTransport` that always succeeds, a 50ms ping interval, and a 100ms pong timeout. A dedicated task sends pongs at 50ms intervals throughout the test.
+**Tests:** A Pong received within the configured timeout does NOT trigger the death signal. The watchdog sends pings every 50ms and waits up to 100ms for a matching Pong. When a Pong is received, the watchdog continues the loop without signaling death.
+**Mode:** both
+**Inputs:** `MockTransport::new_ok()`, 50ms interval, 100ms timeout, pongs sent at 50ms intervals.
+**Expected output:** No death signal sent within 250ms.
+**Acceptance:** `cargo test -p anvilml-worker --test keepalive_tests test_pong_within_timeout_keeps_alive` exits 0.
+
+---
+
+## test_missing_pong_triggers_dead_signal (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/keepalive_tests.rs`
+**Context:** The `anvilml-worker` crate has the `time` feature enabled on tokio. The `KeepaliveWatchdog` type is constructed with a `MockTransport` that always succeeds, a 50ms ping interval, and a 100ms pong timeout. No pongs are sent.
+**Tests:** No Pong arriving within the timeout triggers the death signal. The watchdog sends a ping, waits for a Pong, and when none arrives within the timeout, it signals death via the oneshot channel and exits.
+**Mode:** both
+**Inputs:** `MockTransport::new_ok()`, 50ms interval, 100ms timeout, no pongs sent.
+**Expected output:** Death signal sent within ~150ms (50ms first ping + 100ms pong timeout).
+**Acceptance:** `cargo test -p anvilml-worker --test keepalive_tests test_missing_pong_triggers_dead_signal` exits 0.
+
+---
+
+## test_repeated_successful_pings_no_false_trigger (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/keepalive_tests.rs`
+**Context:** The `anvilml-worker` crate has the `time` feature enabled on tokio. The `KeepaliveWatchdog` type is constructed with a `MockTransport` that always succeeds, a 50ms ping interval, and a 100ms pong timeout. A dedicated task sends pongs at 40ms intervals throughout the test.
+**Tests:** Repeated successful Pongs do not false-trigger the death signal. The watchdog loops across multiple ping/pong cycles, receiving each Pong and continuing the loop. No death signal is sent as long as Pongs keep arriving.
+**Mode:** both
+**Inputs:** `MockTransport::new_ok()`, 50ms interval, 100ms timeout, pongs sent at 40ms intervals for 600ms.
+**Expected output:** No death signal sent within 300ms after the last pong.
+**Acceptance:** `cargo test -p anvilml-worker --test keepalive_tests test_repeated_successful_pings_no_false_trigger` exits 0.
+
+---
+
+## test_transport_send_failure_triggers_dead_signal (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/keepalive_tests.rs`
+**Context:** The `anvilml-worker` crate has the `time` feature enabled on tokio. The `KeepaliveWatchdog` type is constructed with a `MockTransport` that always fails, a 50ms ping interval, and a 100ms pong timeout.
+**Tests:** A transport send failure triggers the death signal. The watchdog sends a Ping, the transport returns an error, and the watchdog immediately signals death and exits without waiting for a Pong.
+**Mode:** both
+**Inputs:** `MockTransport::new_err(IpcError::SendFailed(...))`, 50ms interval, 100ms timeout, no pongs sent.
+**Expected output:** Death signal sent immediately after the first ping failure.
+**Acceptance:** `cargo test -p anvilml-worker --test keepalive_tests test_transport_send_failure_triggers_dead_signal` exits 0.

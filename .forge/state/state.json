@@ -77,16 +77,17 @@
     "P8-A1",
     "P8-B1",
     "P8-B2",
-    "P8-B3"
+    "P8-B3",
+    "P8-C1"
   ],
-  "in_progress": "P8-C1",
+  "in_progress": "P8-C2",
   "plan_approved": true,
-  "current_plan": "1. **Add `sync` feature to `Cargo.toml`.** Modify `crates/anvilml-worker/Cargo.toml`: change the tokio dependency line from `features = [\"process\"]` to `features = [\"process\", \"sync\"]`. This enables `tokio::sync::mpsc::Sender` needed by the demux.\n\n2. **Create `crates/anvilml-worker/src/demux.rs`.** Implement the `Demux` struct:\n   - **Fields**: `inner: std::sync::Mutex<std::collections::HashMap<String, tokio::sync::mpsc::Sender<WorkerEvent>>>`.\n   - **`Demux::new() -> Self`**: Returns `Self { inner: Mutex::new(HashMap::new()) }`.\n   - **`Demux::register(&self, worker_id: String, tx: tokio::sync::mpsc::Sender<WorkerEvent>)`**: Locks the mutex, inserts or overwrites the entry. Returns `()`. This is idempotent \u2014 if a worker with the same ID is re-registered (e.g. after respawn), the old sender is replaced by the new one. The old sender's channel will eventually drain and close, which is safe.\n   - **`Demux::deregister(&self, worker_id: &str) -> bool`**: Locks the mutex, calls `HashMap::remove()`, returns the boolean result. Safe to call on absent entries (returns `false`).\n   - **`Demux::route(&self, worker_id: &str, event: WorkerEvent) -> Result<(), AnvilError>`**: Locks the mutex, looks up the worker_id in the HashMap. If found, clones the `Sender` (cheap clone \u2014 just an Arc increment), unlocks the mutex, then calls `tx.send(event).await`. If the send fails (receiver dropped), returns `Err(AnvilError::Ipc(format!(\"send failed for worker {worker_id}\")))`. If not found, returns `Err(AnvilError::WorkerNotFound(worker_id.into()))`. The route method is `async` because it awaits on the channel send.\n\n3. **Update `crates/anvilml-worker/src/lib.rs`.** Add two lines after the existing module declarations:\n   ```rust\n   mod demux;\n   pub use demux::Demux;\n   ```\n   This keeps lib.rs well under the 80-line hard cap (~14 lines total).\n\n4. **Create `crates/anvilml-worker/tests/demux_tests.rs`.** Write \u22655 integration tests:\n   - `test_register_and_route_delivers`: Register a worker, route an event, verify the receiver gets it.\n   - `test_route_worker_not_found`: Route to an unregistered worker, verify `AnvilError::WorkerNotFound` is returned.\n   - `test_deregister_removes_entry` (mandatory per \u00a79.4): Register a worker, route successfully, deregister, then route again \u2014 verify `AnvilError::WorkerNotFound`. This proves the entry was actually removed.\n   - `test_double_deregister_is_safe`: Deregister an existing entry, then deregister the same ID again \u2014 verify the second call returns `false` and does not panic.\n   - `test_register_overwrites`: Register a worker with sender A, then register the same worker ID with sender B, route an event, verify it arrives on B's receiver (not A's). This tests the idempotent overwrite behavior.\n\n5. **Verify compilation and tests.** Run `cargo test -p anvilml-worker --test demux_tests` and confirm exit 0.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-01T09:31:25+0200",
-  "plan_approval_message_id": "1521780023961452636",
+  "last_updated": "2026-07-01T10:12:22+0200",
+  "plan_approval_message_id": "1521790238588932128",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1521780022296186972",
+  "plan_report_message_id": "1521790236877918288",
   "impl_report_message_id": null
 }

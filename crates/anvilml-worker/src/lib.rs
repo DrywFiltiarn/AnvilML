@@ -6,6 +6,9 @@ pub use demux::Demux;
 mod env;
 pub use env::WorkerEnv;
 
+pub mod keepalive;
+pub use keepalive::KeepaliveWatchdog;
+
 mod spawn;
 pub use spawn::{build_command, spawn_worker};
 
