@@ -80,6 +80,13 @@ impl Transport for MockTransport {
 /// An adapter that implements `Transport` for `Arc<RouterTransport>`.
 ///
 /// Bridges the concrete `RouterTransport::send()` method to the trait API.
+///
+/// TODO(P8-E3): construct this inside `ManagedWorker::run()` — wrap the worker's
+/// `Arc<RouterTransport>` in `RouterTransportAdapter`, pass it to
+/// `KeepaliveWatchdog::new(...)`, and spawn `watchdog.run()` in run()'s lifecycle.
+/// Remove the `#[allow(dead_code)]` below once that wiring exists — this struct is
+/// unused because no supervisor/ManagedWorker module exists yet to construct it.
+#[allow(dead_code)]
 struct RouterTransportAdapter(Arc<RouterTransport>);
 
 impl Transport for RouterTransportAdapter {
