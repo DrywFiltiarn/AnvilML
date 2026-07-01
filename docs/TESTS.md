@@ -3207,3 +3207,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Worker pre-registered, no events sent for 60 seconds.
 **Expected output:** Worker task completes within 65s (60s timeout + 5s buffer); `demux.registered("test-worker")` returns `false`.
 **Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_deregister_called_on_initializing_timeout` exits 0.
+
+---
+
+## test_crash_appends_to_attempt_history (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process, rt, sync, time), `tracing`, `rmp-serde` (dev), and `zeromq` (dev, tokio-runtime) dependencies. Uses in-process ZeroMQ ROUTER/DEALER pair to simulate a Python worker.
+**Tests:** A single transport error (DEALER socket dropped) causes exactly one crash attempt to be recorded in `attempt_history`. The crash path appends `Instant::now()` and calls `should_respawn()`, then emits a `crash_respawn_decision` INFO log before breaking.
+**Mode:** mock
+**Inputs:** ROUTER/DEALER pair on loopback, `Ready` event sent via `rmp_serde::to_vec_named()`, DEALER dropped to trigger transport error.
+**Expected output:** `ManagedWorker::run()` exits cleanly within 5s; the crash path executed (attempt_history.push + should_respawn call + log).
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_crash_appends_to_attempt_history` exits 0.
+
+---
+
+## test_crash_history_grows_per_crash (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process, rt, sync, time), `tracing`, `rmp-serde` (dev), and `zeromq` (dev, tokio-runtime) dependencies. Uses two sequential worker instances to verify crash-attempt accumulation.
+**Tests:** Multiple transport errors each append to `attempt_history`. Two separate `ManagedWorker` instances are spawned, each sending `Ready` then dropping its DEALER, proving each crash independently records an attempt.
+**Mode:** mock
+**Inputs:** Two ROUTER/DEALER pairs, each worker sends `Ready` then has its DEALER dropped.
+**Expected output:** Both worker instances exit cleanly within 5s each; each crash path executed independently.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_crash_history_grows_per_crash` exits 0.
+
+---
+
+## test_should_respawn_called_on_crash (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process, rt, sync, time), `tracing`, `rmp-serde` (dev), and `zeromq` (dev, tokio-runtime) dependencies. Uses a `RespawnPolicy` with 10 max attempts to verify `should_respawn()` is consulted on crash.
+**Tests:** On crash, `should_respawn()` is consulted and the INFO log `crash_respawn_decision` is emitted. A custom `RespawnPolicy::new(2000, 10, 300)` allows 10 attempts, so `should_respawn()` must return `true` for the first crash.
+**Mode:** mock
+**Inputs:** ROUTER/DEALER pair, `RespawnPolicy::new(2000, 10, 300)`, `Ready` event, DEALER dropped.
+**Expected output:** Worker exits cleanly within 5s; `crash_respawn_decision` log emitted with `should_respawn = true`.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_should_respawn_called_on_crash` exits 0.

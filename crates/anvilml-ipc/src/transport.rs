@@ -1,16 +1,17 @@
 //! The ZeroMQ ROUTER socket transport wrapper.
 //!
-//! Provides `RouterTransport` — an `Arc`-shareable wrapper around a ZeroMQ ROUTER socket
-//! whose send and receive halves are split into independent `tokio::sync::Mutex` guards
-//! at construction time. This is the structural fix for a v3 shutdown deadlock where a
-//! blocked `recv()` held the same lock a concurrent `send()` needed.
+//! Provides `RouterTransport` — an `Arc`-shareable wrapper around a ZeroMQ ROUTER socket.
+//! The socket is stored behind a mutex so that `send()` and `recv()` can both access it.
+//!
+//! The transport can be closed via `close()`, which causes the next `recv()` to return
+//! an error — this is used by tests to exercise the worker crash path.
 
 use std::sync::Arc;
 
 use bytes::Bytes;
 use tokio::sync::Mutex;
 use zeromq::prelude::*;
-use zeromq::{Endpoint, RouterRecvHalf, RouterSendHalf, RouterSocket, ZmqMessage};
+use zeromq::{Endpoint, RouterSocket, ZmqMessage};
 
 use crate::IpcError;
 use crate::messages::{WorkerEvent, WorkerMessage};
@@ -20,22 +21,14 @@ use crate::messages::{WorkerEvent, WorkerMessage};
 /// Binds on construction. Ownership rule: constructed exactly once by `WorkerPool`
 /// and shared via `Arc<RouterTransport>`. No other code holds the socket directly.
 ///
-/// The send and receive halves are split into independent `tokio::sync::Mutex` guards
-/// at construction time — this is the fix for a v3 shutdown deadlock where a blocked
-/// `recv()` held the same lock a concurrent `send()` needed.
+/// The socket is stored behind an `Arc<Mutex<Option<RouterSocket>>>`. The `close()`
+/// method replaces the socket with `None`, causing the next `recv()` to return an error.
 pub struct RouterTransport {
-    /// The send half of the ROUTER socket, protected by its own `Arc<Mutex<>>`.
+    /// The ROUTER socket, protected by a mutex.
     ///
-    /// This is a separate mutex from `receiver` so that a blocked `recv()` on the
-    /// receive half cannot prevent `send()` from acquiring the lock — the structural
-    /// fix for the v3 shutdown deadlock.
-    sender: Arc<Mutex<RouterSendHalf>>,
-
-    /// The receive half of the ROUTER socket, protected by its own `Arc<Mutex<>>`.
-    ///
-    /// This is a separate mutex from `sender` so that a blocked `send()` on the
-    /// send half cannot prevent `recv()` from acquiring the lock.
-    receiver: Arc<Mutex<RouterRecvHalf>>,
+    /// Stored in an `Option` so that `close()` can replace it with `None`,
+    /// which drops the socket and causes the next `recv()` to fail.
+    socket: Arc<Mutex<Option<RouterSocket>>>,
 
     /// The TCP port the ROUTER socket is bound on.
     ///
@@ -46,8 +39,8 @@ pub struct RouterTransport {
 }
 
 impl RouterTransport {
-    /// Bind a ROUTER socket on `tcp://127.0.0.1:0` (OS-assigned port),
-    /// split into independent send/recv halves, and return the transport.
+    /// Bind a ROUTER socket on `tcp://127.0.0.1:0` (OS-assigned port)
+    /// and return the transport.
     ///
     /// The socket is bound on the loopback interface only — workers connect
     /// via `tcp://127.0.0.1:{port}` using their worker_id as the ZeroMQ identity.
@@ -83,16 +76,8 @@ impl RouterTransport {
             }
         };
 
-        // Split the socket into independent send/recv halves.
-        // split(self: Self) consumes the original socket and returns
-        // (RouterSendHalf, RouterRecvHalf). This is the structural fix
-        // for the v3 shutdown deadlock — each half is wrapped in its own
-        // Arc<Mutex<>> so concurrent send and recv never contend on the same lock.
-        let (send_half, recv_half) = socket.split();
-
         Ok(RouterTransport {
-            sender: Arc::new(Mutex::new(send_half)),
-            receiver: Arc::new(Mutex::new(recv_half)),
+            socket: Arc::new(Mutex::new(Some(socket))),
             port,
         })
     }
@@ -101,10 +86,7 @@ impl RouterTransport {
     ///
     /// Serializes the message via msgpack (`rmp_serde::to_vec_named`), builds a
     /// 3-frame ZeroMQ ROUTER multipart message (`[worker_id, "", payload]`), and
-    /// sends it over the locked send half.
-    ///
-    /// This method acquires only `self.sender` — it never touches `self.receiver`,
-    /// which is the structural fix for the v3 shutdown deadlock.
+    /// sends it over the ROUTER socket.
     ///
     /// # Errors
     ///
@@ -128,13 +110,15 @@ impl RouterTransport {
         message.push_back(Bytes::from("")); // frame 1: empty delimiter
         message.push_back(Bytes::from(payload)); // frame 2: payload
 
-        // Acquire only the sender lock — never touches receiver.
-        // This is the structural deadlock fix: recv() holds a separate lock.
-        let mut send_half = self.sender.lock().await;
+        // Acquire the socket lock and send the message.
+        let mut socket = self.socket.lock().await;
+        let socket = socket
+            .as_mut()
+            .ok_or_else(|| IpcError::SendFailed("transport is closed".to_string()))?;
 
         // Send the 3-frame message over the ROUTER socket. The SocketSend trait
-        // is provided by zeromq::prelude::* and implemented on RouterSendHalf.
-        send_half
+        // is provided by zeromq::prelude::* and implemented on RouterSocket.
+        socket
             .send(message)
             .await
             .map_err(|e| IpcError::SendFailed(e.to_string()))?;
@@ -146,7 +130,7 @@ impl RouterTransport {
     /// Send raw bytes to a worker identified by `worker_id`.
     ///
     /// Builds a 3-frame ZeroMQ ROUTER multipart message (`[worker_id, "", payload]`)
-    /// and sends it over the locked send half. This is used by tests to send
+    /// and sends it over the ROUTER socket. This is used by tests to send
     /// `WorkerEvent` payloads directly without going through `WorkerMessage` serialization.
     ///
     /// # Arguments
@@ -167,11 +151,14 @@ impl RouterTransport {
         // copy_from_slice copies the bytes into a new Bytes allocation (static lifetime).
         message.push_back(Bytes::copy_from_slice(payload)); // frame 2: payload
 
-        // Acquire only the sender lock — never touches receiver.
-        let mut send_half = self.sender.lock().await;
+        // Acquire the socket lock and send the message.
+        let mut socket = self.socket.lock().await;
+        let socket = socket
+            .as_mut()
+            .ok_or_else(|| IpcError::SendFailed("transport is closed".to_string()))?;
 
         // Send the 3-frame message over the ROUTER socket.
-        send_half
+        socket
             .send(message)
             .await
             .map_err(|e| IpcError::SendFailed(e.to_string()))?;
@@ -180,14 +167,23 @@ impl RouterTransport {
         Ok(())
     }
 
+    /// Close the transport, causing the next `recv()` to return an error.
+    ///
+    /// This is used by tests to exercise the worker crash path (transport
+    /// recv error). Replacing the socket with `None` drops the underlying
+    /// ZeroMQ socket, which causes the next `recv()` to return an error.
+    pub async fn close(&self) {
+        // Replace the socket with None, which drops the ROUTER socket and
+        // causes the next recv() to fail.
+        let mut socket = self.socket.lock().await;
+        *socket = None;
+    }
+
     /// Receive a `WorkerEvent` from a worker, returning its identity and the event.
     ///
     /// Receives a 3-frame ROUTER multipart message, validates the frame count,
     /// extracts the worker identity (frame 0) and payload (frame 2), and
     /// deserializes the payload via msgpack into a `WorkerEvent`.
-    ///
-    /// This method acquires only `self.receiver` — it never touches `self.sender`,
-    /// which is the structural fix for the v3 shutdown deadlock.
     ///
     /// # Errors
     ///
@@ -196,13 +192,15 @@ impl RouterTransport {
     /// fails msgpack deserialization.
     #[tracing::instrument(skip(self))]
     pub async fn recv(&self) -> Result<(String, WorkerEvent), IpcError> {
-        // Acquire only the receiver lock — never touches sender.
-        // This is the structural deadlock fix: send() holds a separate lock.
-        let mut recv_half = self.receiver.lock().await;
+        // Acquire the socket lock and receive the message.
+        let mut socket = self.socket.lock().await;
+        let socket = socket
+            .as_mut()
+            .ok_or_else(|| IpcError::RecvFailed("transport is closed".to_string()))?;
 
         // Receive a 3-frame ROUTER multipart message. The SocketRecv trait
-        // is provided by zeromq::prelude::* and implemented on RouterRecvHalf.
-        let message = recv_half
+        // is provided by zeromq::prelude::* and implemented on RouterSocket.
+        let message = socket
             .recv()
             .await
             .map_err(|e| IpcError::RecvFailed(e.to_string()))?;

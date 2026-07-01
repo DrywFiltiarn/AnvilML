@@ -82,16 +82,17 @@
     "P8-C2",
     "P8-D1",
     "P8-E1",
-    "P8-E2"
+    "P8-E2",
+    "P8-E3"
   ],
-  "in_progress": "P8-E3",
+  "in_progress": "P8-E4",
   "plan_approved": true,
-  "current_plan": "1. **Update `WorkerStatus` enum** in `crates/anvilml-core/src/types/worker.rs`:\n   - Replace `Spawning` with `Initializing` (the design doc \u00a75.7 uses `Initializing`, not `Spawning`, for the post-spawn state that the 60-second timeout guards).\n   - Add `Respawning` variant after `Dead` (required by the \u00a79.5 state machine: `Dead \u2192 Respawning \u2192 Initializing`).\n   - Keep `Dying` as-is (it exists in the current code and is used for the Dying event transition).\n\n2. **Add `Demux::registered()` method** in `crates/anvilml-worker/src/demux.rs`:\n   - `pub fn registered(&self, worker_id: &str) -> bool` \u2014 locks the inner mutex, checks if the worker_id key exists in the HashMap, returns true/false. This is a read-only query for test verification of deregistration.\n\n3. **Implement `ManagedWorker` struct** in `crates/anvilml-worker/src/managed.rs`:\n   ```rust\n   pub struct ManagedWorker {\n       worker_id: String,\n       transport: Arc<RouterTransport>,\n       demux: Arc<Demux>,\n       respawn_policy: RespawnPolicy,\n       attempt_history: Vec<Instant>,\n   }\n   ```\n   - `worker_id: String` \u2014 stable identity, used for deregister.\n   - `transport: Arc<RouterTransport>` \u2014 shared ROUTER socket for receiving events.\n   - `demux: Arc<Demux>` \u2014 shared routing table; wrapped in Arc so the test can inspect it after run() consumes the ManagedWorker.\n   - `respawn_policy: RespawnPolicy` \u2014 decision logic for crash recovery (used in P8-E4).\n   - `attempt_history: Vec<Instant>` \u2014 timestamps of crash/Dead transitions (used in P8-E4).\n\n4. **Implement `ManagedWorker::new()` constructor**:\n   - Takes `worker_id: String`, `transport: Arc<RouterTransport>`, `demux: Arc<Demux>`, `respawn_policy: RespawnPolicy`.\n   - Returns `Self` with empty `attempt_history`.\n\n5. **Implement `ManagedWorker::run(mut self, mut shutdown_rx: oneshot::Receiver<()>)`**:\n   - **Entry**: Set status to `Initializing` via `self.handle.set_status(WorkerStatus::Initializing).await`, then call `self.demux.register(self.worker_id.clone())`.\n   - **Initializing timeout**: Spawn a `tokio::time::sleep(Duration::from_secs(60))` task. If it completes before a `Ready` event arrives, set status to `Dead`, log `worker_declared_dead`, and return (deregister on exit).\n   - **Main loop** (`tokio::select!`):\n     - `shutdown_rx` branch: Set status to `Dying`, log `shutdown_requested`, break loop.\n     - `transport.recv()` branch: Receive `(id, event)`, match on event:\n       - `Ready`: Set status to `Idle`, log `worker_ready`, clear the timeout (cancel the sleep task by dropping it).\n       - `Dying`: Set status to `Dead`, append `Instant::now()` to `attempt_history`, log `worker_dying`, break loop.\n       - `Completed`/`Failed`/`Cancelled`: Set status to `Idle`, log completion/failure/cancellation.\n       - `Pong`: No action needed (keepalive handles this separately).\n       - Other events: Log at DEBUG level.\n   - **Exit**: Call `self.demux.deregister(&self.worker_id)`, log `worker_deregistered`, return.\n   - The deregister call is the final action of `run()`, executed on every exit path (graceful shutdown, timeout, crash).\n\n6. **Update `lib.rs`** to re-export `ManagedWorker`:\n   - Add `pub use managed::ManagedWorker;` to the existing `pub use managed::WorkerHandle;` line.\n\n7. **Write >=5 new tests** in `crates/anvilml-worker/tests/managed_tests.rs`:\n   - See the Tests section below for exact test names, what they verify, and the mock IPC backend setup.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-01T13:54:04+0200",
-  "plan_approval_message_id": "1521846121218048120",
+  "last_updated": "2026-07-01T15:31:19+0200",
+  "plan_approval_message_id": "1521866613576564838",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1521846118760054866",
+  "plan_report_message_id": "1521866611454119977",
   "impl_report_message_id": null
 }

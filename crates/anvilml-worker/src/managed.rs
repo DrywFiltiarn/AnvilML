@@ -179,16 +179,15 @@ pub struct ManagedWorker {
     /// Crash-recovery backoff policy.
     ///
     /// Decides whether a crashed worker may be respawned based on the count of
-    /// recent crash attempts within a sliding window. Used by `P8-E4` for
-    /// automatic crash recovery.
-    #[allow(dead_code)]
+    /// recent crash attempts within a sliding window. Consulted on every
+    /// crash (transport recv error) to determine if respawn is permissible.
     respawn_policy: RespawnPolicy,
 
-    /// Timestamps of crash / `Dead` transitions.
+    /// Timestamps of crash transitions.
     ///
-    /// Each time the worker transitions to `Dead` (crash or explicit termination),
-    /// `Instant::now()` is appended. Used by `P8-E4` to decide respawn eligibility.
-    #[allow(dead_code)]
+    /// Each time the worker crashes (transport recv error), `Instant::now()`
+    /// is appended to this vector. Consulted by `RespawnPolicy::should_respawn()`
+    /// to decide whether a respawn is permissible.
     attempt_history: Vec<Instant>,
 }
 
@@ -221,6 +220,16 @@ impl ManagedWorker {
             respawn_policy,
             attempt_history: Vec::new(),
         }
+    }
+
+    /// Returns the number of crash attempts tracked in `attempt_history`.
+    ///
+    /// Each crash (transport recv error) appends an `Instant` to the history.
+    /// This accessor is primarily for testing — it lets callers verify that
+    /// crash-attempt tracking is working correctly without exposing the
+    /// internal `Vec<Instant>` directly.
+    pub fn attempt_count(&self) -> usize {
+        self.attempt_history.len()
     }
 
     /// Run the worker's full lifecycle.
@@ -279,8 +288,17 @@ impl ManagedWorker {
                         }
                         Err(e) => {
                             // Transport recv failed — this is a fatal error for the
-                            // managed worker. Log and break to exit path.
+                            // managed worker. Track the crash attempt and decide
+                            // whether a respawn is permissible.
+                            // P8-E5 will act on the decision by sleeping, re-spawning,
+                            // and continuing the loop instead of breaking.
                             tracing::error!(worker_id = %self.worker_id, error = %e, "transport recv failed");
+                            // Record this crash attempt.
+                            self.attempt_history.push(Instant::now());
+                            // Consult the respawn policy — this is the decision point
+                            // that P8-D1 was built for but nothing had wired up yet.
+                            let should = self.respawn_policy.should_respawn(&self.attempt_history);
+                            tracing::info!(worker_id = %self.worker_id, should_respawn = should, "crash_respawn_decision");
                             break;
                         }
                     }
