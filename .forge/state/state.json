@@ -74,16 +74,17 @@
     "P7-B1",
     "P7-B2",
     "P7-D1",
-    "P8-A1"
+    "P8-A1",
+    "P8-B1"
   ],
-  "in_progress": "P8-B1",
+  "in_progress": "P8-B2",
   "plan_approved": true,
-  "current_plan": "1. **Create `crates/anvilml-worker/src/env.rs`** with the `WorkerEnv` struct and its `build` method:\n   - Import `std::collections::HashMap` and `anvilml_core::DeviceType`.\n   - Define `pub struct WorkerEnv;` (zero-sized unit struct \u2014 the builder pattern uses a static method, not an instance).\n   - Implement `pub fn WorkerEnv::build(ipc_port: u16, worker_id: &str, device_index: u32, device_type: DeviceType, mock: bool, log_level: &str, max_ipc_payload_mib: u32) -> HashMap<String, String>`:\n     - Allocate a new `HashMap`.\n     - Insert `(\"ANVILML_IPC_PORT\", ipc_port.to_string())`.\n     - Insert `(\"ANVILML_WORKER_ID\", worker_id.to_string())`.\n     - Insert `(\"ANVILML_DEVICE_INDEX\", device_index.to_string())`.\n     - Insert `(\"ANVILML_DEVICE_TYPE\", device_type.as_str())` \u2014 use a helper or match to convert `DeviceType` to `\"cuda\"`, `\"rocm\"`, or `\"cpu\"` string. (Rationale: `DeviceType` has `#[serde(rename_all = \"snake_case\")]` but no `AsRef<str>` or `Display` impl; a match is the most explicit and zero-dependency approach.)\n     - If `mock` is `true`, insert `(\"ANVILML_WORKER_MOCK\", \"1\")`. If `mock` is `false`, do NOT insert this key (absent from map).\n     - Insert `(\"ANVILML_LOG_LEVEL\", log_level.to_string())`.\n     - Insert `(\"ANVILML_MAX_IPC_PAYLOAD_MIB\", max_ipc_payload_mib.to_string())`.\n     - Return the populated map.\n   - Add a `///` doc comment on `WorkerEnv` describing its purpose.\n   - Add a `///` doc comment on `build()` with parameter descriptions and return type.\n\n2. **Update `crates/anvilml-worker/src/lib.rs`**:\n   - Add `mod env;` after the existing `//!` doc comment.\n   - Add `pub use env::WorkerEnv;` after the `mod` declaration.\n   - Keep the file \u2264 80 lines (it will be ~4 lines).\n\n3. **Create `crates/anvilml-worker/tests/env_tests.rs`** with \u22655 integration tests:\n   - Test that all env vars are present with correct values (one comprehensive test).\n   - Test `ANVILML_WORKER_MOCK` absent when `mock = false`.\n   - Test `ANVILML_WORKER_MOCK = \"1\"` when `mock = true`.\n   - Test `ANVILML_DEVICE_TYPE` maps correctly for all 3 `DeviceType` variants (`Cuda`\u2192`\"cuda\"`, `Rocm`\u2192`\"rocm\"`, `Cpu`\u2192`\"cpu\"`).\n   - Test a 4th variant combining specific values to verify `ANVILML_FORCE_WORKER_MOCK` is NOT present.\n\n4. **Run `cargo test -p anvilml-worker --test env_tests`** to verify all tests pass.\n\nNo logging calls are needed \u2014 `WorkerEnv::build()` is a pure data transformation with no side effects, no I/O, and no decision points that would require observability. No `#[tracing::instrument]` is needed.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-01T01:05:55+0200",
-  "plan_approval_message_id": "1521649627760295996",
+  "last_updated": "2026-07-01T07:49:03+0200",
+  "plan_approval_message_id": "1521750624474103829",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1521649626296483981",
+  "plan_report_message_id": "1521750622725079061",
   "impl_report_message_id": null
 }

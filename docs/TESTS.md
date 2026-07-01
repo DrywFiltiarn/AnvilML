@@ -4,6 +4,78 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 ---
 
+## test_build_command_has_path (anvilml-worker)
+
+**File:** `crates/anvilml-worker/src/spawn.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process feature) and `tracing` dependencies.
+**Tests:** `build_command()` constructs a valid `Command` without panicking.
+**Mode:** both
+**Inputs:** Empty env map, venv path `/tmp/test_venv`.
+**Expected output:** `build_command()` returns a configured `Command` without error.
+**Acceptance:** `cargo test -p anvilml-worker --test spawn_tests test_build_command_has_path` exits 0.
+
+---
+
+## test_interpreter_path_unix (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/spawn_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process feature) and `tracing` dependencies.
+**Tests:** `build_command()` constructs a Command targeting the correct Unix interpreter path (`{venv_path}/bin/python3`).
+**Mode:** both
+**Inputs:** venv path `/tmp/test_venv`, empty env map.
+**Expected output:** Command is structurally valid with Unix interpreter path.
+**Acceptance:** `cargo test -p anvilml-worker --test spawn_tests test_interpreter_path_unix` exits 0.
+
+---
+
+## test_interpreter_path_windows (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/spawn_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process feature) and `tracing` dependencies.
+**Tests:** `build_command()` would construct the correct Windows interpreter path (`{venv_path}\Scripts\python.exe`) when compiled for the Windows target.
+**Mode:** both
+**Inputs:** venv path `C:\test_venv`, empty env map.
+**Expected output:** Command is structurally valid with Windows interpreter path.
+**Acceptance:** `cargo test -p anvilml-worker --test spawn_tests test_interpreter_path_windows` exits 0.
+
+---
+
+## test_worker_script_arg (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/spawn_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process feature) and `tracing` dependencies.
+**Tests:** `build_command()` sets the script argument to `worker/worker_main.py`, ensuring the worker subprocess runs the correct module.
+**Mode:** both
+**Inputs:** Any venv path, empty env map.
+**Expected output:** Command has exactly one argument: `worker/worker_main.py`.
+**Acceptance:** `cargo test -p anvilml-worker --test spawn_tests test_worker_script_arg` exits 0.
+
+---
+
+## test_env_vars_applied (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/spawn_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process feature), `tracing`, and `anvilml-core` dependencies. Uses `WorkerEnv::build()` to produce a realistic env map.
+**Tests:** `build_command()` correctly applies all env vars from the input map via `Command::envs()`.
+**Mode:** both
+**Inputs:** Full env map from `WorkerEnv::build(5555, "0", 1, DeviceType::Cuda, true, "debug", 512)`.
+**Expected output:** All env vars from the map are applied to the Command.
+**Acceptance:** `cargo test -p anvilml-worker --test spawn_tests test_env_vars_applied` exits 0.
+
+---
+
+## test_stdio_piped (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/spawn_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process feature) and `tracing` dependencies.
+**Tests:** `build_command()` configures both stdout and stderr for piping, enabling the supervisor to read worker output and errors.
+**Mode:** both
+**Inputs:** Any venv path, empty env map.
+**Expected output:** Command has both stdout and stderr set to `Stdio::piped()`.
+**Acceptance:** `cargo test -p anvilml-worker --test spawn_tests test_stdio_piped` exits 0.
+
+---
+
 ## cli_help_shows_all_flags (backend)
 
 **File:** `backend/tests/cli_help_test.rs`
