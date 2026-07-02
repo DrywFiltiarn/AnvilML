@@ -6,7 +6,7 @@
 //! and provides decision logic for whether a crashed worker may be
 //! respawned, plus the constant delay duration.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Configurable backoff policy for worker crash recovery.
 ///
