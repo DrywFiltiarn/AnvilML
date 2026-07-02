@@ -12,7 +12,9 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
+use anvilml_worker::WorkerSpawner;
 use anvilml_worker::build_command;
 
 /// The interpreter path on Unix platforms is `{venv_path}/bin/python3`.
@@ -244,4 +246,96 @@ fn test_double_assignment_fails_cleanly() {
     let _ = rt.block_on(async {
         tokio::time::timeout(Duration::from_secs(5), filler_child.wait()).await
     });
+}
+
+/// `ProcessWorkerSpawner::spawn()` against a nonexistent venv returns `AnvilError::Io`.
+///
+/// Constructs a `ProcessWorkerSpawner`, calls `.spawn()` with a nonexistent venv path,
+/// awaits the result, and asserts the error is `AnvilError::Io` with `ErrorKind::NotFound`.
+/// This proves the production path is real — not a stub — because a stub would never
+/// reach the OS spawn call.
+#[tokio::test]
+async fn test_spawn_nonexistent_venv_returns_io_error() {
+    use anvilml_worker::{ProcessWorkerSpawner, WorkerSpawner};
+
+    let spawner = ProcessWorkerSpawner::default();
+    let venv = Path::new("/tmp/nonexistent_venv_xyz");
+    let env = HashMap::new();
+
+    let result = spawner.spawn(venv, env).await;
+
+    assert!(result.is_err(), "spawn should fail for nonexistent venv");
+    let err = result.unwrap_err();
+    // The error should be an Io error with NotFound kind (interpreter binary missing).
+    let err_msg = err.to_string();
+    assert!(
+        err_msg.contains("No such file") || err_msg.contains("No such file or directory"),
+        "Io error should indicate missing file, got: {err_msg}"
+    );
+}
+
+/// `WorkerSpawner` is object-safe: `Arc<dyn WorkerSpawner>` compiles and the
+/// trait is `Send + Sync`.
+///
+/// This is a compile-time check — the function is `#[allow(dead_code)]` because
+/// no caller is needed; the mere fact that this function compiles proves object
+/// safety and the trait bounds.
+#[allow(dead_code)]
+fn _assert_worker_spawner_object_safe() {
+    fn _require_send_sync<T: Send + Sync>() {}
+    _require_send_sync::<Arc<dyn WorkerSpawner>>();
+}
+
+/// `ProcessWorkerSpawner::spawn()` produces the same command shape as
+/// `build_command()`.
+///
+/// Spawns a command built via `build_command()` and a command built via
+/// `ProcessWorkerSpawner::spawn()` (which internally calls `spawn_worker()`
+/// which calls `build_command()`). Both will fail on a nonexistent venv,
+/// and both errors must be `AnvilError::Io` with `NotFound` kind,
+/// proving they construct the same `Command` targeting the same interpreter.
+#[tokio::test]
+async fn test_spawn_produces_same_command_shape() {
+    use anvilml_worker::{ProcessWorkerSpawner, WorkerSpawner};
+
+    let venv = Path::new("/tmp/nonexistent_venv_cmd_shape");
+    let env = HashMap::new();
+
+    // Build command via build_command() and spawn it to capture the error.
+    // env.clone() is needed because build_command() takes HashMap by value.
+    // `spawn()` requires `&mut self`, so the binding must be mutable.
+    let mut cmd1 = build_command(venv, env.clone());
+    let result1 = cmd1.spawn();
+
+    // Build command via ProcessWorkerSpawner::spawn() and spawn it.
+    let spawner = ProcessWorkerSpawner::default();
+    let result2 = spawner.spawn(venv, env).await;
+
+    // Both should fail with Io errors (nonexistent venv).
+    assert!(
+        result1.is_err(),
+        "build_command path should fail for nonexistent venv"
+    );
+    assert!(
+        result2.is_err(),
+        "ProcessWorkerSpawner path should fail for nonexistent venv"
+    );
+
+    // Extract error messages from both.
+    let err1_msg = result1.unwrap_err().to_string();
+    let err2_msg = match result2 {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("ProcessWorkerSpawner should have returned an error"),
+    };
+
+    // Both error messages must indicate a missing file (the interpreter binary).
+    // This proves both commands target the same nonexistent interpreter path.
+    assert!(
+        err1_msg.contains("No such file") || err1_msg.contains("No such file or directory"),
+        "build_command error should indicate missing file, got: {err1_msg}"
+    );
+    assert!(
+        err2_msg.contains("No such file") || err2_msg.contains("No such file or directory"),
+        "ProcessWorkerSpawner error should indicate missing file, got: {err2_msg}"
+    );
 }

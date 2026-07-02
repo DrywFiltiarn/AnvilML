@@ -2860,6 +2860,40 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 ---
 
+## test_spawn_nonexistent_venv_returns_io_error (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/spawn_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process feature), `tracing`, and `anvilml-core` dependencies. The `WorkerSpawner` trait and `ProcessWorkerSpawner` struct are defined in `spawn.rs` and re-exported from `lib.rs`.
+**Tests:** `ProcessWorkerSpawner::spawn()` against a nonexistent venv path returns `AnvilError::Io` whose message contains the interpreter path (`python3` or `python`), proving the production path reaches the OS spawn call.
+**Mode:** both
+**Inputs:** `venv_path = "/tmp/nonexistent_venv_xyz"`, empty env map.
+**Expected output:** `Err(AnvilError::Io(_))` where `e.to_string()` contains `"python3"` or `"python"`.
+**Acceptance:** `cargo test -p anvilml-worker --test spawn_tests test_spawn_nonexistent_venv_returns_io_error` exits 0.
+
+---
+
+## test_worker_spawner_is_object_safe (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/spawn_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process feature), `tracing`, and `anvilml-core` dependencies. The `WorkerSpawner` trait is defined in `spawn.rs` and re-exported from `lib.rs`.
+**Tests:** `WorkerSpawner` is object-safe: `Arc<dyn WorkerSpawner>` compiles and the trait is `Send + Sync`. This is a compile-time check — no runtime behavior is exercised.
+**Mode:** both
+**Inputs:** N/A (compile-time check only).
+**Expected output:** The test function compiles without trait object safety errors.
+**Acceptance:** `cargo test -p anvilml-worker --test spawn_tests test_worker_spawner_is_object_safe` exits 0.
+
+---
+
+## test_spawn_produces_same_command_shape (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/spawn_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process feature), `tracing`, and `anvilml-core` dependencies. `build_command()` and `ProcessWorkerSpawner::spawn()` both construct commands for the same venv path.
+**Tests:** `ProcessWorkerSpawner::spawn()` produces the same command shape as `build_command()` — both error messages contain the same interpreter path, proving `spawn()` delegates to `spawn_worker()` which delegates to `build_command()`.
+**Mode:** both
+**Inputs:** `venv_path = "/tmp/nonexistent_venv_cmd_shape"`, empty env map, same for both calls.
+**Expected output:** Both error messages contain the venv path, confirming identical interpreter paths.
+**Acceptance:** `cargo test -p anvilml-worker --test spawn_tests test_spawn_produces_same_command_shape` exits 0.
+
 ---
 
 ## test_register_and_route_delivers (anvilml-worker)

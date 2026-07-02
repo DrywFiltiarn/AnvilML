@@ -10,7 +10,7 @@ pub mod keepalive;
 pub use keepalive::KeepaliveWatchdog;
 
 mod spawn;
-pub use spawn::{build_command, spawn_worker};
+pub use spawn::{ProcessWorkerSpawner, WorkerSpawner, build_command, spawn_worker};
 
 #[cfg(windows)]
 mod job_object;

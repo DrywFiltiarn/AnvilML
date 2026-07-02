@@ -5,7 +5,9 @@
 //! `{venv_path}/bin/python3` on Unix, `{venv_path}\Scripts\python.exe` on Windows.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::process::Stdio;
 
 use tokio::process::Command;
@@ -106,5 +108,51 @@ mod tests {
         // We can't easily inspect the internal path, but we can verify
         // the command is constructible without panicking.
         let _ = cmd;
+    }
+}
+
+/// Trait for spawning Python worker subprocesses.
+///
+/// Provides an injectable abstraction over subprocess spawning, enabling
+/// `ManagedWorker` to spawn its first-generation subprocess and every
+/// respawn through a single uniform interface. Production code uses
+/// `ProcessWorkerSpawner`; tests may substitute a mock implementation.
+pub trait WorkerSpawner: Send + Sync {
+    /// Spawn a Python worker subprocess.
+    ///
+    /// # Arguments
+    /// * `venv_path` — Root of the Python virtual environment containing
+    ///   the interpreter.
+    /// * `env` — Environment variables to inject into the subprocess.
+    ///
+    /// # Errors
+    /// Returns `AnvilError::Io` if the process cannot be spawned
+    /// (e.g. the interpreter binary does not exist).
+    fn spawn<'a>(
+        &'a self,
+        venv_path: &'a Path,
+        env: HashMap<String, String>,
+    ) -> Pin<Box<dyn Future<Output = Result<tokio::process::Child, AnvilError>> + Send + 'a>>;
+}
+
+/// Production implementation of `WorkerSpawner` that calls
+/// `spawn_worker()` directly.
+///
+/// This is the concrete spawner used in production. It does not
+/// re-implement any part of `build_command()`'s logic — it delegates
+/// entirely to `spawn_worker()`.
+#[derive(Clone, Debug, Default)]
+pub struct ProcessWorkerSpawner;
+
+impl WorkerSpawner for ProcessWorkerSpawner {
+    fn spawn<'a>(
+        &'a self,
+        venv_path: &'a Path,
+        env: HashMap<String, String>,
+    ) -> Pin<Box<dyn Future<Output = Result<tokio::process::Child, AnvilError>> + Send + 'a>> {
+        // Delegate to spawn_worker() — no re-implementation of
+        // build_command() logic. spawn_worker() handles interpreter
+        // path selection, env injection, and stdio piping.
+        Box::pin(spawn_worker(venv_path, env))
     }
 }
