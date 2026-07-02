@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-ipc"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "anvilml-core",
  "bytes",
@@ -209,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-worker"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
@@ -219,6 +219,7 @@ dependencies = [
  "serial_test",
  "tokio",
  "tracing",
+ "uuid",
  "windows",
  "zeromq",
 ]

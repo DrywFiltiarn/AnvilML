@@ -251,7 +251,10 @@ impl ManagedWorker {
     ///
     /// 1. **Graceful shutdown** — `shutdown_rx` receives `()`: status → `Dying`, deregister.
     /// 2. **Initializing timeout** — 60s elapses without `Ready`: status → `Dead`, deregister.
-    /// 3. **Worker crash** — `Dying` event received: status → `Dead`, deregister.
+    /// 3. **Worker crash (explicit)** — `Dying` event received: status → `Dead`, deregister.
+    /// 4. **Worker crash (transport)** — `transport.recv()` returns `Err`: status → `Dead`,
+    ///    `attempt_history` is appended and `RespawnPolicy::should_respawn()` is consulted
+    ///    (the decision itself is acted on by `P8-E6`), deregister.
     ///
     /// On all exit paths, `demux.deregister(&self.worker_id)` is the final action.
     #[tracing::instrument(skip(self, shutdown_rx), fields(worker_id = %self.worker_id))]
@@ -263,15 +266,20 @@ impl ManagedWorker {
 
         // Step 2: Spawn the Initializing timeout guard.
         // If this sleep completes before a Ready event, the worker is declared Dead.
-        // We hold the JoinHandle so we can drop it (cancel it) when Ready arrives.
+        // `initialized` disarms this branch once Ready arrives — see the `if
+        // !initialized` precondition on the select branch below. Without this,
+        // the timeout keeps ticking for the worker's entire lifetime and fires
+        // at 60s regardless of how long ago Ready was actually received.
         let init_timeout = tokio::time::sleep(Duration::from_secs(60));
         tokio::pin!(init_timeout);
+        let mut initialized = false;
 
         // Step 3: Main event loop.
         loop {
             tokio::select! {
                 // Graceful shutdown path.
                 _ = &mut shutdown_rx => {
+                    *self.status.write().await = WorkerStatus::Dying;
                     tracing::info!(worker_id = %self.worker_id, "shutdown_requested");
                     break;
                 }
@@ -280,6 +288,9 @@ impl ManagedWorker {
                 result = self.transport.recv() => {
                     match result {
                         Ok((id, event)) => {
+                            if matches!(event, WorkerEvent::Ready { .. }) {
+                                initialized = true;
+                            }
                             // handle_event returns true when the Dying event is
                             // received, signaling the main loop to break and exit.
                             if self.handle_event(&id, event).await {
@@ -290,9 +301,10 @@ impl ManagedWorker {
                             // Transport recv failed — this is a fatal error for the
                             // managed worker. Track the crash attempt and decide
                             // whether a respawn is permissible.
-                            // P8-E5 will act on the decision by sleeping, re-spawning,
+                            // P8-E6 will act on the decision by sleeping, re-spawning,
                             // and continuing the loop instead of breaking.
                             tracing::error!(worker_id = %self.worker_id, error = %e, "transport recv failed");
+                            *self.status.write().await = WorkerStatus::Dead;
                             // Record this crash attempt.
                             self.attempt_history.push(Instant::now());
                             // Consult the respawn policy — this is the decision point
@@ -306,7 +318,10 @@ impl ManagedWorker {
 
                 // Initializing timeout — 60 seconds elapsed without Ready.
                 // This means the worker process started but never reported readiness.
-                _ = &mut init_timeout => {
+                // Disarmed once `initialized` is true, per the precondition below —
+                // this branch is not even polled once Ready has been received.
+                _ = &mut init_timeout, if !initialized => {
+                    *self.status.write().await = WorkerStatus::Dead;
                     tracing::info!(worker_id = %self.worker_id, "worker_declared_dead");
                     break;
                 }
@@ -322,32 +337,39 @@ impl ManagedWorker {
     ///
     /// Returns `true` if the main loop should break (on `Dying` event),
     /// `false` otherwise. Transitions the worker's status based on the event type:
-    /// - `Ready`: log `worker_ready`.
-    /// - `Dying`: log `worker_dying`, return `true` to break the loop.
-    /// - `Completed`/`Failed`/`Cancelled`: log completion/failure/cancellation.
+    /// - `Ready`: status → `Idle`, log `worker_ready`.
+    /// - `Dying`: status → `Dead`, log `worker_dying`, return `true` to break the loop.
+    /// - `Completed`/`Failed`/`Cancelled`: status → `Idle`, log completion/failure/cancellation.
     /// - `Pong`: no action (keepalive handles this separately).
     /// - Other events: log at DEBUG level.
     ///
-    /// The `init_timeout` guard is dropped (cancelled) when a `Ready` event arrives,
-    /// preventing the timeout from triggering after the worker has started.
+    /// The `init_timeout` branch in `run()`'s `select!` is disarmed once a `Ready`
+    /// event is seen (tracked via `run()`'s own `initialized` flag, not by this
+    /// method) — see `run()`'s doc comment for the mechanism.
     async fn handle_event(&mut self, _id: &str, event: WorkerEvent) -> bool {
         match &event {
             WorkerEvent::Ready { .. } => {
-                // Worker successfully initialized — cancel the initializing timeout
-                // by dropping the pinned sleep future. After this point the timeout
-                // will not fire even if the select loop continues.
+                // Worker successfully initialized. The Initializing timeout is
+                // disarmed by run()'s own select! precondition (`initialized`),
+                // set the moment this event is matched in the recv() branch —
+                // not here, since handle_event() doesn't own that state.
+                *self.status.write().await = WorkerStatus::Idle;
                 tracing::info!(worker_id = %self.worker_id, "worker_ready");
                 false
             }
             WorkerEvent::Dying { reason } => {
-                // Worker is terminating — log and signal the main loop to break.
-                // The status transition to Dead and deregister happen in the exit path.
+                // Worker is terminating — the worker itself reported this, so it
+                // is already gone: transition straight to Dead (not the Dying
+                // status, which is reserved for a supervisor-initiated shutdown
+                // still in flight — see the shutdown_rx branch in run()).
+                *self.status.write().await = WorkerStatus::Dead;
                 tracing::info!(worker_id = %self.worker_id, reason = %reason, "worker_dying");
                 true
             }
             WorkerEvent::Completed { job_id, elapsed_ms } => {
                 // Job completed successfully — transition back to Idle so the
                 // worker can accept the next job.
+                *self.status.write().await = WorkerStatus::Idle;
                 tracing::info!(worker_id = %self.worker_id, job_id = %job_id, elapsed_ms = %elapsed_ms, "job_completed");
                 false
             }
@@ -358,6 +380,7 @@ impl ManagedWorker {
             } => {
                 // Job failed — transition back to Idle. The traceback is logged
                 // at DEBUG level for diagnostic purposes.
+                *self.status.write().await = WorkerStatus::Idle;
                 tracing::info!(worker_id = %self.worker_id, job_id = %job_id, error = %error, "job_failed");
                 if let Some(tb) = traceback {
                     tracing::debug!(worker_id = %self.worker_id, traceback = %tb, "job failure traceback");
@@ -366,6 +389,7 @@ impl ManagedWorker {
             }
             WorkerEvent::Cancelled { job_id } => {
                 // Job was cancelled by the client — transition back to Idle.
+                *self.status.write().await = WorkerStatus::Idle;
                 tracing::info!(worker_id = %self.worker_id, job_id = %job_id, "job_cancelled");
                 false
             }

@@ -349,11 +349,54 @@ async fn connect_dealer(transport: &RouterTransport, worker_id: &str) -> DealerS
         .connect(&endpoint)
         .await
         .expect("DEALER connect to ROUTER should succeed");
-    // Give the ROUTER time to register the DEALER's identity.
-    // Without this, send_raw may fail with "Destination client not found by
-    // identity" because the ROUTER hasn't seen the DEALER yet.
+    // Give the ROUTER time to register the DEALER's identity. Without this,
+    // a subsequent ROUTER-side send addressed to this identity could fail
+    // with "Destination client not found by identity" before the handshake
+    // settles — tests that simulate worker-originated events via the DEALER's
+    // own send() aren't affected by this, but the delay is cheap insurance.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     dealer
+}
+
+/// Send a `WorkerEvent` from the DEALER side to the ROUTER — the correct
+/// direction for simulating a worker-originated event in tests.
+///
+/// `RouterTransport::send_raw()`/`send()` go the other way (ROUTER → the
+/// peer identified by `worker_id`, i.e. straight to this same DEALER) and
+/// must never be used to simulate the worker sending something — a ROUTER's
+/// own outbound send never loops back into its own `recv()`. This was a
+/// latent defect discovered while implementing `P8-E5`: `test_run_completes_
+/// on_ready_event` and five other pre-existing tests used `send_raw()` for
+/// exactly this wrong purpose, so the events they claimed to deliver were
+/// never actually received by `ManagedWorker`. See `PHASES.md`'s amendments
+/// log for the full account.
+async fn send_event(dealer: &mut DealerSocket, event: &WorkerEvent) {
+    let payload = rmp_serde::to_vec_named(event).expect("event should serialize");
+    let mut msg = ZmqMessage::from(Bytes::from(""));
+    msg.push_back(Bytes::from(payload));
+    dealer.send(msg).await.expect("DEALER send should succeed");
+}
+
+/// Send a payload that fails `WorkerEvent` msgpack deserialization, from the
+/// DEALER side — the deterministic, deadlock-free way to trigger `ManagedWorker`'s
+/// transport-error crash path in tests.
+///
+/// `RouterTransport::close()` is NOT safe to use for this once any event has
+/// already been genuinely received on the same `ManagedWorker`: `recv()` holds
+/// its `self.socket` lock for the entire duration of the blocking inner socket
+/// read (a confirmed defect in `anvilml-ipc/src/transport.rs`, flagged but not
+/// fixed as part of this retrofit — Phase 7 is frozen). If `ManagedWorker`'s
+/// next `recv()` call is already in flight and holding that lock waiting for a
+/// message that will never come, `close()` blocks forever waiting for the same
+/// lock, and only `run()`'s `init_timeout` (60s) ever breaks the standoff. A
+/// malformed payload sidesteps this entirely: it's a genuine incoming message
+/// the already-listening `recv()` receives normally (no lock contention), and
+/// fails only at the deserialization step, returning `IpcError::RecvFailed`
+/// exactly like a real transport error would. See `PHASES.md`'s amendments log.
+async fn send_malformed(dealer: &mut DealerSocket) {
+    let mut msg = ZmqMessage::from(Bytes::from(""));
+    msg.push_back(Bytes::from_static(b"not valid msgpack"));
+    dealer.send(msg).await.expect("DEALER send should succeed");
 }
 
 /// `run()` transitions through Initializing → Idle when a Ready event is received,
@@ -372,8 +415,7 @@ async fn test_run_completes_on_ready_event() {
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
 
     // Connect a DEALER socket as the "Python worker" so the ROUTER recognizes
-    // the worker identity. Without this, send_raw fails with
-    // "Destination client not found by identity".
+    // the worker identity.
     let mut _dealer = connect_dealer(&transport, "test-worker").await;
 
     // Spawn the worker — it starts in Initializing state.
@@ -387,7 +429,9 @@ async fn test_run_completes_on_ready_event() {
     );
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
-    // Send a Ready event to simulate the worker reporting startup.
+    // Send a Ready event to simulate the worker reporting startup — via the
+    // DEALER (worker → ROUTER), the direction ManagedWorker's recv() actually
+    // receives from.
     let ready = WorkerEvent::Ready {
         worker_id: "test-worker".to_string(),
         device_index: 0,
@@ -403,8 +447,18 @@ async fn test_run_completes_on_ready_event() {
         capabilities_source: "mock".to_string(),
         node_types: vec![],
     };
-    let payload = rmp_serde::to_vec_named(&ready).unwrap();
-    transport.send_raw("test-worker", &payload).await.unwrap();
+    send_event(&mut _dealer, &ready).await;
+
+    // Give the worker time to process the Ready event before asserting on it.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // The doc comment above has always claimed this transition happens —
+    // verify it actually does now, rather than only checking the task exits.
+    assert_eq!(
+        *status.read().await,
+        WorkerStatus::Idle,
+        "worker should be Idle after Ready event"
+    );
 
     // Send shutdown signal — the worker should exit cleanly.
     drop(shutdown_tx);
@@ -452,6 +506,14 @@ async fn test_shutdown_rx_triggers_graceful_exit() {
         _ = handle => (),
         _ = timeout => panic!("ManagedWorker::run() did not complete within 5s"),
     }
+
+    // Graceful shutdown transitions status to Dying (not Dead — the worker
+    // subprocess itself isn't confirmed gone, only asked to stop).
+    assert_eq!(
+        *status.read().await,
+        WorkerStatus::Dying,
+        "status should be Dying after graceful shutdown"
+    );
 }
 
 /// On graceful shutdown path, `demux.deregister(worker_id)` is called, confirmed
@@ -483,7 +545,9 @@ async fn test_deregister_called_on_graceful_exit() {
     );
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
-    // Send Ready event — worker should register and transition to Idle.
+    // Send Ready event via the DEALER (worker → ROUTER) — registration itself
+    // already happened above (simulating the pool's pre-spawn registration);
+    // this just exercises the normal startup event on top of it.
     let ready = WorkerEvent::Ready {
         worker_id: "test-worker".to_string(),
         device_index: 0,
@@ -499,13 +563,20 @@ async fn test_deregister_called_on_graceful_exit() {
         capabilities_source: "mock".to_string(),
         node_types: vec![],
     };
-    let payload = rmp_serde::to_vec_named(&ready).unwrap();
-    transport.send_raw("test-worker", &payload).await.unwrap();
+    send_event(&mut _dealer, &ready).await;
 
-    // After Ready, worker should be registered.
+    // Give the worker time to process the Ready event.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // After Ready, worker should still be registered and now Idle.
     assert!(
         demux.registered("test-worker"),
         "worker should be registered after Ready event"
+    );
+    assert_eq!(
+        *status.read().await,
+        WorkerStatus::Idle,
+        "worker should be Idle after Ready event"
     );
 
     // Send shutdown — worker should deregister on exit.
@@ -607,6 +678,15 @@ async fn test_deregister_called_on_crash() {
         !demux.registered("test-worker"),
         "worker should be deregistered after crash"
     );
+
+    // A Dying event is the worker itself reporting it's gone — status must
+    // go straight to Dead, not the Dying value (that's reserved for a
+    // supervisor-initiated shutdown still in flight).
+    assert_eq!(
+        *status.read().await,
+        WorkerStatus::Dead,
+        "status should be Dead after a Dying event"
+    );
 }
 
 /// When no Ready event arrives within the Initializing timeout, `run()` exits
@@ -663,6 +743,12 @@ async fn test_deregister_called_on_initializing_timeout() {
         !demux.registered("test-worker"),
         "worker should be deregistered after Initializing timeout"
     );
+
+    assert_eq!(
+        *status.read().await,
+        WorkerStatus::Dead,
+        "status should be Dead after the Initializing timeout fires"
+    );
 }
 
 /// A single transport error (DEALER dropped) causes exactly one crash attempt
@@ -678,7 +764,7 @@ async fn test_crash_appends_to_attempt_history() {
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
 
     // Connect a DEALER socket as the "Python worker".
-    let _dealer = connect_dealer(&transport, "test-worker").await;
+    let mut _dealer = connect_dealer(&transport, "test-worker").await;
 
     // Spawn the worker — it starts in Initializing state.
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -691,7 +777,8 @@ async fn test_crash_appends_to_attempt_history() {
     );
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
-    // Send a Ready event to transition to Idle.
+    // Send a Ready event to transition to Idle — via the DEALER (worker →
+    // ROUTER), the direction ManagedWorker's recv() actually receives from.
     let ready = WorkerEvent::Ready {
         worker_id: "test-worker".to_string(),
         device_index: 0,
@@ -707,13 +794,15 @@ async fn test_crash_appends_to_attempt_history() {
         capabilities_source: "mock".to_string(),
         node_types: vec![],
     };
-    let payload = rmp_serde::to_vec_named(&ready).unwrap();
-    transport.send_raw("test-worker", &payload).await.unwrap();
+    send_event(&mut _dealer, &ready).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    // Close the transport — this causes the ROUTER's next recv() to return
-    // an error, simulating a transport crash and exercising the crash exit
-    // path (attempt_history.push + should_respawn + crash_respawn_decision).
-    transport.close().await;
+    // Send a malformed payload — this causes the ROUTER's next recv() to
+    // return an error deterministically (no lock contention with close(),
+    // see send_malformed()'s doc comment), simulating a transport crash and
+    // exercising the crash exit path (attempt_history.push + should_respawn +
+    // crash_respawn_decision).
+    send_malformed(&mut _dealer).await;
 
     // Give the worker time to detect the crash and exit.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -726,14 +815,16 @@ async fn test_crash_appends_to_attempt_history() {
         _ = timeout => panic!("ManagedWorker::run() did not complete within 5s"),
     }
 
-    // After crash, exactly one crash attempt should be recorded.
+    // After crash, the transport-error path transitions status to Dead.
     //
     // Note: we cannot call attempt_count() on `worker` because `run()`
-    // consumed `self`. We verify via the status transition — the worker
-    // should have exited without error, which proves the crash path
-    // executed correctly. The actual history count is verified by
-    // checking that the worker exited cleanly (the crash_respawn_decision
-    // log was emitted).
+    // consumed `self` — the shared `status` lock is the only thing this
+    // test can still observe.
+    assert_eq!(
+        *status.read().await,
+        WorkerStatus::Dead,
+        "status should be Dead after a transport recv error"
+    );
 }
 
 /// Multiple transport errors each append to `attempt_history`.
@@ -751,7 +842,7 @@ async fn test_crash_history_grows_per_crash() {
         let transport = Arc::new(RouterTransport::bind().await.unwrap());
         let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
 
-        let _dealer = connect_dealer(&transport, "test-worker").await;
+        let mut _dealer = connect_dealer(&transport, "test-worker").await;
 
         let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let worker = ManagedWorker::new(
@@ -763,7 +854,7 @@ async fn test_crash_history_grows_per_crash() {
         );
         let handle = tokio::spawn(worker.run(shutdown_rx));
 
-        // Send Ready event.
+        // Send Ready event via the DEALER (worker → ROUTER).
         let ready = WorkerEvent::Ready {
             worker_id: "test-worker".to_string(),
             device_index: 0,
@@ -779,11 +870,12 @@ async fn test_crash_history_grows_per_crash() {
             capabilities_source: "mock".to_string(),
             node_types: vec![],
         };
-        let payload = rmp_serde::to_vec_named(&ready).unwrap();
-        transport.send_raw("test-worker", &payload).await.unwrap();
+        send_event(&mut _dealer, &ready).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        // Close the transport to trigger the crash path.
-        transport.close().await;
+        // Send a malformed payload to trigger the crash path deterministically
+        // (see send_malformed()'s doc comment for why close() is unsafe here).
+        send_malformed(&mut _dealer).await;
 
         let timeout = tokio::time::sleep(Duration::from_secs(5));
         tokio::select! {
@@ -798,7 +890,7 @@ async fn test_crash_history_grows_per_crash() {
         let transport = Arc::new(RouterTransport::bind().await.unwrap());
         let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
 
-        let _dealer = connect_dealer(&transport, "test-worker-2").await;
+        let mut _dealer = connect_dealer(&transport, "test-worker-2").await;
 
         let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let worker = ManagedWorker::new(
@@ -825,10 +917,10 @@ async fn test_crash_history_grows_per_crash() {
             capabilities_source: "mock".to_string(),
             node_types: vec![],
         };
-        let payload = rmp_serde::to_vec_named(&ready).unwrap();
-        transport.send_raw("test-worker-2", &payload).await.unwrap();
+        send_event(&mut _dealer, &ready).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        transport.close().await;
+        send_malformed(&mut _dealer).await;
 
         let timeout = tokio::time::sleep(Duration::from_secs(5));
         tokio::select! {
@@ -860,7 +952,7 @@ async fn test_should_respawn_called_on_crash() {
     // must return true for the first crash.
     let policy = RespawnPolicy::new(2000, 10, 300);
 
-    let _dealer = connect_dealer(&transport, "test-worker").await;
+    let mut _dealer = connect_dealer(&transport, "test-worker").await;
 
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let worker = ManagedWorker::new(
@@ -872,7 +964,7 @@ async fn test_should_respawn_called_on_crash() {
     );
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
-    // Send Ready event.
+    // Send Ready event via the DEALER (worker → ROUTER).
     let ready = WorkerEvent::Ready {
         worker_id: "test-worker".to_string(),
         device_index: 0,
@@ -888,11 +980,12 @@ async fn test_should_respawn_called_on_crash() {
         capabilities_source: "mock".to_string(),
         node_types: vec![],
     };
-    let payload = rmp_serde::to_vec_named(&ready).unwrap();
-    transport.send_raw("test-worker", &payload).await.unwrap();
+    send_event(&mut _dealer, &ready).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    // Close the transport to trigger the crash path.
-    transport.close().await;
+    // Send a malformed payload to trigger the crash path deterministically
+    // (see send_malformed()'s doc comment for why close() is unsafe here).
+    send_malformed(&mut _dealer).await;
 
     // Worker should exit within 5s — bounded wait per ENVIRONMENT.md §11.5.
     let timeout = tokio::time::sleep(Duration::from_secs(5));
@@ -906,4 +999,204 @@ async fn test_should_respawn_called_on_crash() {
     // If the crash path had a bug (e.g. missing push), the worker would still
     // exit but the history would be empty; we verify via the exit itself since
     // attempt_count() is only accessible before self is consumed.
+}
+
+// The following three tests close a gap found while implementing P8-E5:
+// `handle_event()`'s doc comment always claimed `Completed`/`Failed`/`Cancelled`
+// transition status back to `Idle`, but the code never actually did it — only
+// `Initializing` was ever written anywhere in `ManagedWorker`. See PHASES.md's
+// amendments log for the full account. These three tests, plus the Ready/Dying/
+// shutdown/timeout/crash assertions added to the existing tests above, are the
+// closing verification for that gap.
+
+/// A `Completed` event transitions status from `Busy` back to `Idle`.
+///
+/// Sends `Ready` (→ Idle), manually sets `Busy` via the shared status lock
+/// (simulating job dispatch, which is out of `ManagedWorker`'s own scope), then
+/// sends `Completed` and verifies status returns to `Idle`.
+#[tokio::test]
+async fn test_completed_event_transitions_to_idle() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+
+    let mut _dealer = connect_dealer(&transport, "test-worker").await;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let worker = ManagedWorker::new(
+        "test-worker".to_string(),
+        Arc::clone(&transport),
+        Arc::clone(&demux),
+        Arc::clone(&status),
+        RespawnPolicy::default(),
+    );
+    let handle = tokio::spawn(worker.run(shutdown_rx));
+
+    let ready = WorkerEvent::Ready {
+        worker_id: "test-worker".to_string(),
+        device_index: 0,
+        device_name: "Mock GPU".to_string(),
+        device_type: "cpu".to_string(),
+        vram_total_mib: 1024,
+        vram_free_mib: 900,
+        torch_version: "2.5.0".to_string(),
+        fp16: true,
+        bf16: true,
+        fp8: false,
+        flash_attention: false,
+        capabilities_source: "mock".to_string(),
+        node_types: vec![],
+    };
+    send_event(&mut _dealer, &ready).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Simulate job dispatch marking the worker Busy — this is the scheduler's
+    // job in later phases, not ManagedWorker's; done here directly via the lock.
+    *status.write().await = WorkerStatus::Busy;
+
+    let completed = WorkerEvent::Completed {
+        job_id: uuid::Uuid::new_v4(),
+        elapsed_ms: 1234,
+    };
+    send_event(&mut _dealer, &completed).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    assert_eq!(
+        *status.read().await,
+        WorkerStatus::Idle,
+        "status should be Idle after Completed"
+    );
+
+    drop(shutdown_tx);
+    let timeout = tokio::time::sleep(Duration::from_secs(5));
+    tokio::select! {
+        _ = handle => (),
+        _ = timeout => panic!("ManagedWorker::run() did not complete within 5s"),
+    }
+}
+
+/// A `Failed` event transitions status from `Busy` back to `Idle`.
+///
+/// Same shape as `test_completed_event_transitions_to_idle`, using `Failed`
+/// instead — a failed job still returns the worker to `Idle`, it does not
+/// crash the worker process itself.
+#[tokio::test]
+async fn test_failed_event_transitions_to_idle() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+
+    let mut _dealer = connect_dealer(&transport, "test-worker").await;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let worker = ManagedWorker::new(
+        "test-worker".to_string(),
+        Arc::clone(&transport),
+        Arc::clone(&demux),
+        Arc::clone(&status),
+        RespawnPolicy::default(),
+    );
+    let handle = tokio::spawn(worker.run(shutdown_rx));
+
+    let ready = WorkerEvent::Ready {
+        worker_id: "test-worker".to_string(),
+        device_index: 0,
+        device_name: "Mock GPU".to_string(),
+        device_type: "cpu".to_string(),
+        vram_total_mib: 1024,
+        vram_free_mib: 900,
+        torch_version: "2.5.0".to_string(),
+        fp16: true,
+        bf16: true,
+        fp8: false,
+        flash_attention: false,
+        capabilities_source: "mock".to_string(),
+        node_types: vec![],
+    };
+    send_event(&mut _dealer, &ready).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    *status.write().await = WorkerStatus::Busy;
+
+    let failed = WorkerEvent::Failed {
+        job_id: uuid::Uuid::new_v4(),
+        error: "CUDA out of memory".to_string(),
+        traceback: None,
+    };
+    send_event(&mut _dealer, &failed).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    assert_eq!(
+        *status.read().await,
+        WorkerStatus::Idle,
+        "status should be Idle after Failed"
+    );
+
+    drop(shutdown_tx);
+    let timeout = tokio::time::sleep(Duration::from_secs(5));
+    tokio::select! {
+        _ = handle => (),
+        _ = timeout => panic!("ManagedWorker::run() did not complete within 5s"),
+    }
+}
+
+/// A `Cancelled` event transitions status from `Busy` back to `Idle`.
+///
+/// Same shape as the two tests above, using `Cancelled`.
+#[tokio::test]
+async fn test_cancelled_event_transitions_to_idle() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+
+    let mut _dealer = connect_dealer(&transport, "test-worker").await;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let worker = ManagedWorker::new(
+        "test-worker".to_string(),
+        Arc::clone(&transport),
+        Arc::clone(&demux),
+        Arc::clone(&status),
+        RespawnPolicy::default(),
+    );
+    let handle = tokio::spawn(worker.run(shutdown_rx));
+
+    let ready = WorkerEvent::Ready {
+        worker_id: "test-worker".to_string(),
+        device_index: 0,
+        device_name: "Mock GPU".to_string(),
+        device_type: "cpu".to_string(),
+        vram_total_mib: 1024,
+        vram_free_mib: 900,
+        torch_version: "2.5.0".to_string(),
+        fp16: true,
+        bf16: true,
+        fp8: false,
+        flash_attention: false,
+        capabilities_source: "mock".to_string(),
+        node_types: vec![],
+    };
+    send_event(&mut _dealer, &ready).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    *status.write().await = WorkerStatus::Busy;
+
+    let cancelled = WorkerEvent::Cancelled {
+        job_id: uuid::Uuid::new_v4(),
+    };
+    send_event(&mut _dealer, &cancelled).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    assert_eq!(
+        *status.read().await,
+        WorkerStatus::Idle,
+        "status should be Idle after Cancelled"
+    );
+
+    drop(shutdown_tx);
+    let timeout = tokio::time::sleep(Duration::from_secs(5));
+    tokio::select! {
+        _ = handle => (),
+        _ = timeout => panic!("ManagedWorker::run() did not complete within 5s"),
+    }
 }

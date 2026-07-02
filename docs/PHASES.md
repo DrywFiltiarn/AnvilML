@@ -230,6 +230,81 @@ project-wide compliance sweep (Phase 30).
   `docs/TASKS_PHASE008.md` for the complete revised task definitions and
   `docs/PHASES_GRAPH.md`'s Known Wiring Gaps Closed table, items 11 and 14-15,
   for the full technical cross-reference.
+- MANUAL RETROFIT PATCH: `WorkerStatus` TRANSITIONS NEVER IMPLEMENTED (Phase 8,
+  `managed.rs`) - discovered while re-attempting `P8-E5` (the keepalive-wiring
+  task, second attempt) against the corrected task graph above: `handle_event()`
+  and `run()`'s own doc comments in `crates/anvilml-worker/src/managed.rs` have,
+  since `P8-E3`, claimed `Ready → Idle`, `Dying → Dead`, `Completed/Failed/
+  Cancelled → Idle`, graceful shutdown `→ Dying`, and the `Initializing` timeout
+  `→ Dead` - none of these were ever implemented. The only status write in the
+  entire file was the single `Initializing` set at the top of `run()`; every
+  other documented transition was pure prose. This slipped through `P8-E3`'s and
+  `P8-E4`'s own acceptance tests because neither task asserted `status()` mid-
+  lifecycle, only exit-path behavior (deregistration, task completion). It
+  surfaced this time because the new `P8-E5` attempt's own required test -
+  "Pong forwarding doesn't disturb Idle/Busy handling" - correctly assumed the
+  documented contract and failed when the worker never left `Initializing`.
+  Patched directly (not through a numbered Forge task - a manual retrofit
+  commit, the same category as `0fdf3e9`) rather than re-attempting `P8-E5`
+  against still-broken prior code: implemented all five missing transitions in
+  `handle_event()` and `run()`'s three `select!` branches exactly as already
+  documented, added `uuid` as an `anvilml-worker` dev-dependency (pinned to the
+  workspace's `1.23.4`, matching `anvilml-ipc`/`anvilml-core`'s existing usage -
+  needed by any test constructing a `WorkerEvent` variant carrying a `job_id:
+  Uuid` field, a second, smaller gap the same failed attempt had independently
+  tripped over), and added test coverage for every transition (three new tests
+  for `Completed`/`Failed`/`Cancelled`, plus assertions added to five existing
+  tests that already exercised the relevant path but never checked the
+  resulting status value). Applying those new assertions immediately surfaced
+  a second, independent gap in the same file: six pre-existing tests
+  (`test_run_completes_on_ready_event`, `test_deregister_called_on_graceful_
+  exit`, `test_crash_appends_to_attempt_history`, `test_crash_history_grows_
+  per_crash` ×2, `test_should_respawn_called_on_crash`) used `RouterTransport::
+  send_raw()` to simulate the worker sending a `Ready` event - but `send_raw()`
+  sends via the ROUTER's own socket addressed to `worker_id`, i.e. genuine
+  ROUTER→DEALER traffic delivered to the test's own simulated DEALER, which
+  never loops back into that same `RouterTransport`'s `recv()`. `Ready` was
+  therefore never actually received by `ManagedWorker` in any of these six
+  tests - silently vacuous since `P8-E3`, masked because none of them checked
+  `status()` afterward and none of their actual assertions (deregistration,
+  task completion, or a `transport.close()`-triggered crash that fires
+  regardless of prior state) depended on `Ready` having been processed. Fixed
+  in the same pass: all six tests, plus the three new `Completed`/`Failed`/
+  `Cancelled` tests, were switched to a new `send_event()` test helper using
+  the correct DEALER→ROUTER direction (`_dealer.send()`), matching the pattern
+  `test_deregister_called_on_crash` already used correctly. Fixing that
+  delivery path immediately surfaced two more, deeper issues in the same
+  area: (1) `run()`'s 60s `init_timeout` guard was never actually cancelled
+  on `Ready` despite `handle_event()`'s doc comment claiming it was dropped —
+  the pinned sleep stayed live for the worker's entire lifetime and fired
+  regardless of how long it had already been `Idle`/`Busy`, previously masked
+  because most tests finish well under 60s; and (2) once `Ready` was
+  genuinely delivered and a second, still-pending `recv()` call was
+  genuinely holding `RouterTransport`'s socket mutex waiting for a message
+  that would never arrive, calling `transport.close()` (which needs that
+  same mutex) deadlocked - previously avoided only by luck of scheduling
+  (`send_raw()`'s own lock contention usually won the race before
+  `ManagedWorker`'s task did) and, once that luck was removed, only
+  eventually broken by (1)'s uncancelled timeout accidentally acting as an
+  unintended release valve at the 60s mark. (2) is a genuine defect in
+  completed Phase 7 code (`RouterTransport::recv()`/`close()` in
+  `anvilml-ipc/src/transport.rs`) - the exact deadlock class suspected but
+  never confirmed during the original `P8-E5` attempt's own reverted rewrite
+  of this file. Both fixed in the same pass: `run()` now tracks an
+  `initialized: bool`, set the instant a `Ready` event is matched, gating the
+  `init_timeout` `select!` branch behind `if !initialized`; `RouterTransport`
+  gained a `tokio::sync::watch::Sender<bool>` close signal, deliberately
+  independent of the socket's own mutex and sent *before* `close()` attempts
+  its own lock acquisition, with `recv()` racing the real socket read against
+  that signal via `tokio::select!` so a `close()` call reliably interrupts an
+  in-flight `recv()` rather than racing it for the same lock; the three tests
+  affected were additionally changed to trigger the crash path via a
+  malformed payload sent through the already-open DEALER connection instead
+  of `close()` at all - deterministic and free of any contention by
+  construction, matching the crash-simulation guidance already written into
+  the `P8-E6` task spec. `anvilml-worker` bumped `0.1.10` → `0.1.11`;
+  `anvilml-ipc` bumped `0.1.9` → `0.1.10`. See `docs/PHASES_GRAPH.md`'s Known
+  Wiring Gaps Closed table, items 16-19.
 
 ## v4 roadmap status: COMPLETE
 

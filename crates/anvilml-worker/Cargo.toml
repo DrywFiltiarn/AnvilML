@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-worker"
-version = "0.1.10"
+version = "0.1.11"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -24,6 +24,7 @@ serial_test = "3"
 rmp-serde = "1"
 zeromq = { version = "0.6", default-features = false, features = ["tokio-runtime"] }
 bytes = "1"
+uuid = { version = "1.23.4", features = ["v4", "serde"] }
 
 [features]
 mock-hardware = ["anvilml-hardware/mock-hardware"]
