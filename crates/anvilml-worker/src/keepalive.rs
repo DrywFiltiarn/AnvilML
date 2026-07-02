@@ -81,13 +81,19 @@ impl Transport for MockTransport {
 ///
 /// Bridges the concrete `RouterTransport::send()` method to the trait API.
 ///
-/// TODO(P8-E3): construct this inside `ManagedWorker::run()` — wrap the worker's
+/// `pub(crate)`, not private: `ManagedWorker` (in the sibling `managed` module)
+/// is the intended constructor of this type, per `TODO(P8-E5)` below — module-
+/// private visibility made that impossible to compile (E0603) regardless of
+/// wiring status. Widened to `pub(crate)` rather than `pub` since nothing
+/// outside this crate needs it.
+///
+/// TODO(P8-E5): construct this inside `ManagedWorker::run()` — wrap the worker's
 /// `Arc<RouterTransport>` in `RouterTransportAdapter`, pass it to
 /// `KeepaliveWatchdog::new(...)`, and spawn `watchdog.run()` in run()'s lifecycle.
 /// Remove the `#[allow(dead_code)]` below once that wiring exists — this struct is
-/// unused because no supervisor/ManagedWorker module exists yet to construct it.
+/// still unused today; only its visibility was blocking, not its usage.
 #[allow(dead_code)]
-struct RouterTransportAdapter(Arc<RouterTransport>);
+pub(crate) struct RouterTransportAdapter(Arc<RouterTransport>);
 
 impl Transport for RouterTransportAdapter {
     async fn send(
