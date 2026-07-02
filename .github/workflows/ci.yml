@@ -15,6 +15,19 @@ jobs:
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Provision worker venv (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: bash scripts/install_worker_deps.sh
+
+      - name: Provision worker venv (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: .\scripts\install_worker_deps.ps1
+
       - name: Check formatting (Linux only)
         if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --all -- --check
