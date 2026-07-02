@@ -13,6 +13,7 @@ use std::sync::Arc;
 use anvilml_core::types::worker::WorkerStatus;
 use anvilml_ipc::RouterTransport;
 use anvilml_ipc::WorkerEvent;
+use anvilml_worker::DEFAULT_INIT_TIMEOUT;
 use anvilml_worker::Demux;
 use anvilml_worker::ManagedWorker;
 use anvilml_worker::RespawnPolicy;
@@ -378,21 +379,20 @@ async fn send_event(dealer: &mut DealerSocket, event: &WorkerEvent) {
 }
 
 /// Send a payload that fails `WorkerEvent` msgpack deserialization, from the
-/// DEALER side — the deterministic, deadlock-free way to trigger `ManagedWorker`'s
-/// transport-error crash path in tests.
+/// DEALER side — a deterministic way to trigger `ManagedWorker`'s
+/// transport-error crash path in tests without depending on `close()`'s
+/// specific interrupt timing.
 ///
-/// `RouterTransport::close()` is NOT safe to use for this once any event has
-/// already been genuinely received on the same `ManagedWorker`: `recv()` holds
-/// its `self.socket` lock for the entire duration of the blocking inner socket
-/// read (a confirmed defect in `anvilml-ipc/src/transport.rs`, flagged but not
-/// fixed as part of this retrofit — Phase 7 is frozen). If `ManagedWorker`'s
-/// next `recv()` call is already in flight and holding that lock waiting for a
-/// message that will never come, `close()` blocks forever waiting for the same
-/// lock, and only `run()`'s `init_timeout` (60s) ever breaks the standoff. A
-/// malformed payload sidesteps this entirely: it's a genuine incoming message
-/// the already-listening `recv()` receives normally (no lock contention), and
-/// fails only at the deserialization step, returning `IpcError::RecvFailed`
-/// exactly like a real transport error would. See `PHASES.md`'s amendments log.
+/// `RouterTransport::close()` and `recv()` no longer deadlock (`transport.rs`'s
+/// `closed_tx` watch-channel signal, see `RouterTransport::close()`'s doc
+/// comment), so `close()` is safe to use here too. This helper is kept as the
+/// preferred crash-simulation method regardless: it delivers a genuine
+/// incoming message through the already-open DEALER connection and fails only
+/// at the deserialization step, returning `IpcError::RecvFailed` exactly like
+/// a real transport error would — deterministic by construction, with no
+/// dependency on `close()`'s signal-vs-lock race resolving in any particular
+/// number of poll cycles. Matches the crash-simulation guidance already
+/// written into the `P8-E6` task spec. See `PHASES.md`'s amendments log.
 async fn send_malformed(dealer: &mut DealerSocket) {
     let mut msg = ZmqMessage::from(Bytes::from(""));
     msg.push_back(Bytes::from_static(b"not valid msgpack"));
@@ -426,6 +426,7 @@ async fn test_run_completes_on_ready_event() {
         Arc::clone(&demux),
         Arc::clone(&status),
         RespawnPolicy::default(),
+        DEFAULT_INIT_TIMEOUT,
     );
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
@@ -494,6 +495,7 @@ async fn test_shutdown_rx_triggers_graceful_exit() {
         Arc::clone(&demux),
         Arc::clone(&status),
         RespawnPolicy::default(),
+        DEFAULT_INIT_TIMEOUT,
     );
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
@@ -542,6 +544,7 @@ async fn test_deregister_called_on_graceful_exit() {
         Arc::clone(&demux),
         Arc::clone(&status),
         RespawnPolicy::default(),
+        DEFAULT_INIT_TIMEOUT,
     );
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
@@ -622,6 +625,7 @@ async fn test_deregister_called_on_crash() {
         Arc::clone(&demux),
         Arc::clone(&status),
         RespawnPolicy::default(),
+        DEFAULT_INIT_TIMEOUT,
     );
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
@@ -694,13 +698,15 @@ async fn test_deregister_called_on_crash() {
 ///
 /// Creates a ROUTER/DEALER pair, registers the worker (simulating the pool's
 /// pre-spawn registration), and sends NO events. The worker remains in
-/// Initializing state until the 60-second timeout fires, at which point it
-/// exits and deregisters.
+/// Initializing state until `init_timeout` fires, at which point it exits and
+/// deregisters.
 ///
-/// This test verifies the timeout guard exists and that deregister is called
-/// on the timeout path. The actual 60s wait is verified by the code structure
-/// (the `tokio::time::sleep(Duration::from_secs(60))` in `run()`).
-#[serial_test::serial]
+/// This test passes a short `init_timeout` (200ms) rather than
+/// `DEFAULT_INIT_TIMEOUT` (60s) — it exercises the timeout *mechanism*, not
+/// production's specific grace period, so there is no reason to make the
+/// test suite pay a real 60s wall-clock cost for it. See
+/// `test_default_init_timeout_matches_design_spec` below for the check that
+/// covers the production *value*.
 #[tokio::test]
 async fn test_deregister_called_on_initializing_timeout() {
     let demux = Arc::new(Demux::new());
@@ -722,19 +728,20 @@ async fn test_deregister_called_on_initializing_timeout() {
         Arc::clone(&demux),
         Arc::clone(&status),
         RespawnPolicy::default(),
+        Duration::from_millis(200),
     );
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
     // Send no events — the worker stays in Initializing.
-    // The 60s timeout will fire, transitioning to Dead and deregistering.
+    // The 200ms init_timeout will fire, transitioning to Dead and deregistering.
     //
     // We use a bounded wait to avoid hanging indefinitely if the timeout
-    // mechanism is broken. 65s gives the 60s timeout + 5s buffer.
-    let timeout = tokio::time::sleep(Duration::from_secs(65));
+    // mechanism is broken. 5s gives generous buffer over the 200ms timeout.
+    let timeout = tokio::time::sleep(Duration::from_secs(5));
     tokio::select! {
         _ = handle => (),
         _ = timeout => {
-            panic!("ManagedWorker::run() did not complete within 65s — the Initializing timeout may not be firing");
+            panic!("ManagedWorker::run() did not complete within 5s — the Initializing timeout may not be firing");
         }
     }
 
@@ -748,6 +755,20 @@ async fn test_deregister_called_on_initializing_timeout() {
         *status.read().await,
         WorkerStatus::Dead,
         "status should be Dead after the Initializing timeout fires"
+    );
+}
+
+/// `DEFAULT_INIT_TIMEOUT` matches the 60s grace period specified in
+/// `ANVILML_DESIGN.md §9.2` for production use. This is a cheap, direct
+/// check that the constant itself hasn't drifted — the timeout *mechanism*
+/// is covered by `test_deregister_called_on_initializing_timeout` above
+/// using a short duration; this test covers the production *value*.
+#[test]
+fn test_default_init_timeout_matches_design_spec() {
+    assert_eq!(
+        DEFAULT_INIT_TIMEOUT,
+        Duration::from_secs(60),
+        "DEFAULT_INIT_TIMEOUT must match ANVILML_DESIGN.md §9.2's documented 60s grace period"
     );
 }
 
@@ -774,6 +795,7 @@ async fn test_crash_appends_to_attempt_history() {
         Arc::clone(&demux),
         Arc::clone(&status),
         RespawnPolicy::default(),
+        DEFAULT_INIT_TIMEOUT,
     );
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
@@ -851,6 +873,7 @@ async fn test_crash_history_grows_per_crash() {
             Arc::clone(&demux),
             Arc::clone(&status),
             RespawnPolicy::default(),
+            DEFAULT_INIT_TIMEOUT,
         );
         let handle = tokio::spawn(worker.run(shutdown_rx));
 
@@ -874,7 +897,8 @@ async fn test_crash_history_grows_per_crash() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // Send a malformed payload to trigger the crash path deterministically
-        // (see send_malformed()'s doc comment for why close() is unsafe here).
+        // (see send_malformed()'s doc comment — close() would also work now,
+        // this stays deterministic by construction).
         send_malformed(&mut _dealer).await;
 
         let timeout = tokio::time::sleep(Duration::from_secs(5));
@@ -899,6 +923,7 @@ async fn test_crash_history_grows_per_crash() {
             Arc::clone(&demux),
             Arc::clone(&status),
             RespawnPolicy::default(),
+            DEFAULT_INIT_TIMEOUT,
         );
         let handle = tokio::spawn(worker.run(shutdown_rx));
 
@@ -961,6 +986,7 @@ async fn test_should_respawn_called_on_crash() {
         Arc::clone(&demux),
         Arc::clone(&status),
         policy,
+        DEFAULT_INIT_TIMEOUT,
     );
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
@@ -984,7 +1010,8 @@ async fn test_should_respawn_called_on_crash() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // Send a malformed payload to trigger the crash path deterministically
-    // (see send_malformed()'s doc comment for why close() is unsafe here).
+    // (see send_malformed()'s doc comment — close() would also work now,
+    // this stays deterministic by construction).
     send_malformed(&mut _dealer).await;
 
     // Worker should exit within 5s — bounded wait per ENVIRONMENT.md §11.5.
@@ -1029,6 +1056,7 @@ async fn test_completed_event_transitions_to_idle() {
         Arc::clone(&demux),
         Arc::clone(&status),
         RespawnPolicy::default(),
+        DEFAULT_INIT_TIMEOUT,
     );
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
@@ -1095,6 +1123,7 @@ async fn test_failed_event_transitions_to_idle() {
         Arc::clone(&demux),
         Arc::clone(&status),
         RespawnPolicy::default(),
+        DEFAULT_INIT_TIMEOUT,
     );
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
@@ -1158,6 +1187,7 @@ async fn test_cancelled_event_transitions_to_idle() {
         Arc::clone(&demux),
         Arc::clone(&status),
         RespawnPolicy::default(),
+        DEFAULT_INIT_TIMEOUT,
     );
     let handle = tokio::spawn(worker.run(shutdown_rx));
 

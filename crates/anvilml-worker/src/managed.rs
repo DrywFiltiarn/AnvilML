@@ -27,6 +27,19 @@ use crate::demux::Demux;
 use crate::respawn::RespawnPolicy;
 use anvilml_ipc::RouterTransport;
 
+/// Production default for the Initializing→Idle grace period.
+///
+/// Per `ANVILML_DESIGN.md §9.2`: "A worker that fails to reach `Idle` within
+/// 60 seconds is killed and respawned." This is real grace time for the
+/// Python subprocess to load a diffusion model onto the GPU (CUDA init +
+/// weight loading) — not an arbitrary value, and not one production callers
+/// should shorten. It exists as an explicit constant (rather than being
+/// buried inline in `run()`) so every caller of `ManagedWorker::new()` states
+/// its intent plainly: `ManagedWorker::new(..., DEFAULT_INIT_TIMEOUT)` for
+/// production, or a short `Duration` for tests exercising the timeout path
+/// itself.
+pub const DEFAULT_INIT_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// A cheap, `Clone`-able handle for interacting with a worker's lifecycle.
 ///
 /// Each `WorkerHandle` owns an `Arc`-reference to the worker's status lock,
@@ -140,7 +153,9 @@ impl WorkerHandle {
 /// owns the worker's entire lifetime.
 ///
 /// The lifecycle is:
-/// 1. **Initializing** — the worker is spawned; a 60-second timeout guards this state.
+/// 1. **Initializing** — the worker is spawned; `init_timeout` (60s in production,
+///    via `DEFAULT_INIT_TIMEOUT`; configurable per-instance, see `new()`) guards
+///    this state.
 /// 2. **Idle** — the worker sent a `Ready` event; waiting for job assignment.
 /// 3. **Busy** — the worker is executing a job.
 /// 4. **Dying** — the worker received a shutdown signal or sent a `Dying` event.
@@ -189,6 +204,15 @@ pub struct ManagedWorker {
     /// is appended to this vector. Consulted by `RespawnPolicy::should_respawn()`
     /// to decide whether a respawn is permissible.
     attempt_history: Vec<Instant>,
+
+    /// Grace period for the Initializing→Idle transition.
+    ///
+    /// Production callers should pass `DEFAULT_INIT_TIMEOUT` (60s per
+    /// `ANVILML_DESIGN.md §9.2`). Tests exercising the timeout path itself
+    /// pass a short duration so the test doesn't block on a real 60s wait —
+    /// see `KeepaliveWatchdog::new()`'s `ping_interval`/`pong_timeout` params
+    /// for the same pattern elsewhere in this crate.
+    init_timeout: Duration,
 }
 
 impl ManagedWorker {
@@ -205,12 +229,16 @@ impl ManagedWorker {
     /// * `demux` — Shared routing table for deregister on exit.
     /// * `status` — Shared status lock for tracking lifecycle state.
     /// * `respawn_policy` — Crash-recovery decision logic.
+    /// * `init_timeout` — Grace period for the Initializing→Idle transition.
+    ///   Production callers pass `DEFAULT_INIT_TIMEOUT`; tests exercising the
+    ///   timeout path itself pass a short duration.
     pub fn new(
         worker_id: String,
         transport: Arc<RouterTransport>,
         demux: Arc<Demux>,
         status: Arc<RwLock<WorkerStatus>>,
         respawn_policy: RespawnPolicy,
+        init_timeout: Duration,
     ) -> Self {
         Self {
             worker_id,
@@ -219,6 +247,7 @@ impl ManagedWorker {
             status,
             respawn_policy,
             attempt_history: Vec::new(),
+            init_timeout,
         }
     }
 
@@ -236,7 +265,8 @@ impl ManagedWorker {
     ///
     /// This method consumes `self` and owns the worker's entire lifetime:
     /// - Sets status to `Initializing` on entry.
-    /// - Spawns a 60-second timeout: if no `Ready` event arrives, sets status to `Dead`.
+    /// - Spawns the `init_timeout` guard (60s in production; configurable, see `new()`):
+    ///   if no `Ready` event arrives before it elapses, sets status to `Dead`.
     /// - Enters a `tokio::select!` loop between `shutdown_rx` and `transport.recv()`.
     /// - Transitions status based on events: `Ready → Idle`, `Dying → Dead`,
     ///   `Completed/Failed/Cancelled → Idle`.
@@ -250,7 +280,8 @@ impl ManagedWorker {
     /// # Exit paths
     ///
     /// 1. **Graceful shutdown** — `shutdown_rx` receives `()`: status → `Dying`, deregister.
-    /// 2. **Initializing timeout** — 60s elapses without `Ready`: status → `Dead`, deregister.
+    /// 2. **Initializing timeout** — `init_timeout` elapses without `Ready` (60s in
+    ///    production): status → `Dead`, deregister.
     /// 3. **Worker crash (explicit)** — `Dying` event received: status → `Dead`, deregister.
     /// 4. **Worker crash (transport)** — `transport.recv()` returns `Err`: status → `Dead`,
     ///    `attempt_history` is appended and `RespawnPolicy::should_respawn()` is consulted
@@ -269,8 +300,9 @@ impl ManagedWorker {
         // `initialized` disarms this branch once Ready arrives — see the `if
         // !initialized` precondition on the select branch below. Without this,
         // the timeout keeps ticking for the worker's entire lifetime and fires
-        // at 60s regardless of how long ago Ready was actually received.
-        let init_timeout = tokio::time::sleep(Duration::from_secs(60));
+        // at `self.init_timeout` regardless of how long ago Ready was actually
+        // received.
+        let init_timeout = tokio::time::sleep(self.init_timeout);
         tokio::pin!(init_timeout);
         let mut initialized = false;
 
@@ -316,7 +348,7 @@ impl ManagedWorker {
                     }
                 }
 
-                // Initializing timeout — 60 seconds elapsed without Ready.
+                // Initializing timeout — init_timeout elapsed without Ready.
                 // This means the worker process started but never reported readiness.
                 // Disarmed once `initialized` is true, per the precondition below —
                 // this branch is not even polled once Ready has been received.

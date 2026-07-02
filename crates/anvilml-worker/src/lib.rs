@@ -18,7 +18,7 @@ mod job_object;
 pub use job_object::JobObjectGuard;
 
 mod managed;
-pub use managed::{ManagedWorker, WorkerHandle};
+pub use managed::{DEFAULT_INIT_TIMEOUT, ManagedWorker, WorkerHandle};
 
 mod respawn;
 pub use respawn::RespawnPolicy;

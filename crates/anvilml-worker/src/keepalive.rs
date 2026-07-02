@@ -118,18 +118,42 @@ impl Transport for RouterTransportAdapter {
 ///
 /// # Example
 ///
-/// ```ignore
-/// let (dead_tx, dead_rx) = oneshot::channel();
-/// let (pong_tx, pong_rx) = mpsc::channel(16);
+/// Uses `MockTransport` (this module) rather than a live `RouterTransport`,
+/// and millisecond-scale durations rather than the 30s/10s production
+/// defaults, so the example runs quickly as a real doctest instead of being
+/// `ignore`d pseudo-code.
+///
+/// ```
+/// use anvilml_ipc::WorkerEvent;
+/// use anvilml_worker::keepalive::{KeepaliveWatchdog, MockTransport};
+/// use tokio::sync::{mpsc, oneshot};
+/// use tokio::time::Duration;
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let (dead_tx, _dead_rx) = oneshot::channel();
+/// let (pong_tx, pong_rx) = mpsc::channel::<WorkerEvent>(16);
+///
 /// let watchdog = KeepaliveWatchdog::new(
 ///     "worker-0".into(),
-///     transport,
+///     MockTransport::new_ok(),
 ///     pong_rx,
 ///     dead_tx,
-///     Duration::from_secs(30),
-///     Duration::from_secs(10),
+///     Duration::from_millis(10),
+///     Duration::from_millis(50),
 /// );
-/// tokio::spawn(watchdog.run());
+/// let handle = tokio::spawn(watchdog.run());
+///
+/// // Reply to the watchdog's first Ping (seq 0) so it doesn't declare the
+/// // worker dead.
+/// pong_tx.send(WorkerEvent::Pong { seq: 0 }).await.unwrap();
+///
+/// // Dropping pong_tx closes the channel; the watchdog's next recv() then
+/// // returns None and it exits cleanly instead of running forever.
+/// tokio::time::sleep(Duration::from_millis(20)).await;
+/// drop(pong_tx);
+/// let _ = handle.await;
+/// # }
 /// ```
 pub struct KeepaliveWatchdog<T: Transport> {
     /// Stable worker identity (e.g. `"0"`). Used as the ROUTER socket address.
