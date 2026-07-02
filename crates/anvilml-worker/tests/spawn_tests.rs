@@ -266,12 +266,21 @@ async fn test_spawn_nonexistent_venv_returns_io_error() {
 
     assert!(result.is_err(), "spawn should fail for nonexistent venv");
     let err = result.unwrap_err();
-    // The error should be an Io error with NotFound kind (interpreter binary missing).
-    let err_msg = err.to_string();
-    assert!(
-        err_msg.contains("No such file") || err_msg.contains("No such file or directory"),
-        "Io error should indicate missing file, got: {err_msg}"
-    );
+    // Assert on the portable ErrorKind rather than the OS-native Display string —
+    // std::io::Error's message text differs by platform (e.g. Linux renders
+    // NotFound as "No such file or directory", Windows as "The system cannot
+    // find the path specified."), so string-matching the message is not
+    // cross-platform. ErrorKind::NotFound is the stable, portable signal.
+    match err {
+        AnvilError::Io(io_err) => {
+            assert_eq!(
+                io_err.kind(),
+                std::io::ErrorKind::NotFound,
+                "expected NotFound, got: {io_err}"
+            );
+        }
+        other => panic!("expected AnvilError::Io, got: {other:?}"),
+    }
 }
 
 /// `WorkerSpawner` is object-safe: `Arc<dyn WorkerSpawner>` compiles and the
@@ -322,20 +331,24 @@ async fn test_spawn_produces_same_command_shape() {
     );
 
     // Extract error messages from both.
-    let err1_msg = result1.unwrap_err().to_string();
-    let err2_msg = match result2 {
-        Err(e) => e.to_string(),
+    // result1 comes from std::process::Command::spawn() directly (std::io::Error).
+    // result2 comes through ProcessWorkerSpawner (AnvilError::Io(std::io::Error)).
+    // Compare portable ErrorKind on both, not the OS-native Display string.
+    let err1_kind = result1.unwrap_err().kind();
+    let err2_kind = match result2 {
+        Err(AnvilError::Io(io_err)) => io_err.kind(),
+        Err(other) => panic!("expected AnvilError::Io, got: {other:?}"),
         Ok(_) => panic!("ProcessWorkerSpawner should have returned an error"),
     };
 
-    // Both error messages must indicate a missing file (the interpreter binary).
-    // This proves both commands target the same nonexistent interpreter path.
-    assert!(
-        err1_msg.contains("No such file") || err1_msg.contains("No such file or directory"),
-        "build_command error should indicate missing file, got: {err1_msg}"
+    assert_eq!(
+        err1_kind,
+        std::io::ErrorKind::NotFound,
+        "build_command error should be NotFound, got: {err1_kind:?}"
     );
-    assert!(
-        err2_msg.contains("No such file") || err2_msg.contains("No such file or directory"),
-        "ProcessWorkerSpawner error should indicate missing file, got: {err2_msg}"
+    assert_eq!(
+        err2_kind,
+        std::io::ErrorKind::NotFound,
+        "ProcessWorkerSpawner error should be NotFound, got: {err2_kind:?}"
     );
 }
