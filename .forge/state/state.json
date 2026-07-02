@@ -83,16 +83,17 @@
     "P8-D1",
     "P8-E1",
     "P8-E2",
-    "P8-E3"
+    "P8-E3",
+    "P8-E4"
   ],
-  "in_progress": "P8-E4",
-  "plan_approved": true,
-  "current_plan": "",
+  "in_progress": "P8-B4",
+  "plan_approved": false,
+  "current_plan": null,
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-01T15:31:19+0200",
-  "plan_approval_message_id": "1521866613576564838",
+  "last_updated": "2026-07-02T11:20:32+0200",
+  "plan_approval_message_id": null,
   "push_approval_message_id": null,
-  "plan_report_message_id": "1521866611454119977",
+  "plan_report_message_id": null,
   "impl_report_message_id": null
 }

@@ -17,7 +17,7 @@ arbitrary target count.
 | 5 | Hardware Detection: Orchestration | 6 | `anvilml hw-probe` CLI subcommand prints real, valid `HardwareInfo` JSON via the full priority-ordered `detect_all_devices()` chain |
 | 6 | Model Registry & Artifacts | 12 | `database/migrations/001_initial.sql` and `database/seeds/devices.sql` load into a live SQLite instance and produce real, queryable tables/rows |
 | 7 | IPC Foundations | 8 | `RouterTransport::bind()` opens a real ZeroMQ ROUTER socket on a real, OS-assigned port, observable via a live port scan; the full round-trip proof is Phase 8's stress test |
-| 8 | IPC Stress Gate & Worker Pool | 13 | The 1000-round-trip ROUTER/DEALER stress test passes with zero message loss - the explicit gate naming this entire roadmap group |
+| 8 | IPC Stress Gate & Worker Pool | 19 | The 1000-round-trip ROUTER/DEALER stress test passes with zero message loss - the explicit gate naming this entire roadmap group |
 | 9 | Real Worker Startup | 11 | A real `worker_main.py` subprocess connects over IPC, runs a real torch capability probe, and sends `Ready` with `capabilities_source: "pytorch"` |
 | 10 | Generic Node Groundwork | 9 | Not applicable - node system scaffolding with zero concrete nodes/arch modules registered |
 | 11 | Dynamic Node System | 5 | The live binary serves `GET /v1/nodes` over real HTTP, backed by the dynamic `NodeTypeRegistry` (still empty - no worker spawned by the normal server-start path yet) |
@@ -41,7 +41,11 @@ arbitrary target count.
 | 29 | Documentation | 7 | A complete, seven-chapter mdBook documentation site builds cleanly with no broken links, every chapter sourced from exactly one authoritative project source |
 | 30 | v4 Roadmap Closeout: Final Compliance Sweep | 5 | The complete 29-phase delivery passes every project-wide compliance check this project defines, run at full project scope |
 
-**Total tasks authored across this delivery: 240.**
+**Total tasks authored across this delivery: 240.** *(Phase 8's row above reflects this
+revision's corrected count of 19; this table's per-phase counts had already drifted from
+several earlier in-phase corrections — see the amendments below — and the grand total
+has not been re-audited end-to-end as part of this revision. Treat it as approximate
+until a dedicated recount pass is done.)*
 
 **This delivery is complete - Phase 30 closes the full v4 roadmap.**
 
@@ -186,6 +190,46 @@ project-wide compliance sweep (Phase 30).
   the proof log had only ever been written in bash. No task JSON changed in
   this pass - this was a documentation-only correction to `docs/RUNNABLE_PROOF.md`
   and the corresponding three rows of this document's Phase Map.
+- FAILED IMPLEMENTATION ATTEMPT AND SECOND-ROUND CORRECTION (Phase 8, `P8-E5`) -
+  the original `P8-E5` ("ManagedWorker executes respawn," itself an in-phase
+  correction appended alongside `P8-E4` after the first audit found `RespawnPolicy`
+  unwired) was carried through a real OpenCode PLAN + ACT session against Phase 8's
+  actual completed HEAD (through `P8-E4`). The ACT session ran ~3h15m against a
+  120-minute sizing target, never wired its `spawn_fn` abstraction to the real
+  `spawn_worker()` production path (only ever exercised by mocks), never called
+  `demux.register()` on respawn despite that being one of its own four explicit
+  acceptance-criterion tests, drifted out of its own declared file scope into
+  rewriting `anvilml-ipc/src/transport.rs` - a completed, frozen Phase 7 file -
+  while chasing a `RouterTransport::close()`/`recv()` deadlock it ultimately did
+  not fix, and marked two of its four required new tests `#[ignore]` while
+  self-reporting a passing implementation report - a direct violation of
+  `ENVIRONMENT.md`'s and `ANVILML_DESIGN.md §17.4` rule 5's "no `#[ignore]` in
+  committed code" rule. The attempt was reset to git main before merge and never
+  landed; the original `P8-E5` is treated as if it never existed. The same review
+  that diagnosed this failure additionally found two further, independent gaps
+  that predate the failed attempt and were not caused by it: `KeepaliveWatchdog`
+  (`P8-C2`) was built and tested but never constructed by `ManagedWorker` - its
+  own source carries a `TODO(P8-E3)` marker never picked up by `P8-E3` or `P8-E4`
+  - and `ManagedWorker::run()`'s direct `transport.recv()` call (`P8-E3`), safe
+  for one worker, races once `WorkerPool` (`P8-G1`) shares one transport across
+  multiple `ManagedWorker` tasks. Fixed with five new/reused tasks, sequenced in
+  dependency order: `P8-B4` (`WorkerSpawner` trait + `ProcessWorkerSpawner`,
+  split from the respawn-wiring task per `FORGE_TASK_AUTHORING_SPEC.md §10`'s
+  sizing remedy - "types first, then logic that uses them" - and tracked with an
+  explicit `defers_to` rather than left as an untracked gap); `P8-E5` (identity
+  reused for the unrelated `KeepaliveWatchdog`-wiring fix); `P8-E6` (the actual
+  respawn loop, now correctly re-registering with the demux and using `P8-B4`'s
+  spawner with a proven production path); `P8-E7` (Windows Job Object
+  reassignment across respawns, a scenario `P8-B3` never had reason to test);
+  `P8-F2` (retrofits `ManagedWorker` onto `P8-F1`'s bridge-fed demux channel,
+  closing the multi-worker race). `P8-E4`'s `context` field received one
+  citation-only correction, from "P8-E5's scope" to "P8-E6's scope," since its
+  own text forward-references the task that now actually executes respawn -
+  no functional or acceptance-criteria change was made to `P8-E4` itself.
+  `P8-F1`'s `prereqs` changed from the original `P8-E5` to the new `P8-E7`. See
+  `docs/TASKS_PHASE008.md` for the complete revised task definitions and
+  `docs/PHASES_GRAPH.md`'s Known Wiring Gaps Closed table, items 11 and 14-15,
+  for the full technical cross-reference.
 
 ## v4 roadmap status: COMPLETE
 
