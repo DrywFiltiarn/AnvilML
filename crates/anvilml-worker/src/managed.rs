@@ -24,6 +24,7 @@ use anvilml_core::types::worker::WorkerStatus;
 use anvilml_ipc::WorkerEvent;
 
 use crate::demux::Demux;
+use crate::keepalive::{KeepaliveWatchdog, RouterTransportAdapter};
 use crate::respawn::RespawnPolicy;
 use anvilml_ipc::RouterTransport;
 
@@ -39,6 +40,18 @@ use anvilml_ipc::RouterTransport;
 /// production, or a short `Duration` for tests exercising the timeout path
 /// itself.
 pub const DEFAULT_INIT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Production default for the keepalive watchdog ping interval.
+///
+/// Per `ANVILML_DESIGN.md §9.2`: "Keepalive pings every 30 seconds."
+/// Tests override with a short duration so they don't block on real seconds.
+pub const DEFAULT_WATCHDOG_PING_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Production default for the keepalive watchdog pong timeout.
+///
+/// Per `ANVILML_DESIGN.md §9.2`: "no pong within 10 seconds → dead."
+/// Tests override with a short duration so they don't block on real seconds.
+pub const DEFAULT_WATCHDOG_PONG_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A cheap, `Clone`-able handle for interacting with a worker's lifecycle.
 ///
@@ -213,6 +226,41 @@ pub struct ManagedWorker {
     /// see `KeepaliveWatchdog::new()`'s `ping_interval`/`pong_timeout` params
     /// for the same pattern elsewhere in this crate.
     init_timeout: Duration,
+
+    /// Oneshot receiver for the watchdog's death signal.
+    ///
+    /// When the watchdog detects a missing Pong (pong_timeout elapsed without a
+    /// matching response), it sends on `dead_tx` and this receiver becomes ready.
+    /// The `run()` loop polls this in a `select!` branch alongside shutdown and
+    /// transport recv — when ready, the worker is declared Dead.
+    watchdog_dead_rx: tokio::sync::oneshot::Receiver<()>,
+
+    /// Optional oneshot sender for the watchdog's death signal.
+    ///
+    /// Created in `new()`, stored here, then `take()`n in `run()` when spawning
+    /// the watchdog task. This ensures the sender is owned by the watchdog task
+    /// and dropped when the task exits.
+    watchdog_dead_tx: Option<tokio::sync::oneshot::Sender<()>>,
+
+    /// Channel sender for forwarding Pong events to the watchdog.
+    ///
+    /// Each `WorkerEvent::Pong` from `handle_event()` is sent here. The watchdog
+    /// filters for matching sequence numbers internally. A closed or full channel
+    /// is not an error — the watchdog will eventually timeout and declare the
+    /// worker dead, which is the correct failure mode.
+    pong_tx: tokio::sync::mpsc::Sender<anvilml_ipc::WorkerEvent>,
+
+    /// Time between consecutive Ping messages sent by the watchdog.
+    ///
+    /// Production default: 30 seconds per `ANVILML_DESIGN.md §9.2`.
+    /// Tests override with a short duration.
+    watchdog_ping_interval: Duration,
+
+    /// Maximum time to wait for a matching Pong after sending a Ping.
+    ///
+    /// Production default: 10 seconds per `ANVILML_DESIGN.md §9.2`.
+    /// Tests override with a short duration.
+    watchdog_pong_timeout: Duration,
 }
 
 impl ManagedWorker {
@@ -232,6 +280,16 @@ impl ManagedWorker {
     /// * `init_timeout` — Grace period for the Initializing→Idle transition.
     ///   Production callers pass `DEFAULT_INIT_TIMEOUT`; tests exercising the
     ///   timeout path itself pass a short duration.
+    /// * `pong_tx` — Channel sender for forwarding Pong events to the keepalive
+    ///   watchdog. The caller creates the channel pair and passes the sender here;
+    ///   the receiver is used internally by the watchdog spawned in `run()`.
+    /// * `watchdog_ping_interval` — Time between consecutive Ping messages.
+    ///   Production callers should pass `DEFAULT_WATCHDOG_PING_INTERVAL`.
+    ///   Tests use a short duration so the test doesn't block on a real 30s wait.
+    /// * `watchdog_pong_timeout` — Maximum wait for a matching Pong after a Ping.
+    ///   Production callers should pass `DEFAULT_WATCHDOG_PONG_TIMEOUT`.
+    ///   Tests use a short duration so the test doesn't block on a real 10s wait.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         worker_id: String,
         transport: Arc<RouterTransport>,
@@ -239,7 +297,11 @@ impl ManagedWorker {
         status: Arc<RwLock<WorkerStatus>>,
         respawn_policy: RespawnPolicy,
         init_timeout: Duration,
+        pong_tx: tokio::sync::mpsc::Sender<anvilml_ipc::WorkerEvent>,
+        watchdog_ping_interval: Duration,
+        watchdog_pong_timeout: Duration,
     ) -> Self {
+        let (watchdog_dead_tx, watchdog_dead_rx) = tokio::sync::oneshot::channel();
         Self {
             worker_id,
             transport,
@@ -248,6 +310,11 @@ impl ManagedWorker {
             respawn_policy,
             attempt_history: Vec::new(),
             init_timeout,
+            watchdog_dead_rx,
+            watchdog_dead_tx: Some(watchdog_dead_tx),
+            pong_tx,
+            watchdog_ping_interval,
+            watchdog_pong_timeout,
         }
     }
 
@@ -267,7 +334,12 @@ impl ManagedWorker {
     /// - Sets status to `Initializing` on entry.
     /// - Spawns the `init_timeout` guard (60s in production; configurable, see `new()`):
     ///   if no `Ready` event arrives before it elapses, sets status to `Dead`.
-    /// - Enters a `tokio::select!` loop between `shutdown_rx` and `transport.recv()`.
+    /// - Spawns a `KeepaliveWatchdog` task that sends Pings and monitors Pongs;
+    ///   if no Pong arrives within the timeout (pong_timeout), the watchdog signals
+    ///   death via `watchdog_dead_rx`, which triggers the same crash path as a
+    ///   transport error.
+    /// - Enters a `tokio::select!` loop between `shutdown_rx`, `transport.recv()`,
+    ///   `init_timeout`, and `watchdog_dead_rx`.
     /// - Transitions status based on events: `Ready → Idle`, `Dying → Dead`,
     ///   `Completed/Failed/Cancelled → Idle`.
     /// - Calls `demux.deregister()` on every exit path.
@@ -286,6 +358,9 @@ impl ManagedWorker {
     /// 4. **Worker crash (transport)** — `transport.recv()` returns `Err`: status → `Dead`,
     ///    `attempt_history` is appended and `RespawnPolicy::should_respawn()` is consulted
     ///    (the decision itself is acted on by `P8-E6`), deregister.
+    /// 5. **Keepalive watchdog timeout** — `watchdog_dead_rx` becomes ready (no Pong
+    ///    within `pong_timeout`): status → `Dead`, `attempt_history` appended and
+    ///    `should_respawn()` consulted (same crash path as transport error), deregister.
     ///
     /// On all exit paths, `demux.deregister(&self.worker_id)` is the final action.
     #[tracing::instrument(skip(self, shutdown_rx), fields(worker_id = %self.worker_id))]
@@ -306,7 +381,34 @@ impl ManagedWorker {
         tokio::pin!(init_timeout);
         let mut initialized = false;
 
-        // Step 3: Main event loop.
+        // Step 3: Spawn the keepalive watchdog.
+        // The watchdog sends Pings at a configurable interval and waits for
+        // matching Pongs through its pong_rx channel. If no Pong arrives within
+        // pong_timeout after a Ping, it sends on watchdog_dead_tx, making
+        // watchdog_dead_rx ready in the select! below.
+        //
+        // Production defaults: 30s ping interval, 10s pong timeout
+        // (ANVILML_DESIGN.md §9.2).
+        let watchdog_dead_tx = self
+            .watchdog_dead_tx
+            .take()
+            .expect("watchdog_dead_tx should be Some before run() starts");
+        let (watchdog_pong_tx, watchdog_pong_rx) = tokio::sync::mpsc::channel(16);
+        // Replace self.pong_tx with the sender for the watchdog's channel.
+        // This ensures handle_event() forwards Pongs into the same channel
+        // the watchdog is reading from.
+        self.pong_tx = watchdog_pong_tx;
+        let watchdog = KeepaliveWatchdog::new(
+            self.worker_id.clone(),
+            RouterTransportAdapter(Arc::clone(&self.transport)),
+            watchdog_pong_rx,
+            watchdog_dead_tx,
+            self.watchdog_ping_interval,
+            self.watchdog_pong_timeout,
+        );
+        tokio::spawn(watchdog.run());
+
+        // Step 4: Main event loop.
         loop {
             tokio::select! {
                 // Graceful shutdown path.
@@ -357,6 +459,18 @@ impl ManagedWorker {
                     tracing::info!(worker_id = %self.worker_id, "worker_declared_dead");
                     break;
                 }
+
+                // Watchdog dead path — the keepalive watchdog detected a missing Pong.
+                // This is a second crash source, independent of transport.recv().
+                // Handled identically to the transport-error branch.
+                _ = &mut self.watchdog_dead_rx => {
+                    tracing::error!(worker_id = %self.worker_id, "watchdog timeout — worker declared dead");
+                    *self.status.write().await = WorkerStatus::Dead;
+                    self.attempt_history.push(Instant::now());
+                    let should = self.respawn_policy.should_respawn(&self.attempt_history);
+                    tracing::info!(worker_id = %self.worker_id, should_respawn = should, "crash_respawn_decision");
+                    break;
+                }
             }
         }
 
@@ -372,13 +486,19 @@ impl ManagedWorker {
     /// - `Ready`: status → `Idle`, log `worker_ready`.
     /// - `Dying`: status → `Dead`, log `worker_dying`, return `true` to break the loop.
     /// - `Completed`/`Failed`/`Cancelled`: status → `Idle`, log completion/failure/cancellation.
-    /// - `Pong`: no action (keepalive handles this separately).
+    /// - `Pong`: forward to the keepalive watchdog's pong channel via `try_send`
+    ///   (best-effort; a failed send is not an error — the watchdog will timeout
+    ///   if it misses a Pong).
     /// - Other events: log at DEBUG level.
     ///
     /// The `init_timeout` branch in `run()`'s `select!` is disarmed once a `Ready`
     /// event is seen (tracked via `run()`'s own `initialized` flag, not by this
     /// method) — see `run()`'s doc comment for the mechanism.
     async fn handle_event(&mut self, _id: &str, event: WorkerEvent) -> bool {
+        // Clone the event for forwarding to the watchdog before the match.
+        // The match borrows `event` via `&event`, so we can't move it
+        // into `try_send()` without first cloning.
+        let pong_forward = event.clone();
         match &event {
             WorkerEvent::Ready { .. } => {
                 // Worker successfully initialized. The Initializing timeout is
@@ -426,8 +546,12 @@ impl ManagedWorker {
                 false
             }
             WorkerEvent::Pong { seq } => {
-                // Keepalive pong — no state transition needed. The keepalive
-                // watchdog monitors these separately via the demux channel.
+                // Forward the Pong to the keepalive watchdog's pong channel.
+                // The watchdog filters for matching sequence numbers internally.
+                // A failed send (closed/full channel) is best-effort — the watchdog
+                // will timeout and declare the worker dead if it misses a Pong,
+                // which is the correct failure mode.
+                let _ = self.pong_tx.try_send(pong_forward);
                 tracing::debug!(worker_id = %self.worker_id, seq = %seq, "pong_received");
                 false
             }

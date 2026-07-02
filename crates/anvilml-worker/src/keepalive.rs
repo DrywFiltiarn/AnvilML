@@ -82,18 +82,10 @@ impl Transport for MockTransport {
 /// Bridges the concrete `RouterTransport::send()` method to the trait API.
 ///
 /// `pub(crate)`, not private: `ManagedWorker` (in the sibling `managed` module)
-/// is the intended constructor of this type, per `TODO(P8-E5)` below — module-
-/// private visibility made that impossible to compile (E0603) regardless of
-/// wiring status. Widened to `pub(crate)` rather than `pub` since nothing
-/// outside this crate needs it.
-///
-/// TODO(P8-E5): construct this inside `ManagedWorker::run()` — wrap the worker's
-/// `Arc<RouterTransport>` in `RouterTransportAdapter`, pass it to
-/// `KeepaliveWatchdog::new(...)`, and spawn `watchdog.run()` in run()'s lifecycle.
-/// Remove the `#[allow(dead_code)]` below once that wiring exists — this struct is
-/// still unused today; only its visibility was blocking, not its usage.
-#[allow(dead_code)]
-pub(crate) struct RouterTransportAdapter(Arc<RouterTransport>);
+/// constructs this type to wrap the worker's `Arc<RouterTransport>` and pass it
+/// to `KeepaliveWatchdog::new()`. Widened to `pub(crate)` rather than `pub` since
+/// nothing outside this crate needs it.
+pub(crate) struct RouterTransportAdapter(pub(crate) Arc<RouterTransport>);
 
 impl Transport for RouterTransportAdapter {
     async fn send(
@@ -254,10 +246,20 @@ impl<T: Transport> KeepaliveWatchdog<T> {
             tracing::debug!(worker_id = %self.worker_id, seq, "sending ping");
 
             // Send the Ping message via the transport.
-            if let Err(e) = self
-                .transport
-                .send(&self.worker_id, &WorkerMessage::Ping { seq })
-                .await
+            // Use a timeout around the send to prevent deadlock: if the
+            // transport's recv() holds the socket mutex during an async
+            // receive, a concurrent send() would block forever. The
+            // timeout ensures the watchdog eventually gives up and signals
+            // death rather than blocking indefinitely on the mutex.
+            let send_timeout = Duration::from_secs(5);
+            if let Err(e) = tokio::time::timeout(
+                send_timeout,
+                self.transport
+                    .send(&self.worker_id, &WorkerMessage::Ping { seq }),
+            )
+            .await
+            .map_err(|_| anvilml_ipc::IpcError::SendFailed("send timed out".to_string()))
+            .and_then(|r| r)
             {
                 // Transport send failed — the worker is unreachable.
                 // Signal death and exit the loop.

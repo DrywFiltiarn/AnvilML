@@ -3277,3 +3277,63 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** ROUTER/DEALER pair, `RespawnPolicy::new(2000, 10, 300)`, `Ready` event, DEALER dropped.
 **Expected output:** Worker exits cleanly within 5s; `crash_respawn_decision` log emitted with `should_respawn = true`.
 **Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_should_respawn_called_on_crash` exits 0.
+
+---
+
+## test_watchdog_missing_pong_triggers_crash_path (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (sync, time, process features) and `tracing` dependencies. `ManagedWorker::new()` accepts `pong_tx`, `watchdog_ping_interval`, and `watchdog_pong_timeout` parameters.
+**Tests:** Missing Pongs trigger the watchdog's crash path identically to a transport error. Creates a ROUTER/DEALER pair with short watchdog timings (ping_interval=50ms, pong_timeout=200ms), sends Ready to transition to Idle, then sends no Pongs. The watchdog sends a Ping, waits 200ms for a Pong that never arrives, declares the worker dead via `dead_tx`, and the `dead_rx` branch in `run()` triggers the same crash path as a transport error (status → Dead, attempt_history appended, should_respawn called, loop breaks).
+**Mode:** mock
+**Inputs:** ROUTER/DEALER pair, `Ready` event, no Pongs forwarded.
+**Expected output:** Status transitions to `Dead` within ~400ms.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_watchdog_missing_pong_triggers_crash_path` exits 0.
+
+---
+
+## test_watchdog_live_pongs_no_false_trigger (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (sync, time, process features) and `tracing` dependencies.
+**Tests:** Sending Pongs at the correct sequence number keeps the watchdog alive. Creates a ROUTER/DEALER pair with short watchdog timings (ping_interval=50ms, pong_timeout=200ms), sends Ready to transition to Idle, then continuously sends Pongs at the correct sequence number (seq 0, 1, 2, ...). The watchdog should not declare the worker dead — `dead_rx` never fires, and the worker stays alive for the duration of the test.
+**Mode:** mock
+**Inputs:** ROUTER/DEALER pair, `Ready` event, Pongs at seq 0-9.
+**Expected output:** Status remains `Idle` throughout — Pongs keep watchdog alive.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_watchdog_live_pongs_no_false_trigger` exits 0.
+
+---
+
+## test_pong_forwarding_does_not_disturb_idle_busy (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (sync, time, process features) and `tracing` dependencies.
+**Tests:** Pong forwarding to the watchdog channel does not disturb normal event processing. Sends a sequence of events: Ready (→ Idle), manually sets Busy, sends Completed (→ Idle), sends Failed (→ Idle). The watchdog receives Pongs on its channel but filters them by sequence number. Status transitions are correct throughout.
+**Mode:** mock
+**Inputs:** ROUTER/DEALER pair, `Ready`, Busy status, `Completed`, `Failed` events.
+**Expected output:** Status transitions: Idle → Busy → Idle → Idle. No false triggers.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_pong_forwarding_does_not_disturb_idle_busy` exits 0.
+
+---
+
+## test_router_transport_adapter_not_dead_code (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (sync, time, process features) and `tracing` dependencies. `RouterTransportAdapter` is `pub(crate)` and is no longer `#[allow(dead_code)]`.
+**Tests:** Verifies that `RouterTransportAdapter` is no longer `#[allow(dead_code)]` by confirming it compiles without dead_code warnings. The adapter is now constructed inside `ManagedWorker::run()` via the watchdog spawning code. Clippy with `-D warnings` would fail if the adapter were unused.
+**Mode:** both
+**Inputs:** N/A — compile-time check.
+**Expected output:** No dead_code warning on `RouterTransportAdapter`.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_router_transport_adapter_not_dead_code` exits 0.
+
+---
+
+## test_watchdog_channel_cleans_up_on_exit (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (sync, time, process features) and `tracing` dependencies.
+**Tests:** After `run()` completes, the `pong_tx` is dropped (consumed by `self`), closing the watchdog's `pong_rx`. The watchdog exits its loop without sending on `dead_tx` (graceful exit). Verifies that the watchdog task cleans up properly when the worker exits — it doesn't leak or hang.
+**Mode:** mock
+**Inputs:** ROUTER/DEALER pair, `Ready` event, shutdown signal.
+**Expected output:** Worker completes within 500ms, status is `Dying`.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_watchdog_channel_cleans_up_on_exit` exits 0.

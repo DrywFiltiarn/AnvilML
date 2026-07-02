@@ -84,16 +84,17 @@
     "P8-E1",
     "P8-E2",
     "P8-E3",
-    "P8-E4"
+    "P8-E4",
+    "P8-B4"
   ],
-  "in_progress": "P8-B4",
+  "in_progress": "P8-E5",
   "plan_approved": true,
-  "current_plan": "1. **Add trait and struct to `spawn.rs`.** Append the following after the existing `spawn_worker()` function and its `#[cfg(test)]` module:\n\n   ```rust\n   use std::future::Future;\n   use std::pin::Pin;\n   use std::sync::Arc;\n\n   /// Trait for spawning Python worker subprocesses.\n   ///\n   /// Provides an injectable abstraction over subprocess spawning, enabling\n   /// `ManagedWorker` to spawn its first-generation subprocess and every\n   /// respawn through a single uniform interface. Production code uses\n   /// `ProcessWorkerSpawner`; tests may substitute a mock implementation.\n   pub trait WorkerSpawner: Send + Sync {\n       /// Spawn a Python worker subprocess.\n       ///\n       /// # Arguments\n       /// * `venv_path` \u2014 Root of the Python virtual environment containing\n       ///   the interpreter.\n       /// * `env` \u2014 Environment variables to inject into the subprocess.\n       ///\n       /// # Errors\n       /// Returns `AnvilError::Io` if the process cannot be spawned\n       /// (e.g. the interpreter binary does not exist).\n       fn spawn(\n           &self,\n           venv_path: &Path,\n           env: HashMap<String, String>,\n       ) -> Pin<Box<dyn Future<Output = Result<tokio::process::Child, AnvilError>> + Send>>;\n   }\n\n   /// Production implementation of `WorkerSpawner` that calls\n   /// `spawn_worker()` directly.\n   ///\n   /// This is the concrete spawner used in production. It does not\n   /// re-implement any part of `build_command()`'s logic \u2014 it delegates\n   /// entirely to `spawn_worker()`.\n   #[derive(Clone, Debug, Default)]\n   pub struct ProcessWorkerSpawner;\n\n   impl WorkerSpawner for ProcessWorkerSpawner {\n       fn spawn(\n           &self,\n           venv_path: &Path,\n           env: HashMap<String, String>,\n       ) -> Pin<Box<dyn Future<Output = Result<tokio::process::Child, AnvilError>> + Send>> {\n           // Delegate to spawn_worker() \u2014 no re-implementation of\n           // build_command() logic. spawn_worker() handles interpreter\n           // path selection, env injection, and stdio piping.\n           Box::pin(spawn_worker(venv_path, env))\n       }\n   }\n   ```\n\n   Rationale: `ProcessWorkerSpawner` is a zero-sized unit struct (`#[derive(Default)]`) because it needs no state \u2014 spawning is entirely determined by its arguments. The `Clone`/`Debug` derives follow the pattern of other zero-state types in the crate.\n\n2. **Update `lib.rs`.** Change the existing `pub use spawn::{build_command, spawn_worker};` line to include the new public types:\n   ```rust\n   pub use spawn::{build_command, spawn_worker, WorkerSpawner, ProcessWorkerSpawner};\n   ```\n   This keeps `lib.rs` at 24 lines (no new lines added, one existing line modified).\n\n3. **Write three new tests in `tests/spawn_tests.rs`.**\n\n   **Test 1 \u2014 `test_spawn_nonexistent_venv_returns_io_error`:** Construct a `ProcessWorkerSpawner`, call `.spawn()` with a nonexistent venv path (e.g. `/tmp/nonexistent_venv_xyz`), await the result, assert it is `Err(AnvilError::Io(_))`, and verify the error's `Display` output contains the expected interpreter path (`/tmp/nonexistent_venv_xyz_xyz/bin/python3`). This proves the production path is real \u2014 not a stub \u2014 because a stub would never reach the OS spawn call.\n\n   **Test 2 \u2014 `test_worker_spawner_is_object_safe`:** A compile-time check. Declare a function that accepts `Arc<dyn WorkerSpawner>` and assert `WorkerSpawner` is `Send + Sync`. This test does not need to run at runtime \u2014 it only needs to compile. The `#[allow(dead_code)]` attribute is used on the function to suppress the unused warning (no caller needed).\n\n   **Test 3 \u2014 `test_spawn_produces_same_command_shape`:** Build a `Command` via `build_command()` and build a `Command` by calling `ProcessWorkerSpawner::spawn()` (which internally calls `spawn_worker()`, which calls `build_command()`). Compare the two commands' program paths and arguments to confirm they are identical. This proves `ProcessWorkerSpawner::spawn()` does not re-implement `build_command()` logic but delegates to it.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-02T11:44:32+0200",
-  "plan_approval_message_id": "1522172680458076323",
+  "last_updated": "2026-07-02T22:13:59+0200",
+  "plan_approval_message_id": "1522333336696127558",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1522172678809583717",
+  "plan_report_message_id": "1522333334657695849",
   "impl_report_message_id": null
 }
