@@ -70,15 +70,20 @@ impl RespawnPolicy {
     /// that crashes rapidly will be permanently halted, but one whose
     /// crashes are spread thin enough to fall outside the window can
     /// recover.
-    pub fn should_respawn(&self, attempt_history: &[Instant]) -> bool {
-        let now = Instant::now();
-        // Compute the cutoff: only attempts newer than this are counted.
-        let cutoff = now - Duration::from_secs(self.respawn_window_s as u64);
-        // Filter to attempts within the trailing window.
-        let count = attempt_history.iter().filter(|&&t| t > cutoff).count();
-        // At exactly max_attempts, respawn halts (count >= max → false).
-        // At max_attempts - 1, respawn continues (count < max → true).
-        count < self.respawn_max_attempts as usize
+    pub fn should_respawn(&self, attempt_history: &[std::time::Instant]) -> bool {
+        let now = std::time::Instant::now();
+        let window = std::time::Duration::from_secs(self.respawn_window_s as u64);
+
+        let count_in_window = match now.checked_sub(window) {
+            Some(cutoff) => attempt_history.iter().filter(|&&t| t >= cutoff).count(),
+            // now is closer to this process's clock origin than the window size
+            // (observed on Windows CI runners) — every entry in attempt_history
+            // is therefore within the window by definition, so count them all
+            // rather than panicking on the underflowing subtraction.
+            None => attempt_history.len(),
+        };
+
+        count_in_window < self.respawn_max_attempts as usize
     }
 
     /// Returns the constant delay between respawn attempts as a `Duration`.
