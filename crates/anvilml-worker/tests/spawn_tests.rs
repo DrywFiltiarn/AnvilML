@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use anvilml_core::AnvilError;
 use anvilml_worker::WorkerSpawner;
 use anvilml_worker::build_command;
 
