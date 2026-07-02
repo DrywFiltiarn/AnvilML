@@ -216,8 +216,17 @@ impl<T: Transport> KeepaliveWatchdog<T> {
     /// Run the keepalive loop.
     ///
     /// Sends a Ping every `ping_interval` and waits for a matching Pong
-    /// within `pong_timeout`. If the timeout expires without a Pong, the
-    /// watchdog signals worker death via `dead_tx` and the loop terminates.
+    /// within `pong_timeout`. Exits and signals worker death via `dead_tx` on
+    /// any of three conditions:
+    /// 1. `transport.send()` fails — the worker is unreachable.
+    /// 2. `pong_timeout` elapses with no matching Pong.
+    /// 3. `pong_rx` is closed (all senders dropped) — the worker is gone.
+    ///    There is currently no separate graceful-shutdown signal for this
+    ///    task; closing `pong_rx` is the only way to stop it externally, and
+    ///    doing so is indistinguishable here from the worker having crashed.
+    ///    A caller that wants to stop the watchdog without a `dead_tx` signal
+    ///    firing (e.g. as part of the worker's own clean shutdown) currently
+    ///    has no way to do that — this is a real gap, not yet a task.
     ///
     /// This method is designed to be spawned as a tokio task:
     /// `tokio::spawn(watchdog.run())`.
@@ -267,14 +276,24 @@ impl<T: Transport> KeepaliveWatchdog<T> {
                     tracing::debug!(worker_id = %self.worker_id, seq, "received pong");
                 }
                 Ok(false) => {
-                    // Pong arrived but with wrong seq (shouldn't happen
-                    // in normal operation, but guard against it).
-                    // Continue the loop to send the next Ping.
-                    tracing::debug!(
+                    // `wait_for_matching_pong` only ever returns `false` when
+                    // `pong_rx.recv()` yields `None` — i.e. the channel is
+                    // closed and the worker is gone (see its doc comment). A
+                    // wrong-seq Pong is skipped *inside* that method's own
+                    // loop and never surfaces here as `false`. Treating this
+                    // as "continue the loop" (the previous behavior) was a
+                    // genuine bug: recv() on a closed, drained channel
+                    // returns `None` immediately rather than after
+                    // `pong_timeout`, so `tokio::time::timeout` never times
+                    // out and this loop spun forever, re-sending Pings into
+                    // a channel that could never produce another Pong.
+                    tracing::info!(
                         worker_id = %self.worker_id,
-                        expected_seq = seq,
-                        "pong with wrong seq, continuing"
+                        seq,
+                        "pong_rx closed — worker is gone, declaring dead"
                     );
+                    let _ = self.dead_tx.send(());
+                    return;
                 }
                 Err(_) => {
                     // Timeout expired — no Pong received within the timeout.

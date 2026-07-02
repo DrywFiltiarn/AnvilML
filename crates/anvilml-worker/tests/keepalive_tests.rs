@@ -169,6 +169,62 @@ async fn test_repeated_successful_pings_no_false_trigger() {
     pong_task.abort();
 }
 
+/// The `pong_rx` channel closing (all senders dropped) triggers the death
+/// signal and the watchdog exits — it does not loop forever.
+///
+/// This is a regression test for a genuine bug: `wait_for_matching_pong()`
+/// returns `false` when `pong_rx.recv()` yields `None` (channel closed), but
+/// `run()` used to treat `Ok(false)` as "continue the loop" — the same
+/// handling as a wrong-seq Pong (a case `wait_for_matching_pong()` actually
+/// never surfaces as `false`; it's handled by an internal `continue` in that
+/// method's own loop). Once the channel is closed, `recv()` resolves to
+/// `None` immediately rather than after `pong_timeout`, so
+/// `tokio::time::timeout` never timed out and `run()` spun forever, ticking
+/// and re-sending Pings into a channel that could never produce another
+/// Pong. Drops `pong_tx` after a short delay (rather than never sending a
+/// Pong at all, which is `test_missing_pong_triggers_dead_signal` above) to
+/// isolate this specific path from the ordinary pong-timeout path.
+#[tokio::test]
+async fn test_pong_channel_closed_triggers_dead_signal() {
+    let (dead_tx, mut dead_rx) = oneshot::channel();
+    let (pong_tx, pong_rx) = mpsc::channel::<WorkerEvent>(16);
+    let transport = MockTransport::new_ok();
+
+    let watchdog = KeepaliveWatchdog::new(
+        "worker-0".to_string(),
+        transport,
+        pong_rx,
+        dead_tx,
+        Duration::from_millis(10),
+        Duration::from_millis(50),
+    );
+
+    let handle = tokio::spawn(watchdog.run());
+
+    // Answer the first Ping so the watchdog is past its initial iteration,
+    // then close the channel — this is the state the doctest hang was found
+    // in: the watchdog mid-loop, not merely never having started.
+    tokio::time::sleep(Duration::from_millis(15)).await;
+    let _ = pong_tx.send(WorkerEvent::Pong { seq: 0 }).await;
+    tokio::time::sleep(Duration::from_millis(15)).await;
+    drop(pong_tx);
+
+    // Bounded wait per ENVIRONMENT.md §11.5. Before the fix, this genuinely
+    // never resolved — the task spun forever — so this bound is what
+    // actually catches a regression, not a formality.
+    let result = timeout(Duration::from_secs(2), &mut dead_rx).await;
+    assert!(
+        result.is_ok(),
+        "death signal should be sent when pong_rx is closed"
+    );
+
+    let task_result = timeout(Duration::from_millis(100), handle).await;
+    assert!(
+        task_result.is_ok(),
+        "watchdog task should exit after pong_rx closes, not loop forever"
+    );
+}
+
 /// A transport send failure triggers the death signal.
 ///
 /// Constructs a watchdog with a `MockTransport` that fails on every send.
