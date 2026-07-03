@@ -30,6 +30,7 @@ use tokio::sync::oneshot;
 
 use anvilml_core::types::worker::WorkerStatus;
 use anvilml_ipc::WorkerEvent;
+use anvilml_ipc::WorkerMessage;
 
 #[cfg(windows)]
 use crate::JobObjectGuard;
@@ -63,6 +64,19 @@ pub const DEFAULT_WATCHDOG_PING_INTERVAL: Duration = Duration::from_secs(30);
 /// Per `ANVILML_DESIGN.md §9.2`: "no pong within 10 seconds → dead."
 /// Tests override with a short duration so they don't block on real seconds.
 pub const DEFAULT_WATCHDOG_PONG_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Production default bound for a graceful shutdown to complete on its own.
+///
+/// Per `ANVILML_DESIGN.md §19.3`: "Server waits up to 30 seconds for
+/// workers to exit. Any worker not exited is killed." That section
+/// describes this at the pool level ("workers", plural) — `WorkerPool`
+/// doesn't exist yet (P8-G1). `ManagedWorker::run()` enforcing this same
+/// 30s bound per-worker is intended to be the building block a future
+/// `WorkerPool::shutdown_all()` awaits against, inheriting §19.3's overall
+/// behavior as an emergent property of each worker's own correct
+/// implementation — not something P8-G1 needs to separately re-implement
+/// or duplicate a timeout for.
+pub const DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The reason a single generation (`run_once()` call) ended.
 ///
@@ -312,6 +326,13 @@ pub struct ManagedWorker {
     /// Tests override with a short duration.
     watchdog_pong_timeout: Duration,
 
+    /// Maximum time to wait for the worker to exit on its own after
+    /// sending `WorkerMessage::Shutdown`, before force-killing it.
+    ///
+    /// Production default: 30 seconds per `ANVILML_DESIGN.md §19.3`.
+    /// Tests override with a short duration.
+    graceful_shutdown_timeout: Duration,
+
     /// Root of the Python virtual environment. Passed to `spawner.spawn()` on
     /// every generation — gen 0 and every respawn alike.
     venv_path: PathBuf,
@@ -401,6 +422,12 @@ pub struct ManagedWorkerConfig {
     /// worker dead. Production default: 10s.
     pub watchdog_pong_timeout: Duration,
 
+    // --- Shutdown ---
+    /// Maximum time to wait for the worker to exit on its own after
+    /// sending `WorkerMessage::Shutdown`, before force-killing it.
+    /// Production default: 30s (`ANVILML_DESIGN.md §19.3`).
+    pub graceful_shutdown_timeout: Duration,
+
     // --- Respawn / process spawning (P8-E6) ---
     /// Root of the Python virtual environment. Passed to `spawner.spawn()`
     /// on every generation — gen 0 and every respawn alike.
@@ -459,6 +486,7 @@ impl ManagedWorker {
             pong_tx: config.pong_tx,
             watchdog_ping_interval: config.watchdog_ping_interval,
             watchdog_pong_timeout: config.watchdog_pong_timeout,
+            graceful_shutdown_timeout: config.graceful_shutdown_timeout,
             venv_path: config.venv_path,
             env: config.env,
             spawner: config.spawner,
@@ -507,6 +535,91 @@ impl ManagedWorker {
         let should = self.respawn_policy.should_respawn(&self.attempt_history);
         tracing::info!(worker_id = %self.worker_id, should_respawn = should, "crash_respawn_decision");
         should
+    }
+
+    /// Force-kill the currently-tracked child, if any.
+    ///
+    /// Used for exit paths where there's no expectation of a graceful,
+    /// worker-initiated exit: `InitTimedOut` (nothing to gracefully finish
+    /// — the worker never even reached `Ready`), `WorkerReportedDying`
+    /// (the worker already told us it's terminating on its own — this is
+    /// a safety net, not the primary mechanism), and
+    /// `Crashed { should_respawn: false }` (the connection is presumably
+    /// already broken by the time this fires — transport error or
+    /// watchdog timeout — so there's no "ask nicely" step worth
+    /// attempting). Also the fallback `graceful_shutdown_child()` calls if
+    /// the worker doesn't exit on its own within the bound.
+    async fn force_kill_child(&mut self) {
+        if let Some(mut child) = self.child.take()
+            && let Err(e) = child.kill().await
+        {
+            tracing::warn!(
+                worker_id = %self.worker_id,
+                error = %e,
+                "failed to kill child on exit (it may have already exited)"
+            );
+        }
+    }
+
+    /// Attempt a graceful shutdown of the currently-tracked child.
+    ///
+    /// Sends `WorkerMessage::Shutdown` — documented as "the worker should
+    /// finish its current step, then exit 0" — then waits
+    /// `self.graceful_shutdown_timeout` for the worker to exit on its own
+    /// (production default 30s, `ANVILML_DESIGN.md §19.3`), force-killing
+    /// as a fallback if it doesn't. There is no IPC-level acknowledgment
+    /// event for "the worker received Shutdown and is exiting" —
+    /// `WorkerEvent` has no such variant — so process exit itself
+    /// (`Child::wait()`), not any received message, is what this waits on.
+    ///
+    /// A `transport.send()` failure is treated the same as the worker not
+    /// exiting in time: there's no point waiting for a worker we couldn't
+    /// even ask to shut down, so this skips straight to the force-kill
+    /// fallback.
+    async fn graceful_shutdown_child(&mut self) {
+        if self.child.is_none() {
+            return;
+        }
+
+        if let Err(e) = self
+            .transport
+            .send(&self.worker_id, &WorkerMessage::Shutdown)
+            .await
+        {
+            tracing::warn!(
+                worker_id = %self.worker_id,
+                error = %e,
+                "failed to send Shutdown message — force-killing instead"
+            );
+            self.force_kill_child().await;
+            return;
+        }
+
+        let Some(child) = self.child.as_mut() else {
+            return;
+        };
+        match tokio::time::timeout(self.graceful_shutdown_timeout, child.wait()).await {
+            Ok(Ok(_)) => {
+                tracing::info!(worker_id = %self.worker_id, "worker_exited_gracefully");
+                self.child = None;
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    worker_id = %self.worker_id,
+                    error = %e,
+                    "error waiting for graceful exit — force-killing"
+                );
+                self.force_kill_child().await;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    worker_id = %self.worker_id,
+                    timeout = ?self.graceful_shutdown_timeout,
+                    "worker did not exit within the graceful shutdown timeout — force-killing"
+                );
+                self.force_kill_child().await;
+            }
+        }
     }
 
     /// Steps, in order:
@@ -884,9 +997,25 @@ impl ManagedWorker {
     ///    `RespawnPolicy::next_delay()`, and loop back to step 1 — the next
     ///    `run_once()` call spawns the next generation's child as its own
     ///    first step.
-    /// 4. Any other outcome (`ShutdownRequested`, `InitTimedOut`,
-    ///    `WorkerReportedDying`, or `Crashed { should_respawn: false }`):
-    ///    return. The worker has exited for good.
+    /// 4. `RunOutcome::ShutdownRequested`: `graceful_shutdown_child()` —
+    ///    send `WorkerMessage::Shutdown`, wait up to
+    ///    `graceful_shutdown_timeout` for the worker to exit on its own,
+    ///    force-kill as a fallback — then return.
+    /// 5. Any other outcome (`InitTimedOut`, `WorkerReportedDying`, or
+    ///    `Crashed { should_respawn: false }`): `force_kill_child()` — no
+    ///    expectation of a graceful exit for these, see that method's own
+    ///    doc comment for why — then return. The worker has exited for
+    ///    good.
+    ///
+    /// Before this method's cleanup was added, `self.child` was only ever
+    /// killed as part of the *next* generation's respawn — meaning every
+    /// exit path in this list left the current generation's child process
+    /// simply dropped, unkilled (`tokio::process::Child` does not kill on
+    /// drop unless `kill_on_drop(true)` was set at spawn time, which it
+    /// isn't). On Windows this was largely masked by `JobObjectGuard`'s own
+    /// drop-triggered kill-on-close; on Linux/macOS, where no equivalent
+    /// exists, every worker exit — not just crashes — orphaned its child
+    /// process.
     ///
     /// # Arguments
     ///
@@ -922,7 +1051,18 @@ impl ManagedWorker {
                     // Loop back — run_once() spawns and registers the next
                     // generation as its own first steps.
                 }
-                _ => break,
+                RunOutcome::ShutdownRequested => {
+                    self.graceful_shutdown_child().await;
+                    break;
+                }
+                RunOutcome::InitTimedOut
+                | RunOutcome::WorkerReportedDying
+                | RunOutcome::Crashed {
+                    should_respawn: false,
+                } => {
+                    self.force_kill_child().await;
+                    break;
+                }
             }
         }
     }

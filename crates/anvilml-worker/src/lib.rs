@@ -19,8 +19,8 @@ pub use job_object::JobObjectGuard;
 
 mod managed;
 pub use managed::{
-    DEFAULT_INIT_TIMEOUT, DEFAULT_WATCHDOG_PING_INTERVAL, DEFAULT_WATCHDOG_PONG_TIMEOUT,
-    ManagedWorker, ManagedWorkerConfig, RunOutcome, WorkerHandle,
+    DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT, DEFAULT_INIT_TIMEOUT, DEFAULT_WATCHDOG_PING_INTERVAL,
+    DEFAULT_WATCHDOG_PONG_TIMEOUT, ManagedWorker, ManagedWorkerConfig, RunOutcome, WorkerHandle,
 };
 
 mod respawn;
