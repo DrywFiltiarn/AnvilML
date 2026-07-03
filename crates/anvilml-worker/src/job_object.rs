@@ -31,6 +31,16 @@ pub struct JobObjectGuard {
     handle: HANDLE,
 }
 
+// SAFETY: HANDLE is a raw `*mut c_void` Win32 handle, which windows-rs does not
+// mark Send/Sync by default. A Win32 handle has no thread-affinity — it is safe
+// to use and close from any thread, which is exactly what happens here: the
+// guard is constructed on whichever task spawned/respawned the child (managed.rs's
+// respawn loop, P8-E6/P8-E7) and must be movable into ManagedWorker::run()'s
+// tokio::spawn'd future. No interior mutability beyond what's already
+// synchronized elsewhere in ManagedWorker touches this handle concurrently.
+unsafe impl Send for JobObjectGuard {}
+unsafe impl Sync for JobObjectGuard {}
+
 impl JobObjectGuard {
     /// Create a new anonymous job object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` enabled.
     ///
