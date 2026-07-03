@@ -345,6 +345,50 @@ use zeromq::{DealerSocket, SocketOptions, ZmqMessage};
 
 // rmp_serde is imported at the top of the file for serializing WorkerEvent bytes.
 
+/// Returns true if a process with the given PID currently exists (i.e. has
+/// not exited/been reaped). Used by the force-kill assertions below to
+/// confirm `JobObjectGuard`'s kill-on-close (Windows) or the direct SIGKILL
+/// path (Unix) actually terminated the tracked child — cross-platform so
+/// Windows CI exercises the same assertion Linux does, instead of skipping
+/// it entirely.
+#[cfg(target_os = "linux")]
+fn pid_is_alive(pid: u32) -> bool {
+    std::path::Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// Windows equivalent of `pid_is_alive` above: opens the process with
+/// `PROCESS_QUERY_LIMITED_INFORMATION` (sufficient to read the exit code,
+/// no elevated rights needed) and checks `GetExitCodeProcess` returns
+/// `STILL_ACTIVE`. A PID that no longer exists fails `OpenProcess` outright
+/// (Windows recycles PIDs, but not within the sub-second window this test
+/// checks in), which is treated as "not alive" — the correct outcome for
+/// this assertion either way.
+#[cfg(target_os = "windows")]
+fn pid_is_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // SAFETY: OpenProcess/GetExitCodeProcess/CloseHandle are standard Win32
+    // calls with no preconditions beyond a valid PID (which may legitimately
+    // not exist — that's a normal, handled failure path, not a precondition
+    // violation). The handle is always closed on every return path below.
+    unsafe {
+        let handle = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            Ok(h) => h,
+            // Process doesn't exist (already reaped) — not alive.
+            Err(_) => return false,
+        };
+
+        let mut exit_code: u32 = 0;
+        let got_code = GetExitCodeProcess(handle, &mut exit_code).is_ok();
+        let _ = CloseHandle(handle);
+
+        got_code && exit_code == STILL_ACTIVE.0 as u32
+    }
+}
+
 /// A `WorkerSpawner` for tests.
 ///
 /// `WorkerSpawner::spawn()`'s return type is a genuine `tokio::process::Child`,
@@ -2718,15 +2762,11 @@ async fn test_graceful_shutdown_force_kills_after_timeout() {
     // Give the OS a moment to actually reap the killed process.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    #[cfg(target_os = "linux")]
-    {
-        let proc_path = format!("/proc/{pid}");
-        assert!(
-            !std::path::Path::new(&proc_path).exists(),
-            "child (pid {pid}) should have been force-killed after the \
-             graceful_shutdown_timeout elapsed, not left running"
-        );
-    }
+    assert!(
+        !pid_is_alive(pid),
+        "child (pid {pid}) should have been force-killed after the \
+         graceful_shutdown_timeout elapsed, not left running"
+    );
 }
 
 /// `InitTimedOut` force-kills the tracked child — the worker never reached
@@ -2775,15 +2815,11 @@ async fn test_init_timeout_force_kills_child() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    #[cfg(target_os = "linux")]
-    {
-        let proc_path = format!("/proc/{pid}");
-        assert!(
-            !std::path::Path::new(&proc_path).exists(),
-            "child (pid {pid}) should have been force-killed after \
-             init_timeout, not left running"
-        );
-    }
+    assert!(
+        !pid_is_alive(pid),
+        "child (pid {pid}) should have been force-killed after \
+         init_timeout, not left running"
+    );
 }
 
 /// `WorkerReportedDying` force-kills the tracked child as a safety net,
@@ -2834,15 +2870,11 @@ async fn test_worker_reported_dying_force_kills_child() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    #[cfg(target_os = "linux")]
-    {
-        let proc_path = format!("/proc/{pid}");
-        assert!(
-            !std::path::Path::new(&proc_path).exists(),
-            "child (pid {pid}) should have been force-killed after \
-             WorkerReportedDying, not left running"
-        );
-    }
+    assert!(
+        !pid_is_alive(pid),
+        "child (pid {pid}) should have been force-killed after \
+         WorkerReportedDying, not left running"
+    );
 }
 
 /// A permanent (at-limit) crash — `Crashed { should_respawn: false }` —
@@ -2892,13 +2924,9 @@ async fn test_permanent_crash_force_kills_child() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    #[cfg(target_os = "linux")]
-    {
-        let proc_path = format!("/proc/{pid}");
-        assert!(
-            !std::path::Path::new(&proc_path).exists(),
-            "child (pid {pid}) should have been force-killed after a \
-             permanent crash, not left running"
-        );
-    }
+    assert!(
+        !pid_is_alive(pid),
+        "child (pid {pid}) should have been force-killed after a \
+         permanent crash, not left running"
+    );
 }
