@@ -1916,7 +1916,7 @@ async fn test_child_tracked_after_spawn() {
     // returns quickly — we only need it to get past the spawn step, not
     // reach any particular event-loop state.
     let _ = shutdown_tx.send(());
-    let (worker, outcome) = worker.run_once_for_test(&mut shutdown_rx).await;
+    let (mut worker, outcome) = worker.run_once_for_test(&mut shutdown_rx).await;
 
     assert_eq!(
         outcome,
@@ -1933,6 +1933,18 @@ async fn test_child_tracked_after_spawn() {
         1,
         "spawn() should have been called exactly once"
     );
+
+    // Clean up: this test uses run_once_for_test() directly, which
+    // bypasses run()'s outer-loop cleanup — graceful_shutdown_child() and
+    // force_kill_child() only fire from run()'s own loop, never from
+    // run_once() itself (see run()'s doc comment). Without this, the
+    // spawned child would be silently dropped here, unkilled — a real,
+    // confirmed process leak this test itself was causing.
+    let mut child = worker
+        .take_child_for_test()
+        .expect("child should still be tracked");
+    let _ = child.kill().await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
 }
 
 /// An under-limit crash triggers exactly one respawn: the spawner is called
@@ -2333,7 +2345,7 @@ async fn test_respawn_kills_previous_child() {
     // into mid-flight from the same sequential task.
     let gen1_handle = tokio::spawn(async move { worker.run_once_for_test(&mut shutdown_rx).await });
     let _ = shutdown_tx.send(());
-    let (worker, _outcome) = tokio::time::timeout(Duration::from_secs(2), gen1_handle)
+    let (mut worker, _outcome) = tokio::time::timeout(Duration::from_secs(2), gen1_handle)
         .await
         .expect("gen 1's run_once_for_test() should complete within 2s of the shutdown signal")
         .expect("gen 1's run_once_for_test() task should not panic");
@@ -2346,21 +2358,30 @@ async fn test_respawn_kills_previous_child() {
         "gen 1 should be a genuinely new process, not the same PID reused"
     );
 
-    // Linux-specific stronger check: confirm gen 0's process is actually
-    // gone, not merely replaced in self.child while still running in the
-    // background. Gated to Linux (matching this codebase's existing
-    // platform-gating convention for OS-specific assertions, e.g.
-    // spawn_tests.rs's #[cfg(windows)] tests) since /proc is Linux-specific
-    // and unavailable on macOS or Windows CI runners.
-    #[cfg(target_os = "linux")]
-    {
-        let proc_path = format!("/proc/{gen0_pid}");
-        assert!(
-            !std::path::Path::new(&proc_path).exists(),
-            "gen 0's process (pid {gen0_pid}) should have been killed before \
-             gen 1 spawned, not left running in the background"
-        );
-    }
+    // Confirm gen 0's process is actually gone, not merely replaced in
+    // self.child while still running in the background. Uses the
+    // cross-platform pid_is_alive() helper (see its own doc comment) so
+    // this assertion runs on Windows CI too, not just Linux.
+    assert!(
+        !pid_is_alive(gen0_pid),
+        "gen 0's process (pid {gen0_pid}) should have been killed before \
+         gen 1 spawned, not left running in the background"
+    );
+
+    // Clean up gen 1's child — this test uses run_once_for_test() directly
+    // (twice), which bypasses run()'s outer-loop cleanup —
+    // graceful_shutdown_child() and force_kill_child() only fire from
+    // run()'s own loop, never from run_once() itself. Gen 0's child is
+    // already verified dead above (killed by gen 1's own respawn-time
+    // cleanup step); gen 1's child, being the last generation in this
+    // test, has nothing else to kill it. Without this, it would be
+    // silently dropped here, unkilled — a real, confirmed process leak
+    // this test itself was causing.
+    let mut gen1_child = worker
+        .take_child_for_test()
+        .expect("gen 1 should have a tracked child");
+    let _ = gen1_child.kill().await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), gen1_child.wait()).await;
 }
 
 // The following tests exercise P8-E7: Windows Job Object reassignment
