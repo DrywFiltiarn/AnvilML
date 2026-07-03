@@ -556,12 +556,24 @@ async fn test_send_recv_roundtrip() {
 
 /// A blocked `recv()` does not prevent a concurrent `send()` from
 /// completing — the load-bearing regression test for the v3 shutdown
-/// deadlock.
+/// deadlock, and for the P8-E5 false-worker-death bug it caused when
+/// `KeepaliveWatchdog` became the first code to genuinely exercise this
+/// scenario across two separate tasks.
 ///
 /// Spawns a DEALER (to provide a valid send destination), spawns `recv()`
-/// in a background task (which blocks waiting for a message), then
-/// immediately calls `send()` from the main task. The send must complete
-/// without waiting for recv to unblock.
+/// in a background task, then calls `send()` from the main task while
+/// `recv()` is *unambiguously* still blocked — the DEALER deliberately
+/// withholds its Pong for 1 second, well past both the 50ms lead-in and the
+/// 250ms bound this test gives `send()` to complete. This ordering is not
+/// incidental: an earlier version of this test had the DEALER send its Pong
+/// immediately with no delay, which on a loopback connection could plausibly
+/// complete — and release recv()'s lock — before send() was even attempted,
+/// letting the test pass regardless of whether the two locks were actually
+/// independent. That version would have stayed green through the entire
+/// period `RouterTransport` used one shared mutex for both directions. The
+/// explicit delay here removes that ambiguity: if this send() call ever
+/// blocks on recv()'s lock again, it will wait the full 1 second for the
+/// DEALER's Pong and this test will time out and fail, not pass by luck.
 #[tokio::test]
 async fn test_concurrent_send_recv_does_not_block() {
     let transport = Arc::new(RouterTransport::bind().await.expect("bind should succeed"));
@@ -571,14 +583,18 @@ async fn test_concurrent_send_recv_does_not_block() {
     let dealer_id = worker_id.clone();
 
     // Spawn a DEALER that connects to the router (provides a valid send
-    // destination). The DEALER also sends a Pong to unblock recv later.
+    // destination), then deliberately WITHHOLDS its Pong for 1 second —
+    // long enough that recv() is unambiguously still blocked, with no
+    // message available, at the moment this test's send() is attempted
+    // below. See the doc comment above for why this delay is load-bearing,
+    // not incidental.
     let dealer_handle = tokio::spawn(async move {
         let mut dealer = make_dealer(router_port, dealer_id.clone());
         dealer
             .connect(&format!("tcp://127.0.0.1:{router_port}"))
             .await
             .expect("DEALER connect should succeed");
-        // Wait for send(); send a Pong to unblock recv.
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         let pong_event = WorkerEvent::Pong { seq: 99 };
         let payload = rmp_serde::to_vec_named(&pong_event).expect("serialize Pong");
         let mut msg = ZmqMessage::from(Bytes::from(""));
@@ -586,27 +602,33 @@ async fn test_concurrent_send_recv_does_not_block() {
         dealer.send(msg).await.expect("DEALER send should succeed");
     });
 
-    // Spawn recv() in a background task — it will block waiting for a message.
+    // Spawn recv() in a background task — it will block waiting for a
+    // message that, per the DEALER's 1-second delay above, cannot possibly
+    // have arrived yet by the time send() is attempted below.
     let recv_transport = Arc::clone(&transport);
     let recv_handle = tokio::spawn(async move { recv_transport.recv().await });
 
     // Give the DEALER time to connect and register, and give recv time
-    // to acquire the lock and block.
+    // to acquire its lock and start blocking. Well short of the DEALER's
+    // 1-second Pong delay, so recv() is guaranteed still pending here.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    // Now send a message from the main task. This must complete without
-    // waiting for the recv to finish — proving the locks are independent.
+    // Now send a message from the main task, bounded to 250ms — far shorter
+    // than the DEALER's 1-second delay. If send() were still blocked on
+    // recv()'s lock (the v3/P8-E5 bug), this would time out here, not pass
+    // by coincidence.
     let ping_msg = WorkerMessage::Ping { seq: 99 };
     let send_result = timeout(
-        std::time::Duration::from_secs(3),
+        std::time::Duration::from_millis(250),
         transport.send(&worker_id, &ping_msg),
     )
     .await;
 
-    // Send should succeed within the timeout.
     assert!(
         send_result.is_ok(),
-        "send should complete without waiting for recv (deadlock regression test)"
+        "send should complete promptly without waiting for recv \
+         (deadlock regression test — if this times out, sender/receiver \
+         locks have been merged back into one, regressing §8.3)"
     );
     assert!(
         send_result.unwrap().is_ok(),

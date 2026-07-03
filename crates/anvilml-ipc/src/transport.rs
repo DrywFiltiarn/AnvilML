@@ -1,19 +1,26 @@
 //! The ZeroMQ ROUTER socket transport wrapper.
 //!
 //! Provides `RouterTransport` — an `Arc`-shareable wrapper around a ZeroMQ ROUTER socket.
-//! The socket is stored behind a mutex so that `send()` and `recv()` can both access it.
+//! `send()` and `recv()` operate on independent locks (`sender`/`receiver`), each guarding
+//! only its own direction — see `ANVILML_DESIGN.md §8.3`. This is not a style choice: a
+//! single shared lock around both directions is the documented root cause of v3's shutdown
+//! deadlock, and P8-E5 (`KeepaliveWatchdog` spawned as a task concurrent with
+//! `ManagedWorker::run()`, sharing this same transport) is proof the risk is real, not
+//! theoretical — it is the first code to exercise genuine concurrent send+recv from two
+//! separate tasks, and previously would have blocked a `send()` for as long as a concurrent
+//! `recv()` was waiting on a message that might never arrive.
 //!
-//! The transport can be closed via `close()`, which causes the next `recv()` to return
-//! an error — this is used by tests to exercise the worker crash path. `close()`'s
-//! signal is delivered via a `watch` channel, deliberately independent of the socket's
-//! own mutex — see `close()`'s doc comment for why.
+//! The transport can be closed via `close()`, which causes the next `send()`/`recv()` to
+//! return an error — this is used by tests to exercise the worker crash path. `close()`'s
+//! signal is delivered via a `watch` channel, deliberately independent of both locks — see
+//! `close()`'s doc comment for why.
 
 use std::sync::Arc;
 
 use bytes::Bytes;
 use tokio::sync::{Mutex, watch};
 use zeromq::prelude::*;
-use zeromq::{Endpoint, RouterSocket, ZmqMessage};
+use zeromq::{Endpoint, RouterRecvHalf, RouterSendHalf, RouterSocket, ZmqMessage};
 
 use crate::IpcError;
 use crate::messages::{WorkerEvent, WorkerMessage};
@@ -23,26 +30,41 @@ use crate::messages::{WorkerEvent, WorkerMessage};
 /// Binds on construction. Ownership rule: constructed exactly once by `WorkerPool`
 /// and shared via `Arc<RouterTransport>`. No other code holds the socket directly.
 ///
-/// The socket is stored behind an `Arc<Mutex<Option<RouterSocket>>>`. The `close()`
-/// method replaces the socket with `None`, causing the next `recv()` to return an error.
+/// `send()` and `recv()` are backed by independent locks (`sender`/`receiver`) —
+/// see `ANVILML_DESIGN.md §8.3`. The `close()` method replaces both halves with
+/// `None`, causing the next `send()`/`recv()` to return an error.
 pub struct RouterTransport {
-    /// The ROUTER socket, protected by a mutex.
+    /// The send half of the ROUTER socket, protected by its own mutex.
     ///
-    /// Stored in an `Option` so that `close()` can replace it with `None`,
-    /// which drops the socket and causes the next `recv()` to fail.
-    socket: Arc<Mutex<Option<RouterSocket>>>,
+    /// Entirely independent from `receiver`'s lock — a `send()` call never
+    /// waits on anything a concurrent `recv()` is doing, and vice versa.
+    /// Stored in an `Option` so `close()` can replace it with `None`,
+    /// causing the next `send()` to fail.
+    sender: Arc<Mutex<Option<RouterSendHalf>>>,
 
-    /// Closed signal, deliberately independent of `socket`'s mutex.
+    /// The recv half of the ROUTER socket, protected by its own mutex.
     ///
-    /// `recv()` holds `socket`'s lock for the entire duration of the blocking
-    /// inner socket read (it needs `&mut RouterSocket` for that whole span).
-    /// If `close()` used the same lock to signal closure, it would block
-    /// forever whenever a `recv()` call is genuinely in flight and waiting for
-    /// a network message that will never arrive - the lock would never be
-    /// released and `close()` could never acquire it. This `watch` channel
-    /// lets `close()` signal instantly, lock-free, and lets `recv()` race that
-    /// signal against the real socket read via `tokio::select!`, so a blocked
-    /// `recv()` is interrupted rather than permanently starving `close()`.
+    /// Entirely independent from `sender`'s lock — see `sender`'s doc comment.
+    /// `recv()` holds this lock for the entire duration of the blocking inner
+    /// socket read (it needs `&mut RouterRecvHalf` for that whole span), but
+    /// since `sender` is a separate lock, this no longer blocks a concurrent
+    /// `send()` the way a single shared lock did in v3 (see module docs).
+    /// Stored in an `Option` so `close()` can replace it with `None`, causing
+    /// the next `recv()` to fail.
+    receiver: Arc<Mutex<Option<RouterRecvHalf>>>,
+
+    /// Closed signal, deliberately independent of both `sender`'s and
+    /// `receiver`'s locks.
+    ///
+    /// `recv()` holds `receiver`'s lock for the entire duration of the
+    /// blocking inner socket read. If `close()` used that same lock to
+    /// signal closure, it would block forever whenever a `recv()` call is
+    /// genuinely in flight and waiting for a network message that will never
+    /// arrive — the lock would never be released and `close()` could never
+    /// acquire it. This `watch` channel lets `close()` signal instantly,
+    /// lock-free, and lets `recv()` race that signal against the real socket
+    /// read via `tokio::select!`, so a blocked `recv()` is interrupted rather
+    /// than permanently starving `close()`.
     closed_tx: watch::Sender<bool>,
 
     /// The TCP port the ROUTER socket is bound on.
@@ -91,8 +113,17 @@ impl RouterTransport {
             }
         };
 
+        // Split into independent send/recv halves per §8.3 — see the struct's
+        // field docs for why this must never be collapsed back into one lock.
+        // zeromq 0.6.0's RouterSocket::split() is exactly this: it consumes
+        // the socket and returns (RouterSendHalf, RouterRecvHalf), each
+        // usable from a different task with no shared internal lock between
+        // them (RouterSendHalf is even Clone, backed by its own Arc).
+        let (send_half, recv_half) = socket.split();
+
         Ok(RouterTransport {
-            socket: Arc::new(Mutex::new(Some(socket))),
+            sender: Arc::new(Mutex::new(Some(send_half))),
+            receiver: Arc::new(Mutex::new(Some(recv_half))),
             closed_tx: watch::channel(false).0,
             port,
         })
@@ -126,15 +157,17 @@ impl RouterTransport {
         message.push_back(Bytes::from("")); // frame 1: empty delimiter
         message.push_back(Bytes::from(payload)); // frame 2: payload
 
-        // Acquire the socket lock and send the message.
-        let mut socket = self.socket.lock().await;
-        let socket = socket
+        // Acquire the sender lock (independent from receiver's — see struct
+        // docs) and send the message.
+        let mut sender = self.sender.lock().await;
+        let sender = sender
             .as_mut()
             .ok_or_else(|| IpcError::SendFailed("transport is closed".to_string()))?;
 
-        // Send the 3-frame message over the ROUTER socket. The SocketSend trait
-        // is provided by zeromq::prelude::* and implemented on RouterSocket.
-        socket
+        // Send the 3-frame message over the ROUTER socket's send half. The
+        // SocketSend trait is provided by zeromq::prelude::* and implemented
+        // on RouterSendHalf.
+        sender
             .send(message)
             .await
             .map_err(|e| IpcError::SendFailed(e.to_string()))?;
@@ -167,14 +200,15 @@ impl RouterTransport {
         // copy_from_slice copies the bytes into a new Bytes allocation (static lifetime).
         message.push_back(Bytes::copy_from_slice(payload)); // frame 2: payload
 
-        // Acquire the socket lock and send the message.
-        let mut socket = self.socket.lock().await;
-        let socket = socket
+        // Acquire the sender lock (independent from receiver's — see struct
+        // docs) and send the message.
+        let mut sender = self.sender.lock().await;
+        let sender = sender
             .as_mut()
             .ok_or_else(|| IpcError::SendFailed("transport is closed".to_string()))?;
 
-        // Send the 3-frame message over the ROUTER socket.
-        socket
+        // Send the 3-frame message over the ROUTER socket's send half.
+        sender
             .send(message)
             .await
             .map_err(|e| IpcError::SendFailed(e.to_string()))?;
@@ -183,30 +217,36 @@ impl RouterTransport {
         Ok(())
     }
 
-    /// Close the transport, causing the next `recv()` to return an error.
+    /// Close the transport, causing the next `send()`/`recv()` to return an error.
     ///
     /// This is used by tests to exercise the worker crash path (transport
     /// recv error).
     ///
     /// Signals via the lock-free `closed_tx` watch channel *first*, before
-    /// touching `socket`'s mutex. This ordering matters: if a `recv()` call is
-    /// currently in flight, holding `socket`'s lock while blocked on a network
-    /// read that will never arrive, this method's own attempt to acquire that
-    /// same lock (below) would otherwise block forever. Signaling first
-    /// guarantees the in-flight `recv()`'s `tokio::select!` (see `recv()`)
-    /// observes the signal and returns promptly, releasing the lock, before
-    /// this method's own lock acquisition is reached.
+    /// touching either lock. This ordering matters for `receiver`'s lock
+    /// specifically: if a `recv()` call is currently in flight, holding
+    /// `receiver`'s lock while blocked on a network read that will never
+    /// arrive, this method's own attempt to acquire that same lock (below)
+    /// would otherwise block forever. Signaling first guarantees the
+    /// in-flight `recv()`'s `tokio::select!` (see `recv()`) observes the
+    /// signal and returns promptly, releasing the lock, before this method's
+    /// own lock acquisition is reached. (`sender`'s lock has no equivalent
+    /// hazard — `send()` never blocks indefinitely the way `recv()` does — but
+    /// it's still cleared here so a `send()` after `close()` correctly fails.)
     pub async fn close(&self) {
         // Signal first (lock-free) — see the doc comment above for why this
         // ordering is required, not just convenient.
         let _ = self.closed_tx.send(true);
 
-        // Now replace the socket with None. By this point any in-flight
-        // recv() has already been signaled and will release the lock on its
-        // own; this acquisition is not competing with a recv() that can never
-        // finish on its own.
-        let mut socket = self.socket.lock().await;
-        *socket = None;
+        // Clear both halves. By this point any in-flight recv() has already
+        // been signaled and will release receiver's lock on its own; this
+        // acquisition is not competing with a recv() that can never finish
+        // on its own. sender and receiver are independent locks, so there's
+        // no ordering hazard between clearing the two.
+        let mut sender = self.sender.lock().await;
+        *sender = None;
+        let mut receiver = self.receiver.lock().await;
+        *receiver = None;
     }
 
     /// Receive a `WorkerEvent` from a worker, returning its identity and the event.
@@ -231,23 +271,25 @@ impl RouterTransport {
     /// fails msgpack deserialization.
     #[tracing::instrument(skip(self))]
     pub async fn recv(&self) -> Result<(String, WorkerEvent), IpcError> {
-        // Fast path: already closed. Avoids acquiring the socket lock at all
-        // for any recv() call made after close() has already completed.
+        // Fast path: already closed. Avoids acquiring the receiver lock at
+        // all for any recv() call made after close() has already completed.
         if *self.closed_tx.subscribe().borrow() {
             return Err(IpcError::RecvFailed("transport is closed".to_string()));
         }
 
         let mut closed_rx = self.closed_tx.subscribe();
-        let mut socket_guard = self.socket.lock().await;
-        let socket = socket_guard
+        let mut receiver_guard = self.receiver.lock().await;
+        let receiver = receiver_guard
             .as_mut()
             .ok_or_else(|| IpcError::RecvFailed("transport is closed".to_string()))?;
 
         // Receive a 3-frame ROUTER multipart message, or bail out if close()
         // signals while this read is still pending. The SocketRecv trait is
-        // provided by zeromq::prelude::* and implemented on RouterSocket.
+        // provided by zeromq::prelude::* and implemented on RouterRecvHalf.
+        // This lock is independent from sender's (see struct docs) — a
+        // concurrent send() is never blocked by this call being in flight.
         let message = tokio::select! {
-            result = socket.recv() => {
+            result = receiver.recv() => {
                 result.map_err(|e| IpcError::RecvFailed(e.to_string()))?
             }
             _ = closed_rx.changed() => {

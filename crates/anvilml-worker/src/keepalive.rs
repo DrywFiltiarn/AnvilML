@@ -246,11 +246,19 @@ impl<T: Transport> KeepaliveWatchdog<T> {
             tracing::debug!(worker_id = %self.worker_id, seq, "sending ping");
 
             // Send the Ping message via the transport.
-            // Use a timeout around the send to prevent deadlock: if the
-            // transport's recv() holds the socket mutex during an async
-            // receive, a concurrent send() would block forever. The
-            // timeout ensures the watchdog eventually gives up and signals
-            // death rather than blocking indefinitely on the mutex.
+            //
+            // `RouterTransport::send()` and `::recv()` are backed by
+            // independent locks (`anvilml-ipc/src/transport.rs`, per
+            // `ANVILML_DESIGN.md §8.3`), so this call is no longer at risk of
+            // blocking on whatever `ManagedWorker::run()`'s own concurrent
+            // `recv()` is doing — that was true before the §8.3 split landed,
+            // and was this watchdog's actual root cause of falsely declaring
+            // healthy-but-idle workers dead (a `send()` blocked on lock
+            // contention looked identical to a genuinely unreachable worker).
+            // The timeout below is kept as defense-in-depth against a
+            // different, unrelated failure mode — e.g. OS-level socket
+            // backpressure if a peer stops reading — not as a workaround for
+            // shared-lock contention, which no longer exists.
             let send_timeout = Duration::from_secs(5);
             if let Err(e) = tokio::time::timeout(
                 send_timeout,
