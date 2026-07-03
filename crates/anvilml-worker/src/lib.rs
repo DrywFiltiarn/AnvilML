@@ -1,5 +1,8 @@
 //! Spawns/supervises Python worker subprocesses.
 
+mod bridge;
+pub use bridge::spawn_bridge;
+
 mod demux;
 pub use demux::Demux;
 
