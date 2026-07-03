@@ -2182,7 +2182,7 @@ async fn test_respawn_kills_previous_child() {
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
     let spawner = Arc::new(MockWorkerSpawner::new());
     let (pong_tx, _pong_rx) = tokio::sync::mpsc::channel(16);
-    let (_shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
 
     let worker = ManagedWorker::new(ManagedWorkerConfig {
         worker_id: "test-worker".to_string(),
@@ -2231,7 +2231,23 @@ async fn test_respawn_kills_previous_child() {
     // shutdown_rx), so reusing it is fine; matching run()'s own real
     // behavior of holding one shutdown_rx across every generation.
     tokio::time::sleep(Duration::from_millis(20)).await;
-    let (worker, _outcome) = worker.run_once_for_test(&mut shutdown_rx).await;
+
+    // Gen 1 never receives a Ready event in this test — it doesn't need
+    // to, since this test only verifies child-kill/PID-tracking, not
+    // steady-state event handling. Left to run on its own, gen 1's
+    // run_once_for_test() would only return once init_timeout elapses:
+    // 60 seconds, per this test's DEFAULT_INIT_TIMEOUT config — the exact
+    // hang this comment is here to prevent regressing back into. Spawned
+    // as its own task so a real shutdown signal can be sent concurrently,
+    // giving gen 1 a genuinely fast (not merely "shorter") exit path —
+    // run_once_for_test() is a single .await we can't otherwise signal
+    // into mid-flight from the same sequential task.
+    let gen1_handle = tokio::spawn(async move { worker.run_once_for_test(&mut shutdown_rx).await });
+    let _ = shutdown_tx.send(());
+    let (worker, _outcome) = tokio::time::timeout(Duration::from_secs(2), gen1_handle)
+        .await
+        .expect("gen 1's run_once_for_test() should complete within 2s of the shutdown signal")
+        .expect("gen 1's run_once_for_test() task should not panic");
     let gen1_pid = worker
         .child_pid_for_test()
         .expect("gen 1 should have a tracked child");
