@@ -2273,3 +2273,214 @@ async fn test_respawn_kills_previous_child() {
         );
     }
 }
+
+// The following tests exercise P8-E7: Windows Job Object reassignment
+// across respawn generations. Windows-only, both by cfg and by necessity —
+// JobObjectGuard itself does not compile on non-Windows targets.
+
+/// An under-limit respawn's new Child is assigned to the same
+/// `JobObjectGuard` as the original.
+///
+/// `JobObjectGuard` has no introspection API (no "list assigned PIDs"), so
+/// this is verified behaviorally, matching the pattern already established
+/// in `spawn_tests.rs`'s `test_assigned_child_terminated_on_drop`: drop
+/// everything after a respawn and confirm the *new* (gen 1) child actually
+/// gets killed by the job object's kill-on-close limit. If
+/// `assign_process()` were only ever called for gen 0 (not reassigned on
+/// respawn), gen 1's child would survive the drop untouched.
+///
+/// Uses `run_once_for_test()` directly (twice, manually) to simulate what
+/// `run()`'s outer loop does — same pattern as
+/// `test_respawn_kills_previous_child` — since this needs to hold gen 1's
+/// `Child` handle directly afterward (`take_child_for_test()`) in order to
+/// `.wait()` on it.
+#[cfg(windows)]
+#[tokio::test]
+async fn test_respawn_reassigns_job_object_to_new_child() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+    let spawner = Arc::new(MockWorkerSpawner::new());
+    let (pong_tx, _pong_rx) = tokio::sync::mpsc::channel(16);
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
+
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: RespawnPolicy::new(10, 3, 300),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
+        pong_tx,
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::clone(&spawner) as Arc<dyn WorkerSpawner>,
+    });
+
+    // Gen 0: crash it via a malformed payload, matching
+    // test_respawn_kills_previous_child's established pattern.
+    let dealer_transport = Arc::clone(&transport);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let mut dealer = connect_dealer(&dealer_transport, "test-worker").await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        send_malformed(&mut dealer).await;
+    });
+
+    let (worker, outcome) = worker.run_once_for_test(&mut shutdown_rx).await;
+    assert_eq!(
+        outcome,
+        RunOutcome::Crashed {
+            should_respawn: true
+        },
+        "gen 0 should crash and be respawn-eligible"
+    );
+
+    // Gen 1: never receives a Ready event — this test only verifies
+    // job-object reassignment, not steady-state event handling. Ended via
+    // a real shutdown signal rather than waiting out init_timeout, matching
+    // test_respawn_kills_previous_child's established fix for the same
+    // situation (gen 1 has no other way to return quickly).
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let gen1_handle = tokio::spawn(async move { worker.run_once_for_test(&mut shutdown_rx).await });
+    let _ = shutdown_tx.send(());
+    let (mut worker, _outcome) = tokio::time::timeout(Duration::from_secs(2), gen1_handle)
+        .await
+        .expect("gen 1's run_once_for_test() should complete within 2s of the shutdown signal")
+        .expect("gen 1's run_once_for_test() task should not panic");
+
+    let mut gen1_child = worker
+        .take_child_for_test()
+        .expect("gen 1 should have a tracked child");
+
+    // Drop the worker (and with it, job_guard) — this closes the job
+    // object, triggering JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE for whatever is
+    // currently assigned to it. If assign_process() was genuinely called
+    // for gen 1 (not just gen 0), gen 1's child dies here.
+    drop(worker);
+
+    // Bounded wait per ENVIRONMENT.md §11.5, matching
+    // test_assigned_child_terminated_on_drop's own established pattern.
+    let result = tokio::time::timeout(Duration::from_secs(5), gen1_child.wait()).await;
+    match result {
+        Ok(Ok(_)) => {
+            // Gen 1's child exited — killed by the job object's
+            // kill-on-close limit, proving reassignment happened.
+        }
+        Ok(Err(e)) => panic!("gen 1 child wait failed: {e}"),
+        Err(_) => panic!(
+            "gen 1's child did not exit within 5s of the worker (and job_guard) \
+             dropping — assign_process() may not have been called for the \
+             respawned generation"
+        ),
+    }
+}
+
+/// The job object's protection correctly tracks the *current* child across
+/// **multiple** respawns, not just a single reassignment.
+///
+/// Distinct from `test_respawn_reassigns_job_object_to_new_child` above:
+/// that test proves reassignment happens once; this one proves it keeps
+/// happening correctly across repeated respawns — "whichever Child is
+/// currently assigned when the guard drops" (this task's own acceptance
+/// wording) genuinely means *whichever*, not just *the second one*.
+#[cfg(windows)]
+#[tokio::test]
+async fn test_job_guard_kills_current_child_after_multiple_respawns() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+    let spawner = Arc::new(MockWorkerSpawner::new());
+    let (pong_tx, _pong_rx) = tokio::sync::mpsc::channel(16);
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
+
+    // max_attempts=3: two crashes stay under the limit (1 < 3, then 2 < 3),
+    // allowing two respawns — gen 0 -> gen 1 -> gen 2.
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: RespawnPolicy::new(10, 3, 300),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
+        pong_tx,
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::clone(&spawner) as Arc<dyn WorkerSpawner>,
+    });
+
+    // Gen 0: crash it via a malformed payload.
+    let dealer_transport = Arc::clone(&transport);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let mut dealer = connect_dealer(&dealer_transport, "test-worker").await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        send_malformed(&mut dealer).await;
+    });
+
+    let (worker, outcome) = worker.run_once_for_test(&mut shutdown_rx).await;
+    assert_eq!(
+        outcome,
+        RunOutcome::Crashed {
+            should_respawn: true
+        },
+        "gen 0 should crash and be respawn-eligible"
+    );
+
+    // Gen 1: crash it too, via a second, fresh malformed payload over a new
+    // DEALER connection — the first one is already gone by now (it was
+    // local to the spawned closure above, which already completed), so
+    // this is a genuinely sequential, non-overlapping connection, not a
+    // second simultaneous identity on the same ROUTER.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let dealer_transport2 = Arc::clone(&transport);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let mut dealer2 = connect_dealer(&dealer_transport2, "test-worker").await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        send_malformed(&mut dealer2).await;
+    });
+
+    let (worker, outcome) = worker.run_once_for_test(&mut shutdown_rx).await;
+    assert_eq!(
+        outcome,
+        RunOutcome::Crashed {
+            should_respawn: true
+        },
+        "gen 1 should also crash and still be respawn-eligible (2 < 3)"
+    );
+
+    // Gen 2: never receives Ready — ended via a real shutdown signal, same
+    // pattern as test_respawn_reassigns_job_object_to_new_child.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let gen2_handle = tokio::spawn(async move { worker.run_once_for_test(&mut shutdown_rx).await });
+    let _ = shutdown_tx.send(());
+    let (mut worker, _outcome) = tokio::time::timeout(Duration::from_secs(2), gen2_handle)
+        .await
+        .expect("gen 2's run_once_for_test() should complete within 2s of the shutdown signal")
+        .expect("gen 2's run_once_for_test() task should not panic");
+
+    let mut gen2_child = worker
+        .take_child_for_test()
+        .expect("gen 2 should have a tracked child");
+
+    drop(worker);
+
+    let result = tokio::time::timeout(Duration::from_secs(5), gen2_child.wait()).await;
+    match result {
+        Ok(Ok(_)) => {
+            // Gen 2's child exited — the job object's protection correctly
+            // followed the process across two reassignments, not just one.
+        }
+        Ok(Err(e)) => panic!("gen 2 child wait failed: {e}"),
+        Err(_) => panic!(
+            "gen 2's child did not exit within 5s of the worker (and job_guard) \
+             dropping — assign_process() may not have tracked the child \
+             correctly across multiple respawns"
+        ),
+    }
+}

@@ -31,6 +31,8 @@ use tokio::sync::oneshot;
 use anvilml_core::types::worker::WorkerStatus;
 use anvilml_ipc::WorkerEvent;
 
+#[cfg(windows)]
+use crate::JobObjectGuard;
 use crate::demux::Demux;
 use crate::keepalive::{KeepaliveWatchdog, RouterTransportAdapter};
 use crate::respawn::RespawnPolicy;
@@ -339,6 +341,24 @@ pub struct ManagedWorker {
     /// own doc comment for why: overwriting without killing first would
     /// silently drop (not terminate) whatever this held, on every respawn.
     child: Option<tokio::process::Child>,
+
+    /// Windows Job Object for orphan-cleanup (P8-E7). Absent entirely on
+    /// non-Windows targets — no field, no behavior change there.
+    ///
+    /// One guard persists across every generation of this worker's
+    /// lifetime — it is not recreated per respawn. `run_once()` calls
+    /// `assign_process(&child)` on it after every successful spawn (gen 0
+    /// and every respawn alike), reassigning the guard's kill-on-close
+    /// protection to whichever child is currently live. A terminated
+    /// process is automatically removed from a job object's process list
+    /// by the OS, so this reassignment is always a clean "empty job
+    /// object accepts a never-before-assigned process" case, not the
+    /// cross-guard rejection scenario `spawn_tests.rs`'s
+    /// `test_double_assignment_fails_cleanly` exercises — see this
+    /// field's own construction in `new()` for why `JobObjectGuard::new()`
+    /// failing doesn't fail construction of the whole `ManagedWorker`.
+    #[cfg(windows)]
+    job_guard: Option<JobObjectGuard>,
 }
 
 /// Construction parameters for `ManagedWorker::new()`.
@@ -404,6 +424,30 @@ impl ManagedWorker {
     /// `Demux::register()` is documented idempotent, and `run_once()`'s own
     /// registration simply overwrites it with an equivalent entry.
     pub fn new(config: ManagedWorkerConfig) -> Self {
+        #[cfg(windows)]
+        let job_guard = match JobObjectGuard::new() {
+            Ok(guard) => Some(guard),
+            Err(e) => {
+                // Graceful degradation, not a construction failure: this
+                // guard is defense-in-depth against orphaned processes if
+                // the supervisor dies unexpectedly, not something the
+                // worker's own correct operation depends on. Failing
+                // ManagedWorker::new() itself over a job-object creation
+                // failure (rare — resource exhaustion or unusual security
+                // policy) would be a disproportionate response, and would
+                // force a breaking Result<Self, _> signature change onto
+                // every platform, including non-Windows ones where this
+                // failure mode can't even occur.
+                tracing::warn!(
+                    error = %e,
+                    "JobObjectGuard::new() failed — this worker's child \
+                     processes will not be protected against orphaning if \
+                     the supervisor dies unexpectedly"
+                );
+                None
+            }
+        };
+
         Self {
             worker_id: config.worker_id,
             transport: config.transport,
@@ -419,6 +463,8 @@ impl ManagedWorker {
             env: config.env,
             spawner: config.spawner,
             child: None,
+            #[cfg(windows)]
+            job_guard,
         }
     }
 
@@ -593,6 +639,32 @@ impl ManagedWorker {
         // dropped (and its OS process left running, unmanaged) the moment
         // this match arm ends.
         self.child = Some(child);
+
+        // Reassign the Job Object's kill-on-close protection to this
+        // generation's child (P8-E7). Every generation, gen 0 and every
+        // respawn alike — see job_guard's own field doc comment for why
+        // reassigning onto a fresh child is always the clean case, not
+        // the cross-guard rejection scenario. assign_process() failing is
+        // logged and non-fatal to this spawn attempt, matching job_guard
+        // being Option (see new()'s own doc comment) — the worker still
+        // runs, just without this specific orphan-cleanup protection for
+        // this generation.
+        #[cfg(windows)]
+        if let Some(guard) = &self.job_guard
+            && let Err(e) = guard.assign_process(
+                self.child
+                    .as_ref()
+                    .expect("self.child was just set to Some(child) immediately above"),
+            )
+        {
+            tracing::warn!(
+                worker_id = %self.worker_id,
+                error = %e,
+                "JobObjectGuard::assign_process() failed — this generation's \
+                 child will not be protected against orphaning if the \
+                 supervisor dies unexpectedly"
+            );
+        }
 
         // Register with the demux now that a worker process genuinely
         // exists. Idempotent per Demux::register()'s own contract, so this
@@ -776,6 +848,26 @@ impl ManagedWorker {
     #[cfg(feature = "test-utils")]
     pub fn child_pid_for_test(&self) -> Option<u32> {
         self.child.as_ref().and_then(|c| c.id())
+    }
+
+    /// Test-only accessor that takes ownership of the currently-tracked
+    /// child, leaving `None` behind.
+    ///
+    /// Needed for P8-E7's `JobObjectGuard` tests specifically: verifying a
+    /// job object's kill-on-close behavior means dropping the guard, then
+    /// `.wait()`-ing on the *same* `Child` handle to see if the OS actually
+    /// terminated it — matching the pattern already established in
+    /// `spawn_tests.rs`'s `test_assigned_child_terminated_on_drop`. That
+    /// requires the caller to hold the `Child` handle directly; `.wait()`
+    /// isn't reachable through `child_pid_for_test()`'s `u32`.
+    ///
+    /// Taking the handle out of `self.child` does not affect the job
+    /// object's OS-level association with that process — `AssignProcessToJobObject`
+    /// operates on the OS process itself, independent of which Rust-level
+    /// value currently owns the `Child` handle for it.
+    #[cfg(feature = "test-utils")]
+    pub fn take_child_for_test(&mut self) -> Option<tokio::process::Child> {
+        self.child.take()
     }
 
     /// Run the worker's full lifecycle across every respawn generation.
