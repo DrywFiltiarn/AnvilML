@@ -288,8 +288,14 @@ pub struct ManagedWorker {
     /// filters for matching sequence numbers internally. A closed or full channel
     /// is not an error — the watchdog will eventually timeout and declare the
     /// worker dead, which is the correct failure mode. Reassigned to a fresh
-    /// channel by `run_once()` at the top of every generation, tied to that
-    /// generation's freshly-spawned watchdog task.
+    /// channel by `run_once()` at the start of phase 2 (once `Ready` is
+    /// received), tied to that generation's freshly-spawned watchdog task —
+    /// see `run_once()`'s doc comment for why the watchdog doesn't exist
+    /// yet during phase 1. A stray `Pong` received during phase 1 is sent
+    /// into whatever this field currently holds (the caller-provided sender
+    /// on gen 0, or the previous generation's now-orphaned watchdog channel
+    /// on a respawn) — harmless either way, since an unmatched seq is
+    /// silently ignored by `wait_for_matching_pong()`.
     pong_tx: tokio::sync::mpsc::Sender<anvilml_ipc::WorkerEvent>,
 
     /// Time between consecutive Ping messages sent by the watchdog.
@@ -444,6 +450,19 @@ impl ManagedWorker {
     /// being polled without winning a `select!`. Owning it here would mean
     /// generation 2+ has no way to observe a shutdown request at all.
     ///
+    /// Records a crash attempt and consults the respawn policy.
+    ///
+    /// Shared by all three crash sources — `spawner.spawn()` failure,
+    /// transport recv error, and the keepalive watchdog's death signal —
+    /// so the attempt_history/should_respawn/logging sequence is written
+    /// (and can go wrong) in exactly one place, not three.
+    fn record_crash_and_decide(&mut self) -> bool {
+        self.attempt_history.push(Instant::now());
+        let should = self.respawn_policy.should_respawn(&self.attempt_history);
+        tracing::info!(worker_id = %self.worker_id, should_respawn = should, "crash_respawn_decision");
+        should
+    }
+
     /// Steps, in order:
     /// 1. If a previous generation's child is still tracked (`self.child`),
     ///    kills it (`.kill().await`) before spawning the new one — a no-op
@@ -463,31 +482,67 @@ impl ManagedWorker {
     ///    wraps), registers with the demux (`Demux::register()` is
     ///    documented idempotent — this is safe even on gen 0, where a caller
     ///    may already have registered), and sets status to `Initializing`.
-    /// 4. Spawns the `init_timeout` guard: if no `Ready` event arrives
-    ///    before it elapses, sets status to `Dead` and returns
-    ///    `RunOutcome::InitTimedOut` — not respawn-eligible, see
-    ///    `RunOutcome`'s doc comment.
-    /// 5. Spawns a fresh `KeepaliveWatchdog` task (fresh `dead_tx`/`dead_rx`
-    ///    pair every generation — this is *not* a struct field, unlike
-    ///    pre-P8-E6: a single oneshot pair consumed via `.take()` once in
-    ///    `new()` would panic on generation 2's watchdog spawn, since the
-    ///    `Option` would already be `None` from generation 1).
-    /// 6. Enters a `tokio::select!` loop between `shutdown_rx`,
-    ///    `transport.recv()`, `init_timeout`, and the watchdog's `dead_rx`.
+    /// 4. **Phase 1 — pre-`Ready` loop.** `tokio::select!` between
+    ///    `shutdown_rx`, `transport.recv()`, and the `init_timeout` guard.
+    ///    No watchdog exists yet in this phase — see "Why the watchdog
+    ///    waits for `Ready`" below. Any non-`Ready` event is processed via
+    ///    `handle_event()` and phase 1 continues; `Ready` is processed the
+    ///    same way and then phase 1 ends, moving to phase 2.
+    /// 5. **Phase 2 — steady-state loop.** Spawns a fresh `KeepaliveWatchdog`
+    ///    task (fresh `dead_tx`/`dead_rx` pair every generation — this is
+    ///    *not* a struct field, unlike pre-P8-E6: a single oneshot pair
+    ///    consumed via `.take()` once in `new()` would panic on generation
+    ///    2's watchdog spawn, since the `Option` would already be `None`
+    ///    from generation 1), then `tokio::select!`s between `shutdown_rx`,
+    ///    `transport.recv()`, and the watchdog's `dead_rx`. No
+    ///    `init_timeout` in this phase — `Ready` has already been received,
+    ///    so that guard's job is already done.
+    ///
+    /// # Why the watchdog waits for `Ready`
+    ///
+    /// `KeepaliveWatchdog::run()`'s first ping fires essentially immediately
+    /// once spawned (standard `tokio::time::interval` behavior — the first
+    /// tick resolves right away, it does not wait a full `ping_interval`
+    /// first). If the watchdog were spawned unconditionally at the top of
+    /// this method (as it was pre-this-fix), that first ping can race the
+    /// worker subprocess's own ZeroMQ DEALER-side connection handshake:
+    /// `Demux::register()` succeeding (an in-memory Rust map insert) says
+    /// nothing about whether the ROUTER *socket* itself has recorded the
+    /// peer identity yet — that only happens once the DEALER's connection
+    /// handshake genuinely completes at the ZeroMQ protocol level, which is
+    /// a separate, slower thing. Losing that race makes `RouterTransport`'s
+    /// `send()` fail with "Destination client not found by identity", which
+    /// the watchdog cannot distinguish from a genuinely dead worker — a
+    /// false-positive crash on a worker that hasn't even finished
+    /// connecting. Waiting for `Ready` (the worker's own proof its
+    /// connection is fully established) before spawning the watchdog
+    /// eliminates this race structurally rather than narrowing it with an
+    /// arbitrary grace period. `init_timeout` already exists specifically
+    /// to catch "never started" — the watchdog's job becomes exactly
+    /// "started, then died," with no overlap between the two.
+    ///
+    /// `shutdown_rx` is a mutable *reference*, not owned outright — it must
+    /// survive across every generation of the outer loop, since a
+    /// `oneshot::Receiver` becomes permanently unusable once it actually
+    /// resolves (receives a value, or its sender drops), not merely from
+    /// being polled without winning a `select!`. Owning it here would mean
+    /// generation 2+ has no way to observe a shutdown request at all.
     ///
     /// # Exit paths (this generation only — see `run()` for what happens next)
     ///
-    /// 1. **Graceful shutdown** — `shutdown_rx` receives `()`: status → `Dying`,
-    ///    returns `RunOutcome::ShutdownRequested`.
-    /// 2. **Initializing timeout** — `init_timeout` elapses without `Ready`:
-    ///    status → `Dead`, returns `RunOutcome::InitTimedOut`.
-    /// 3. **Worker crash (explicit)** — `Dying` event received: status → `Dead`,
-    ///    returns `RunOutcome::WorkerReportedDying`.
-    /// 4. **Worker crash (transport)** — `transport.recv()` returns `Err`:
-    ///    status → `Dead`, `attempt_history` appended, `should_respawn()`
-    ///    consulted, returns `RunOutcome::Crashed`.
+    /// 1. **Graceful shutdown** — `shutdown_rx` receives `()`, in either
+    ///    phase: status → `Dying`, returns `RunOutcome::ShutdownRequested`.
+    /// 2. **Initializing timeout** — `init_timeout` elapses without `Ready`
+    ///    (phase 1 only — this branch does not exist in phase 2): status →
+    ///    `Dead`, returns `RunOutcome::InitTimedOut`.
+    /// 3. **Worker crash (explicit)** — `Dying` event received, in either
+    ///    phase: status → `Dead`, returns `RunOutcome::WorkerReportedDying`.
+    /// 4. **Worker crash (transport)** — `transport.recv()` returns `Err`,
+    ///    in either phase: status → `Dead`, `attempt_history` appended,
+    ///    `should_respawn()` consulted, returns `RunOutcome::Crashed`.
     /// 5. **Keepalive watchdog timeout** — the watchdog's `dead_rx` becomes
-    ///    ready: status → `Dead`, `attempt_history` appended, `should_respawn()`
+    ///    ready (phase 2 only — the watchdog does not exist in phase 1):
+    ///    status → `Dead`, `attempt_history` appended, `should_respawn()`
     ///    consulted, returns `RunOutcome::Crashed` (same handling as path 4).
     ///
     /// This method does **not** call `demux.deregister()` — that is `run()`'s
@@ -525,9 +580,7 @@ impl ManagedWorker {
             Ok(child) => child,
             Err(e) => {
                 tracing::error!(worker_id = %self.worker_id, error = %e, "spawn_failed");
-                self.attempt_history.push(Instant::now());
-                let should = self.respawn_policy.should_respawn(&self.attempt_history);
-                tracing::info!(worker_id = %self.worker_id, should_respawn = should, "crash_respawn_decision");
+                let should = self.record_crash_and_decide();
                 return (
                     self,
                     RunOutcome::Crashed {
@@ -550,30 +603,75 @@ impl ManagedWorker {
             self.demux.registered(&self.worker_id),
             "worker must be registered immediately after a successful spawn"
         );
+        tracing::info!(
+            worker_id = %self.worker_id,
+            child_pid = ?self.child.as_ref().and_then(|c| c.id()),
+            "worker_spawned_and_registered"
+        );
 
         // The worker must transition through Initializing before it can
         // reach Idle.
         *self.status.write().await = WorkerStatus::Initializing;
 
-        // Step 3: Spawn the Initializing timeout guard.
-        // If this sleep completes before a Ready event, the worker is declared Dead.
-        // `initialized` disarms this branch once Ready arrives — see the `if
-        // !initialized` precondition on the select branch below. Without this,
-        // the timeout keeps ticking for the worker's entire lifetime and fires
-        // at `self.init_timeout` regardless of how long ago Ready was actually
-        // received.
+        // Spawn the Initializing timeout guard — phase 1 only, see below.
+        // If this sleep completes before a Ready event, the worker is
+        // declared Dead.
         let init_timeout = tokio::time::sleep(self.init_timeout);
         tokio::pin!(init_timeout);
-        let mut initialized = false;
 
-        // Step 4: Spawn the keepalive watchdog.
-        // The watchdog sends Pings at a configurable interval and waits for
-        // matching Pongs through its pong_rx channel. If no Pong arrives within
-        // pong_timeout after a Ping, it sends on dead_tx, making dead_rx ready
-        // in the select! below.
+        // Phase 1: pre-Ready loop. No watchdog exists yet — see this
+        // method's "Why the watchdog waits for Ready" doc section for why
+        // that's deliberate, not an oversight.
+        let early_exit = loop {
+            tokio::select! {
+                _ = &mut *shutdown_rx => {
+                    *self.status.write().await = WorkerStatus::Dying;
+                    tracing::info!(worker_id = %self.worker_id, "shutdown_requested");
+                    break Some(RunOutcome::ShutdownRequested);
+                }
+
+                result = self.transport.recv() => {
+                    match result {
+                        Ok((id, event)) => {
+                            let is_ready = matches!(event, WorkerEvent::Ready { .. });
+                            if self.handle_event(&id, event).await {
+                                break Some(RunOutcome::WorkerReportedDying);
+                            }
+                            if is_ready {
+                                // Ready received — end phase 1 cleanly, no
+                                // RunOutcome yet, proceed to phase 2 below.
+                                break None;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(worker_id = %self.worker_id, error = %e, "transport recv failed");
+                            *self.status.write().await = WorkerStatus::Dead;
+                            let should = self.record_crash_and_decide();
+                            break Some(RunOutcome::Crashed { should_respawn: should });
+                        }
+                    }
+                }
+
+                _ = &mut init_timeout => {
+                    *self.status.write().await = WorkerStatus::Dead;
+                    tracing::info!(worker_id = %self.worker_id, "worker_declared_dead");
+                    break Some(RunOutcome::InitTimedOut);
+                }
+            }
+        };
+
+        if let Some(outcome) = early_exit {
+            return (self, outcome);
+        }
+
+        // Phase 2: Ready has been received — spawn the watchdog now, past
+        // the dealer-handshake race window (the worker has already proven
+        // its connection is fully established by sending Ready), and enter
+        // the steady-state loop.
         //
-        // dead_tx/dead_rx are fresh locals for THIS generation only — see this
-        // method's own doc comment for why they can't be struct fields anymore.
+        // dead_tx/dead_rx are fresh locals for THIS generation only — see
+        // this method's own doc comment for why they can't be struct
+        // fields anymore.
         //
         // Production defaults: 30s ping interval, 10s pong timeout
         // (ANVILML_DESIGN.md §9.2).
@@ -593,23 +691,17 @@ impl ManagedWorker {
         );
         tokio::spawn(watchdog.run());
 
-        // Step 5: Main event loop for this generation.
         let outcome = loop {
             tokio::select! {
-                // Graceful shutdown path.
                 _ = &mut *shutdown_rx => {
                     *self.status.write().await = WorkerStatus::Dying;
                     tracing::info!(worker_id = %self.worker_id, "shutdown_requested");
                     break RunOutcome::ShutdownRequested;
                 }
 
-                // Worker event path.
                 result = self.transport.recv() => {
                     match result {
                         Ok((id, event)) => {
-                            if matches!(event, WorkerEvent::Ready { .. }) {
-                                initialized = true;
-                            }
                             // handle_event returns true when the Dying event is
                             // received, signaling this generation to end.
                             if self.handle_event(&id, event).await {
@@ -618,26 +710,12 @@ impl ManagedWorker {
                         }
                         Err(e) => {
                             // Transport recv failed — a crash for this generation.
-                            // Track the attempt and consult the respawn policy;
-                            // run()'s outer loop acts on the decision.
                             tracing::error!(worker_id = %self.worker_id, error = %e, "transport recv failed");
                             *self.status.write().await = WorkerStatus::Dead;
-                            self.attempt_history.push(Instant::now());
-                            let should = self.respawn_policy.should_respawn(&self.attempt_history);
-                            tracing::info!(worker_id = %self.worker_id, should_respawn = should, "crash_respawn_decision");
+                            let should = self.record_crash_and_decide();
                             break RunOutcome::Crashed { should_respawn: should };
                         }
                     }
-                }
-
-                // Initializing timeout — init_timeout elapsed without Ready.
-                // This means the worker process started but never reported readiness.
-                // Disarmed once `initialized` is true, per the precondition below —
-                // this branch is not even polled once Ready has been received.
-                _ = &mut init_timeout, if !initialized => {
-                    *self.status.write().await = WorkerStatus::Dead;
-                    tracing::info!(worker_id = %self.worker_id, "worker_declared_dead");
-                    break RunOutcome::InitTimedOut;
                 }
 
                 // Watchdog dead path — the keepalive watchdog detected a missing Pong.
@@ -646,9 +724,7 @@ impl ManagedWorker {
                 _ = &mut watchdog_dead_rx => {
                     tracing::error!(worker_id = %self.worker_id, "watchdog timeout — worker declared dead");
                     *self.status.write().await = WorkerStatus::Dead;
-                    self.attempt_history.push(Instant::now());
-                    let should = self.respawn_policy.should_respawn(&self.attempt_history);
-                    tracing::info!(worker_id = %self.worker_id, should_respawn = should, "crash_respawn_decision");
+                    let should = self.record_crash_and_decide();
                     break RunOutcome::Crashed { should_respawn: should };
                 }
             }
@@ -771,9 +847,10 @@ impl ManagedWorker {
     ///   if it misses a Pong).
     /// - Other events: log at DEBUG level.
     ///
-    /// The `init_timeout` branch in `run_once()`'s `select!` is disarmed once a
-    /// `Ready` event is seen (tracked via `run_once()`'s own `initialized` flag,
-    /// not by this method) — see `run_once()`'s doc comment for the mechanism.
+    /// The `init_timeout` branch only exists in `run_once()`'s phase-1 loop
+    /// (pre-`Ready`) — it is structurally absent from phase 2, not disarmed
+    /// by a runtime flag, once a `Ready` event ends phase 1. See
+    /// `run_once()`'s doc comment for the full two-phase mechanism.
     async fn handle_event(&mut self, _id: &str, event: WorkerEvent) -> bool {
         // Clone the event for forwarding to the watchdog before the match.
         // The match borrows `event` via `&event`, so we can't move it
@@ -781,10 +858,10 @@ impl ManagedWorker {
         let pong_forward = event.clone();
         match &event {
             WorkerEvent::Ready { .. } => {
-                // Worker successfully initialized. The Initializing timeout is
-                // disarmed by run_once()'s own select! precondition (`initialized`),
-                // set the moment this event is matched in the recv() branch —
-                // not here, since handle_event() doesn't own that state.
+                // Worker successfully initialized. run_once()'s phase-1 loop
+                // ends the moment this event is matched in its own recv()
+                // branch — not here, since handle_event() doesn't own that
+                // control flow, it's only called from within it.
                 *self.status.write().await = WorkerStatus::Idle;
                 tracing::info!(worker_id = %self.worker_id, "worker_ready");
                 false
