@@ -209,11 +209,12 @@ dependencies = [
 
 [[package]]
 name = "anvilml-worker"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "anvilml-core",
  "anvilml-hardware",
  "anvilml-ipc",
+ "anvilml-worker",
  "bytes",
  "rmp-serde",
  "tokio",

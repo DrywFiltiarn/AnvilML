@@ -7,13 +7,21 @@
 //!   lifecycle. Each handle owns an `Arc`-reference to the worker's status lock,
 //!   a `oneshot::Sender` for requesting shutdown, and an `Arc<Mutex<Option<JoinHandle>>>`
 //!   for tracking the worker task.
-//! - `ManagedWorker` — the full lifecycle task that owns a worker's lifetime.
-//!   It calls `demux.register()` on entry and `demux.deregister()` on every exit
-//!   path (graceful shutdown, crash, timeout).
+//! - `ManagedWorker` — the full lifecycle task that owns a worker's lifetime across
+//!   every respawn generation. As of P8-E6, `run_once()` calls `demux.register()`
+//!   itself immediately after each successful spawn (gen 0 and every respawn
+//!   alike — see `run_once()`'s doc comment), and `run()`'s outer loop calls
+//!   `demux.deregister()` on every exit from a generation. Before P8-E6, the
+//!   very first registration was the external caller's responsibility alone;
+//!   that external pre-registration is still harmless if a caller still does it
+//!   (`Demux::register()` is documented idempotent), but is no longer required —
+//!   `run_once()`'s own registration now covers gen 0 too.
 //!
 //! The `WorkerHandle` is a lightweight view into shared state; `ManagedWorker`
 //! is the consuming task that runs the lifecycle loop.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -26,6 +34,7 @@ use anvilml_ipc::WorkerEvent;
 use crate::demux::Demux;
 use crate::keepalive::{KeepaliveWatchdog, RouterTransportAdapter};
 use crate::respawn::RespawnPolicy;
+use crate::spawn::WorkerSpawner;
 use anvilml_ipc::RouterTransport;
 
 /// Production default for the Initializing→Idle grace period.
@@ -52,6 +61,44 @@ pub const DEFAULT_WATCHDOG_PING_INTERVAL: Duration = Duration::from_secs(30);
 /// Per `ANVILML_DESIGN.md §9.2`: "no pong within 10 seconds → dead."
 /// Tests override with a short duration so they don't block on real seconds.
 pub const DEFAULT_WATCHDOG_PONG_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The reason a single generation (`run_once()` call) ended.
+///
+/// Consumed by `run()`'s outer loop to decide whether to respawn or stop for
+/// good. Only `Crashed` carries a respawn decision — the other three variants
+/// are unconditional: `run()` never respawns after them, regardless of what
+/// `RespawnPolicy` would otherwise allow. This matches this task's own scope
+/// exactly: two crash sources (transport recv error, `KeepaliveWatchdog`'s
+/// death signal) are respawn-eligible; graceful shutdown, the `Initializing`
+/// timeout, and an explicit `Dying` event are not, unchanged from their
+/// pre-P8-E6 behavior.
+///
+/// `pub`, not `pub(crate)`: `run_once()` itself is `pub(crate)` (matching
+/// this task's specified visibility), but its `test-utils`-gated public
+/// wrapper `run_once_for_test()` returns `RunOutcome` too — a `pub` function
+/// cannot have a `pub(crate)` type in its signature (Rust's
+/// `private_interfaces` lint), so this enum must be visible wherever that
+/// wrapper is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunOutcome {
+    /// `shutdown_rx` fired. No respawn, ever — this is supervisor-initiated.
+    ShutdownRequested,
+    /// `init_timeout` elapsed without a `Ready` event. No respawn — a worker
+    /// that never reaches `Ready` may indicate a persistent environment
+    /// problem a respawn wouldn't fix; this task's scope doesn't list this
+    /// path as crash-eligible.
+    InitTimedOut,
+    /// The worker reported its own termination (`Dying` event). No respawn —
+    /// same reasoning as `InitTimedOut`: not listed as crash-eligible.
+    WorkerReportedDying,
+    /// A crash was detected: `spawner.spawn()` itself failing, a transport
+    /// recv error, or the keepalive watchdog's death signal. All three are
+    /// treated identically here — `attempt_history` has already been
+    /// appended and `RespawnPolicy::should_respawn()` already consulted
+    /// before this variant is constructed; `should_respawn` carries that
+    /// decision.
+    Crashed { should_respawn: bool },
+}
 
 /// A cheap, `Clone`-able handle for interacting with a worker's lifecycle.
 ///
@@ -163,26 +210,31 @@ impl WorkerHandle {
 /// `ManagedWorker` owns the worker's stable identity, a shared `RouterTransport` for
 /// receiving events from the worker, a shared `Demux` for the routing table, and a
 /// `RespawnPolicy` for crash-recovery decisions. It consumes `self` in `run()`, which
-/// owns the worker's entire lifetime.
+/// owns the worker's entire lifetime across every respawn generation.
 ///
-/// The lifecycle is:
-/// 1. **Initializing** — the worker is spawned; `init_timeout` (60s in production,
-///    via `DEFAULT_INIT_TIMEOUT`; configurable per-instance, see `new()`) guards
-///    this state.
+/// The lifecycle, per generation:
+/// 1. **Initializing** — `run_once()` spawns a fresh child process (gen 0 and every
+///    respawn alike, via the same code path) and registers with the demux, then sets
+///    this status. `init_timeout` (60s in production, via `DEFAULT_INIT_TIMEOUT`;
+///    configurable per-instance, see `new()`) guards this state.
 /// 2. **Idle** — the worker sent a `Ready` event; waiting for job assignment.
 /// 3. **Busy** — the worker is executing a job.
 /// 4. **Dying** — the worker received a shutdown signal or sent a `Dying` event.
 /// 5. **Dead** — the worker has terminated.
-/// 6. On exit, `deregister()` is called to remove the worker from the routing table.
+/// 6. **Respawning** — set by `run()`'s outer loop between a respawn-eligible crash
+///    and the next generation's spawn attempt, during the backoff delay.
+///
+/// `demux.register()` is called by `run_once()` itself, immediately after each
+/// successful spawn. `demux.deregister()` is called by `run()`'s outer loop after
+/// every generation exits, regardless of outcome. See `run()`'s and `run_once()`'s
+/// own doc comments for the full per-generation contract.
 ///
 /// `run()` is the consuming method — it takes `self` by value and returns only after
-/// the worker has fully exited and been deregistered.
-///
-/// Registration with the demux is performed by the pool **before** spawning the
-/// `ManagedWorker` task. `run()` only performs `deregister()` on exit.
+/// the worker has exited for good (no further respawn) and been deregistered.
 pub struct ManagedWorker {
     /// Stable worker identity — the bare device index as a string (e.g. `"0"`).
-    /// Used for deregister on exit.
+    /// Used for register/deregister and as the spawned subprocess's expected
+    /// ZeroMQ DEALER identity.
     worker_id: String,
 
     /// Shared ROUTER socket transport for receiving events from the worker.
@@ -191,11 +243,11 @@ pub struct ManagedWorker {
     /// `ManagedWorker` and the event-sending test code.
     transport: Arc<RouterTransport>,
 
-    /// Shared routing table — used to deregister on exit.
+    /// Shared routing table.
     ///
     /// Wrapped in `Arc` so the test can inspect it after `run()` consumes the
-    /// `ManagedWorker` and returns. Registration is performed by the pool
-    /// before `run()` is spawned.
+    /// `ManagedWorker` and returns. `run_once()` registers on every successful
+    /// spawn; `run()`'s outer loop deregisters after every generation exits.
     demux: Arc<Demux>,
 
     /// Shared status lock — used by `run()` to track the worker's lifecycle state.
@@ -207,15 +259,18 @@ pub struct ManagedWorker {
     /// Crash-recovery backoff policy.
     ///
     /// Decides whether a crashed worker may be respawned based on the count of
-    /// recent crash attempts within a sliding window. Consulted on every
-    /// crash (transport recv error) to determine if respawn is permissible.
+    /// recent crash attempts within a sliding window. Consulted on every crash
+    /// (spawn failure, transport recv error, or keepalive watchdog death signal)
+    /// to determine if respawn is permissible, and for the backoff delay between
+    /// a respawn-eligible crash and the next spawn attempt.
     respawn_policy: RespawnPolicy,
 
     /// Timestamps of crash transitions.
     ///
-    /// Each time the worker crashes (transport recv error), `Instant::now()`
-    /// is appended to this vector. Consulted by `RespawnPolicy::should_respawn()`
-    /// to decide whether a respawn is permissible.
+    /// Appended on every crash (spawn failure, transport recv error, or watchdog
+    /// death signal). Consulted by `RespawnPolicy::should_respawn()` to decide
+    /// whether a respawn is permissible. Persists across generations — this is
+    /// the whole point of the sliding-window backoff policy.
     attempt_history: Vec<Instant>,
 
     /// Grace period for the Initializing→Idle transition.
@@ -227,27 +282,14 @@ pub struct ManagedWorker {
     /// for the same pattern elsewhere in this crate.
     init_timeout: Duration,
 
-    /// Oneshot receiver for the watchdog's death signal.
-    ///
-    /// When the watchdog detects a missing Pong (pong_timeout elapsed without a
-    /// matching response), it sends on `dead_tx` and this receiver becomes ready.
-    /// The `run()` loop polls this in a `select!` branch alongside shutdown and
-    /// transport recv — when ready, the worker is declared Dead.
-    watchdog_dead_rx: tokio::sync::oneshot::Receiver<()>,
-
-    /// Optional oneshot sender for the watchdog's death signal.
-    ///
-    /// Created in `new()`, stored here, then `take()`n in `run()` when spawning
-    /// the watchdog task. This ensures the sender is owned by the watchdog task
-    /// and dropped when the task exits.
-    watchdog_dead_tx: Option<tokio::sync::oneshot::Sender<()>>,
-
     /// Channel sender for forwarding Pong events to the watchdog.
     ///
     /// Each `WorkerEvent::Pong` from `handle_event()` is sent here. The watchdog
     /// filters for matching sequence numbers internally. A closed or full channel
     /// is not an error — the watchdog will eventually timeout and declare the
-    /// worker dead, which is the correct failure mode.
+    /// worker dead, which is the correct failure mode. Reassigned to a fresh
+    /// channel by `run_once()` at the top of every generation, tied to that
+    /// generation's freshly-spawned watchdog task.
     pong_tx: tokio::sync::mpsc::Sender<anvilml_ipc::WorkerEvent>,
 
     /// Time between consecutive Ping messages sent by the watchdog.
@@ -261,116 +303,259 @@ pub struct ManagedWorker {
     /// Production default: 10 seconds per `ANVILML_DESIGN.md §9.2`.
     /// Tests override with a short duration.
     watchdog_pong_timeout: Duration,
+
+    /// Root of the Python virtual environment. Passed to `spawner.spawn()` on
+    /// every generation — gen 0 and every respawn alike.
+    venv_path: PathBuf,
+
+    /// Environment variables for the worker subprocess.
+    ///
+    /// Built once (`WorkerEnv::build`) and held static across respawns.
+    /// `WorkerSpawner::spawn()` consumes its `env` argument by value, so
+    /// `run_once()` clones this at each call site rather than moving it out.
+    env: HashMap<String, String>,
+
+    /// Spawns the worker subprocess. `Arc<dyn ...>` so production
+    /// (`ProcessWorkerSpawner`) and tests (a mock) share one field type.
+    spawner: Arc<dyn WorkerSpawner>,
+
+    /// The currently-spawned child process, if any.
+    ///
+    /// Set by `run_once()` immediately after a successful spawn, gen 0 and
+    /// every respawn alike — this is what "Child stored, not orphaned" means:
+    /// without this field, the `Child` returned by `spawner.spawn()` would be
+    /// a temporary with no owner past the end of the expression that spawned
+    /// it, and tokio drops an orphaned `Child` without killing the OS process
+    /// it wraps. `None` only before the very first spawn attempt.
+    ///
+    /// On respawn, `run_once()` kills the previous generation's child
+    /// (`.kill().await`) before overwriting this field — see `run_once()`'s
+    /// own doc comment for why: overwriting without killing first would
+    /// silently drop (not terminate) whatever this held, on every respawn.
+    child: Option<tokio::process::Child>,
+}
+
+/// Construction parameters for `ManagedWorker::new()`.
+///
+/// Bundled into a config struct (rather than 12 positional parameters) as of
+/// P8-E6 — named fields catch "wrong argument order" at compile time in a way
+/// positional args of increasingly-similar types (multiple `Duration`s,
+/// multiple `Arc<...>`s) do not. Fields are grouped by concern below, not
+/// alphabetically or by arrival order — related fields sit together.
+pub struct ManagedWorkerConfig {
+    // --- Identity ---
+    /// Stable worker identity (e.g. `"0"`, `"1"`), also used as the ZeroMQ
+    /// DEALER identity the worker subprocess connects with.
+    pub worker_id: String,
+
+    // --- Shared infrastructure (constructed once, outside ManagedWorker) ---
+    /// The ROUTER transport, shared across all workers in the pool.
+    pub transport: Arc<RouterTransport>,
+    /// The event-routing table, shared across all workers in the pool.
+    pub demux: Arc<Demux>,
+    /// Externally-readable status handle — cloned into `WorkerHandle` so
+    /// callers can observe status without going through `ManagedWorker`.
+    pub status: Arc<RwLock<WorkerStatus>>,
+
+    // --- Crash recovery ---
+    /// Backoff/max-attempt policy consulted on every crash (spawn failure,
+    /// transport error, or `KeepaliveWatchdog` death signal).
+    pub respawn_policy: RespawnPolicy,
+    /// Grace period for the Initializing→Idle transition. Production callers
+    /// pass `DEFAULT_INIT_TIMEOUT` (60s, `ANVILML_DESIGN.md §9.2`).
+    pub init_timeout: Duration,
+
+    // --- Keepalive watchdog ---
+    /// Forwarding channel for `Pong` events, read by the spawned
+    /// `KeepaliveWatchdog` task via its paired receiver.
+    pub pong_tx: tokio::sync::mpsc::Sender<anvilml_ipc::WorkerEvent>,
+    /// How often the watchdog sends a Ping. Production default: 30s.
+    pub watchdog_ping_interval: Duration,
+    /// How long the watchdog waits for a matching Pong before declaring the
+    /// worker dead. Production default: 10s.
+    pub watchdog_pong_timeout: Duration,
+
+    // --- Respawn / process spawning (P8-E6) ---
+    /// Root of the Python virtual environment. Passed to `spawner.spawn()`
+    /// on every generation — gen 0 and every respawn alike.
+    pub venv_path: PathBuf,
+    /// Environment variables for the worker subprocess. Built once
+    /// (`WorkerEnv::build`) and held static across respawns — `spawn()`
+    /// consumes its `env` argument by value, so each call site clones this.
+    pub env: HashMap<String, String>,
+    /// Spawns the worker subprocess. `Arc<dyn ...>` so production
+    /// (`ProcessWorkerSpawner`) and tests (a mock) share one field type.
+    pub spawner: Arc<dyn WorkerSpawner>,
 }
 
 impl ManagedWorker {
-    /// Construct a new `ManagedWorker` from its component parts.
+    /// Construct a new `ManagedWorker` from a `ManagedWorkerConfig`.
     ///
-    /// The worker is **not** registered in the demux by this constructor — the
-    /// pool must call `demux.register(worker_id, tx)` before spawning `run()`.
-    /// `run()` will call `demux.deregister()` on every exit path.
-    ///
-    /// # Arguments
-    ///
-    /// * `worker_id` — Stable worker identity string (e.g. `"0"`).
-    /// * `transport` — Shared `RouterTransport` for receiving events from the worker.
-    /// * `demux` — Shared routing table for deregister on exit.
-    /// * `status` — Shared status lock for tracking lifecycle state.
-    /// * `respawn_policy` — Crash-recovery decision logic.
-    /// * `init_timeout` — Grace period for the Initializing→Idle transition.
-    ///   Production callers pass `DEFAULT_INIT_TIMEOUT`; tests exercising the
-    ///   timeout path itself pass a short duration.
-    /// * `pong_tx` — Channel sender for forwarding Pong events to the keepalive
-    ///   watchdog. The caller creates the channel pair and passes the sender here;
-    ///   the receiver is used internally by the watchdog spawned in `run()`.
-    /// * `watchdog_ping_interval` — Time between consecutive Ping messages.
-    ///   Production callers should pass `DEFAULT_WATCHDOG_PING_INTERVAL`.
-    ///   Tests use a short duration so the test doesn't block on a real 30s wait.
-    /// * `watchdog_pong_timeout` — Maximum wait for a matching Pong after a Ping.
-    ///   Production callers should pass `DEFAULT_WATCHDOG_PONG_TIMEOUT`.
-    ///   Tests use a short duration so the test doesn't block on a real 10s wait.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        worker_id: String,
-        transport: Arc<RouterTransport>,
-        demux: Arc<Demux>,
-        status: Arc<RwLock<WorkerStatus>>,
-        respawn_policy: RespawnPolicy,
-        init_timeout: Duration,
-        pong_tx: tokio::sync::mpsc::Sender<anvilml_ipc::WorkerEvent>,
-        watchdog_ping_interval: Duration,
-        watchdog_pong_timeout: Duration,
-    ) -> Self {
-        let (watchdog_dead_tx, watchdog_dead_rx) = tokio::sync::oneshot::channel();
+    /// The worker does not need to be pre-registered in the demux by the
+    /// caller — `run_once()` registers itself immediately after every
+    /// successful spawn, gen 0 included. A caller that still registers before
+    /// spawning `run()` (matching the pre-P8-E6 contract) is harmless:
+    /// `Demux::register()` is documented idempotent, and `run_once()`'s own
+    /// registration simply overwrites it with an equivalent entry.
+    pub fn new(config: ManagedWorkerConfig) -> Self {
         Self {
-            worker_id,
-            transport,
-            demux,
-            status,
-            respawn_policy,
+            worker_id: config.worker_id,
+            transport: config.transport,
+            demux: config.demux,
+            status: config.status,
+            respawn_policy: config.respawn_policy,
             attempt_history: Vec::new(),
-            init_timeout,
-            watchdog_dead_rx,
-            watchdog_dead_tx: Some(watchdog_dead_tx),
-            pong_tx,
-            watchdog_ping_interval,
-            watchdog_pong_timeout,
+            init_timeout: config.init_timeout,
+            pong_tx: config.pong_tx,
+            watchdog_ping_interval: config.watchdog_ping_interval,
+            watchdog_pong_timeout: config.watchdog_pong_timeout,
+            venv_path: config.venv_path,
+            env: config.env,
+            spawner: config.spawner,
+            child: None,
         }
     }
 
     /// Returns the number of crash attempts tracked in `attempt_history`.
     ///
-    /// Each crash (transport recv error) appends an `Instant` to the history.
-    /// This accessor is primarily for testing — it lets callers verify that
-    /// crash-attempt tracking is working correctly without exposing the
-    /// internal `Vec<Instant>` directly.
+    /// Each crash (spawn failure, transport recv error, or watchdog death
+    /// signal) appends an `Instant` to the history. This accessor is
+    /// primarily for testing — it lets callers verify that crash-attempt
+    /// tracking is working correctly without exposing the internal
+    /// `Vec<Instant>` directly.
     pub fn attempt_count(&self) -> usize {
         self.attempt_history.len()
     }
 
-    /// Run the worker's full lifecycle.
+    /// Run a single generation of the worker's lifecycle: spawn, register,
+    /// initialize, and process events until this generation ends.
     ///
-    /// This method consumes `self` and owns the worker's entire lifetime:
-    /// - Sets status to `Initializing` on entry.
-    /// - Spawns the `init_timeout` guard (60s in production; configurable, see `new()`):
-    ///   if no `Ready` event arrives before it elapses, sets status to `Dead`.
-    /// - Spawns a `KeepaliveWatchdog` task that sends Pings and monitors Pongs;
-    ///   if no Pong arrives within the timeout (pong_timeout), the watchdog signals
-    ///   death via `watchdog_dead_rx`, which triggers the same crash path as a
-    ///   transport error.
-    /// - Enters a `tokio::select!` loop between `shutdown_rx`, `transport.recv()`,
-    ///   `init_timeout`, and `watchdog_dead_rx`.
-    /// - Transitions status based on events: `Ready → Idle`, `Dying → Dead`,
-    ///   `Completed/Failed/Cancelled → Idle`.
-    /// - Calls `demux.deregister()` on every exit path.
+    /// Called by `run()`'s outer loop once per generation — gen 0 and every
+    /// respawn alike, via the exact same code path, per this task's own
+    /// scope ("spawner.spawn() at top of every generation"). Takes and
+    /// returns `self` by value (rather than `&mut self`) because ownership
+    /// needs to survive across the `.await` points inside, matching the
+    /// pattern already established by `run()` pre-P8-E6.
     ///
-    /// # Arguments
+    /// `shutdown_rx` is a mutable *reference*, not owned outright — it must
+    /// survive across every generation of the outer loop, since a
+    /// `oneshot::Receiver` becomes permanently unusable once it actually
+    /// resolves (receives a value, or its sender drops), not merely from
+    /// being polled without winning a `select!`. Owning it here would mean
+    /// generation 2+ has no way to observe a shutdown request at all.
     ///
-    /// * `shutdown_rx` — A oneshot receiver; when `()` is sent, the worker transitions
-    ///   to `Dying` and exits cleanly.
+    /// Steps, in order:
+    /// 1. If a previous generation's child is still tracked (`self.child`),
+    ///    kills it (`.kill().await`) before spawning the new one — a no-op
+    ///    on gen 0. Without this, the old `Child` would be silently dropped
+    ///    the moment step 3 overwrites `self.child`, potentially leaking a
+    ///    still-running process (e.g. a hung worker whose IPC connection
+    ///    died) on every respawn cycle. A kill failure (most commonly: the
+    ///    process had already exited on its own) is logged and otherwise
+    ///    ignored — it doesn't block the new spawn attempt.
+    /// 2. Calls `self.spawner.spawn(&self.venv_path, self.env.clone())`. On
+    ///    failure: appends to `attempt_history`, consults
+    ///    `RespawnPolicy::should_respawn()`, and returns
+    ///    `RunOutcome::Crashed` immediately — no registration, no
+    ///    `Initializing` status, since no worker process exists to track.
+    /// 3. On success: stores the `Child` (`self.child`, so it isn't orphaned
+    ///    — an unstored `Child` is dropped without killing the OS process it
+    ///    wraps), registers with the demux (`Demux::register()` is
+    ///    documented idempotent — this is safe even on gen 0, where a caller
+    ///    may already have registered), and sets status to `Initializing`.
+    /// 4. Spawns the `init_timeout` guard: if no `Ready` event arrives
+    ///    before it elapses, sets status to `Dead` and returns
+    ///    `RunOutcome::InitTimedOut` — not respawn-eligible, see
+    ///    `RunOutcome`'s doc comment.
+    /// 5. Spawns a fresh `KeepaliveWatchdog` task (fresh `dead_tx`/`dead_rx`
+    ///    pair every generation — this is *not* a struct field, unlike
+    ///    pre-P8-E6: a single oneshot pair consumed via `.take()` once in
+    ///    `new()` would panic on generation 2's watchdog spawn, since the
+    ///    `Option` would already be `None` from generation 1).
+    /// 6. Enters a `tokio::select!` loop between `shutdown_rx`,
+    ///    `transport.recv()`, `init_timeout`, and the watchdog's `dead_rx`.
     ///
-    /// # Exit paths
+    /// # Exit paths (this generation only — see `run()` for what happens next)
     ///
-    /// 1. **Graceful shutdown** — `shutdown_rx` receives `()`: status → `Dying`, deregister.
-    /// 2. **Initializing timeout** — `init_timeout` elapses without `Ready` (60s in
-    ///    production): status → `Dead`, deregister.
-    /// 3. **Worker crash (explicit)** — `Dying` event received: status → `Dead`, deregister.
-    /// 4. **Worker crash (transport)** — `transport.recv()` returns `Err`: status → `Dead`,
-    ///    `attempt_history` is appended and `RespawnPolicy::should_respawn()` is consulted
-    ///    (the decision itself is acted on by `P8-E6`), deregister.
-    /// 5. **Keepalive watchdog timeout** — `watchdog_dead_rx` becomes ready (no Pong
-    ///    within `pong_timeout`): status → `Dead`, `attempt_history` appended and
-    ///    `should_respawn()` consulted (same crash path as transport error), deregister.
+    /// 1. **Graceful shutdown** — `shutdown_rx` receives `()`: status → `Dying`,
+    ///    returns `RunOutcome::ShutdownRequested`.
+    /// 2. **Initializing timeout** — `init_timeout` elapses without `Ready`:
+    ///    status → `Dead`, returns `RunOutcome::InitTimedOut`.
+    /// 3. **Worker crash (explicit)** — `Dying` event received: status → `Dead`,
+    ///    returns `RunOutcome::WorkerReportedDying`.
+    /// 4. **Worker crash (transport)** — `transport.recv()` returns `Err`:
+    ///    status → `Dead`, `attempt_history` appended, `should_respawn()`
+    ///    consulted, returns `RunOutcome::Crashed`.
+    /// 5. **Keepalive watchdog timeout** — the watchdog's `dead_rx` becomes
+    ///    ready: status → `Dead`, `attempt_history` appended, `should_respawn()`
+    ///    consulted, returns `RunOutcome::Crashed` (same handling as path 4).
     ///
-    /// On all exit paths, `demux.deregister(&self.worker_id)` is the final action.
-    #[tracing::instrument(skip(self, shutdown_rx), fields(worker_id = %self.worker_id))]
-    pub async fn run(mut self, mut shutdown_rx: oneshot::Receiver<()>) {
-        // Step 1: Set status to Initializing.
-        // The worker must transition through Initializing before it can reach Idle.
-        // Registration with the demux was performed by the pool before spawning.
+    /// This method does **not** call `demux.deregister()` — that is `run()`'s
+    /// outer loop's responsibility, called once per generation regardless of
+    /// outcome, after this method returns.
+    pub(crate) async fn run_once(
+        mut self,
+        shutdown_rx: &mut oneshot::Receiver<()>,
+    ) -> (Self, RunOutcome) {
+        // If a previous generation's child is still tracked, kill it before
+        // spawning the new one. A no-op on gen 0 (self.child is None until
+        // the first spawn). Without this, the old Child value would be
+        // silently dropped the moment `self.child = Some(new_child)`
+        // overwrites it below — and tokio::process::Child does not kill the
+        // underlying OS process on drop unless `kill_on_drop(true)` was set
+        // when it was built, which ProcessWorkerSpawner's current Command
+        // construction does not do. Most crashes mean the old process has
+        // already exited on its own — `.kill()` on an already-exited
+        // process returns an error, which is expected and harmless here —
+        // but a hung/deadlocked worker whose IPC connection died while the
+        // process itself is still running would otherwise leak one more
+        // zombie process on every single respawn cycle.
+        if let Some(mut old_child) = self.child.take()
+            && let Err(e) = old_child.kill().await
+        {
+            tracing::warn!(
+                worker_id = %self.worker_id,
+                error = %e,
+                "failed to kill previous generation's child (it may have already exited)"
+            );
+        }
+
+        // Step 1/2: spawn this generation's child process.
+        let child = match self.spawner.spawn(&self.venv_path, self.env.clone()).await {
+            Ok(child) => child,
+            Err(e) => {
+                tracing::error!(worker_id = %self.worker_id, error = %e, "spawn_failed");
+                self.attempt_history.push(Instant::now());
+                let should = self.respawn_policy.should_respawn(&self.attempt_history);
+                tracing::info!(worker_id = %self.worker_id, should_respawn = should, "crash_respawn_decision");
+                return (
+                    self,
+                    RunOutcome::Crashed {
+                        should_respawn: should,
+                    },
+                );
+            }
+        };
+        // Store the Child so it isn't orphaned — an unstored Child is
+        // dropped (and its OS process left running, unmanaged) the moment
+        // this match arm ends.
+        self.child = Some(child);
+
+        // Register with the demux now that a worker process genuinely
+        // exists. Idempotent per Demux::register()'s own contract, so this
+        // is safe even on gen 0 if an external caller already registered.
+        let (registered_tx, _registered_rx) = tokio::sync::mpsc::channel(16);
+        self.demux.register(self.worker_id.clone(), registered_tx);
+        debug_assert!(
+            self.demux.registered(&self.worker_id),
+            "worker must be registered immediately after a successful spawn"
+        );
+
+        // The worker must transition through Initializing before it can
+        // reach Idle.
         *self.status.write().await = WorkerStatus::Initializing;
 
-        // Step 2: Spawn the Initializing timeout guard.
+        // Step 3: Spawn the Initializing timeout guard.
         // If this sleep completes before a Ready event, the worker is declared Dead.
         // `initialized` disarms this branch once Ready arrives — see the `if
         // !initialized` precondition on the select branch below. Without this,
@@ -381,18 +566,18 @@ impl ManagedWorker {
         tokio::pin!(init_timeout);
         let mut initialized = false;
 
-        // Step 3: Spawn the keepalive watchdog.
+        // Step 4: Spawn the keepalive watchdog.
         // The watchdog sends Pings at a configurable interval and waits for
         // matching Pongs through its pong_rx channel. If no Pong arrives within
-        // pong_timeout after a Ping, it sends on watchdog_dead_tx, making
-        // watchdog_dead_rx ready in the select! below.
+        // pong_timeout after a Ping, it sends on dead_tx, making dead_rx ready
+        // in the select! below.
+        //
+        // dead_tx/dead_rx are fresh locals for THIS generation only — see this
+        // method's own doc comment for why they can't be struct fields anymore.
         //
         // Production defaults: 30s ping interval, 10s pong timeout
         // (ANVILML_DESIGN.md §9.2).
-        let watchdog_dead_tx = self
-            .watchdog_dead_tx
-            .take()
-            .expect("watchdog_dead_tx should be Some before run() starts");
+        let (watchdog_dead_tx, mut watchdog_dead_rx) = tokio::sync::oneshot::channel();
         let (watchdog_pong_tx, watchdog_pong_rx) = tokio::sync::mpsc::channel(16);
         // Replace self.pong_tx with the sender for the watchdog's channel.
         // This ensures handle_event() forwards Pongs into the same channel
@@ -408,14 +593,14 @@ impl ManagedWorker {
         );
         tokio::spawn(watchdog.run());
 
-        // Step 4: Main event loop.
-        loop {
+        // Step 5: Main event loop for this generation.
+        let outcome = loop {
             tokio::select! {
                 // Graceful shutdown path.
-                _ = &mut shutdown_rx => {
+                _ = &mut *shutdown_rx => {
                     *self.status.write().await = WorkerStatus::Dying;
                     tracing::info!(worker_id = %self.worker_id, "shutdown_requested");
-                    break;
+                    break RunOutcome::ShutdownRequested;
                 }
 
                 // Worker event path.
@@ -426,26 +611,21 @@ impl ManagedWorker {
                                 initialized = true;
                             }
                             // handle_event returns true when the Dying event is
-                            // received, signaling the main loop to break and exit.
+                            // received, signaling this generation to end.
                             if self.handle_event(&id, event).await {
-                                break;
+                                break RunOutcome::WorkerReportedDying;
                             }
                         }
                         Err(e) => {
-                            // Transport recv failed — this is a fatal error for the
-                            // managed worker. Track the crash attempt and decide
-                            // whether a respawn is permissible.
-                            // P8-E6 will act on the decision by sleeping, re-spawning,
-                            // and continuing the loop instead of breaking.
+                            // Transport recv failed — a crash for this generation.
+                            // Track the attempt and consult the respawn policy;
+                            // run()'s outer loop acts on the decision.
                             tracing::error!(worker_id = %self.worker_id, error = %e, "transport recv failed");
                             *self.status.write().await = WorkerStatus::Dead;
-                            // Record this crash attempt.
                             self.attempt_history.push(Instant::now());
-                            // Consult the respawn policy — this is the decision point
-                            // that P8-D1 was built for but nothing had wired up yet.
                             let should = self.respawn_policy.should_respawn(&self.attempt_history);
                             tracing::info!(worker_id = %self.worker_id, should_respawn = should, "crash_respawn_decision");
-                            break;
+                            break RunOutcome::Crashed { should_respawn: should };
                         }
                     }
                 }
@@ -457,26 +637,126 @@ impl ManagedWorker {
                 _ = &mut init_timeout, if !initialized => {
                     *self.status.write().await = WorkerStatus::Dead;
                     tracing::info!(worker_id = %self.worker_id, "worker_declared_dead");
-                    break;
+                    break RunOutcome::InitTimedOut;
                 }
 
                 // Watchdog dead path — the keepalive watchdog detected a missing Pong.
                 // This is a second crash source, independent of transport.recv().
                 // Handled identically to the transport-error branch.
-                _ = &mut self.watchdog_dead_rx => {
+                _ = &mut watchdog_dead_rx => {
                     tracing::error!(worker_id = %self.worker_id, "watchdog timeout — worker declared dead");
                     *self.status.write().await = WorkerStatus::Dead;
                     self.attempt_history.push(Instant::now());
                     let should = self.respawn_policy.should_respawn(&self.attempt_history);
                     tracing::info!(worker_id = %self.worker_id, should_respawn = should, "crash_respawn_decision");
-                    break;
+                    break RunOutcome::Crashed { should_respawn: should };
                 }
             }
-        }
+        };
 
-        // Final action on every exit path: deregister the worker.
-        self.demux.deregister(&self.worker_id);
-        tracing::info!(worker_id = %self.worker_id, "worker_deregistered");
+        (self, outcome)
+    }
+
+    /// Test-only public wrapper around `run_once()`.
+    ///
+    /// `run_once()` itself is `pub(crate)`, matching this task's own specified
+    /// visibility — but `tests/managed_tests.rs` is an integration test crate,
+    /// which cannot see `pub(crate)` items at all: Cargo compiles integration
+    /// tests against this library as a normal external dependency, the same
+    /// way any downstream consumer would. This wrapper exists solely to make
+    /// single-generation state (e.g. `self.child`, one generation's exact
+    /// `RunOutcome` in isolation, rather than inferred from `run()`'s
+    /// multi-generation black-box behavior) inspectable from integration
+    /// tests, without changing `run_once()`'s own production visibility.
+    ///
+    /// Gated behind the `test-utils` feature (`Cargo.toml`), not
+    /// `#[cfg(test)]`. `#[cfg(test)]` only activates when this crate's own
+    /// unit tests are compiled (`cargo test --lib`) — it does **not**
+    /// activate when an integration test in `tests/` links against this
+    /// library, because that link happens against a normal (non-`--cfg
+    /// test`) build of the library. A `#[cfg(test)]`-gated item here would
+    /// compile without error but simply not exist in the artifact
+    /// `tests/managed_tests.rs` links against — a real Rust visibility
+    /// gotcha, not a style choice. `test-utils` is enabled automatically for
+    /// every `cargo test` build (unit and integration alike) via the
+    /// self-referential `[dev-dependencies]` entry in `Cargo.toml`; no
+    /// command-line changes are needed.
+    #[cfg(feature = "test-utils")]
+    pub async fn run_once_for_test(
+        self,
+        shutdown_rx: &mut oneshot::Receiver<()>,
+    ) -> (Self, RunOutcome) {
+        self.run_once(shutdown_rx).await
+    }
+
+    /// Test-only accessor for the currently-tracked child's OS process ID.
+    ///
+    /// `self.child` is a private field for the same reason `run_once()` is
+    /// `pub(crate)` — see `run_once_for_test()`'s doc comment for the full
+    /// explanation of why a `test-utils`-gated wrapper is needed at all
+    /// rather than `#[cfg(test)]`. Returns `None` if no child has been
+    /// spawned yet (only possible before the very first `run_once()` call
+    /// completes its spawn step).
+    #[cfg(feature = "test-utils")]
+    pub fn child_pid_for_test(&self) -> Option<u32> {
+        self.child.as_ref().and_then(|c| c.id())
+    }
+
+    /// Run the worker's full lifecycle across every respawn generation.
+    ///
+    /// This method consumes `self` and owns the worker's entire lifetime. It
+    /// is a thin outer loop around `run_once()` (see that method's own doc
+    /// comment for the full per-generation contract):
+    ///
+    /// 1. Call `run_once()` for this generation.
+    /// 2. Deregister — unconditional, on every generation's exit, regardless
+    ///    of outcome.
+    /// 3. If the outcome is `RunOutcome::Crashed { should_respawn: true }`:
+    ///    set status to `Respawning`, sleep for
+    ///    `RespawnPolicy::next_delay()`, and loop back to step 1 — the next
+    ///    `run_once()` call spawns the next generation's child as its own
+    ///    first step.
+    /// 4. Any other outcome (`ShutdownRequested`, `InitTimedOut`,
+    ///    `WorkerReportedDying`, or `Crashed { should_respawn: false }`):
+    ///    return. The worker has exited for good.
+    ///
+    /// # Arguments
+    ///
+    /// * `shutdown_rx` — A oneshot receiver; when `()` is sent, the current
+    ///   generation transitions to `Dying` and the worker exits for good —
+    ///   no respawn, regardless of `RespawnPolicy`. Held here, at the outer
+    ///   loop's level, and passed to each `run_once()` call by mutable
+    ///   reference so it survives across every generation — see
+    ///   `run_once()`'s own doc comment for why owning it per-generation
+    ///   would be incorrect.
+    #[tracing::instrument(skip(self, shutdown_rx), fields(worker_id = %self.worker_id))]
+    pub async fn run(mut self, mut shutdown_rx: oneshot::Receiver<()>) {
+        loop {
+            let (worker, outcome) = self.run_once(&mut shutdown_rx).await;
+            self = worker;
+
+            // Final action for this generation, on every exit path: deregister.
+            self.demux.deregister(&self.worker_id);
+            tracing::info!(worker_id = %self.worker_id, "worker_deregistered");
+
+            match outcome {
+                RunOutcome::Crashed {
+                    should_respawn: true,
+                } => {
+                    *self.status.write().await = WorkerStatus::Respawning;
+                    let delay = self.respawn_policy.next_delay();
+                    tracing::info!(
+                        worker_id = %self.worker_id,
+                        delay_ms = %delay.as_millis(),
+                        "respawn_scheduled"
+                    );
+                    tokio::time::sleep(delay).await;
+                    // Loop back — run_once() spawns and registers the next
+                    // generation as its own first steps.
+                }
+                _ => break,
+            }
+        }
     }
 
     /// Handle a single `WorkerEvent` from the worker.
@@ -491,9 +771,9 @@ impl ManagedWorker {
     ///   if it misses a Pong).
     /// - Other events: log at DEBUG level.
     ///
-    /// The `init_timeout` branch in `run()`'s `select!` is disarmed once a `Ready`
-    /// event is seen (tracked via `run()`'s own `initialized` flag, not by this
-    /// method) — see `run()`'s doc comment for the mechanism.
+    /// The `init_timeout` branch in `run_once()`'s `select!` is disarmed once a
+    /// `Ready` event is seen (tracked via `run_once()`'s own `initialized` flag,
+    /// not by this method) — see `run_once()`'s doc comment for the mechanism.
     async fn handle_event(&mut self, _id: &str, event: WorkerEvent) -> bool {
         // Clone the event for forwarding to the watchdog before the match.
         // The match borrows `event` via `&event`, so we can't move it
@@ -502,7 +782,7 @@ impl ManagedWorker {
         match &event {
             WorkerEvent::Ready { .. } => {
                 // Worker successfully initialized. The Initializing timeout is
-                // disarmed by run()'s own select! precondition (`initialized`),
+                // disarmed by run_once()'s own select! precondition (`initialized`),
                 // set the moment this event is matched in the recv() branch —
                 // not here, since handle_event() doesn't own that state.
                 *self.status.write().await = WorkerStatus::Idle;
@@ -513,7 +793,7 @@ impl ManagedWorker {
                 // Worker is terminating — the worker itself reported this, so it
                 // is already gone: transition straight to Dead (not the Dying
                 // status, which is reserved for a supervisor-initiated shutdown
-                // still in flight — see the shutdown_rx branch in run()).
+                // still in flight — see the shutdown_rx branch in run_once()).
                 *self.status.write().await = WorkerStatus::Dead;
                 tracing::info!(worker_id = %self.worker_id, reason = %reason, "worker_dying");
                 true

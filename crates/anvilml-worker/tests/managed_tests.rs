@@ -8,15 +8,24 @@
 //! The second half of this file exercises `ManagedWorker::run()` — the full
 //! lifecycle task — using in-process ZeroMQ sockets to simulate a Python worker.
 
+use std::collections::HashMap;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use anvilml_core::AnvilError;
 use anvilml_core::types::worker::WorkerStatus;
 use anvilml_ipc::RouterTransport;
 use anvilml_ipc::WorkerEvent;
 use anvilml_worker::Demux;
 use anvilml_worker::ManagedWorker;
+use anvilml_worker::ManagedWorkerConfig;
 use anvilml_worker::RespawnPolicy;
+use anvilml_worker::RunOutcome;
 use anvilml_worker::WorkerHandle;
+use anvilml_worker::WorkerSpawner;
 use anvilml_worker::{
     DEFAULT_INIT_TIMEOUT, DEFAULT_WATCHDOG_PING_INTERVAL, DEFAULT_WATCHDOG_PONG_TIMEOUT,
 };
@@ -334,6 +343,85 @@ use zeromq::{DealerSocket, SocketOptions, ZmqMessage};
 
 // rmp_serde is imported at the top of the file for serializing WorkerEvent bytes.
 
+/// A `WorkerSpawner` for tests.
+///
+/// `WorkerSpawner::spawn()`'s return type is a genuine `tokio::process::Child`,
+/// not a mockable trait object, so this can't fake a process — it spawns a
+/// real, harmless, boundedly-long-lived OS process (`sleep 999` on Unix,
+/// `cmd /c timeout 999` on Windows — matching the existing cross-platform
+/// pattern already used for `JobObjectGuard` testing in `spawn_tests.rs`),
+/// ignoring `venv_path`/`env` entirely since this never runs Python.
+///
+/// Tracks how many times `spawn()` was called (`call_count()`) — needed for
+/// respawn-count assertions (e.g. "spawner called twice for an under-limit
+/// respawn"). `AtomicUsize` rather than requiring `&mut self`, since
+/// `WorkerSpawner::spawn()`'s signature takes `&self`.
+///
+/// `failing()` constructs a variant where every `spawn()` call returns `Err`
+/// without spawning anything — used to test the spawn-failure crash path
+/// (`RunOutcome::Crashed` from a failed `spawner.spawn()` call itself, not
+/// from a transport error or watchdog timeout on an already-running worker).
+struct MockWorkerSpawner {
+    call_count: AtomicUsize,
+    should_fail: bool,
+}
+
+impl MockWorkerSpawner {
+    fn new() -> Self {
+        Self {
+            call_count: AtomicUsize::new(0),
+            should_fail: false,
+        }
+    }
+
+    fn failing() -> Self {
+        Self {
+            call_count: AtomicUsize::new(0),
+            should_fail: true,
+        }
+    }
+
+    fn call_count(&self) -> usize {
+        self.call_count.load(Ordering::SeqCst)
+    }
+}
+
+impl WorkerSpawner for MockWorkerSpawner {
+    fn spawn<'a>(
+        &'a self,
+        _venv_path: &'a Path,
+        _env: HashMap<String, String>,
+    ) -> Pin<Box<dyn Future<Output = Result<tokio::process::Child, AnvilError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+
+            if self.should_fail {
+                return Err(AnvilError::Io(std::io::Error::other(
+                    "MockWorkerSpawner: simulated spawn failure",
+                )));
+            }
+
+            #[cfg(unix)]
+            let mut cmd = {
+                let mut c = tokio::process::Command::new("sleep");
+                c.arg("999");
+                c
+            };
+            #[cfg(windows)]
+            let mut cmd = {
+                let mut c = tokio::process::Command::new("cmd");
+                c.args(["/c", "timeout", "999"]);
+                c
+            };
+
+            cmd.stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+
+            cmd.spawn().map_err(AnvilError::Io)
+        })
+    }
+}
+
 /// Connect a DEALER socket to a `RouterTransport`'s bound endpoint, setting the
 /// worker identity. Returns the DEALER socket handle.
 ///
@@ -424,17 +512,20 @@ async fn test_run_completes_on_ready_event() {
     // Spawn the worker — it starts in Initializing state.
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let (pong_tx, _pong_rx) = mpsc::channel(16);
-    let worker = ManagedWorker::new(
-        "test-worker".to_string(),
-        Arc::clone(&transport),
-        Arc::clone(&demux),
-        Arc::clone(&status),
-        RespawnPolicy::default(),
-        DEFAULT_INIT_TIMEOUT,
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: RespawnPolicy::default(),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
-        DEFAULT_WATCHDOG_PING_INTERVAL,
-        DEFAULT_WATCHDOG_PONG_TIMEOUT,
-    );
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::new(MockWorkerSpawner::new()),
+    });
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
     // Send a Ready event to simulate the worker reporting startup — via the
@@ -497,17 +588,20 @@ async fn test_shutdown_rx_triggers_graceful_exit() {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let (pong_tx, _pong_rx) = mpsc::channel(16);
-    let worker = ManagedWorker::new(
-        "test-worker".to_string(),
-        Arc::clone(&transport),
-        Arc::clone(&demux),
-        Arc::clone(&status),
-        RespawnPolicy::default(),
-        DEFAULT_INIT_TIMEOUT,
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: RespawnPolicy::default(),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
-        DEFAULT_WATCHDOG_PING_INTERVAL,
-        DEFAULT_WATCHDOG_PONG_TIMEOUT,
-    );
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::new(MockWorkerSpawner::new()),
+    });
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
     // Send shutdown immediately — no Ready event.
@@ -550,17 +644,20 @@ async fn test_deregister_called_on_graceful_exit() {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let (pong_tx, _pong_rx) = mpsc::channel(16);
-    let worker = ManagedWorker::new(
-        "test-worker".to_string(),
-        Arc::clone(&transport),
-        Arc::clone(&demux),
-        Arc::clone(&status),
-        RespawnPolicy::default(),
-        DEFAULT_INIT_TIMEOUT,
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: RespawnPolicy::default(),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
-        DEFAULT_WATCHDOG_PING_INTERVAL,
-        DEFAULT_WATCHDOG_PONG_TIMEOUT,
-    );
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::new(MockWorkerSpawner::new()),
+    });
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
     // Send Ready event via the DEALER (worker → ROUTER) — registration itself
@@ -635,17 +732,20 @@ async fn test_deregister_called_on_crash() {
     // the exit path instead. The oneshot sender is dropped without sending.
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let (pong_tx, _pong_rx) = mpsc::channel(16);
-    let worker = ManagedWorker::new(
-        "test-worker".to_string(),
-        Arc::clone(&transport),
-        Arc::clone(&demux),
-        Arc::clone(&status),
-        RespawnPolicy::default(),
-        DEFAULT_INIT_TIMEOUT,
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: RespawnPolicy::default(),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
-        DEFAULT_WATCHDOG_PING_INTERVAL,
-        DEFAULT_WATCHDOG_PONG_TIMEOUT,
-    );
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::new(MockWorkerSpawner::new()),
+    });
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
     // Send Ready event first — via the DEALER socket (correct direction:
@@ -742,17 +842,20 @@ async fn test_deregister_called_on_initializing_timeout() {
 
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let (pong_tx, _pong_rx) = mpsc::channel(16);
-    let worker = ManagedWorker::new(
-        "test-worker".to_string(),
-        Arc::clone(&transport),
-        Arc::clone(&demux),
-        Arc::clone(&status),
-        RespawnPolicy::default(),
-        Duration::from_millis(200),
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: RespawnPolicy::default(),
+        init_timeout: Duration::from_millis(200),
         pong_tx,
-        DEFAULT_WATCHDOG_PING_INTERVAL,
-        DEFAULT_WATCHDOG_PONG_TIMEOUT,
-    );
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::new(MockWorkerSpawner::new()),
+    });
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
     // Send no events — the worker stays in Initializing.
@@ -813,17 +916,20 @@ async fn test_crash_appends_to_attempt_history() {
     // Spawn the worker — it starts in Initializing state.
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let (pong_tx, _pong_rx) = mpsc::channel(16);
-    let worker = ManagedWorker::new(
-        "test-worker".to_string(),
-        Arc::clone(&transport),
-        Arc::clone(&demux),
-        Arc::clone(&status),
-        RespawnPolicy::default(),
-        DEFAULT_INIT_TIMEOUT,
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: RespawnPolicy::default(),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
-        DEFAULT_WATCHDOG_PING_INTERVAL,
-        DEFAULT_WATCHDOG_PONG_TIMEOUT,
-    );
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::new(MockWorkerSpawner::new()),
+    });
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
     // Send a Ready event to transition to Idle — via the DEALER (worker →
@@ -895,17 +1001,20 @@ async fn test_crash_history_grows_per_crash() {
 
         let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let (pong_tx, _pong_rx) = mpsc::channel(16);
-        let worker = ManagedWorker::new(
-            "test-worker".to_string(),
-            Arc::clone(&transport),
-            Arc::clone(&demux),
-            Arc::clone(&status),
-            RespawnPolicy::default(),
-            DEFAULT_INIT_TIMEOUT,
+        let worker = ManagedWorker::new(ManagedWorkerConfig {
+            worker_id: "test-worker".to_string(),
+            transport: Arc::clone(&transport),
+            demux: Arc::clone(&demux),
+            status: Arc::clone(&status),
+            respawn_policy: RespawnPolicy::default(),
+            init_timeout: DEFAULT_INIT_TIMEOUT,
             pong_tx,
-            DEFAULT_WATCHDOG_PING_INTERVAL,
-            DEFAULT_WATCHDOG_PONG_TIMEOUT,
-        );
+            watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+            watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+            venv_path: PathBuf::from("/mock/venv"),
+            env: HashMap::new(),
+            spawner: Arc::new(MockWorkerSpawner::new()),
+        });
         let handle = tokio::spawn(worker.run(shutdown_rx));
 
         // Send Ready event via the DEALER (worker → ROUTER).
@@ -949,17 +1058,20 @@ async fn test_crash_history_grows_per_crash() {
 
         let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let (pong_tx, _pong_rx) = mpsc::channel(16);
-        let worker = ManagedWorker::new(
-            "test-worker-2".to_string(),
-            Arc::clone(&transport),
-            Arc::clone(&demux),
-            Arc::clone(&status),
-            RespawnPolicy::default(),
-            DEFAULT_INIT_TIMEOUT,
+        let worker = ManagedWorker::new(ManagedWorkerConfig {
+            worker_id: "test-worker-2".to_string(),
+            transport: Arc::clone(&transport),
+            demux: Arc::clone(&demux),
+            status: Arc::clone(&status),
+            respawn_policy: RespawnPolicy::default(),
+            init_timeout: DEFAULT_INIT_TIMEOUT,
             pong_tx,
-            DEFAULT_WATCHDOG_PING_INTERVAL,
-            DEFAULT_WATCHDOG_PONG_TIMEOUT,
-        );
+            watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+            watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+            venv_path: PathBuf::from("/mock/venv"),
+            env: HashMap::new(),
+            spawner: Arc::new(MockWorkerSpawner::new()),
+        });
         let handle = tokio::spawn(worker.run(shutdown_rx));
 
         let ready = WorkerEvent::Ready {
@@ -1016,17 +1128,20 @@ async fn test_should_respawn_called_on_crash() {
 
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let (pong_tx, _pong_rx) = mpsc::channel(16);
-    let worker = ManagedWorker::new(
-        "test-worker".to_string(),
-        Arc::clone(&transport),
-        Arc::clone(&demux),
-        Arc::clone(&status),
-        policy,
-        DEFAULT_INIT_TIMEOUT,
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: policy,
+        init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
-        DEFAULT_WATCHDOG_PING_INTERVAL,
-        DEFAULT_WATCHDOG_PONG_TIMEOUT,
-    );
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::new(MockWorkerSpawner::new()),
+    });
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
     // Send Ready event via the DEALER (worker → ROUTER).
@@ -1090,17 +1205,20 @@ async fn test_completed_event_transitions_to_idle() {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let (pong_tx, _pong_rx) = mpsc::channel(16);
-    let worker = ManagedWorker::new(
-        "test-worker".to_string(),
-        Arc::clone(&transport),
-        Arc::clone(&demux),
-        Arc::clone(&status),
-        RespawnPolicy::default(),
-        DEFAULT_INIT_TIMEOUT,
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: RespawnPolicy::default(),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
-        DEFAULT_WATCHDOG_PING_INTERVAL,
-        DEFAULT_WATCHDOG_PONG_TIMEOUT,
-    );
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::new(MockWorkerSpawner::new()),
+    });
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
     let ready = WorkerEvent::Ready {
@@ -1161,17 +1279,20 @@ async fn test_failed_event_transitions_to_idle() {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let (pong_tx, _pong_rx) = mpsc::channel(16);
-    let worker = ManagedWorker::new(
-        "test-worker".to_string(),
-        Arc::clone(&transport),
-        Arc::clone(&demux),
-        Arc::clone(&status),
-        RespawnPolicy::default(),
-        DEFAULT_INIT_TIMEOUT,
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: RespawnPolicy::default(),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
-        DEFAULT_WATCHDOG_PING_INTERVAL,
-        DEFAULT_WATCHDOG_PONG_TIMEOUT,
-    );
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::new(MockWorkerSpawner::new()),
+    });
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
     let ready = WorkerEvent::Ready {
@@ -1229,17 +1350,20 @@ async fn test_cancelled_event_transitions_to_idle() {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let (pong_tx, _pong_rx) = mpsc::channel(16);
-    let worker = ManagedWorker::new(
-        "test-worker".to_string(),
-        Arc::clone(&transport),
-        Arc::clone(&demux),
-        Arc::clone(&status),
-        RespawnPolicy::default(),
-        DEFAULT_INIT_TIMEOUT,
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: RespawnPolicy::default(),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
-        DEFAULT_WATCHDOG_PING_INTERVAL,
-        DEFAULT_WATCHDOG_PONG_TIMEOUT,
-    );
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::new(MockWorkerSpawner::new()),
+    });
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
     let ready = WorkerEvent::Ready {
@@ -1305,17 +1429,20 @@ async fn test_watchdog_missing_pong_triggers_crash_path() {
     let (pong_tx, _pong_rx) = mpsc::channel(16);
 
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-    let worker = ManagedWorker::new(
-        "test-worker".to_string(),
-        Arc::clone(&transport),
-        Arc::clone(&demux),
-        Arc::clone(&status),
-        RespawnPolicy::new(1000, 10, 100),
-        Duration::from_secs(60),
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: RespawnPolicy::new(1000, 10, 100),
+        init_timeout: Duration::from_secs(60),
         pong_tx,
-        Duration::from_millis(50),
-        Duration::from_millis(200),
-    );
+        watchdog_ping_interval: Duration::from_millis(50),
+        watchdog_pong_timeout: Duration::from_millis(200),
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::new(MockWorkerSpawner::new()),
+    });
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
     // Send Ready event to transition to Idle.
@@ -1379,17 +1506,20 @@ async fn test_watchdog_live_pongs_no_false_trigger() {
 
     let (pong_tx, _pong_rx) = mpsc::channel(16);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-    let worker = ManagedWorker::new(
-        "test-worker".to_string(),
-        Arc::clone(&transport),
-        Arc::clone(&demux),
-        Arc::clone(&status),
-        RespawnPolicy::default(),
-        DEFAULT_INIT_TIMEOUT,
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: RespawnPolicy::default(),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
-        Duration::from_millis(50),
-        Duration::from_millis(200),
-    );
+        watchdog_ping_interval: Duration::from_millis(50),
+        watchdog_pong_timeout: Duration::from_millis(200),
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::new(MockWorkerSpawner::new()),
+    });
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
     // Send Ready event.
@@ -1456,17 +1586,20 @@ async fn test_pong_forwarding_does_not_disturb_idle_busy() {
 
     let (pong_tx, _pong_rx) = mpsc::channel(16);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-    let worker = ManagedWorker::new(
-        "test-worker".to_string(),
-        Arc::clone(&transport),
-        Arc::clone(&demux),
-        Arc::clone(&status),
-        RespawnPolicy::default(),
-        DEFAULT_INIT_TIMEOUT,
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: RespawnPolicy::default(),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
-        DEFAULT_WATCHDOG_PING_INTERVAL,
-        DEFAULT_WATCHDOG_PONG_TIMEOUT,
-    );
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::new(MockWorkerSpawner::new()),
+    });
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
     // Send Ready event → Idle.
@@ -1580,17 +1713,20 @@ async fn test_watchdog_channel_cleans_up_on_exit() {
 
     let (pong_tx, _pong_rx) = mpsc::channel(16);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-    let worker = ManagedWorker::new(
-        "test-worker".to_string(),
-        Arc::clone(&transport),
-        Arc::clone(&demux),
-        Arc::clone(&status),
-        RespawnPolicy::default(),
-        DEFAULT_INIT_TIMEOUT,
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: RespawnPolicy::default(),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
-        DEFAULT_WATCHDOG_PING_INTERVAL,
-        DEFAULT_WATCHDOG_PONG_TIMEOUT,
-    );
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::new(MockWorkerSpawner::new()),
+    });
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
     // Send Ready event to transition to Idle.
@@ -1631,4 +1767,449 @@ async fn test_watchdog_channel_cleans_up_on_exit() {
         WorkerStatus::Dying,
         "status should be Dying after graceful shutdown"
     );
+}
+
+// The following tests exercise P8-E6's respawn loop: `spawner.spawn()` at
+// the top of every generation, the respawn decision on a crash, and the
+// Respawning → Initializing transition between generations.
+
+/// After a successful spawn, `self.child` is set — the worker's child
+/// process is tracked, not orphaned. Uses `run_once_for_test()` directly
+/// (see that method's own doc comment for why: `run()` consumes and never
+/// returns `self`, so there would be no way to inspect `self.child`
+/// afterward through the public API alone).
+#[tokio::test]
+async fn test_child_tracked_after_spawn() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+    let spawner = Arc::new(MockWorkerSpawner::new());
+    let (pong_tx, _pong_rx) = tokio::sync::mpsc::channel(16);
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
+
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: RespawnPolicy::default(),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
+        pong_tx,
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::clone(&spawner) as Arc<dyn WorkerSpawner>,
+    });
+
+    // Trigger a graceful shutdown almost immediately so run_once_for_test()
+    // returns quickly — we only need it to get past the spawn step, not
+    // reach any particular event-loop state.
+    let _ = shutdown_tx.send(());
+    let (worker, outcome) = worker.run_once_for_test(&mut shutdown_rx).await;
+
+    assert_eq!(
+        outcome,
+        RunOutcome::ShutdownRequested,
+        "shutdown was requested before any event arrived"
+    );
+    assert!(
+        worker.child_pid_for_test().is_some(),
+        "child should be tracked (Some) once spawn() has succeeded, \
+         regardless of how this generation later ends"
+    );
+    assert_eq!(
+        spawner.call_count(),
+        1,
+        "spawn() should have been called exactly once"
+    );
+}
+
+/// An under-limit crash triggers exactly one respawn: the spawner is called
+/// a second time, and the worker is re-registered with the demux for the
+/// new generation.
+#[tokio::test]
+async fn test_respawn_under_limit_spawns_again_and_reregisters() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+    let spawner = Arc::new(MockWorkerSpawner::new());
+    let (pong_tx, _pong_rx) = tokio::sync::mpsc::channel(16);
+
+    // max_attempts=2: the first crash has count_in_window=1 < 2 -> respawn.
+    // A second crash would have count_in_window=2, not < 2 -> no respawn.
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: RespawnPolicy::new(50, 2, 300),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
+        pong_tx,
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::clone(&spawner) as Arc<dyn WorkerSpawner>,
+    });
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(worker.run(shutdown_rx));
+
+    // Connect as the DEALER for gen 0, let it register, then crash it.
+    let mut dealer = connect_dealer(&transport, "test-worker").await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    send_malformed(&mut dealer).await;
+
+    // Respawn delay is 50ms; give generous margin for gen 1's spawn +
+    // registration to complete.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert_eq!(
+        spawner.call_count(),
+        2,
+        "spawner should be called once for gen 0 and again for the respawn"
+    );
+    assert!(
+        demux.registered("test-worker"),
+        "worker should be re-registered with the demux for the new generation"
+    );
+
+    let _ = shutdown_tx.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+}
+
+/// An at-limit crash does not respawn: the spawner is called exactly once,
+/// and the worker exits for good.
+#[tokio::test]
+async fn test_respawn_at_limit_exits_permanently() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+    let spawner = Arc::new(MockWorkerSpawner::new());
+    let (pong_tx, _pong_rx) = tokio::sync::mpsc::channel(16);
+
+    // max_attempts=1: the first crash already has count_in_window=1, not
+    // < 1 -> should_respawn() is false immediately. No respawn at all.
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: RespawnPolicy::new(50, 1, 300),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
+        pong_tx,
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::clone(&spawner) as Arc<dyn WorkerSpawner>,
+    });
+
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(worker.run(shutdown_rx));
+
+    let mut dealer = connect_dealer(&transport, "test-worker").await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    send_malformed(&mut dealer).await;
+
+    // run() should complete on its own — no respawn means no further
+    // generation to wait on. Bounded wait per ENVIRONMENT.md §11.5.
+    let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    assert!(
+        result.is_ok(),
+        "run() should exit permanently, not wait for a respawn that won't happen"
+    );
+
+    assert_eq!(
+        spawner.call_count(),
+        1,
+        "spawner should be called only once — the crash was at-limit, no respawn"
+    );
+    assert!(
+        !demux.registered("test-worker"),
+        "worker should be deregistered after exiting for good"
+    );
+}
+
+/// Between a respawn-eligible crash and the next generation's spawn, status
+/// passes through `Respawning` before the next generation's `Initializing`.
+/// Order matters: a caller polling status during this window should never
+/// observe a state that implies a worker exists when none currently does.
+#[tokio::test]
+async fn test_respawn_status_transitions_respawning_then_initializing() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+    let spawner = Arc::new(MockWorkerSpawner::new());
+    let (pong_tx, _pong_rx) = tokio::sync::mpsc::channel(16);
+
+    // A longer delay (300ms) than the other tests so there's a wide,
+    // reliably-observable window where status must read Respawning.
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: RespawnPolicy::new(300, 2, 300),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
+        pong_tx,
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::clone(&spawner) as Arc<dyn WorkerSpawner>,
+    });
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(worker.run(shutdown_rx));
+
+    let mut dealer = connect_dealer(&transport, "test-worker").await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    send_malformed(&mut dealer).await;
+
+    // Mid-delay: status must be Respawning (crash already processed, next
+    // spawn hasn't happened yet — the 300ms sleep in run()'s outer loop is
+    // still in flight).
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        *status.read().await,
+        WorkerStatus::Respawning,
+        "status should be Respawning during the backoff delay, before the next spawn"
+    );
+
+    // Past the full delay: the next generation should have spawned and set
+    // Initializing.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        *status.read().await,
+        WorkerStatus::Initializing,
+        "status should be Initializing once the next generation has spawned"
+    );
+
+    let _ = shutdown_tx.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+}
+
+/// The actual delay between a respawn-eligible crash and the next spawn
+/// matches `RespawnPolicy::next_delay()` — not some other hardcoded value.
+#[tokio::test]
+async fn test_respawn_delay_matches_next_delay() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+    let spawner = Arc::new(MockWorkerSpawner::new());
+    let (pong_tx, _pong_rx) = tokio::sync::mpsc::channel(16);
+
+    let policy = RespawnPolicy::new(250, 2, 300);
+    let expected_delay = policy.next_delay();
+
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: policy,
+        init_timeout: DEFAULT_INIT_TIMEOUT,
+        pong_tx,
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::clone(&spawner) as Arc<dyn WorkerSpawner>,
+    });
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(worker.run(shutdown_rx));
+
+    let mut dealer = connect_dealer(&transport, "test-worker").await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let crash_time = tokio::time::Instant::now();
+    send_malformed(&mut dealer).await;
+
+    // Poll spawner.call_count() until it reaches 2 (the respawn happened),
+    // bounded per ENVIRONMENT.md §11.5, and measure the elapsed time.
+    let poll_result = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if spawner.call_count() >= 2 {
+                return tokio::time::Instant::now();
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+
+    let respawn_time = poll_result.expect("respawn should happen within 2s");
+    let elapsed = respawn_time - crash_time;
+
+    // Allow generous scheduling slack either side — this is asserting the
+    // delay is the *configured* 250ms, not a hardcoded different value
+    // (e.g. the old default of 2000ms), not asserting sub-millisecond
+    // timer precision.
+    assert!(
+        elapsed >= expected_delay,
+        "respawn happened after only {elapsed:?}, before the configured {expected_delay:?} delay elapsed"
+    );
+    assert!(
+        elapsed < expected_delay + Duration::from_millis(500),
+        "respawn took {elapsed:?}, far longer than the configured {expected_delay:?} delay — \
+         delay may not be using RespawnPolicy::next_delay()"
+    );
+
+    let _ = shutdown_tx.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+}
+
+/// `spawner.spawn()` itself failing (not a running worker crashing) is
+/// respawn-eligible: `attempt_history` is appended and
+/// `RespawnPolicy::should_respawn()` is consulted, exactly like a transport
+/// error or watchdog timeout on an already-running worker. Confirmed
+/// design decision (bounded retries via should_respawn(), not an
+/// unconditional infinite retry loop for a persistently broken environment).
+///
+/// Uses `run_once_for_test()` directly — this needs to observe one
+/// generation's exact `RunOutcome` in isolation, which `run()`'s
+/// multi-generation black-box behavior can't provide directly.
+#[tokio::test]
+async fn test_spawn_failure_is_respawn_eligible() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+    let spawner = Arc::new(MockWorkerSpawner::failing());
+    let (pong_tx, _pong_rx) = tokio::sync::mpsc::channel(16);
+    let (_shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
+
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: RespawnPolicy::new(50, 2, 300),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
+        pong_tx,
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::clone(&spawner) as Arc<dyn WorkerSpawner>,
+    });
+
+    let (worker, outcome) = worker.run_once_for_test(&mut shutdown_rx).await;
+
+    assert_eq!(
+        outcome,
+        RunOutcome::Crashed {
+            should_respawn: true
+        },
+        "a spawn failure under the attempt limit should be respawn-eligible"
+    );
+    assert_eq!(
+        worker.attempt_count(),
+        1,
+        "the spawn failure should be recorded in attempt_history"
+    );
+    assert!(
+        !demux.registered("test-worker"),
+        "a worker that never successfully spawned should never be registered"
+    );
+    assert_eq!(
+        spawner.call_count(),
+        1,
+        "spawn() should have been attempted exactly once"
+    );
+}
+
+/// On respawn, the previous generation's child is killed
+/// (`.kill().await`) before the new one is spawned and stored — it is not
+/// silently dropped (which would leak the OS process, since
+/// `tokio::process::Child` does not kill on drop unless `kill_on_drop(true)`
+/// was set at construction, which `ProcessWorkerSpawner`'s `Command` does
+/// not do).
+///
+/// Uses `run_once_for_test()` twice, manually, to simulate what `run()`'s
+/// outer loop does — this is the only way to hold both generations'
+/// `Child` PIDs simultaneously and compare them, which neither `run()`'s
+/// black-box behavior nor a single `run_once_for_test()` call can provide.
+#[tokio::test]
+async fn test_respawn_kills_previous_child() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+    let spawner = Arc::new(MockWorkerSpawner::new());
+    let (pong_tx, _pong_rx) = tokio::sync::mpsc::channel(16);
+    let (_shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
+
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        respawn_policy: RespawnPolicy::new(10, 3, 300),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
+        pong_tx,
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::clone(&spawner) as Arc<dyn WorkerSpawner>,
+    });
+
+    // Gen 0: connect the DEALER first (spawn() itself doesn't need it, but
+    // run_once_for_test()'s event loop does), spawn, then crash it via a
+    // malformed payload. Only needs to stay alive long enough to send that
+    // one payload — gen 1, spawned later in this test, never needs any
+    // DEALER interaction at all.
+    let dealer_transport = Arc::clone(&transport);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let mut dealer = connect_dealer(&dealer_transport, "test-worker").await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        send_malformed(&mut dealer).await;
+    });
+
+    let (worker, outcome) = worker.run_once_for_test(&mut shutdown_rx).await;
+    assert_eq!(
+        outcome,
+        RunOutcome::Crashed {
+            should_respawn: true
+        },
+        "gen 0 should crash and be respawn-eligible"
+    );
+    let gen0_pid = worker
+        .child_pid_for_test()
+        .expect("gen 0 should have a tracked child");
+
+    // Simulate run()'s outer loop: sleep for the configured delay, then
+    // call run_once_for_test() again for gen 1. A fresh shutdown_rx is
+    // needed since the previous one may have been polled to completion
+    // internally — but it wasn't consumed (the crash path doesn't touch
+    // shutdown_rx), so reusing it is fine; matching run()'s own real
+    // behavior of holding one shutdown_rx across every generation.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let (worker, _outcome) = worker.run_once_for_test(&mut shutdown_rx).await;
+    let gen1_pid = worker
+        .child_pid_for_test()
+        .expect("gen 1 should have a tracked child");
+
+    assert_ne!(
+        gen0_pid, gen1_pid,
+        "gen 1 should be a genuinely new process, not the same PID reused"
+    );
+
+    // Linux-specific stronger check: confirm gen 0's process is actually
+    // gone, not merely replaced in self.child while still running in the
+    // background. Gated to Linux (matching this codebase's existing
+    // platform-gating convention for OS-specific assertions, e.g.
+    // spawn_tests.rs's #[cfg(windows)] tests) since /proc is Linux-specific
+    // and unavailable on macOS or Windows CI runners.
+    #[cfg(target_os = "linux")]
+    {
+        let proc_path = format!("/proc/{gen0_pid}");
+        assert!(
+            !std::path::Path::new(&proc_path).exists(),
+            "gen 0's process (pid {gen0_pid}) should have been killed before \
+             gen 1 spawned, not left running in the background"
+        );
+    }
 }

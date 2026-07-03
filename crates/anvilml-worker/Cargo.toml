@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-worker"
-version = "0.1.18"
+version = "0.1.19"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -24,6 +24,21 @@ rmp-serde = "1"
 zeromq = { version = "0.6", default-features = false, features = ["tokio-runtime"] }
 bytes = "1"
 uuid = { version = "1.23.4", features = ["v4", "serde"] }
+# Self-referential dependency: enables `test-utils` automatically for every
+# `cargo test` build of this crate (unit tests AND integration tests in
+# `tests/`), with no command-line changes needed. [dev-dependencies] are only
+# ever pulled in for test/bench builds, never for a normal `cargo build` or
+# by other crates depending on this one — so this has zero effect outside
+# `cargo test`.
+anvilml-worker = { path = ".", features = ["test-utils"] }
 
 [features]
 mock-hardware = ["anvilml-hardware/mock-hardware"]
+# Exposes test-only public wrappers around otherwise pub(crate) items (e.g.
+# ManagedWorker::run_once_for_test()) so integration tests in `tests/` can
+# call them — integration tests link against this crate as a normal external
+# dependency and cannot see pub(crate) items at all, so a plain #[cfg(test)]
+# gate would not work here (it only activates for this crate's own `cargo
+# test --lib` unit tests, not for `tests/*.rs` files). See
+# ManagedWorker::run_once_for_test()'s doc comment for the full explanation.
+test-utils = []
