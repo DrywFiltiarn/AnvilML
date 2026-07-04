@@ -46,20 +46,42 @@
 //! worker process, so adding a field would be a wire-protocol change output
 //! of this task's scope, not a fix contained to this new module.
 //!
-//! # Error handling: exit on the first error, matching §9.6's own `?` usage
+//! # Error handling: bounded retry with backoff, not exit-on-first-error
 //!
 //! `IpcError` has no variant distinguishing a permanent condition (the
 //! transport was closed) from a transient one (e.g. a single malformed
-//! frame) — both collapse into `RecvFailed(String)`, distinguishable only
-//! by string content, which would be fragile to match on. `§9.6`'s own
-//! code example uses `?` on both `transport.send()` and `transport.recv()`
-//! — explicit propagate-and-exit semantics, not a retry or backoff scheme.
-//! Both tasks here log the error and then exit (return) on the first one,
-//! matching that intent exactly; literal `?` isn't used because the tasks
-//! return `()` (matching this task's own stated `JoinHandle<()>`), not a
-//! `Result`, so there's nothing for `?` to propagate into.
+//! frame from one worker) — both collapse into `RecvFailed(String)` (or
+//! `SendFailed(String)`), distinguishable only by string content, which
+//! would be fragile to match on. An earlier version of this module exited
+//! immediately on the first error, matching `§9.6`'s own illustrative `?`
+//! usage literally — but since this bridge is pool-wide (see above), that
+//! meant one worker's single malformed message would permanently kill
+//! event delivery for *every* worker sharing the pool, with no crash
+//! signal for the other workers at all (they'd eventually be caught by
+//! `KeepaliveWatchdog`'s own independent Ping/Pong timeout, since the
+//! watchdog sends directly via the shared transport rather than through
+//! this bridge — but only after a delay, and even then they'd respawn
+//! into generations that also can't receive events, since nothing
+//! restarts a dead bridge). Found and fixed as part of P8-F2, the first
+//! task to make a dead reader task's consequences actually observable —
+//! before that, nothing consumed the bridge's routing at all.
+//!
+//! Both tasks now track *consecutive* failures with a short backoff
+//! between retries, rather than exiting on the first one or retrying
+//! forever unbounded. A single transient failure recovers on the very
+//! next attempt and resets the counter to zero — the very next
+//! `transport.recv()` call after a malformed message from one worker is
+//! just as likely to succeed as any other. Only `MAX_CONSECUTIVE_FAILURES`
+//! failures *in a row* — the actual signature of a permanently broken
+//! transport, not a single bad message — cross the threshold and end the
+//! task. `RETRY_BACKOFF` between attempts bounds CPU usage in that
+//! genuinely-broken case: `RouterTransport::recv()`'s fast-path check
+//! returns immediately once the transport is closed, with no blocking
+//! wait at all, so without a backoff a permanently-dead transport would
+//! spin retrying as fast as the CPU allows rather than at a bounded rate.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anvilml_ipc::{RouterTransport, WorkerMessage};
 use tokio::sync::mpsc;
@@ -72,6 +94,18 @@ use crate::demux::Demux;
 /// `managed.rs`'s `pong_tx`/`registered_tx`), not a value `§9.6` itself
 /// specifies.
 const WRITER_CHANNEL_CAPACITY: usize = 16;
+
+/// Maximum consecutive failures before a task gives up and exits. See
+/// this module's own "Error handling" doc section for the full
+/// reasoning — briefly: distinguishes a single transient failure
+/// (recovers on the next attempt, resets this counter) from a
+/// permanently broken transport (repeated, back-to-back failures).
+const MAX_CONSECUTIVE_FAILURES: u32 = 5;
+
+/// Delay between retries after a failure — bounds CPU usage if the
+/// transport is genuinely, permanently broken. See this module's own
+/// "Error handling" doc section.
+const RETRY_BACKOFF: Duration = Duration::from_millis(50);
 
 /// Spawn the IPC bridge's reader and writer tasks.
 ///
@@ -86,11 +120,12 @@ const WRITER_CHANNEL_CAPACITY: usize = 16;
 ///   each one.
 /// - The writer task's `JoinHandle`. The task exits once every sender
 ///   clone is dropped (its `mpsc::Receiver::recv()` returns `None`) or
-///   once a `transport.send()` call fails — see this module's own doc
-///   comment on error handling.
+///   once `MAX_CONSECUTIVE_FAILURES` `transport.send()` calls fail in a
+///   row — see this module's own doc comment on error handling.
 /// - The reader task's `JoinHandle`. The task loops
 ///   `transport.recv()`, routing each `(worker_id, event)` pair via
-///   `demux.route()`, until a `transport.recv()` call fails.
+///   `demux.route()`, until `MAX_CONSECUTIVE_FAILURES` `transport.recv()`
+///   calls fail in a row.
 pub fn spawn_bridge(
     transport: Arc<RouterTransport>,
     demux: Arc<Demux>,
@@ -106,14 +141,30 @@ pub fn spawn_bridge(
     // — never contends with reader_task's recv() below.
     let writer_transport = Arc::clone(&transport);
     let writer_handle = tokio::spawn(async move {
+        let mut consecutive_failures = 0u32;
         while let Some((worker_id, msg)) = rx.recv().await {
-            if let Err(e) = writer_transport.send(&worker_id, &msg).await {
-                tracing::error!(
-                    worker_id = %worker_id,
-                    error = %e,
-                    "bridge writer_task: send failed, exiting"
-                );
-                return;
+            match writer_transport.send(&worker_id, &msg).await {
+                Ok(()) => {
+                    consecutive_failures = 0;
+                }
+                Err(e) => {
+                    consecutive_failures += 1;
+                    tracing::warn!(
+                        worker_id = %worker_id,
+                        error = %e,
+                        consecutive_failures,
+                        "bridge writer_task: send failed"
+                    );
+                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                        tracing::error!(
+                            consecutive_failures,
+                            "bridge writer_task: {MAX_CONSECUTIVE_FAILURES} consecutive \
+                             send failures — transport likely permanently broken, exiting"
+                        );
+                        return;
+                    }
+                    tokio::time::sleep(RETRY_BACKOFF).await;
+                }
             }
         }
         tracing::info!("bridge writer_task: channel closed, exiting");
@@ -124,12 +175,30 @@ pub fn spawn_bridge(
     // writer_task's send() above.
     let reader_transport = transport;
     let reader_handle = tokio::spawn(async move {
+        let mut consecutive_failures = 0u32;
         loop {
             let (worker_id, event) = match reader_transport.recv().await {
-                Ok(pair) => pair,
+                Ok(pair) => {
+                    consecutive_failures = 0;
+                    pair
+                }
                 Err(e) => {
-                    tracing::error!(error = %e, "bridge reader_task: recv failed, exiting");
-                    return;
+                    consecutive_failures += 1;
+                    tracing::warn!(
+                        error = %e,
+                        consecutive_failures,
+                        "bridge reader_task: recv failed"
+                    );
+                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                        tracing::error!(
+                            consecutive_failures,
+                            "bridge reader_task: {MAX_CONSECUTIVE_FAILURES} consecutive \
+                             recv failures — transport likely permanently broken, exiting"
+                        );
+                        return;
+                    }
+                    tokio::time::sleep(RETRY_BACKOFF).await;
+                    continue;
                 }
             };
             if let Err(e) = demux.route(&worker_id, event).await {
@@ -138,7 +207,7 @@ pub fn spawn_bridge(
                 // the transport itself is broken — unlike a recv()
                 // failure, this is scoped to a single message for a
                 // single worker, so the reader loop continues rather
-                // than exiting.
+                // than exiting or counting toward consecutive_failures.
                 tracing::warn!(
                     worker_id = %worker_id,
                     error = %e,

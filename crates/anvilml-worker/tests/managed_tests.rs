@@ -27,6 +27,7 @@ use anvilml_worker::RespawnPolicy;
 use anvilml_worker::RunOutcome;
 use anvilml_worker::WorkerHandle;
 use anvilml_worker::WorkerSpawner;
+use anvilml_worker::spawn_bridge;
 use anvilml_worker::{
     DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT, DEFAULT_INIT_TIMEOUT, DEFAULT_WATCHDOG_PING_INTERVAL,
     DEFAULT_WATCHDOG_PONG_TIMEOUT,
@@ -535,27 +536,6 @@ async fn send_event(dealer: &mut DealerSocket, event: &WorkerEvent) {
     dealer.send(msg).await.expect("DEALER send should succeed");
 }
 
-/// Send a payload that fails `WorkerEvent` msgpack deserialization, from the
-/// DEALER side — a deterministic way to trigger `ManagedWorker`'s
-/// transport-error crash path in tests without depending on `close()`'s
-/// specific interrupt timing.
-///
-/// `RouterTransport::close()` and `recv()` no longer deadlock (`transport.rs`'s
-/// `closed_tx` watch-channel signal, see `RouterTransport::close()`'s doc
-/// comment), so `close()` is safe to use here too. This helper is kept as the
-/// preferred crash-simulation method regardless: it delivers a genuine
-/// incoming message through the already-open DEALER connection and fails only
-/// at the deserialization step, returning `IpcError::RecvFailed` exactly like
-/// a real transport error would — deterministic by construction, with no
-/// dependency on `close()`'s signal-vs-lock race resolving in any particular
-/// number of poll cycles. Matches the crash-simulation guidance already
-/// written into the `P8-E6` task spec. See `PHASES.md`'s amendments log.
-async fn send_malformed(dealer: &mut DealerSocket) {
-    let mut msg = ZmqMessage::from(Bytes::from(""));
-    msg.push_back(Bytes::from_static(b"not valid msgpack"));
-    dealer.send(msg).await.expect("DEALER send should succeed");
-}
-
 /// `run()` transitions through Initializing → Idle when a Ready event is received,
 /// then exits cleanly on shutdown signal.
 ///
@@ -569,6 +549,8 @@ async fn send_malformed(dealer: &mut DealerSocket) {
 async fn test_run_completes_on_ready_event() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
 
     // Connect a DEALER socket as the "Python worker" so the ROUTER recognizes
@@ -648,6 +630,8 @@ async fn test_run_completes_on_ready_event() {
 async fn test_shutdown_rx_triggers_graceful_exit() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
 
     // Connect a DEALER socket as the "Python worker".
@@ -701,6 +685,8 @@ async fn test_shutdown_rx_triggers_graceful_exit() {
 async fn test_deregister_called_on_graceful_exit() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
 
     // Simulate the pool's pre-spawn registration.
@@ -788,6 +774,8 @@ async fn test_deregister_called_on_graceful_exit() {
 async fn test_deregister_called_on_crash() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
 
     // Simulate the pool's pre-spawn registration.
@@ -900,6 +888,8 @@ async fn test_deregister_called_on_crash() {
 async fn test_deregister_called_on_initializing_timeout() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
 
     // Simulate the pool's pre-spawn registration.
@@ -979,6 +969,8 @@ fn test_default_init_timeout_matches_design_spec() {
 async fn test_crash_appends_to_attempt_history() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
 
     // Connect a DEALER socket as the "Python worker".
@@ -1034,12 +1026,18 @@ async fn test_crash_appends_to_attempt_history() {
     send_event(&mut _dealer, &ready).await;
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    // Send a malformed payload — this causes the ROUTER's next recv() to
-    // return an error deterministically (no lock contention with close(),
-    // see send_malformed()'s doc comment), simulating a transport crash and
-    // exercising the crash exit path (attempt_history.push + should_respawn +
+    // Deregister the worker directly — this drops the sender half of
+    // event_rx's channel pair (Demux::deregister()'s own doc comment:
+    // map.remove() drops the stored Sender), causing event_rx.recv() to
+    // return None. As of P8-F2, this is the deterministic way to trigger
+    // ManagedWorker's crash path in tests: a malformed transport message
+    // no longer crashes any specific worker (it's caught and retried by
+    // bridge.rs's reader task instead, which is now shared pool-wide —
+    // see bridge.rs's own "Error handling" doc section), so deregistering
+    // directly is what actually reaches this generation's crash-handling
+    // exit path (attempt_history.push + should_respawn +
     // crash_respawn_decision).
-    send_malformed(&mut _dealer).await;
+    demux.deregister("test-worker");
 
     // Give the worker time to detect the crash and exit.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -1077,6 +1075,8 @@ async fn test_crash_history_grows_per_crash() {
     {
         let demux = Arc::new(Demux::new());
         let transport = Arc::new(RouterTransport::bind().await.unwrap());
+        let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+            spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
         let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
 
         let mut _dealer = connect_dealer(&transport, "test-worker").await;
@@ -1122,10 +1122,13 @@ async fn test_crash_history_grows_per_crash() {
         send_event(&mut _dealer, &ready).await;
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        // Send a malformed payload to trigger the crash path deterministically
-        // (see send_malformed()'s doc comment — close() would also work now,
-        // this stays deterministic by construction).
-        send_malformed(&mut _dealer).await;
+        // Deregister the worker directly — the deterministic way to
+        // trigger ManagedWorker's crash path as of P8-F2: a malformed
+        // transport message no longer crashes any specific worker (it's
+        // caught and retried by bridge.rs's reader task instead, which
+        // is now shared pool-wide), so deregistering directly is what
+        // actually reaches this generation's crash-handling exit path.
+        demux.deregister("test-worker");
 
         let timeout = tokio::time::sleep(Duration::from_secs(5));
         tokio::select! {
@@ -1138,6 +1141,8 @@ async fn test_crash_history_grows_per_crash() {
     {
         let demux = Arc::new(Demux::new());
         let transport = Arc::new(RouterTransport::bind().await.unwrap());
+        let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+            spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
         let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
 
         let mut _dealer = connect_dealer(&transport, "test-worker-2").await;
@@ -1180,7 +1185,7 @@ async fn test_crash_history_grows_per_crash() {
         send_event(&mut _dealer, &ready).await;
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        send_malformed(&mut _dealer).await;
+        demux.deregister("test-worker-2");
 
         let timeout = tokio::time::sleep(Duration::from_secs(5));
         tokio::select! {
@@ -1206,6 +1211,8 @@ async fn test_crash_history_grows_per_crash() {
 async fn test_should_respawn_called_on_crash() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
 
     // Non-respawn-eligible (max_attempts=1): this test verifies a crash is
@@ -1261,10 +1268,13 @@ async fn test_should_respawn_called_on_crash() {
     send_event(&mut _dealer, &ready).await;
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    // Send a malformed payload to trigger the crash path deterministically
-    // (see send_malformed()'s doc comment — close() would also work now,
-    // this stays deterministic by construction).
-    send_malformed(&mut _dealer).await;
+    // Deregister the worker directly — the deterministic way to
+    // trigger ManagedWorker's crash path as of P8-F2: a malformed
+    // transport message no longer crashes any specific worker (it's
+    // caught and retried by bridge.rs's reader task instead, which
+    // is now shared pool-wide), so deregistering directly is what
+    // actually reaches this generation's crash-handling exit path.
+    demux.deregister("test-worker");
 
     // Worker should exit within 5s — bounded wait per ENVIRONMENT.md §11.5.
     let timeout = tokio::time::sleep(Duration::from_secs(5));
@@ -1297,6 +1307,8 @@ async fn test_should_respawn_called_on_crash() {
 async fn test_completed_event_transitions_to_idle() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
 
     let mut _dealer = connect_dealer(&transport, "test-worker").await;
@@ -1372,6 +1384,8 @@ async fn test_completed_event_transitions_to_idle() {
 async fn test_failed_event_transitions_to_idle() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
 
     let mut _dealer = connect_dealer(&transport, "test-worker").await;
@@ -1444,6 +1458,8 @@ async fn test_failed_event_transitions_to_idle() {
 async fn test_cancelled_event_transitions_to_idle() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
 
     let mut _dealer = connect_dealer(&transport, "test-worker").await;
@@ -1522,6 +1538,8 @@ async fn test_cancelled_event_transitions_to_idle() {
 async fn test_watchdog_missing_pong_triggers_crash_path() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
 
     let mut _dealer = connect_dealer(&transport, "test-worker").await;
@@ -1606,6 +1624,8 @@ async fn test_watchdog_missing_pong_triggers_crash_path() {
 async fn test_watchdog_live_pongs_no_false_trigger() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
 
     let mut _dealer = connect_dealer(&transport, "test-worker").await;
@@ -1687,6 +1707,8 @@ async fn test_watchdog_live_pongs_no_false_trigger() {
 async fn test_pong_forwarding_does_not_disturb_idle_busy() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
 
     let mut _dealer = connect_dealer(&transport, "test-worker").await;
@@ -1815,6 +1837,8 @@ fn test_router_transport_adapter_not_dead_code() {
 async fn test_watchdog_channel_cleans_up_on_exit() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
 
     let mut _dealer = connect_dealer(&transport, "test-worker").await;
@@ -1954,6 +1978,8 @@ async fn test_child_tracked_after_spawn() {
 async fn test_respawn_under_limit_spawns_again_and_reregisters() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
     let spawner = Arc::new(MockWorkerSpawner::new());
     let (pong_tx, _pong_rx) = tokio::sync::mpsc::channel(16);
@@ -1979,10 +2005,12 @@ async fn test_respawn_under_limit_spawns_again_and_reregisters() {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
-    // Connect as the DEALER for gen 0, let it register, then crash it.
-    let mut dealer = connect_dealer(&transport, "test-worker").await;
+    // Give gen 0's own spawn+register sequence time to complete before
+    // deregistering — deregister() on a worker_id that was never
+    // registered yet would be a no-op, and the crash this test depends
+    // on would never happen.
     tokio::time::sleep(Duration::from_millis(50)).await;
-    send_malformed(&mut dealer).await;
+    demux.deregister("test-worker");
 
     // Respawn delay is 50ms; give generous margin for gen 1's spawn +
     // registration to complete.
@@ -2008,6 +2036,8 @@ async fn test_respawn_under_limit_spawns_again_and_reregisters() {
 async fn test_respawn_at_limit_exits_permanently() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
     let spawner = Arc::new(MockWorkerSpawner::new());
     let (pong_tx, _pong_rx) = tokio::sync::mpsc::channel(16);
@@ -2033,9 +2063,11 @@ async fn test_respawn_at_limit_exits_permanently() {
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
-    let mut dealer = connect_dealer(&transport, "test-worker").await;
+    // Give gen 0's own spawn+register sequence time to complete before
+    // deregistering — see test_respawn_under_limit_spawns_again_and_reregisters
+    // for the full explanation of why this delay is needed.
     tokio::time::sleep(Duration::from_millis(50)).await;
-    send_malformed(&mut dealer).await;
+    demux.deregister("test-worker");
 
     // run() should complete on its own — no respawn means no further
     // generation to wait on. Bounded wait per ENVIRONMENT.md §11.5.
@@ -2064,6 +2096,8 @@ async fn test_respawn_at_limit_exits_permanently() {
 async fn test_respawn_status_transitions_respawning_then_initializing() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
     let spawner = Arc::new(MockWorkerSpawner::new());
     let (pong_tx, _pong_rx) = tokio::sync::mpsc::channel(16);
@@ -2089,9 +2123,11 @@ async fn test_respawn_status_transitions_respawning_then_initializing() {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
-    let mut dealer = connect_dealer(&transport, "test-worker").await;
+    // Give gen 0's own spawn+register sequence time to complete before
+    // deregistering — see test_respawn_under_limit_spawns_again_and_reregisters
+    // for the full explanation of why this delay is needed.
     tokio::time::sleep(Duration::from_millis(50)).await;
-    send_malformed(&mut dealer).await;
+    demux.deregister("test-worker");
 
     // Mid-delay: status must be Respawning (crash already processed, next
     // spawn hasn't happened yet — the 300ms sleep in run()'s outer loop is
@@ -2122,6 +2158,8 @@ async fn test_respawn_status_transitions_respawning_then_initializing() {
 async fn test_respawn_delay_matches_next_delay() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
     let spawner = Arc::new(MockWorkerSpawner::new());
     let (pong_tx, _pong_rx) = tokio::sync::mpsc::channel(16);
@@ -2148,11 +2186,13 @@ async fn test_respawn_delay_matches_next_delay() {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
-    let mut dealer = connect_dealer(&transport, "test-worker").await;
+    // Give gen 0's own spawn+register sequence time to complete before
+    // deregistering — see test_respawn_under_limit_spawns_again_and_reregisters
+    // for the full explanation of why this delay is needed.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let crash_time = tokio::time::Instant::now();
-    send_malformed(&mut dealer).await;
+    demux.deregister("test-worker");
 
     // Poll spawner.call_count() until it reaches 2 (the respawn happened),
     // bounded per ENVIRONMENT.md §11.5, and measure the elapsed time.
@@ -2279,6 +2319,8 @@ async fn test_spawn_failure_is_respawn_eligible() {
 async fn test_respawn_kills_previous_child() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
     let spawner = Arc::new(MockWorkerSpawner::new());
     let (pong_tx, _pong_rx) = tokio::sync::mpsc::channel(16);
@@ -2300,17 +2342,14 @@ async fn test_respawn_kills_previous_child() {
         spawner: Arc::clone(&spawner) as Arc<dyn WorkerSpawner>,
     });
 
-    // Gen 0: connect the DEALER first (spawn() itself doesn't need it, but
-    // run_once_for_test()'s event loop does), spawn, then crash it via a
-    // malformed payload. Only needs to stay alive long enough to send that
-    // one payload — gen 1, spawned later in this test, never needs any
-    // DEALER interaction at all.
-    let dealer_transport = Arc::clone(&transport);
+    // Gen 0: crash it after giving its own spawn+register sequence time to
+    // complete — deregister() on a worker_id that was never registered
+    // yet would be a no-op, and the crash this test depends on would
+    // never happen. Spawned as its own task since it needs to run
+    // concurrently with run_once_for_test()'s own .await below.
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        let mut dealer = connect_dealer(&dealer_transport, "test-worker").await;
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        send_malformed(&mut dealer).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        demux.deregister("test-worker");
     });
 
     let (worker, outcome) = worker.run_once_for_test(&mut shutdown_rx).await;
@@ -2409,6 +2448,8 @@ async fn test_respawn_kills_previous_child() {
 async fn test_respawn_reassigns_job_object_to_new_child() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
     let spawner = Arc::new(MockWorkerSpawner::new());
     let (pong_tx, _pong_rx) = tokio::sync::mpsc::channel(16);
@@ -2430,14 +2471,12 @@ async fn test_respawn_reassigns_job_object_to_new_child() {
         spawner: Arc::clone(&spawner) as Arc<dyn WorkerSpawner>,
     });
 
-    // Gen 0: crash it via a malformed payload, matching
-    // test_respawn_kills_previous_child's established pattern.
-    let dealer_transport = Arc::clone(&transport);
+    // Gen 0: crash it after giving its own spawn+register sequence time
+    // to complete, matching test_respawn_kills_previous_child's
+    // established pattern.
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        let mut dealer = connect_dealer(&dealer_transport, "test-worker").await;
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        send_malformed(&mut dealer).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        demux.deregister("test-worker");
     });
 
     let (worker, outcome) = worker.run_once_for_test(&mut shutdown_rx).await;
@@ -2502,6 +2541,8 @@ async fn test_respawn_reassigns_job_object_to_new_child() {
 async fn test_job_guard_kills_current_child_after_multiple_respawns() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
     let spawner = Arc::new(MockWorkerSpawner::new());
     let (pong_tx, _pong_rx) = tokio::sync::mpsc::channel(16);
@@ -2525,13 +2566,12 @@ async fn test_job_guard_kills_current_child_after_multiple_respawns() {
         spawner: Arc::clone(&spawner) as Arc<dyn WorkerSpawner>,
     });
 
-    // Gen 0: crash it via a malformed payload.
-    let dealer_transport = Arc::clone(&transport);
+    // Gen 0: crash it after giving its own spawn+register sequence time
+    // to complete.
+    let demux_gen0 = Arc::clone(&demux);
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        let mut dealer = connect_dealer(&dealer_transport, "test-worker").await;
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        send_malformed(&mut dealer).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        demux_gen0.deregister("test-worker");
     });
 
     let (worker, outcome) = worker.run_once_for_test(&mut shutdown_rx).await;
@@ -2543,18 +2583,18 @@ async fn test_job_guard_kills_current_child_after_multiple_respawns() {
         "gen 0 should crash and be respawn-eligible"
     );
 
-    // Gen 1: crash it too, via a second, fresh malformed payload over a new
-    // DEALER connection — the first one is already gone by now (it was
-    // local to the spawned closure above, which already completed), so
-    // this is a genuinely sequential, non-overlapping connection, not a
-    // second simultaneous identity on the same ROUTER.
+    // Gen 1: crash it too. Fires on its own separate spawned task —
+    // matching gen 0's own pattern above — since it needs to run
+    // concurrently with run_once_for_test()'s own .await below. Needs
+    // its own clone of demux: the gen 0 closure above already moved its
+    // own capture of demux into itself via async move, so the outer
+    // demux binding is still available here only because it was cloned,
+    // not moved, at each use site.
     tokio::time::sleep(Duration::from_millis(20)).await;
-    let dealer_transport2 = Arc::clone(&transport);
+    let demux_gen1 = Arc::clone(&demux);
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        let mut dealer2 = connect_dealer(&dealer_transport2, "test-worker").await;
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        send_malformed(&mut dealer2).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        demux_gen1.deregister("test-worker");
     });
 
     let (worker, outcome) = worker.run_once_for_test(&mut shutdown_rx).await;
@@ -2619,6 +2659,8 @@ async fn test_job_guard_kills_current_child_after_multiple_respawns() {
 async fn test_graceful_shutdown_sends_shutdown_message() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
     let spawner = Arc::new(MockWorkerSpawner::new());
     let (pong_tx, _pong_rx) = mpsc::channel(16);
@@ -2724,6 +2766,8 @@ async fn test_graceful_shutdown_sends_shutdown_message() {
 async fn test_graceful_shutdown_force_kills_after_timeout() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
     let spawner = Arc::new(MockWorkerSpawner::new());
     let (pong_tx, _pong_rx) = mpsc::channel(16);
@@ -2796,6 +2840,8 @@ async fn test_graceful_shutdown_force_kills_after_timeout() {
 async fn test_init_timeout_force_kills_child() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
     let spawner = Arc::new(MockWorkerSpawner::new());
     let (pong_tx, _pong_rx) = mpsc::channel(16);
@@ -2849,6 +2895,8 @@ async fn test_init_timeout_force_kills_child() {
 async fn test_worker_reported_dying_force_kills_child() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
     let spawner = Arc::new(MockWorkerSpawner::new());
     let (pong_tx, _pong_rx) = mpsc::channel(16);
@@ -2904,6 +2952,8 @@ async fn test_worker_reported_dying_force_kills_child() {
 async fn test_permanent_crash_force_kills_child() {
     let demux = Arc::new(Demux::new());
     let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
     let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
     let spawner = Arc::new(MockWorkerSpawner::new());
     let (pong_tx, _pong_rx) = mpsc::channel(16);
@@ -2929,13 +2979,15 @@ async fn test_permanent_crash_force_kills_child() {
 
     let handle = tokio::spawn(worker.run(shutdown_rx));
 
-    let mut dealer = connect_dealer(&transport, "test-worker").await;
+    // Give gen 0's own spawn+register sequence time to complete before
+    // deregistering — see test_respawn_under_limit_spawns_again_and_reregisters
+    // for the full explanation of why this delay is needed.
     tokio::time::sleep(Duration::from_millis(50)).await;
     let pid = spawner
         .last_pid()
         .expect("spawner should have recorded a PID by now");
 
-    send_malformed(&mut dealer).await;
+    demux.deregister("test-worker");
 
     let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
     assert!(
@@ -2950,4 +3002,140 @@ async fn test_permanent_crash_force_kills_child() {
         "child (pid {pid}) should have been force-killed after a \
          permanent crash, not left running"
     );
+}
+
+// The following test exercises P8-F2's actual fix directly: two
+// ManagedWorker instances sharing one transport/demux/bridge, proving
+// events sent to one never reach the other. Before P8-F2, both workers'
+// run_once() called self.transport.recv() directly — whichever task's
+// recv() happened to win a given poll would consume whatever message
+// arrived, regardless of which worker it was actually addressed to. As
+// of P8-F2, each worker only ever sees events routed to its own,
+// demux-registered channel — by construction, not by timing luck.
+
+/// Two `ManagedWorker` instances sharing one `RouterTransport`/`Demux`
+/// (via one shared `spawn_bridge()`), with distinct DEALER identities,
+/// never observe each other's events.
+#[tokio::test]
+async fn test_multi_worker_events_never_cross() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
+
+    let status_a = Arc::new(RwLock::new(WorkerStatus::Initializing));
+    let status_b = Arc::new(RwLock::new(WorkerStatus::Initializing));
+    let spawner_a = Arc::new(MockWorkerSpawner::new());
+    let spawner_b = Arc::new(MockWorkerSpawner::new());
+    let (pong_tx_a, _pong_rx_a) = mpsc::channel(16);
+    let (pong_tx_b, _pong_rx_b) = mpsc::channel(16);
+    let (shutdown_tx_a, shutdown_rx_a) = tokio::sync::oneshot::channel();
+    let (shutdown_tx_b, shutdown_rx_b) = tokio::sync::oneshot::channel();
+
+    let worker_a = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "worker-a".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status_a),
+        respawn_policy: RespawnPolicy::default(),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
+        pong_tx: pong_tx_a,
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        graceful_shutdown_timeout: Duration::from_millis(100),
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::clone(&spawner_a) as Arc<dyn WorkerSpawner>,
+    });
+    let worker_b = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "worker-b".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status_b),
+        respawn_policy: RespawnPolicy::default(),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
+        pong_tx: pong_tx_b,
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        graceful_shutdown_timeout: Duration::from_millis(100),
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::clone(&spawner_b) as Arc<dyn WorkerSpawner>,
+    });
+
+    let handle_a = tokio::spawn(worker_a.run(shutdown_rx_a));
+    let handle_b = tokio::spawn(worker_b.run(shutdown_rx_b));
+
+    let mut dealer_a = connect_dealer(&transport, "worker-a").await;
+    let mut dealer_b = connect_dealer(&transport, "worker-b").await;
+
+    fn ready_event(worker_id: &str) -> WorkerEvent {
+        WorkerEvent::Ready {
+            worker_id: worker_id.to_string(),
+            device_index: 0,
+            device_name: "Mock GPU".to_string(),
+            device_type: "cpu".to_string(),
+            vram_total_mib: 1024,
+            vram_free_mib: 900,
+            torch_version: "2.5.0".to_string(),
+            fp16: true,
+            bf16: true,
+            fp8: false,
+            flash_attention: false,
+            capabilities_source: "mock".to_string(),
+            node_types: vec![],
+        }
+    }
+
+    // Send Ready only to worker-a. If events could ever cross (the exact
+    // race P8-F2 fixes), worker-b's own now-nonexistent direct
+    // transport.recv() call could have "stolen" this message before
+    // P8-F2 — worker-b has no such call anymore, so this proves the fix
+    // by construction, not just by this test happening not to trigger
+    // the old race.
+    send_event(&mut dealer_a, &ready_event("worker-a")).await;
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if *status_a.read().await == WorkerStatus::Idle {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("worker-a should reach Idle within 2s of its own Ready event");
+
+    assert_eq!(
+        *status_b.read().await,
+        WorkerStatus::Initializing,
+        "worker-b should be completely unaffected by an event sent only to worker-a"
+    );
+
+    // Now the reverse direction: send Ready only to worker-b, verify
+    // worker-a (already Idle) is unaffected and worker-b alone transitions.
+    send_event(&mut dealer_b, &ready_event("worker-b")).await;
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if *status_b.read().await == WorkerStatus::Idle {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("worker-b should reach Idle within 2s of its own Ready event");
+
+    assert_eq!(
+        *status_a.read().await,
+        WorkerStatus::Idle,
+        "worker-a should remain exactly as it was, unaffected by worker-b's event"
+    );
+
+    // Clean up both workers via graceful shutdown.
+    let _ = shutdown_tx_a.send(());
+    let _ = shutdown_tx_b.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(2), handle_a).await;
+    let _ = tokio::time::timeout(Duration::from_secs(2), handle_b).await;
 }

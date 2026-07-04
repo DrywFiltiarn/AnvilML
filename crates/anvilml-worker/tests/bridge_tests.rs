@@ -219,3 +219,67 @@ async fn test_writer_task_exits_when_sender_dropped() {
         "writer_task should exit cleanly, not panic"
     );
 }
+
+/// Send a payload that fails `WorkerEvent` msgpack deserialization, from
+/// the DEALER side — used to exercise the reader task's consecutive-
+/// failure handling below.
+async fn send_malformed(dealer: &mut DealerSocket) {
+    let mut msg = ZmqMessage::from(Bytes::from(""));
+    msg.push_back(Bytes::from_static(b"not valid msgpack"));
+    dealer.send(msg).await.expect("DEALER send should succeed");
+}
+
+/// A single transient failure (one malformed message) does not end the
+/// reader task — it logs, retries, and keeps routing subsequent, valid
+/// events normally. Regression test for the gap found and fixed as part
+/// of P8-F2: an earlier version of `bridge.rs` exited its reader task on
+/// the very first `transport.recv()` error, which — because this bridge
+/// is shared pool-wide — meant one worker's single malformed message
+/// would silently kill event delivery for every worker sharing the pool.
+/// See `bridge.rs`'s own "Error handling" doc section for the full
+/// explanation.
+#[tokio::test]
+async fn test_reader_task_survives_transient_failure() {
+    let transport = Arc::new(RouterTransport::bind().await.expect("bind should succeed"));
+    let demux = Arc::new(Demux::new());
+
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<WorkerEvent>(16);
+    demux.register("test-worker".to_string(), event_tx);
+
+    let (_tx, _writer_handle, reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
+
+    let mut dealer = connect_dealer(&transport, "test-worker").await;
+
+    // Well under MAX_CONSECUTIVE_FAILURES (5) — this should recover, not
+    // exit the reader task.
+    for _ in 0..3 {
+        send_malformed(&mut dealer).await;
+        // Give the reader task time to observe, log, and back off before
+        // the next malformed message — RETRY_BACKOFF is 50ms.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+
+    // The reader task should still be alive — not yet at the threshold.
+    assert!(
+        !reader_handle.is_finished(),
+        "reader_task should still be running after only 3 consecutive \
+         failures (below MAX_CONSECUTIVE_FAILURES)"
+    );
+
+    // A subsequent, valid event should still route normally, proving the
+    // reader task genuinely recovered rather than being stuck in some
+    // degraded state.
+    let ready = WorkerEvent::Pong { seq: 0 };
+    send_event(&mut dealer, &ready).await;
+
+    let received = tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+        .await
+        .expect("a valid event after transient failures should still route within 2s")
+        .expect("channel should not be closed");
+    assert_eq!(
+        received, ready,
+        "the reader task should route a valid event normally after \
+         recovering from transient failures"
+    );
+}

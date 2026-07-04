@@ -642,7 +642,7 @@ impl ManagedWorker {
     ///    documented idempotent — this is safe even on gen 0, where a caller
     ///    may already have registered), and sets status to `Initializing`.
     /// 4. **Phase 1 — pre-`Ready` loop.** `tokio::select!` between
-    ///    `shutdown_rx`, `transport.recv()`, and the `init_timeout` guard.
+    ///    `shutdown_rx`, `event_rx.recv()`, and the `init_timeout` guard.
     ///    No watchdog exists yet in this phase — see "Why the watchdog
     ///    waits for `Ready`" below. Any non-`Ready` event is processed via
     ///    `handle_event()` and phase 1 continues; `Ready` is processed the
@@ -653,7 +653,7 @@ impl ManagedWorker {
     ///    consumed via `.take()` once in `new()` would panic on generation
     ///    2's watchdog spawn, since the `Option` would already be `None`
     ///    from generation 1), then `tokio::select!`s between `shutdown_rx`,
-    ///    `transport.recv()`, and the watchdog's `dead_rx`. No
+    ///    `event_rx.recv()`, and the watchdog's `dead_rx`. No
     ///    `init_timeout` in this phase — `Ready` has already been received,
     ///    so that guard's job is already done.
     ///
@@ -696,9 +696,19 @@ impl ManagedWorker {
     ///    `Dead`, returns `RunOutcome::InitTimedOut`.
     /// 3. **Worker crash (explicit)** — `Dying` event received, in either
     ///    phase: status → `Dead`, returns `RunOutcome::WorkerReportedDying`.
-    /// 4. **Worker crash (transport)** — `transport.recv()` returns `Err`,
-    ///    in either phase: status → `Dead`, `attempt_history` appended,
-    ///    `should_respawn()` consulted, returns `RunOutcome::Crashed`.
+    /// 4. **Worker crash (event channel closed)** — `event_rx.recv()`
+    ///    returns `None`, in either phase: status → `Dead`,
+    ///    `attempt_history` appended, `should_respawn()` consulted,
+    ///    returns `RunOutcome::Crashed`. As of P8-F2, this generation
+    ///    consumes events from its own demux-routed channel rather than
+    ///    calling `self.transport.recv()` directly — see this method's
+    ///    `event_rx` binding, above, for why: `transport.recv()` races
+    ///    once multiple `ManagedWorker` instances share one
+    ///    `Arc<RouterTransport>` (`WorkerPool`, P8-G1). This path should
+    ///    be rare in practice (see `event_rx`'s own binding comment for
+    ///    when the channel can actually close), unlike the pre-P8-F2
+    ///    transport error this replaces, which fired on every genuine
+    ///    connection failure or malformed message.
     /// 5. **Keepalive watchdog timeout** — the watchdog's `dead_rx` becomes
     ///    ready (phase 2 only — the watchdog does not exist in phase 1):
     ///    status → `Dead`, `attempt_history` appended, `should_respawn()`
@@ -782,8 +792,23 @@ impl ManagedWorker {
         // Register with the demux now that a worker process genuinely
         // exists. Idempotent per Demux::register()'s own contract, so this
         // is safe even on gen 0 if an external caller already registered.
-        let (registered_tx, _registered_rx) = tokio::sync::mpsc::channel(16);
-        self.demux.register(self.worker_id.clone(), registered_tx);
+        //
+        // event_rx is kept (not dropped, unlike pre-P8-F2) and consumed
+        // directly by this generation's select! loops below, instead of
+        // calling self.transport.recv() itself. This is P8-F2's actual
+        // fix: self.transport.recv() races once multiple ManagedWorker
+        // instances share one Arc<RouterTransport> (WorkerPool, P8-G1) —
+        // whichever task's recv() call happens to win a given poll
+        // consumes whatever message arrives, regardless of which worker
+        // it was actually addressed to. Consuming from this worker's own
+        // paired channel instead means events can only ever reach the
+        // worker they were routed to, by construction — bridge.rs's
+        // reader task (P8-F1) is now the sole caller of
+        // transport.recv(), and it routes via Demux::route() using the
+        // identity carried in each message, before this channel is ever
+        // touched.
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<WorkerEvent>(16);
+        self.demux.register(self.worker_id.clone(), event_tx);
         debug_assert!(
             self.demux.registered(&self.worker_id),
             "worker must be registered immediately after a successful spawn"
@@ -815,11 +840,11 @@ impl ManagedWorker {
                     break Some(RunOutcome::ShutdownRequested);
                 }
 
-                result = self.transport.recv() => {
-                    match result {
-                        Ok((id, event)) => {
+                maybe_event = event_rx.recv() => {
+                    match maybe_event {
+                        Some(event) => {
                             let is_ready = matches!(event, WorkerEvent::Ready { .. });
-                            if self.handle_event(&id, event).await {
+                            if self.handle_event(event).await {
                                 break Some(RunOutcome::WorkerReportedDying);
                             }
                             if is_ready {
@@ -828,8 +853,16 @@ impl ManagedWorker {
                                 break None;
                             }
                         }
-                        Err(e) => {
-                            tracing::error!(worker_id = %self.worker_id, error = %e, "transport recv failed");
+                        None => {
+                            // The channel closed — nothing will ever send
+                            // this generation another event again (see
+                            // event_rx's own binding comment above for
+                            // when this can happen; it should be rare
+                            // under normal operation). Functionally
+                            // equivalent to the old transport.recv()
+                            // error case: this generation can no longer
+                            // receive anything, so it's a crash.
+                            tracing::error!(worker_id = %self.worker_id, "event channel closed");
                             *self.status.write().await = WorkerStatus::Dead;
                             let should = self.record_crash_and_decide();
                             break Some(RunOutcome::Crashed { should_respawn: should });
@@ -884,18 +917,21 @@ impl ManagedWorker {
                     break RunOutcome::ShutdownRequested;
                 }
 
-                result = self.transport.recv() => {
-                    match result {
-                        Ok((id, event)) => {
+                maybe_event = event_rx.recv() => {
+                    match maybe_event {
+                        Some(event) => {
                             // handle_event returns true when the Dying event is
                             // received, signaling this generation to end.
-                            if self.handle_event(&id, event).await {
+                            if self.handle_event(event).await {
                                 break RunOutcome::WorkerReportedDying;
                             }
                         }
-                        Err(e) => {
-                            // Transport recv failed — a crash for this generation.
-                            tracing::error!(worker_id = %self.worker_id, error = %e, "transport recv failed");
+                        None => {
+                            // The channel closed — see phase 1's identical
+                            // branch above for the full explanation.
+                            // Functionally equivalent to the old
+                            // transport.recv() error case: a crash.
+                            tracing::error!(worker_id = %self.worker_id, "event channel closed");
                             *self.status.write().await = WorkerStatus::Dead;
                             let should = self.record_crash_and_decide();
                             break RunOutcome::Crashed { should_respawn: should };
@@ -904,8 +940,8 @@ impl ManagedWorker {
                 }
 
                 // Watchdog dead path — the keepalive watchdog detected a missing Pong.
-                // This is a second crash source, independent of transport.recv().
-                // Handled identically to the transport-error branch.
+                // This is a second crash source, independent of event_rx.
+                // Handled identically to the event-channel-closed branch.
                 _ = &mut watchdog_dead_rx => {
                     tracing::error!(worker_id = %self.worker_id, "watchdog timeout — worker declared dead");
                     *self.status.write().await = WorkerStatus::Dead;
@@ -1083,7 +1119,7 @@ impl ManagedWorker {
     /// (pre-`Ready`) — it is structurally absent from phase 2, not disarmed
     /// by a runtime flag, once a `Ready` event ends phase 1. See
     /// `run_once()`'s doc comment for the full two-phase mechanism.
-    async fn handle_event(&mut self, _id: &str, event: WorkerEvent) -> bool {
+    async fn handle_event(&mut self, event: WorkerEvent) -> bool {
         // Clone the event for forwarding to the watchdog before the match.
         // The match borrows `event` via `&event`, so we can't move it
         // into `try_send()` without first cloning.
