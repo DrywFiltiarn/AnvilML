@@ -48,11 +48,13 @@ async fn test_clone_shares_status() {
         "worker-0".to_string(),
         Arc::clone(&status),
         None,
+        None,
         Arc::new(tokio::sync::Mutex::new(None)),
     );
     let handle2 = WorkerHandle::new(
         "worker-1".to_string(),
         status,
+        None,
         None,
         Arc::new(tokio::sync::Mutex::new(None)),
     );
@@ -79,6 +81,7 @@ async fn test_clone_independent_worker_id() {
     let mut handle = WorkerHandle::new(
         "gpu:0".to_string(),
         Arc::new(RwLock::new(WorkerStatus::Idle)),
+        None,
         None,
         Arc::new(tokio::sync::Mutex::new(None)),
     );
@@ -121,6 +124,7 @@ async fn test_request_shutdown_sends_signal() {
         "worker-0".to_string(),
         Arc::new(RwLock::new(WorkerStatus::Idle)),
         Some(tx),
+        None,
         Arc::new(tokio::sync::Mutex::new(None)),
     );
 
@@ -145,6 +149,7 @@ async fn test_request_shutdown_is_idempotent() {
         "worker-0".to_string(),
         Arc::new(RwLock::new(WorkerStatus::Idle)),
         Some(tx),
+        None,
         Arc::new(tokio::sync::Mutex::new(None)),
     );
 
@@ -168,6 +173,7 @@ async fn test_status_returns_current_value() {
         "worker-0".to_string(),
         status,
         None,
+        None,
         Arc::new(tokio::sync::Mutex::new(None)),
     );
 
@@ -188,6 +194,7 @@ async fn test_set_status_changes_value() {
     let handle = WorkerHandle::new(
         "worker-0".to_string(),
         Arc::new(RwLock::new(WorkerStatus::Idle)),
+        None,
         None,
         Arc::new(tokio::sync::Mutex::new(None)),
     );
@@ -218,6 +225,7 @@ async fn test_set_status_visible_across_clone() {
         "worker-0".to_string(),
         Arc::new(RwLock::new(WorkerStatus::Idle)),
         None,
+        None,
         Arc::new(tokio::sync::Mutex::new(None)),
     );
     let clone = handle.clone();
@@ -245,6 +253,7 @@ async fn test_concurrent_status_and_set_status_no_deadlock() {
     let handle = WorkerHandle::new(
         "worker-0".to_string(),
         Arc::new(RwLock::new(WorkerStatus::Idle)),
+        None,
         None,
         Arc::new(tokio::sync::Mutex::new(None)),
     );
@@ -294,6 +303,7 @@ async fn test_set_status_callable_repeatedly() {
     let handle = WorkerHandle::new(
         "worker-0".to_string(),
         Arc::new(RwLock::new(WorkerStatus::Idle)),
+        None,
         None,
         Arc::new(tokio::sync::Mutex::new(None)),
     );
@@ -559,6 +569,7 @@ async fn test_run_completes_on_ready_event() {
 
     // Spawn the worker — it starts in Initializing state.
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
     let (pong_tx, _pong_rx) = mpsc::channel(16);
     let worker = ManagedWorker::new(ManagedWorkerConfig {
         worker_id: "test-worker".to_string(),
@@ -575,7 +586,7 @@ async fn test_run_completes_on_ready_event() {
         env: HashMap::new(),
         spawner: Arc::new(MockWorkerSpawner::new()),
     });
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     // Send a Ready event to simulate the worker reporting startup — via the
     // DEALER (worker → ROUTER), the direction ManagedWorker's recv() actually
@@ -638,6 +649,7 @@ async fn test_shutdown_rx_triggers_graceful_exit() {
     let mut _dealer = connect_dealer(&transport, "test-worker").await;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
     let (pong_tx, _pong_rx) = mpsc::channel(16);
     let worker = ManagedWorker::new(ManagedWorkerConfig {
         worker_id: "test-worker".to_string(),
@@ -654,7 +666,7 @@ async fn test_shutdown_rx_triggers_graceful_exit() {
         env: HashMap::new(),
         spawner: Arc::new(MockWorkerSpawner::new()),
     });
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     // Send shutdown immediately — no Ready event.
     drop(shutdown_tx);
@@ -697,6 +709,7 @@ async fn test_deregister_called_on_graceful_exit() {
     let mut _dealer = connect_dealer(&transport, "test-worker").await;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
     let (pong_tx, _pong_rx) = mpsc::channel(16);
     let worker = ManagedWorker::new(ManagedWorkerConfig {
         worker_id: "test-worker".to_string(),
@@ -713,7 +726,7 @@ async fn test_deregister_called_on_graceful_exit() {
         env: HashMap::new(),
         spawner: Arc::new(MockWorkerSpawner::new()),
     });
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     // Send Ready event via the DEALER (worker → ROUTER) — registration itself
     // already happened above (simulating the pool's pre-spawn registration);
@@ -788,6 +801,7 @@ async fn test_deregister_called_on_crash() {
     // The crash test doesn't send a shutdown signal — the Dying event triggers
     // the exit path instead. The oneshot sender is dropped without sending.
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
     let (pong_tx, _pong_rx) = mpsc::channel(16);
     let worker = ManagedWorker::new(ManagedWorkerConfig {
         worker_id: "test-worker".to_string(),
@@ -804,7 +818,7 @@ async fn test_deregister_called_on_crash() {
         env: HashMap::new(),
         spawner: Arc::new(MockWorkerSpawner::new()),
     });
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     // Send Ready event first — via the DEALER socket (correct direction:
     // worker → ROUTER). The DEALER sends a 2-frame message (delimiter + payload);
@@ -901,6 +915,7 @@ async fn test_deregister_called_on_initializing_timeout() {
     let mut _dealer = connect_dealer(&transport, "test-worker").await;
 
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
     let (pong_tx, _pong_rx) = mpsc::channel(16);
     let worker = ManagedWorker::new(ManagedWorkerConfig {
         worker_id: "test-worker".to_string(),
@@ -917,7 +932,7 @@ async fn test_deregister_called_on_initializing_timeout() {
         env: HashMap::new(),
         spawner: Arc::new(MockWorkerSpawner::new()),
     });
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     // Send no events — the worker stays in Initializing.
     // The 200ms init_timeout will fire, transitioning to Dead and deregistering.
@@ -978,6 +993,7 @@ async fn test_crash_appends_to_attempt_history() {
 
     // Spawn the worker — it starts in Initializing state.
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
     let (pong_tx, _pong_rx) = mpsc::channel(16);
     let worker = ManagedWorker::new(ManagedWorkerConfig {
         worker_id: "test-worker".to_string(),
@@ -1004,7 +1020,7 @@ async fn test_crash_appends_to_attempt_history() {
         env: HashMap::new(),
         spawner: Arc::new(MockWorkerSpawner::new()),
     });
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     // Send a Ready event to transition to Idle — via the DEALER (worker →
     // ROUTER), the direction ManagedWorker's recv() actually receives from.
@@ -1082,6 +1098,7 @@ async fn test_crash_history_grows_per_crash() {
         let mut _dealer = connect_dealer(&transport, "test-worker").await;
 
         let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
         let (pong_tx, _pong_rx) = mpsc::channel(16);
         let worker = ManagedWorker::new(ManagedWorkerConfig {
             worker_id: "test-worker".to_string(),
@@ -1101,7 +1118,7 @@ async fn test_crash_history_grows_per_crash() {
             env: HashMap::new(),
             spawner: Arc::new(MockWorkerSpawner::new()),
         });
-        let handle = tokio::spawn(worker.run(shutdown_rx));
+        let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
         // Send Ready event via the DEALER (worker → ROUTER).
         let ready = WorkerEvent::Ready {
@@ -1148,6 +1165,7 @@ async fn test_crash_history_grows_per_crash() {
         let mut _dealer = connect_dealer(&transport, "test-worker-2").await;
 
         let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
         let (pong_tx, _pong_rx) = mpsc::channel(16);
         let worker = ManagedWorker::new(ManagedWorkerConfig {
             worker_id: "test-worker-2".to_string(),
@@ -1165,7 +1183,7 @@ async fn test_crash_history_grows_per_crash() {
             env: HashMap::new(),
             spawner: Arc::new(MockWorkerSpawner::new()),
         });
-        let handle = tokio::spawn(worker.run(shutdown_rx));
+        let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
         let ready = WorkerEvent::Ready {
             worker_id: "test-worker-2".to_string(),
@@ -1231,6 +1249,7 @@ async fn test_should_respawn_called_on_crash() {
     let mut _dealer = connect_dealer(&transport, "test-worker").await;
 
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
     let (pong_tx, _pong_rx) = mpsc::channel(16);
     let worker = ManagedWorker::new(ManagedWorkerConfig {
         worker_id: "test-worker".to_string(),
@@ -1247,7 +1266,7 @@ async fn test_should_respawn_called_on_crash() {
         env: HashMap::new(),
         spawner: Arc::new(MockWorkerSpawner::new()),
     });
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     // Send Ready event via the DEALER (worker → ROUTER).
     let ready = WorkerEvent::Ready {
@@ -1314,6 +1333,7 @@ async fn test_completed_event_transitions_to_idle() {
     let mut _dealer = connect_dealer(&transport, "test-worker").await;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
     let (pong_tx, _pong_rx) = mpsc::channel(16);
     let worker = ManagedWorker::new(ManagedWorkerConfig {
         worker_id: "test-worker".to_string(),
@@ -1330,7 +1350,7 @@ async fn test_completed_event_transitions_to_idle() {
         env: HashMap::new(),
         spawner: Arc::new(MockWorkerSpawner::new()),
     });
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     let ready = WorkerEvent::Ready {
         worker_id: "test-worker".to_string(),
@@ -1391,6 +1411,7 @@ async fn test_failed_event_transitions_to_idle() {
     let mut _dealer = connect_dealer(&transport, "test-worker").await;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
     let (pong_tx, _pong_rx) = mpsc::channel(16);
     let worker = ManagedWorker::new(ManagedWorkerConfig {
         worker_id: "test-worker".to_string(),
@@ -1407,7 +1428,7 @@ async fn test_failed_event_transitions_to_idle() {
         env: HashMap::new(),
         spawner: Arc::new(MockWorkerSpawner::new()),
     });
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     let ready = WorkerEvent::Ready {
         worker_id: "test-worker".to_string(),
@@ -1465,6 +1486,7 @@ async fn test_cancelled_event_transitions_to_idle() {
     let mut _dealer = connect_dealer(&transport, "test-worker").await;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
     let (pong_tx, _pong_rx) = mpsc::channel(16);
     let worker = ManagedWorker::new(ManagedWorkerConfig {
         worker_id: "test-worker".to_string(),
@@ -1481,7 +1503,7 @@ async fn test_cancelled_event_transitions_to_idle() {
         env: HashMap::new(),
         spawner: Arc::new(MockWorkerSpawner::new()),
     });
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     let ready = WorkerEvent::Ready {
         worker_id: "test-worker".to_string(),
@@ -1548,6 +1570,7 @@ async fn test_watchdog_missing_pong_triggers_crash_path() {
     let (pong_tx, _pong_rx) = mpsc::channel(16);
 
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
     let worker = ManagedWorker::new(ManagedWorkerConfig {
         worker_id: "test-worker".to_string(),
         transport: Arc::clone(&transport),
@@ -1567,7 +1590,7 @@ async fn test_watchdog_missing_pong_triggers_crash_path() {
         env: HashMap::new(),
         spawner: Arc::new(MockWorkerSpawner::new()),
     });
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     // Send Ready event to transition to Idle.
     let ready = WorkerEvent::Ready {
@@ -1632,6 +1655,7 @@ async fn test_watchdog_live_pongs_no_false_trigger() {
 
     let (pong_tx, _pong_rx) = mpsc::channel(16);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
     let worker = ManagedWorker::new(ManagedWorkerConfig {
         worker_id: "test-worker".to_string(),
         transport: Arc::clone(&transport),
@@ -1647,7 +1671,7 @@ async fn test_watchdog_live_pongs_no_false_trigger() {
         env: HashMap::new(),
         spawner: Arc::new(MockWorkerSpawner::new()),
     });
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     // Send Ready event.
     let ready = WorkerEvent::Ready {
@@ -1715,6 +1739,7 @@ async fn test_pong_forwarding_does_not_disturb_idle_busy() {
 
     let (pong_tx, _pong_rx) = mpsc::channel(16);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
     let worker = ManagedWorker::new(ManagedWorkerConfig {
         worker_id: "test-worker".to_string(),
         transport: Arc::clone(&transport),
@@ -1730,7 +1755,7 @@ async fn test_pong_forwarding_does_not_disturb_idle_busy() {
         env: HashMap::new(),
         spawner: Arc::new(MockWorkerSpawner::new()),
     });
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     // Send Ready event → Idle.
     let ready = WorkerEvent::Ready {
@@ -1845,6 +1870,7 @@ async fn test_watchdog_channel_cleans_up_on_exit() {
 
     let (pong_tx, _pong_rx) = mpsc::channel(16);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
     let worker = ManagedWorker::new(ManagedWorkerConfig {
         worker_id: "test-worker".to_string(),
         transport: Arc::clone(&transport),
@@ -1860,7 +1886,7 @@ async fn test_watchdog_channel_cleans_up_on_exit() {
         env: HashMap::new(),
         spawner: Arc::new(MockWorkerSpawner::new()),
     });
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     // Send Ready event to transition to Idle.
     let ready = WorkerEvent::Ready {
@@ -2003,7 +2029,8 @@ async fn test_respawn_under_limit_spawns_again_and_reregisters() {
     });
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     // Give gen 0's own spawn+register sequence time to complete before
     // deregistering — deregister() on a worker_id that was never
@@ -2061,7 +2088,8 @@ async fn test_respawn_at_limit_exits_permanently() {
     });
 
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     // Give gen 0's own spawn+register sequence time to complete before
     // deregistering — see test_respawn_under_limit_spawns_again_and_reregisters
@@ -2121,7 +2149,8 @@ async fn test_respawn_status_transitions_respawning_then_initializing() {
     });
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     // Give gen 0's own spawn+register sequence time to complete before
     // deregistering — see test_respawn_under_limit_spawns_again_and_reregisters
@@ -2184,7 +2213,8 @@ async fn test_respawn_delay_matches_next_delay() {
     });
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     // Give gen 0's own spawn+register sequence time to complete before
     // deregistering — see test_respawn_under_limit_spawns_again_and_reregisters
@@ -2665,6 +2695,7 @@ async fn test_graceful_shutdown_sends_shutdown_message() {
     let spawner = Arc::new(MockWorkerSpawner::new());
     let (pong_tx, _pong_rx) = mpsc::channel(16);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
 
     let worker = ManagedWorker::new(ManagedWorkerConfig {
         worker_id: "test-worker".to_string(),
@@ -2682,7 +2713,7 @@ async fn test_graceful_shutdown_sends_shutdown_message() {
         spawner: Arc::clone(&spawner) as Arc<dyn WorkerSpawner>,
     });
 
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     let mut dealer = connect_dealer(&transport, "test-worker").await;
     let ready = WorkerEvent::Ready {
@@ -2772,6 +2803,7 @@ async fn test_graceful_shutdown_force_kills_after_timeout() {
     let spawner = Arc::new(MockWorkerSpawner::new());
     let (pong_tx, _pong_rx) = mpsc::channel(16);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
 
     let worker = ManagedWorker::new(ManagedWorkerConfig {
         worker_id: "test-worker".to_string(),
@@ -2789,7 +2821,7 @@ async fn test_graceful_shutdown_force_kills_after_timeout() {
         spawner: Arc::clone(&spawner) as Arc<dyn WorkerSpawner>,
     });
 
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     let mut dealer = connect_dealer(&transport, "test-worker").await;
     let ready = WorkerEvent::Ready {
@@ -2846,6 +2878,7 @@ async fn test_init_timeout_force_kills_child() {
     let spawner = Arc::new(MockWorkerSpawner::new());
     let (pong_tx, _pong_rx) = mpsc::channel(16);
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
 
     let worker = ManagedWorker::new(ManagedWorkerConfig {
         worker_id: "test-worker".to_string(),
@@ -2863,7 +2896,7 @@ async fn test_init_timeout_force_kills_child() {
         spawner: Arc::clone(&spawner) as Arc<dyn WorkerSpawner>,
     });
 
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     // Connect a DEALER so the ROUTER recognizes the identity, but never
     // send Ready — init_timeout (100ms) will fire.
@@ -2901,6 +2934,7 @@ async fn test_worker_reported_dying_force_kills_child() {
     let spawner = Arc::new(MockWorkerSpawner::new());
     let (pong_tx, _pong_rx) = mpsc::channel(16);
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
 
     let worker = ManagedWorker::new(ManagedWorkerConfig {
         worker_id: "test-worker".to_string(),
@@ -2918,7 +2952,7 @@ async fn test_worker_reported_dying_force_kills_child() {
         spawner: Arc::clone(&spawner) as Arc<dyn WorkerSpawner>,
     });
 
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     let mut dealer = connect_dealer(&transport, "test-worker").await;
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -2958,6 +2992,7 @@ async fn test_permanent_crash_force_kills_child() {
     let spawner = Arc::new(MockWorkerSpawner::new());
     let (pong_tx, _pong_rx) = mpsc::channel(16);
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
 
     // max_attempts=1: the first crash already hits the ceiling —
     // should_respawn() returns false immediately.
@@ -2977,7 +3012,7 @@ async fn test_permanent_crash_force_kills_child() {
         spawner: Arc::clone(&spawner) as Arc<dyn WorkerSpawner>,
     });
 
-    let handle = tokio::spawn(worker.run(shutdown_rx));
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
 
     // Give gen 0's own spawn+register sequence time to complete before
     // deregistering — see test_respawn_under_limit_spawns_again_and_reregisters
@@ -3031,6 +3066,8 @@ async fn test_multi_worker_events_never_cross() {
     let (pong_tx_b, _pong_rx_b) = mpsc::channel(16);
     let (shutdown_tx_a, shutdown_rx_a) = tokio::sync::oneshot::channel();
     let (shutdown_tx_b, shutdown_rx_b) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx_a, force_shutdown_rx_a) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx_b, force_shutdown_rx_b) = tokio::sync::oneshot::channel();
 
     let worker_a = ManagedWorker::new(ManagedWorkerConfig {
         worker_id: "worker-a".to_string(),
@@ -3063,8 +3100,8 @@ async fn test_multi_worker_events_never_cross() {
         spawner: Arc::clone(&spawner_b) as Arc<dyn WorkerSpawner>,
     });
 
-    let handle_a = tokio::spawn(worker_a.run(shutdown_rx_a));
-    let handle_b = tokio::spawn(worker_b.run(shutdown_rx_b));
+    let handle_a = tokio::spawn(worker_a.run(shutdown_rx_a, force_shutdown_rx_a));
+    let handle_b = tokio::spawn(worker_b.run(shutdown_rx_b, force_shutdown_rx_b));
 
     let mut dealer_a = connect_dealer(&transport, "worker-a").await;
     let mut dealer_b = connect_dealer(&transport, "worker-b").await;

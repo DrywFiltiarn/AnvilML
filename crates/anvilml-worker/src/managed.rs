@@ -119,10 +119,17 @@ pub enum RunOutcome {
 /// A cheap, `Clone`-able handle for interacting with a worker's lifecycle.
 ///
 /// Each `WorkerHandle` owns an `Arc`-reference to the worker's status lock,
-/// a `oneshot::Sender` for requesting shutdown, and an `Arc<Mutex<Option<JoinHandle>>>`
-/// for tracking the worker task. Cloning a handle produces a new handle that shares
-/// the same status lock and join handle — both clones observe the same status and can
-/// request the same shutdown. The `worker_id` field is copied (not shared) across clones.
+/// a pair of `oneshot::Sender`s for requesting graceful and forced
+/// shutdown, and an `Arc<Mutex<Option<JoinHandle>>>` for tracking the
+/// worker task. Cloning a handle produces a new handle that shares the
+/// same status lock and join handle — both clones observe the same
+/// status — but **not** the same ability to trigger shutdown: neither
+/// `oneshot::Sender` is `Clone`-able, so only the original handle can call
+/// `request_shutdown()`/`force_shutdown()`; a clone's calls to either are
+/// silent no-ops. (This corrects an earlier version of this doc comment,
+/// which claimed clones retain shutdown ability — contradicted by the
+/// `Clone` impl's own, already-correct behavior below.) The `worker_id`
+/// field is copied (not shared) across clones.
 ///
 /// This handle does **not** own the `ManagedWorker` struct itself — it is a lightweight
 /// view into the worker's shared state, designed to be freely shared across tasks and
@@ -140,22 +147,32 @@ pub struct WorkerHandle {
     /// making the operation idempotent (second call is a no-op).
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
 
+    /// Optional force-shutdown trigger — `take()`n on the first call to
+    /// `force_shutdown()`, matching `shutdown_tx`'s own idempotency
+    /// pattern. See `ManagedWorker::graceful_shutdown_child()`'s own doc
+    /// comment for why this exists as a signal distinct from
+    /// `shutdown_tx`, and `abort()`'s own doc comment for why externally
+    /// cancelling the task is not an adequate substitute.
+    force_shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+
     /// Shared join handle wrapper — allows the pool to extract and await the handle
     /// during shutdown with a bounded timeout.
     join_handle: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
-// `shutdown_tx` (oneshot::Sender) is not Clone — clones cannot request shutdown.
-// Only the original handle retains the ability to trigger shutdown.
+// Neither shutdown_tx nor force_shutdown_tx (both oneshot::Sender) is
+// Clone — clones cannot request either kind of shutdown. Only the
+// original handle retains the ability to trigger them.
 impl Clone for WorkerHandle {
     fn clone(&self) -> Self {
         Self {
             worker_id: self.worker_id.clone(),
             status: Arc::clone(&self.status),
-            // Clone cannot take the sender — the clone loses the ability to
-            // request shutdown, preserving the invariant that only the original
-            // handle can trigger it.
+            // Neither sender can be taken — the clone loses the ability to
+            // request either kind of shutdown, preserving the invariant
+            // that only the original handle can trigger them.
             shutdown_tx: None,
+            force_shutdown_tx: None,
             join_handle: Arc::clone(&self.join_handle),
         }
     }
@@ -169,19 +186,26 @@ impl WorkerHandle {
     /// * `worker_id` — Stable worker identity string (e.g. `"0"`). Copied into the handle.
     /// * `status` — Shared `Arc<RwLock<WorkerStatus>>` for the worker's lifecycle state.
     ///   All clones of this handle share this same lock.
-    /// * `shutdown_tx` — Optional `oneshot::Sender` used to signal the worker to shut down.
-    ///   If `None`, `request_shutdown()` becomes a no-op.
+    /// * `shutdown_tx` — Optional `oneshot::Sender` used to signal the worker to shut down
+    ///   gracefully. If `None`, `request_shutdown()` becomes a no-op.
+    /// * `force_shutdown_tx` — Optional `oneshot::Sender` used to signal the worker to skip
+    ///   the remainder of its own bounded graceful-shutdown wait and force-kill immediately.
+    ///   Only meaningful after `request_shutdown()` has already been called — see
+    ///   `ManagedWorker::run()`'s own doc comment on its `force_shutdown_rx` parameter.
+    ///   If `None`, `force_shutdown()` becomes a no-op.
     /// * `join_handle` — Shared `Arc<Mutex<Option<JoinHandle>>>` for tracking the worker task.
     pub fn new(
         worker_id: String,
         status: Arc<RwLock<WorkerStatus>>,
         shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+        force_shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
         join_handle: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     ) -> Self {
         Self {
             worker_id,
             status,
             shutdown_tx,
+            force_shutdown_tx,
             join_handle,
         }
     }
@@ -217,6 +241,87 @@ impl WorkerHandle {
             // Ignore the result — the receiver may already be dropped if the worker
             // has already exited. This makes request_shutdown idempotent.
             let _ = tx.send(());
+        }
+    }
+
+    /// Signal the worker to skip the remainder of its own bounded
+    /// graceful-shutdown wait and force-kill its child immediately.
+    ///
+    /// Only meaningful *after* `request_shutdown()` — `graceful_shutdown_child()`
+    /// (where `force_shutdown_rx` is actually consulted) only runs once
+    /// `ShutdownRequested` has already fired; sending this signal first,
+    /// on its own, does nothing, since nothing is listening for it yet.
+    /// See `ManagedWorker::graceful_shutdown_child()`'s own doc comment
+    /// for the full reasoning behind this signal's existence — briefly,
+    /// it exists so `WorkerPool::shutdown_all()` can make a specific
+    /// straggling worker force-kill immediately without externally
+    /// aborting its `run()` task, which would skip that method's own
+    /// cleanup and risk leaking the child process.
+    ///
+    /// Idempotent, matching `request_shutdown()`'s own pattern: `take()`s
+    /// `force_shutdown_tx`, so a second call is a no-op. The result of
+    /// `tx.send(())` is ignored because the receiver may already have
+    /// been dropped (the worker already exited on its own, or the
+    /// graceful wait already completed by the time this fires).
+    pub fn force_shutdown(&mut self) {
+        if let Some(tx) = self.force_shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+    }
+
+    /// Wait for the worker's `run()` task to exit, bounded by `timeout`.
+    ///
+    /// Returns `true` if the task exited within the bound, `false` if the
+    /// timeout elapsed first (the task is still running). Used by
+    /// `WorkerPool::shutdown_all()` to detect stragglers that need to be
+    /// force-killed per `ANVILML_DESIGN.md §19.3` step 4.
+    ///
+    /// Note this only awaits the `run()` *task* — it does not, by itself,
+    /// force-kill anything. Each `ManagedWorker` generation already runs
+    /// its own graceful-then-force-kill sequence internally on every exit
+    /// path (`graceful_shutdown_child()`/`force_kill_child()`, added in the
+    /// orphan-cleanup work preceding this task), so a `request_shutdown()`
+    /// call followed by this method returning `true` within a reasonable
+    /// bound means the underlying child process is already gone too, not
+    /// merely that the Rust task ended.
+    ///
+    /// Idempotent: the `JoinHandle` is polled via `.as_mut()`, not taken,
+    /// so a second call after a successful await resolves immediately
+    /// (`true`) rather than panicking on an already-consumed handle.
+    pub async fn await_exit(&self, timeout: Duration) -> bool {
+        let mut guard = self.join_handle.lock().await;
+        let Some(handle) = guard.as_mut() else {
+            // Already awaited to completion by an earlier call, or never
+            // spawned at all — either way, there's nothing left to wait on.
+            return true;
+        };
+        match tokio::time::timeout(timeout, handle).await {
+            Ok(_) => {
+                *guard = None;
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Forcibly cancel the worker's `run()` task.
+    ///
+    /// Last-resort fallback for `WorkerPool::shutdown_all()` per
+    /// `ANVILML_DESIGN.md §19.3` step 4 ("any worker not exited is
+    /// killed"), used only when `await_exit()` has already timed out. This
+    /// is a genuine safety net, not the primary shutdown mechanism —
+    /// `tokio::task::JoinHandle::abort()` cancels the task at its next
+    /// `.await` point without running any of `ManagedWorker`'s own cleanup
+    /// logic, so a task aborted here can leave its child process orphaned
+    /// exactly like the pre-orphan-cleanup-fix bugs this session already
+    /// found and fixed elsewhere. In practice this should be rare: it only
+    /// fires if a per-worker `graceful_shutdown_timeout` was configured
+    /// longer than the pool-level `shutdown_all()` timeout, or a task is
+    /// genuinely stuck.
+    pub async fn abort(&self) {
+        let guard = self.join_handle.lock().await;
+        if let Some(handle) = guard.as_ref() {
+            handle.abort();
         }
     }
 }
@@ -564,19 +669,39 @@ impl ManagedWorker {
     /// Attempt a graceful shutdown of the currently-tracked child.
     ///
     /// Sends `WorkerMessage::Shutdown` — documented as "the worker should
-    /// finish its current step, then exit 0" — then waits
-    /// `self.graceful_shutdown_timeout` for the worker to exit on its own
-    /// (production default 30s, `ANVILML_DESIGN.md §19.3`), force-killing
-    /// as a fallback if it doesn't. There is no IPC-level acknowledgment
-    /// event for "the worker received Shutdown and is exiting" —
-    /// `WorkerEvent` has no such variant — so process exit itself
-    /// (`Child::wait()`), not any received message, is what this waits on.
+    /// finish its current step, then exit 0" — then races two things: the
+    /// bounded `self.graceful_shutdown_timeout` wait for the worker to
+    /// exit on its own (production default 30s, `ANVILML_DESIGN.md
+    /// §19.3`), and `force_shutdown_rx` — an explicit "skip the rest of
+    /// the graceful wait, force-kill now" signal. There is no IPC-level
+    /// acknowledgment event for "the worker received Shutdown and is
+    /// exiting" — `WorkerEvent` has no such variant — so process exit
+    /// itself (`Child::wait()`), not any received message, is what the
+    /// first race arm waits on.
+    ///
+    /// # Why `force_shutdown_rx` exists
+    ///
+    /// `WorkerPool::shutdown_all()` (P8-G1) enforces one shared, pool-wide
+    /// timeout across every worker. If that pool-level timeout is shorter
+    /// than a given worker's own `graceful_shutdown_timeout` — the exact
+    /// "straggler" scenario `shutdown_all()` is built to handle — the pool
+    /// needs a way to make *this specific* worker skip the remainder of
+    /// its own bounded wait and force-kill immediately, without externally
+    /// cancelling the `run()` task itself. Externally aborting the task
+    /// (`WorkerHandle::abort()`, a genuine last resort — see that method's
+    /// own doc comment) runs none of this method's own cleanup logic,
+    /// which can leave `self.child` orphaned — the exact class of bug this
+    /// session's earlier orphan-cleanup work already found and fixed
+    /// elsewhere. Racing an explicit signal here means the *same*,
+    /// already-correct `force_kill_child()` call this method already made
+    /// for its own internal timeout is what runs, regardless of which of
+    /// the two race arms actually fires.
     ///
     /// A `transport.send()` failure is treated the same as the worker not
     /// exiting in time: there's no point waiting for a worker we couldn't
     /// even ask to shut down, so this skips straight to the force-kill
     /// fallback.
-    async fn graceful_shutdown_child(&mut self) {
+    async fn graceful_shutdown_child(&mut self, force_shutdown_rx: &mut oneshot::Receiver<()>) {
         if self.child.is_none() {
             return;
         }
@@ -595,28 +720,61 @@ impl ManagedWorker {
             return;
         }
 
-        let Some(child) = self.child.as_mut() else {
-            return;
+        // Both race arms only decide an *outcome* here, rather than
+        // calling self.force_kill_child() directly inside either arm:
+        // the first arm's own future (child.wait()) holds self.child
+        // borrowed via `child` for the whole select!, and
+        // force_kill_child() needs a fresh &mut self (including
+        // self.child) that would conflict with that borrow. Deferring
+        // the actual call to after the select! — once `child`'s borrow
+        // has ended — avoids the conflict entirely.
+        enum Outcome {
+            ExitedGracefully,
+            NeedsForceKill,
+        }
+
+        let outcome = {
+            let Some(child) = self.child.as_mut() else {
+                return;
+            };
+            tokio::select! {
+                result = tokio::time::timeout(self.graceful_shutdown_timeout, child.wait()) => {
+                    match result {
+                        Ok(Ok(_)) => Outcome::ExitedGracefully,
+                        Ok(Err(e)) => {
+                            tracing::warn!(
+                                worker_id = %self.worker_id,
+                                error = %e,
+                                "error waiting for graceful exit — force-killing"
+                            );
+                            Outcome::NeedsForceKill
+                        }
+                        Err(_) => {
+                            tracing::warn!(
+                                worker_id = %self.worker_id,
+                                timeout = ?self.graceful_shutdown_timeout,
+                                "worker did not exit within the graceful shutdown timeout — force-killing"
+                            );
+                            Outcome::NeedsForceKill
+                        }
+                    }
+                }
+                _ = &mut *force_shutdown_rx => {
+                    tracing::warn!(
+                        worker_id = %self.worker_id,
+                        "force shutdown requested — skipping remainder of graceful wait"
+                    );
+                    Outcome::NeedsForceKill
+                }
+            }
         };
-        match tokio::time::timeout(self.graceful_shutdown_timeout, child.wait()).await {
-            Ok(Ok(_)) => {
+
+        match outcome {
+            Outcome::ExitedGracefully => {
                 tracing::info!(worker_id = %self.worker_id, "worker_exited_gracefully");
                 self.child = None;
             }
-            Ok(Err(e)) => {
-                tracing::warn!(
-                    worker_id = %self.worker_id,
-                    error = %e,
-                    "error waiting for graceful exit — force-killing"
-                );
-                self.force_kill_child().await;
-            }
-            Err(_) => {
-                tracing::warn!(
-                    worker_id = %self.worker_id,
-                    timeout = ?self.graceful_shutdown_timeout,
-                    "worker did not exit within the graceful shutdown timeout — force-killing"
-                );
+            Outcome::NeedsForceKill => {
                 self.force_kill_child().await;
             }
         }
@@ -1062,8 +1220,22 @@ impl ManagedWorker {
     ///   reference so it survives across every generation — see
     ///   `run_once()`'s own doc comment for why owning it per-generation
     ///   would be incorrect.
-    #[tracing::instrument(skip(self, shutdown_rx), fields(worker_id = %self.worker_id))]
-    pub async fn run(mut self, mut shutdown_rx: oneshot::Receiver<()>) {
+    /// * `force_shutdown_rx` — A second, independent oneshot receiver.
+    ///   Only consulted once `graceful_shutdown_child()` is already
+    ///   running (i.e. after `ShutdownRequested` has already fired) —
+    ///   sending on this *without* a prior `shutdown_rx` signal does
+    ///   nothing, since nothing is listening for it before that point.
+    ///   See `graceful_shutdown_child()`'s own doc comment for why this
+    ///   exists: letting `WorkerPool::shutdown_all()` make a specific
+    ///   straggling worker skip the remainder of its own bounded graceful
+    ///   wait and force-kill immediately, without externally aborting the
+    ///   task (which would skip this method's own cleanup entirely).
+    #[tracing::instrument(skip(self, shutdown_rx, force_shutdown_rx), fields(worker_id = %self.worker_id))]
+    pub async fn run(
+        mut self,
+        mut shutdown_rx: oneshot::Receiver<()>,
+        mut force_shutdown_rx: oneshot::Receiver<()>,
+    ) {
         loop {
             let (worker, outcome) = self.run_once(&mut shutdown_rx).await;
             self = worker;
@@ -1088,7 +1260,7 @@ impl ManagedWorker {
                     // generation as its own first steps.
                 }
                 RunOutcome::ShutdownRequested => {
-                    self.graceful_shutdown_child().await;
+                    self.graceful_shutdown_child(&mut force_shutdown_rx).await;
                     break;
                 }
                 RunOutcome::InitTimedOut

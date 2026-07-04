@@ -26,5 +26,8 @@ pub use managed::{
     DEFAULT_WATCHDOG_PONG_TIMEOUT, ManagedWorker, ManagedWorkerConfig, RunOutcome, WorkerHandle,
 };
 
+mod pool;
+pub use pool::WorkerPool;
+
 mod respawn;
 pub use respawn::RespawnPolicy;
