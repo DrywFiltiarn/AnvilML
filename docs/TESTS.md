@@ -3736,3 +3736,97 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `SlotSpec(name="y", slot_type="IMAGE", optional=True)`.
 **Expected output:** `spec.optional == True`, `spec.name == "y"`, `spec.slot_type == "IMAGE"`.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_slotspec_accepts_explicit_optional_true -v` exits 0.
+
+## test_register_success (anvilml-worker)
+
+**File:** `worker/tests/test_base.py`
+**Context:** The `worker.nodes.base` module is importable. `NODE_REGISTRY` is an empty dict. `register()` validates six required attributes and inserts the class into the registry.
+**Tests:** Decorating a fully-specified class with `@register` inserts it into `NODE_REGISTRY` under its `NODE_TYPE` key, and the function returns the same class object.
+**Mode:** both
+**Inputs:** A class with all 6 required attributes (`NODE_TYPE="test.node"`, `CATEGORY="test"`, `DISPLAY_NAME="Test Node"`, `DESCRIPTION="A test node..."`, `INPUT_SLOTS=[]`, `OUTPUT_SLOTS=[]`).
+**Expected output:** `NODE_REGISTRY["test.node"]` is the decorated class; `del` removes it for test isolation.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_register_success -v` exits 0.
+
+---
+
+## test_register_missing_NODE_TYPE (anvilml-worker)
+
+**File:** `worker/tests/test_base.py`
+**Context:** The `worker.nodes.base` module is importable. `register()` checks for six required attributes in order.
+**Tests:** A class missing `NODE_TYPE` raises `TypeError` with "NODE_TYPE" in the message, confirming the first validation check works.
+**Mode:** both
+**Inputs:** A class inheriting all attributes from `_FullySpecifiedNode` except `NODE_TYPE` (deleted via `del`).
+**Expected output:** `TypeError` raised with "NODE_TYPE" in the message.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_register_missing_NODE_TYPE -v` exits 0.
+
+---
+
+## test_register_missing_CATEGORY (anvilml-worker)
+
+**File:** `worker/tests/test_base.py`
+**Context:** The `worker.nodes.base` module is importable. `register()` checks for six required attributes in order.
+**Tests:** A class missing `CATEGORY` raises `TypeError` with "CATEGORY" in the message, confirming the second validation check works.
+**Mode:** both
+**Inputs:** A class inheriting all attributes from `_FullySpecifiedNode` except `CATEGORY` (deleted via `del`).
+**Expected output:** `TypeError` raised with "CATEGORY" in the message.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_register_missing_CATEGORY -v` exits 0.
+
+---
+
+## test_register_missing_DISPLAY_NAME (anvilml-worker)
+
+**File:** `worker/tests/test_base.py`
+**Context:** The `worker.nodes.base` module is importable. `register()` checks for six required attributes in order.
+**Tests:** A class missing `DISPLAY_NAME` raises `TypeError` with "DISPLAY_NAME" in the message, confirming the third validation check works.
+**Mode:** both
+**Inputs:** A class inheriting all attributes from `_FullySpecifiedNode` except `DISPLAY_NAME` (deleted via `del`).
+**Expected output:** `TypeError` raised with "DISPLAY_NAME" in the message.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_register_missing_DISPLAY_NAME -v` exits 0.
+
+---
+
+## test_register_missing_DESCRIPTION (anvilml-worker)
+
+**File:** `worker/tests/test_base.py`
+**Context:** The `worker.nodes.base` module is importable. `register()` checks for six required attributes in order.
+**Tests:** A class missing `DESCRIPTION` raises `TypeError` with "DESCRIPTION" in the message, confirming the fourth validation check works.
+**Mode:** both
+**Inputs:** A class inheriting all attributes from `_FullySpecifiedNode` except `DESCRIPTION` (deleted via `del`).
+**Expected output:** `TypeError` raised with "DESCRIPTION" in the message.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_register_missing_DESCRIPTION -v` exits 0.
+
+---
+
+## test_register_missing_INPUT_SLOTS (anvilml-worker)
+
+**File:** `worker/tests/test_base.py`
+**Context:** The `worker.nodes.base` module is importable. `register()` checks for six required attributes in order.
+**Tests:** A class missing `INPUT_SLOTS` raises `TypeError` with "INPUT_SLOTS" in the message, confirming the fifth validation check works.
+**Mode:** both
+**Inputs:** A class inheriting all attributes from `_FullySpecifiedNode` except `INPUT_SLOTS` (deleted via `del`).
+**Expected output:** `TypeError` raised with "INPUT_SLOTS" in the message.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_register_missing_INPUT_SLOTS -v` exits 0.
+
+---
+
+## test_register_missing_OUTPUT_SLOTS (anvilml-worker)
+
+**File:** `worker/tests/test_base.py`
+**Context:** The `worker.nodes.base` module is importable. `register()` checks for six required attributes in order.
+**Tests:** A class missing `OUTPUT_SLOTS` raises `TypeError` with "OUTPUT_SLOTS" in the message, confirming the sixth (last) validation check works.
+**Mode:** both
+**Inputs:** A class inheriting all attributes from `_FullySpecifiedNode` except `OUTPUT_SLOTS` (deleted via `del`).
+**Expected output:** `TypeError` raised with "OUTPUT_SLOTS" in the message.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_register_missing_OUTPUT_SLOTS -v` exits 0.
+
+---
+
+## test_register_returns_class_identity (anvilml-worker)
+
+**File:** `worker/tests/test_base.py`
+**Context:** The `worker.nodes.base` module is importable. `register()` returns `cls` unchanged, not a wrapper.
+**Tests:** The return value of `@register` is the exact same class object (`is` comparison), confirming identity preservation — critical because `execute()` must be callable directly on the original class.
+**Mode:** both
+**Inputs:** A class with all 6 required attributes.
+**Expected output:** `result is TestNode` is `True`; entry removed from `NODE_REGISTRY` for test isolation.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_register_returns_class_identity -v` exits 0.
