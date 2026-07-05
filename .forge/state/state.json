@@ -92,16 +92,17 @@
     "P8-F1",
     "P8-F2",
     "P8-G1",
-    "P8-H1"
+    "P8-H1",
+    "P9-A1"
   ],
-  "in_progress": "P9-A1",
+  "in_progress": "P9-A2",
   "plan_approved": true,
-  "current_plan": "1. **Write `worker/requirements/base.txt`** with one package per line, using `==` pins at the MCP-resolved versions:\n   ```\n   diffusers==0.39.0\n   transformers==5.13.0\n   safetensors==0.8.0\n   Pillow==12.3.0\n   msgpack==1.2.1\n   pyzmq==27.1.0\n   pytest==9.1.1\n   ```\n   No `torch`, no `--index-url`, no comments. Seven lines total, one per package. The order is alphabetical by package name for consistency.\n\n2. **Create `worker/requirements/cpu-linux-agent.txt`** as an empty file (zero bytes). This is the correctly-named file per ANVILML_DESIGN.md \u00a73.1 (singular \"agent\"). The existing `cpu-linux-agents.txt` (plural) is a different file, likely a typo from a prior phase; it is outside this task's scope to rename or delete it \u2014 the ACT agent should note its existence but only create the singular-named file.\n\n3. **Clear `worker/requirements/cpu-runner-reqs.txt`** to be empty (zero bytes). The task explicitly states to create it as a \"currently-empty placeholder file.\" The existing content (torch pins with `--index-url`) must be removed per the task instruction: \"Create worker/requirements/cpu-linux-agent.txt and cpu-runner-reqs.txt as separate, currently-empty placeholder files (torch CPU wheel pins are added by a later task once real-mode tests exist to justify them \u2014 do not pre-pin torch speculatively in this task).\"\n\n4. **Verify** that `base.txt` contains no occurrence of `torch` (case-insensitive grep).\n\ndefers_to (from JSON): []",
+  "current_plan": "1. **Resolve torch version via MCP.** Query `pypi-query_get_package_info` for `torch`. The MCP reports `latest_version: \"2.12.1\"`. Record this as the version to pin.\n\n2. **Write `worker/requirements/cpu-linux-agent.txt`.** Create the file with two lines:\n   ```\n   --index-url https://download.pytorch.org/whl/cpu\n   \n   torch==2.12.1\n   ```\n   The empty line between `--index-url` and the package pin matches the pattern used in `cpu-linux-agents.txt` (which already exists with this structure). The `--index-url` directive tells pip to resolve all packages from PyTorch's CPU wheel index, ensuring only the CPU-only build is selected.\n\n3. **Write `worker/requirements/cpu-runner-reqs.txt` with identical content.** Copy the exact content from step 2 into this file. Both files must be byte-identical.\n\n4. **Verify acceptance criteria.** Run `pip install --dry-run -r worker/requirements/cpu-linux-agent.txt` \u2014 must exit 0. Run `cmp worker/requirements/cpu-linux-agent.txt worker/requirements/cpu-runner-reqs.txt` \u2014 must produce no diff output (exit 0).",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-05T11:12:49+0200",
-  "plan_approval_message_id": "1523254653587034132",
+  "last_updated": "2026-07-05T11:33:00+0200",
+  "plan_approval_message_id": "1523260170967449758",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1523254651879686216",
+  "plan_report_message_id": "1523260168823898153",
   "impl_report_message_id": null
 }
