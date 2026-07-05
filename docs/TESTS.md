@@ -3616,3 +3616,75 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Source file `worker/worker_main.py` read as text.
 **Expected output:** Zero lines contain both `ANVILML_WORKER_MOCK` and `exit` outside comments.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py::TestNoMockGate::test_no_mock_gate_exit_path -v` exits 0.
+
+---
+
+## test_real_startup_sends_ready_event (anvilml-worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** `_real_startup_sequence()` now builds and sends a `Ready` event via `ipc.send_event()` with `capabilities_source="pytorch"` and `node_types=[]`. This is the primary acceptance test for the Ready event.
+**Tests:** With mocked `ipc.connect`, `probe_capabilities`, and `ipc.recv_message` (raising to exit the dispatch loop), asserts `ipc.send_event` was called once with a dict containing `_type="Ready"`, `capabilities_source="pytorch"`, and `node_types=[]`.
+**Mode:** real
+**Inputs:** Env vars `ANVILML_IPC_PORT=5555`, `ANVILML_WORKER_ID=test-0`, `ANVILML_DEVICE_TYPE=cpu`, `ANVILML_DEVICE_INDEX=0`; `ipc.connect`, `probe_capabilities`, `ipc.send_event`, and `ipc.recv_message` patched.
+**Expected output:** `ipc.send_event` called once with `{"_type": "Ready", "capabilities_source": "pytorch", "node_types": []}`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py::TestRealStartupSequence::test_real_startup_sends_ready_event -v` exits 0.
+
+---
+
+## test_import_nodes_returns_empty_list (anvilml-worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** `_import_nodes()` is a Phase 9 stub that returns an empty list — the node system is Phase 10's scope.
+**Tests:** Calls `_import_nodes()` directly and asserts the result is `[]`.
+**Mode:** real
+**Inputs:** None (pure function, no setup).
+**Expected output:** `_import_nodes() == []`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py::TestRealStartupSequence::test_import_nodes_returns_empty_list -v` exits 0.
+
+---
+
+## test_dispatch_loop_exists_and_is_callable (anvilml-worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** `_dispatch_loop()` is a placeholder dispatch loop that calls `ipc.recv_message()`, logs each message at DEBUG level, and continues. It catches `Exception` from `recv_message()` and breaks the loop on failure.
+**Tests:** Asserts `_dispatch_loop` is callable, then calls it with `ipc.recv_message` mocked to raise (simulating supervisor disconnect). The loop should log the error and exit cleanly without raising an unhandled exception.
+**Mode:** real
+**Inputs:** Env vars `ANVILML_IPC_PORT=5555`, `ANVILML_WORKER_ID=test-0`, `ANVILML_DEVICE_TYPE=cpu`, `ANVILML_DEVICE_INDEX=0`; `ipc.recv_message` patched to raise `zmq.ZMQError`.
+**Expected output:** No unhandled exception; `ipc.recv_message` called at least once; dispatch loop exits after recv failure.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py::TestRealStartupSequence::test_dispatch_loop_exists_and_is_callable -v` exits 0.
+
+---
+
+## test_real_startup_no_nonzero_exit_for_cpu (anvilml-worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** The full real-mode startup path (IPC connect → torch import → device select → probe → node import → Ready event → dispatch loop) must complete without raising for a valid CPU device_type.
+**Tests:** Runs `_real_startup_sequence()` with mocked IPC and capability probe, confirming no exception is raised.
+**Mode:** real
+**Inputs:** Env vars `ANVILML_IPC_PORT=5555`, `ANVILML_WORKER_ID=cpu-worker`, `ANVILML_DEVICE_TYPE=cpu`, `ANVILML_DEVICE_INDEX=0`; `ipc.connect`, `probe_capabilities`, and `ipc.recv_message` patched.
+**Expected output:** No exception raised; the startup sequence completes (dispatch loop exits on mocked recv failure).
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py::TestRealStartupSequence::test_real_startup_no_nonzero_exit_for_cpu -v` exits 0.
+
+---
+
+## test_mock_startup_sends_ready_event (anvilml-worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** `_mock_startup_sequence()` sends a `Ready` event with `capabilities_source="mock"` (as opposed to `"pytorch"` in real mode).
+**Tests:** With mocked `ipc.connect` and `ipc.recv_message` (raising to exit the dispatch loop), asserts `ipc.send_event` was called once with a dict containing `_type="Ready"`, `capabilities_source="mock"`, and `node_types=[]`.
+**Mode:** real
+**Inputs:** Env vars `ANVILML_IPC_PORT=5555`, `ANVILML_WORKER_ID=test-0`, `ANVILML_DEVICE_TYPE=cpu`, `ANVILML_DEVICE_INDEX=0`; `ipc.connect`, `ipc.send_event`, and `ipc.recv_message` patched.
+**Expected output:** `ipc.send_event` called once with `{"_type": "Ready", "capabilities_source": "mock", "node_types": []}`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py::TestNoMockGate::test_mock_startup_sends_ready_event -v` exits 0.
+
+---
+
+## test_no_mock_gate_in_main_block (anvilml-worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** The new `__main__` block uses `ANVILML_WORKER_MOCK == "1"` dispatch (mock or real mode), not the v3 defect pattern of `ANVILML_WORKER_MOCK != "1": exit(1)`.
+**Tests:** Reads `worker_main.py` source text and asserts no line matches the mock-gate pattern — a guard that calls `exit` when not in mock mode.
+**Mode:** real
+**Inputs:** Source file `worker/worker_main.py` read as text.
+**Expected output:** Zero lines contain both `ANVILML_WORKER_MOCK` and `exit` outside comments.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py::TestNoMockGate::test_no_mock_gate_in_main_block -v` exits 0.

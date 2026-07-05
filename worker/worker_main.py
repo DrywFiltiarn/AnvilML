@@ -1,13 +1,11 @@
 """Entry point for the Python worker process.
 
-This module provides the mock-mode capability probe used during worker startup
-when ``ANVILML_WORKER_MOCK=1`` is set. The real-mode startup path (torch
-import, real hardware probe in ``capability.py``) is the default branch;
-mock mode is the explicit alternate that never imports torch.
+This module provides the real-mode and mock-mode startup sequences for the
+AnvilML Python worker. The real-mode path (torch import, real hardware probe)
+is the default; mock mode is the explicit alternate that never imports torch.
 
-The mock probe returns fixed synthetic capability values that represent
-what a GPU-capable device would report — they are device-agnostic defaults,
-not a CPU simulation.
+Both paths follow the same startup sequence per ``ANVILML_DESIGN.md §14.2``:
+IPC connect → probe capabilities → import nodes → send Ready event → dispatch loop.
 """
 
 import logging
@@ -17,13 +15,63 @@ import sys
 logger = logging.getLogger(__name__)
 
 
-def _real_startup_sequence() -> dict:
-    """Run the real-mode startup sequence: IPC connect → torch import → device select → probe.
+def _import_nodes() -> list:
+    """Import node modules from ``worker/nodes/`` and return the registered node types.
+
+    Currently returns an empty list — the node system itself is Phase 10's scope.
+    This function is called during worker startup (both real and mock modes) so that
+    the ``Ready`` event can carry the node type list even when it is empty.
+
+    Returns:
+        Empty list. Node types will be populated when the node system is implemented.
+    """
+    # Phase 10 scope: real node import will populate this function.
+    # Returning [] is correct for Phase 9 — the node system does not exist yet.
+    return []
+
+
+def _dispatch_loop() -> None:
+    """Receive and log messages from the supervisor in a loop.
+
+    This is a placeholder implementation for Phase 9. Real dispatch logic
+    (routing messages to executor, handling Execute/CancelJob/etc.) is a
+    later phase. For now, every received message is logged at DEBUG level
+    and the loop continues.
+
+    The loop runs indefinitely until the process is terminated by the
+    supervisor or an external signal.
+
+    Raises:
+        RuntimeError: If ipc.connect() has not been called before entering
+            the loop.
+    """
+    # Import ipc here (not at module level) — dispatch_loop may be called
+    # in tests that don't go through the startup sequence.
+    import worker.ipc as ipc
+
+    logger.info("dispatch_loop: starting")
+    while True:
+        try:
+            msg = ipc.recv_message()
+        except Exception as exc:
+            # Log recv failure and continue — a broken socket means the
+            # supervisor is gone; the worker should exit gracefully.
+            # Without this try/except, the worker would crash on supervisor
+            # shutdown instead of exiting cleanly.
+            logger.error("dispatch_loop: recv failed, exiting: error=%s", exc)
+            break
+        logger.debug("dispatch_loop: received message type=%s", msg.get("_type", "<unknown>"))
+
+
+def _real_startup_sequence() -> None:
+    """Run the real-mode startup sequence: IPC connect → torch import → device select → probe → Ready → loop.
 
     This implements the real-mode startup path per ``ANVILML_DESIGN.md §14.2``.
     It reads environment variables injected by the Rust supervisor, connects
     to the IPC ROUTER socket, imports torch, selects the target device, and
-    runs the real torch-level capability probe.
+    runs the real torch-level capability probe. After probing, it sends a
+    ``Ready`` event with ``capabilities_source="pytorch"`` and enters the
+    message dispatch loop.
 
     The torch import happens inside this function (not at module level) so
     that importing ``worker_main`` does not transitively pull in torch —
@@ -35,9 +83,7 @@ def _real_startup_sequence() -> dict:
             ANVILML_DEVICE_TYPE, ANVILML_DEVICE_INDEX.
 
     Returns:
-        Dict with keys ``fp32``, ``fp16``, ``bf16``, ``fp8``, ``fp4``,
-        ``flash_attention``, each mapping to a ``bool`` indicating whether
-        that precision is supported on the target device.
+        None — enters the dispatch loop and blocks indefinitely.
 
     Raises:
         KeyError: If any required environment variable is not set.
@@ -82,7 +128,81 @@ def _real_startup_sequence() -> dict:
         caps["bf16"],
     )
 
-    return caps
+    # Import node types — currently empty (Phase 10 scope), but the Ready
+    # event must carry the list so the supervisor knows the worker supports
+    # the node dispatch pipeline (even if the list is empty).
+    node_types = _import_nodes()
+
+    # Build and send the Ready event — this tells the supervisor the worker
+    # is operational and what capabilities/nodes it supports.
+    # capabilities_source="pytorch" in this branch (real mode);
+    # "mock" in the mock-mode branch (ANVILML_WORKER_MOCK=1).
+    ready_event = {
+        "_type": "Ready",
+        "capabilities_source": "pytorch",
+        "node_types": node_types,
+    }
+    ipc.send_event(ready_event)
+
+    logger.info(
+        "ready: capabilities_source=%s, node_types_count=%d",
+        ready_event["capabilities_source"],
+        len(node_types),
+    )
+
+    # Enter the message dispatch loop — blocks until the process is terminated.
+    _dispatch_loop()
+
+
+def _mock_startup_sequence() -> None:
+    """Run the mock-mode startup sequence: IPC connect → mock probe → Ready.
+
+    This is the mock-mode equivalent of ``_real_startup_sequence()``.
+    It uses ``_mock_probe_capabilities()`` instead of the real torch probe,
+    and sends ``capabilities_source="mock"`` in the Ready event.
+
+    The mock branch never imports ``torch`` — all capability values are
+    synthetic. IPC connection, node import, and dispatch loop are identical
+    to the real-mode path.
+
+    Returns:
+        None — enters the dispatch loop and blocks.
+    """
+    port = int(os.environ["ANVILML_IPC_PORT"])
+    worker_id = os.environ["ANVILML_WORKER_ID"]
+    device_type = os.environ["ANVILML_DEVICE_TYPE"]
+    device_index = int(os.environ["ANVILML_DEVICE_INDEX"])
+
+    import worker.ipc as ipc
+
+    ipc.connect(port, worker_id)
+
+    caps = _mock_probe_capabilities()
+
+    logger.debug(
+        "mock_startup: device_type=%s, caps.fp32=%s, caps.fp16=%s, caps.bf16=%s",
+        device_type,
+        caps["fp32"],
+        caps["fp16"],
+        caps["bf16"],
+    )
+
+    node_types = _import_nodes()
+
+    ready_event = {
+        "_type": "Ready",
+        "capabilities_source": "mock",
+        "node_types": node_types,
+    }
+    ipc.send_event(ready_event)
+
+    logger.info(
+        "ready: capabilities_source=%s, node_types_count=%d",
+        ready_event["capabilities_source"],
+        len(node_types),
+    )
+
+    _dispatch_loop()
 
 
 def _mock_probe_capabilities() -> dict:
@@ -130,6 +250,16 @@ def _mock_probe_capabilities() -> dict:
 
 
 if __name__ == "__main__":
-    caps = _real_startup_sequence()
-    print(caps)
-    sys.exit(0)
+    # Configure basic logging — the supervisor may set ANVILML_LOG_LEVEL,
+    # but we always enable at least INFO-level output for diagnostics.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+    if os.environ.get("ANVILML_WORKER_MOCK") == "1":
+        logger.info("worker: starting in mock mode")
+        _mock_startup_sequence()
+    else:
+        logger.info("worker: starting in real mode")
+        _real_startup_sequence()

@@ -165,10 +165,20 @@ class TestRealStartupSequence:
                     }
                     import worker.worker_main as worker_main
 
-                    worker_main._real_startup_sequence()
+                    # Mock send_event and recv_message so the startup sequence
+                    # can complete without a real IPC socket.
+                    import zmq
 
-                    # Verify ipc.connect was called with correct args.
-                    mock_connect.assert_called_once_with(5555, "test-worker-0")
+                    with mock.patch("worker.ipc.send_event"):
+                        with mock.patch(
+                            "worker.ipc.recv_message"
+                        ) as mock_recv:
+                            mock_recv.side_effect = zmq.ZMQError("broken pipe")
+
+                            worker_main._real_startup_sequence()
+
+                            # Verify ipc.connect was called with correct args.
+                            mock_connect.assert_called_once_with(5555, "test-worker-0")
         finally:
             # Unconditional restore — runs even on assertion failure.
             for key, value in saved.items():
@@ -223,16 +233,26 @@ class TestRealStartupSequence:
                     }
                     import worker.worker_main as worker_main
 
-                    with mock.patch(
-                        "torch.cuda.set_device"
-                    ) as mock_set_device:
-                        worker_main._real_startup_sequence()
+                    # Mock send_event and recv_message so the startup sequence
+                    # can complete without a real IPC socket.
+                    import zmq
 
-                        # CPU path must NOT call set_device.
-                        mock_set_device.assert_not_called()
+                    with mock.patch("worker.ipc.send_event"):
+                        with mock.patch(
+                            "worker.ipc.recv_message"
+                        ) as mock_recv:
+                            mock_recv.side_effect = zmq.ZMQError("broken pipe")
 
-                        # probe_capabilities must be called with ("cpu", 0).
-                        mock_probe.assert_called_once_with("cpu", 0)
+                            with mock.patch(
+                                "torch.cuda.set_device"
+                            ) as mock_set_device:
+                                worker_main._real_startup_sequence()
+
+                                # CPU path must NOT call set_device.
+                                mock_set_device.assert_not_called()
+
+                                # probe_capabilities must be called with ("cpu", 0).
+                                mock_probe.assert_called_once_with("cpu", 0)
         finally:
             for key, value in saved.items():
                 if value is None:
@@ -248,14 +268,14 @@ class TestRealStartupSequence:
         Sets ``ANVILML_DEVICE_TYPE=cuda`` and ``ANVILML_DEVICE_INDEX=1``,
         then verifies both ``torch.cuda.set_device(1)`` and
         ``capability.probe_capabilities("cuda", 1)`` are called, and the
-        returned dict has exactly 6 bool keys.
+        probe result has exactly 6 bool keys.
 
         Env var isolation: saves and restores all four startup env vars
         unconditionally after the test body.
 
         Preconditions: ``ANVILML_DEVICE_TYPE=cuda``, ``ANVILML_DEVICE_INDEX=1``.
         Expected output: set_device(1) called; probe_capabilities("cuda", 1)
-        called; returned dict has 6 keys, all bool.
+        called; probe returns dict with 6 keys, all bool.
         """
         import unittest.mock as mock
 
@@ -292,30 +312,44 @@ class TestRealStartupSequence:
                     with mock.patch(
                         "torch.cuda.set_device"
                     ) as mock_set_device:
-                        result = worker_main._real_startup_sequence()
+                        # Mock send_event and recv_message so the startup sequence
+                        # can complete without a real IPC socket.
+                        import zmq
 
-                        # Non-CPU path must call set_device with correct index.
-                        mock_set_device.assert_called_once_with(1)
+                        with mock.patch("worker.ipc.send_event"):
+                            with mock.patch(
+                                "worker.ipc.recv_message"
+                            ) as mock_recv:
+                                mock_recv.side_effect = zmq.ZMQError("broken pipe")
 
-                        # probe_capabilities must be called with ("cuda", 1).
-                        mock_probe.assert_called_once_with("cuda", 1)
+                                result = worker_main._real_startup_sequence()
 
-                        # Returned dict must have exactly 6 keys, all bool.
-                        assert set(result.keys()) == {
-                            "fp32",
-                            "fp16",
-                            "bf16",
-                            "fp8",
-                            "fp4",
-                            "flash_attention",
-                        }, (
-                            f"Expected 6 keys, got {set(result.keys())}"
-                        )
-                        for key, value in result.items():
-                            assert isinstance(value, bool), (
-                                f"Value for key {key!r} must be bool, "
-                                f"got {type(value).__name__}"
-                            )
+                                # Non-CPU path must call set_device with correct index.
+                                mock_set_device.assert_called_once_with(1)
+
+                                # probe_capabilities must be called with ("cuda", 1).
+                                mock_probe.assert_called_once_with("cuda", 1)
+
+                                # Probe return value must have exactly 6 keys, all bool.
+                                probe_result = mock_probe.return_value
+                                assert set(probe_result.keys()) == {
+                                    "fp32",
+                                    "fp16",
+                                    "bf16",
+                                    "fp8",
+                                    "fp4",
+                                    "flash_attention",
+                                }, (
+                                    f"Expected 6 keys, got {set(probe_result.keys())}"
+                                )
+                                for key, value in probe_result.items():
+                                    assert isinstance(value, bool), (
+                                        f"Value for key {key!r} must be bool, "
+                                        f"got {type(value).__name__}"
+                                    )
+
+                                # Function returns None (enters dispatch loop).
+                                assert result is None
         finally:
             for key, value in saved.items():
                 if value is None:
@@ -334,6 +368,332 @@ class TestNoMockGate:
         Reads the source file of ``worker_main.py`` as text and asserts no
         line matches the v3 defect pattern: an env-var guard that calls
         ``exit`` when not in mock mode.
+
+        Preconditions: None.
+        Expected output: Zero lines match the mock-gate pattern.
+        """
+        import pathlib
+
+        source = pathlib.Path(__file__).resolve().parent.parent / "worker_main.py"
+        text = source.read_text()
+
+        # Mechanical check: no line contains the v3 defect pattern of
+        # guarding real-mode with an env-var exit.
+        for line in text.splitlines():
+            stripped = line.strip()
+            # Skip comments and string literals.
+            if stripped.startswith("#"):
+                continue
+            assert 'ANVILML_WORKER_MOCK' not in stripped or "exit" not in stripped, (
+                f"Mock gate pattern found: {stripped!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# New real-mode tests — P9-D2: Ready event, node import stub, dispatch loop
+# ---------------------------------------------------------------------------
+
+    @pytest.mark.real_mode
+    def test_real_startup_sends_ready_event(self) -> None:
+        """_real_startup_sequence() sends a Ready event via ipc.send_event.
+
+        Patches ``ipc.send_event`` to capture the event dict and asserts it
+        contains ``_type="Ready"``, ``capabilities_source="pytorch"``, and
+        ``node_types=[]``.
+
+        Env var isolation: saves and restores all four startup env vars
+        unconditionally after the test body.
+
+        Preconditions: ``ANVILML_IPC_PORT=5555``, ``ANVILML_WORKER_ID=test-0``,
+        ``ANVILML_DEVICE_TYPE=cpu``, ``ANVILML_DEVICE_INDEX=0``.
+        Expected output: ``ipc.send_event`` called with a dict containing
+        ``_type="Ready"``, ``capabilities_source="pytorch"``, ``node_types=[]``.
+        """
+        import unittest.mock as mock
+
+        # Save env vars before mutating.
+        saved = {
+            "ANVILML_IPC_PORT": os.environ.get("ANVILML_IPC_PORT"),
+            "ANVILML_WORKER_ID": os.environ.get("ANVILML_WORKER_ID"),
+            "ANVILML_DEVICE_TYPE": os.environ.get("ANVILML_DEVICE_TYPE"),
+            "ANVILML_DEVICE_INDEX": os.environ.get("ANVILML_DEVICE_INDEX"),
+        }
+
+        os.environ["ANVILML_IPC_PORT"] = "5555"
+        os.environ["ANVILML_WORKER_ID"] = "test-0"
+        os.environ["ANVILML_DEVICE_TYPE"] = "cpu"
+        os.environ["ANVILML_DEVICE_INDEX"] = "0"
+
+        try:
+            with mock.patch("worker.ipc.connect"):
+                with mock.patch(
+                    "worker.capability.probe_capabilities"
+                ) as mock_probe:
+                    mock_probe.return_value = {
+                        "fp32": True,
+                        "fp16": True,
+                        "bf16": True,
+                        "fp8": False,
+                        "fp4": False,
+                        "flash_attention": True,
+                    }
+
+                    import worker.worker_main as worker_main
+
+                    # Capture the event dict sent via send_event.
+                    captured_events = []
+
+                    def capture_send_event(data: dict) -> None:
+                        captured_events.append(data)
+
+                    import zmq
+
+                    with mock.patch(
+                        "worker.ipc.send_event", side_effect=capture_send_event
+                    ) as mock_send:
+                        with mock.patch(
+                            "worker.ipc.recv_message"
+                        ) as mock_recv:
+                            mock_recv.side_effect = zmq.ZMQError("broken pipe")
+
+                            worker_main._real_startup_sequence()
+
+                            # send_event must have been called exactly once.
+                            mock_send.assert_called_once()
+
+                            # The captured event must be a Ready event.
+                            assert len(captured_events) == 1
+                            event = captured_events[0]
+                            assert event["_type"] == "Ready"
+                            assert event["capabilities_source"] == "pytorch"
+                            assert event["node_types"] == []
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    @pytest.mark.real_mode
+    def test_import_nodes_returns_empty_list(self) -> None:
+        """_import_nodes() returns an empty list.
+
+        Calls ``_import_nodes()`` directly and asserts the result is ``[]``.
+        This confirms the stub behavior is correct for Phase 9 — the node
+        system does not exist yet.
+
+        Preconditions: None (pure function, no setup).
+        Expected output: ``_import_nodes() == []``.
+        """
+        import worker.worker_main as worker_main
+
+        result = worker_main._import_nodes()
+        assert result == [], f"Expected [], got {result!r}"
+
+    @pytest.mark.real_mode
+    def test_dispatch_loop_exists_and_is_callable(self) -> None:
+        """_dispatch_loop exists as a callable and handles a single recv gracefully.
+
+        Asserts ``_dispatch_loop`` is a function, then calls it with
+        ``ipc.recv_message`` mocked to raise after one call (simulating
+        supervisor disconnect). The loop should log the error and break
+        cleanly without raising an unhandled exception.
+
+        Env var isolation: saves and restores all four startup env vars
+        unconditionally after the test body.
+
+        Preconditions: ``ANVILML_IPC_PORT=5555``, ``ANVILML_WORKER_ID=test-0``,
+        ``ANVILML_DEVICE_TYPE=cpu``, ``ANVILML_DEVICE_INDEX=0``.
+        Expected output: no unhandled exception; dispatch loop exits after
+        one recv failure.
+        """
+        import unittest.mock as mock
+
+        # Save env vars before mutating.
+        saved = {
+            "ANVILML_IPC_PORT": os.environ.get("ANVILML_IPC_PORT"),
+            "ANVILML_WORKER_ID": os.environ.get("ANVILML_WORKER_ID"),
+            "ANVILML_DEVICE_TYPE": os.environ.get("ANVILML_DEVICE_TYPE"),
+            "ANVILML_DEVICE_INDEX": os.environ.get("ANVILML_DEVICE_INDEX"),
+        }
+
+        os.environ["ANVILML_IPC_PORT"] = "5555"
+        os.environ["ANVILML_WORKER_ID"] = "test-0"
+        os.environ["ANVILML_DEVICE_TYPE"] = "cpu"
+        os.environ["ANVILML_DEVICE_INDEX"] = "0"
+
+        try:
+            import worker.worker_main as worker_main
+
+            # Verify _dispatch_loop is callable.
+            assert callable(worker_main._dispatch_loop), (
+                "_dispatch_loop must be a callable function"
+            )
+
+            # Mock ipc.recv_message to raise after one call, so the loop exits.
+            import zmq
+
+            with mock.patch("worker.ipc.connect"):
+                with mock.patch(
+                    "worker.ipc.recv_message"
+                ) as mock_recv:
+                    mock_recv.side_effect = zmq.ZMQError("broken pipe")
+
+                    # Calling _dispatch_loop should not raise — it catches
+                    # the recv failure and breaks the loop.
+                    worker_main._dispatch_loop()
+
+                    # recv_message must have been called at least once.
+                    mock_recv.assert_called()
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    @pytest.mark.real_mode
+    def test_real_startup_no_nonzero_exit_for_cpu(self) -> None:
+        """Full real-mode startup path runs without raising for valid CPU device_type.
+
+        Runs the complete startup sequence with mocked IPC and capability probe,
+        confirming no exception is raised (i.e., the function does not exit
+        nonzero for a valid CPU device_type).
+
+        Env var isolation: saves and restores all four startup env vars
+        unconditionally after the test body.
+
+        Preconditions: ``ANVILML_DEVICE_TYPE=cpu`` in env.
+        Expected output: no exception raised; the startup sequence completes
+        (dispatch loop exits on mocked recv failure).
+        """
+        import unittest.mock as mock
+
+        # Save env vars before mutating.
+        saved = {
+            "ANVILML_IPC_PORT": os.environ.get("ANVILML_IPC_PORT"),
+            "ANVILML_WORKER_ID": os.environ.get("ANVILML_WORKER_ID"),
+            "ANVILML_DEVICE_TYPE": os.environ.get("ANVILML_DEVICE_TYPE"),
+            "ANVILML_DEVICE_INDEX": os.environ.get("ANVILML_DEVICE_INDEX"),
+        }
+
+        os.environ["ANVILML_IPC_PORT"] = "5555"
+        os.environ["ANVILML_WORKER_ID"] = "cpu-worker"
+        os.environ["ANVILML_DEVICE_TYPE"] = "cpu"
+        os.environ["ANVILML_DEVICE_INDEX"] = "0"
+
+        try:
+            with mock.patch("worker.ipc.connect"):
+                with mock.patch(
+                    "worker.capability.probe_capabilities"
+                ) as mock_probe:
+                    mock_probe.return_value = {
+                        "fp32": True,
+                        "fp16": True,
+                        "bf16": True,
+                        "fp8": False,
+                        "fp4": False,
+                        "flash_attention": True,
+                    }
+
+                    import worker.worker_main as worker_main
+
+                    import zmq
+
+                    # Mock send_event and recv_message so the startup sequence
+                    # can complete without a real IPC socket.
+                    with mock.patch("worker.ipc.send_event"):
+                        with mock.patch(
+                            "worker.ipc.recv_message"
+                        ) as mock_recv:
+                            mock_recv.side_effect = zmq.ZMQError("broken pipe")
+
+                            # The full startup sequence must not raise.
+                            worker_main._real_startup_sequence()
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    @pytest.mark.real_mode
+    def test_mock_startup_sends_ready_event(self) -> None:
+        """_mock_startup_sequence() sends a Ready event with capabilities_source="mock".
+
+        Patches ``ipc.send_event`` to capture the event dict and asserts it
+        contains ``_type="Ready"``, ``capabilities_source="mock"``, and
+        ``node_types=[]``.
+
+        Env var isolation: saves and restores all four startup env vars
+        unconditionally after the test body.
+
+        Preconditions: ``ANVILML_IPC_PORT=5555``, ``ANVILML_WORKER_ID=test-0``,
+        ``ANVILML_DEVICE_TYPE=cpu``, ``ANVILML_DEVICE_INDEX=0``.
+        Expected output: ``ipc.send_event`` called with a dict containing
+        ``_type="Ready"``, ``capabilities_source="mock"``, ``node_types=[]``.
+        """
+        import unittest.mock as mock
+
+        # Save env vars before mutating.
+        saved = {
+            "ANVILML_IPC_PORT": os.environ.get("ANVILML_IPC_PORT"),
+            "ANVILML_WORKER_ID": os.environ.get("ANVILML_WORKER_ID"),
+            "ANVILML_DEVICE_TYPE": os.environ.get("ANVILML_DEVICE_TYPE"),
+            "ANVILML_DEVICE_INDEX": os.environ.get("ANVILML_DEVICE_INDEX"),
+        }
+
+        os.environ["ANVILML_IPC_PORT"] = "5555"
+        os.environ["ANVILML_WORKER_ID"] = "test-0"
+        os.environ["ANVILML_DEVICE_TYPE"] = "cpu"
+        os.environ["ANVILML_DEVICE_INDEX"] = "0"
+
+        try:
+            with mock.patch("worker.ipc.connect"):
+                import worker.worker_main as worker_main
+
+                # Capture the event dict sent via send_event.
+                captured_events = []
+
+                def capture_send_event(data: dict) -> None:
+                    captured_events.append(data)
+
+                import zmq
+
+                with mock.patch(
+                    "worker.ipc.send_event", side_effect=capture_send_event
+                ) as mock_send:
+                    with mock.patch(
+                        "worker.ipc.recv_message"
+                    ) as mock_recv:
+                        mock_recv.side_effect = zmq.ZMQError("broken pipe")
+
+                        worker_main._mock_startup_sequence()
+
+                        # send_event must have been called exactly once.
+                        mock_send.assert_called_once()
+
+                        # The captured event must be a Ready event.
+                        assert len(captured_events) == 1
+                        event = captured_events[0]
+                        assert event["_type"] == "Ready"
+                        assert event["capabilities_source"] == "mock"
+                        assert event["node_types"] == []
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    @pytest.mark.real_mode
+    def test_no_mock_gate_in_main_block(self) -> None:
+        """The ``__main__`` block uses ``ANVILML_WORKER_MOCK == "1"`` check (not ``!= "1"`` exit).
+
+        Reads the source file of ``worker_main.py`` as text and asserts no
+        line matches the v3 defect pattern: an env-var guard that calls
+        ``exit`` when not in mock mode. The new main block dispatches to
+        mock or real mode based on ``== "1"``, not gating out real mode.
 
         Preconditions: None.
         Expected output: Zero lines match the mock-gate pattern.
