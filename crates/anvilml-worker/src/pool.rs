@@ -60,6 +60,24 @@ pub struct WorkerPool {
     bridge_handles: (JoinHandle<()>, JoinHandle<()>),
 }
 
+/// Whether an `ANVILML_FORCE_WORKER_MOCK` env var value should force mock
+/// mode, per `ENVIRONMENT.md §3.5`'s documented contract: `"1"` = force
+/// mock; unset = no effect. Any other value (`"0"`, `"true"`, empty
+/// string, etc.) is also treated as no effect — this mirrors the table's
+/// own binary framing exactly, it is not a general-purpose truthy-string
+/// parser, so don't extend it to accept other "truthy" spellings without
+/// first checking whether `ENVIRONMENT.md` documents them.
+///
+/// Takes the value as a parameter rather than reading
+/// `std::env::var(...)` directly inside this function, specifically so
+/// this parsing logic is unit-testable without mutating process-global
+/// environment state — `cargo test`'s default parallel execution makes
+/// directly setting env vars inside a test unsafe (another concurrently-
+/// running test could observe or clobber the same process-wide value).
+fn force_mock_from_env_value(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
 impl WorkerPool {
     /// Construct an empty pool: binds a fresh `RouterTransport`, creates a
     /// fresh `Demux`, and spawns the pool-wide bridge (P8-F1) against
@@ -168,10 +186,13 @@ impl WorkerPool {
     /// per-worker override mechanism.
     ///
     /// `mock` (whether to inject `ANVILML_WORKER_MOCK`, per
-    /// `WorkerEnv::build()`'s own doc comment) is derived from the
-    /// `mock-hardware` cargo feature at compile time via `cfg!(...)`, not
-    /// read from `cfg: &ServerConfig` — matching `env.rs`'s own doc
-    /// comment describing this exact parameter.
+    /// `WorkerEnv::build()`'s own doc comment) is `true` if either the
+    /// `mock-hardware` cargo feature is active at compile time, or the
+    /// supervisor's own environment has `ANVILML_FORCE_WORKER_MOCK` set to
+    /// exactly `"1"` at runtime — the latter is `env.rs`'s own documented
+    /// deferral ("a runtime override... not set by this builder") to
+    /// whichever caller actually constructs each worker's environment,
+    /// which is here. Neither is read from `cfg: &ServerConfig`.
     ///
     /// Each worker gets `RespawnPolicy::default()` (`ANVILML_DESIGN.md
     /// §19.4`'s documented defaults: 2s delay, 5 max attempts, 5-minute
@@ -203,7 +224,20 @@ impl WorkerPool {
         let log_level = std::env::var("ANVILML_LOG")
             .or_else(|_| std::env::var("RUST_LOG"))
             .unwrap_or_else(|_| "info".to_string());
-        let mock = cfg!(feature = "mock-hardware");
+
+        // mock-hardware determines this at compile time; ANVILML_FORCE_WORKER_MOCK
+        // is a runtime override on top of that, read here specifically because
+        // env.rs's own WorkerEnv::build() doc comment (and P8-B1's own task
+        // text, which built that function) explicitly deferred this
+        // responsibility to "the caller" — this is that caller. Per
+        // ENVIRONMENT.md §3.5's documented contract: forces mock mode into
+        // every worker even when compiled without mock-hardware, if and only
+        // if the supervisor's own environment has this set to exactly "1"
+        // ("unset = no effect" — any other value, including "0" or "true",
+        // is treated as unset, matching the table's own binary framing).
+        let force_mock =
+            force_mock_from_env_value(std::env::var("ANVILML_FORCE_WORKER_MOCK").ok().as_deref());
+        let mock = cfg!(feature = "mock-hardware") || force_mock;
 
         for device in devices {
             let worker_id = device.index.to_string();
@@ -355,5 +389,39 @@ impl WorkerPool {
 
         self.bridge_handles.0.abort();
         self.bridge_handles.1.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Exactly `"1"` forces mock mode — the one documented, working case.
+    #[test]
+    fn test_force_mock_exactly_one_is_true() {
+        assert!(force_mock_from_env_value(Some("1")));
+    }
+
+    /// Unset (`None`, matching `std::env::var(...).ok()` on a missing var)
+    /// has no effect, per `ENVIRONMENT.md §3.5`'s own "unset = no effect".
+    #[test]
+    fn test_force_mock_unset_is_false() {
+        assert!(!force_mock_from_env_value(None));
+    }
+
+    /// Every other value is also "no effect", matching the table's binary
+    /// framing exactly — not a general-purpose truthy-string parser. This
+    /// is the specific class of mistake worth guarding against: it would
+    /// be easy to accidentally accept "true"/"yes"/"0" as truthy without
+    /// ever noticing, since ENVIRONMENT.md's own contract is undocumented
+    /// for anything other than "1" and "unset".
+    #[test]
+    fn test_force_mock_other_values_are_false() {
+        for value in ["0", "true", "TRUE", "yes", "", "2", " 1", "1 "] {
+            assert!(
+                !force_mock_from_env_value(Some(value)),
+                "value {value:?} should not force mock mode"
+            );
+        }
     }
 }

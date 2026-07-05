@@ -1266,7 +1266,8 @@ pressure:**
 ```rust
 /// Held by WorkerPool. Does NOT wrap ManagedWorker in Arc.
 /// Cloning a WorkerHandle is cheap — it shares the status lock and the
-/// shutdown-trigger sender, not the worker itself.
+/// join handle, not the worker itself, and not either shutdown-trigger
+/// sender (see below).
 #[derive(Clone)]
 pub struct WorkerHandle {
     pub worker_id: String,
@@ -1275,26 +1276,53 @@ pub struct WorkerHandle {
     status: Arc<RwLock<WorkerStatus>>,
     /// Fired exactly once to request graceful shutdown. Consumed by run()'s
     /// own select! loop — there is no separate externally-callable shutdown()
-    /// method that competes with run() for ownership of self.
+    /// method that competes with run() for ownership of self. Not Clone
+    /// (oneshot::Sender never is), so a cloned handle's copy of this is
+    /// always None — only the original handle can request shutdown.
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
-    /// Awaited by WorkerPool::shutdown_all() with a bounded timeout (§9.5).
-    join_handle: tokio::task::JoinHandle<()>,
+    /// A second, independent trigger, consulted only once graceful
+    /// shutdown is already underway. WorkerPool::shutdown_all() enforces
+    /// one shared, pool-wide timeout across every worker (§19.3) — if
+    /// that timeout is shorter than a given worker's own bounded
+    /// graceful-shutdown wait, this signal makes that specific worker
+    /// skip the rest of its own wait and force-kill immediately, without
+    /// WorkerPool needing to externally cancel run()'s task. Externally
+    /// cancelling (JoinHandle::abort()) is a genuine last resort, not this
+    /// mechanism's substitute: it skips every bit of this method's own
+    /// cleanup, which can leave the child process orphaned. Same
+    /// not-Clone, original-handle-only rule as shutdown_tx.
+    force_shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Wrapped in Arc<Mutex<Option<...>>>, not held directly: shutdown_all()
+    /// needs to await or abort this from whichever cloned handle actually
+    /// detects a straggler, and every clone must observe the same
+    /// underlying task — a bare JoinHandle field can't be shared that way,
+    /// since taking ownership of it to await/abort would only be possible
+    /// from one specific clone. Awaited by WorkerPool::shutdown_all() with
+    /// a bounded timeout (§9.5).
+    join_handle: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 /// Spawned once per worker by WorkerPool::spawn_all(). Takes ownership of
 /// itself for the duration of its own task — this is fine, because nothing
 /// outside this function needs to call a method ON the ManagedWorker struct
 /// directly; everything external goes through the WorkerHandle's status lock
-/// and shutdown_tx instead.
+/// and the two shutdown-trigger senders instead.
 impl ManagedWorker {
-    pub async fn run(mut self, mut shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
+    pub async fn run(
+        mut self,
+        mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+        mut force_shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+    ) {
         loop {
             tokio::select! {
                 _ = &mut shutdown_rx => {
                     // Graceful shutdown path — was the separate shutdown(self)
                     // method in v3; folded in here so run() owns the entire
                     // lifecycle and nothing else needs by-value access.
-                    self.send_shutdown_and_wait().await;
+                    // force_shutdown_rx is passed through to this call, not
+                    // consulted in this select! itself — it only matters once
+                    // graceful shutdown is already underway.
+                    self.send_shutdown_and_wait(&mut force_shutdown_rx).await;
                     break;
                 }
                 event = self.next_event() => { /* dispatch */ }
@@ -1307,10 +1335,16 @@ impl ManagedWorker {
 **The rule this generalizes to:** if a struct needs to be shared across multiple
 independent readers/tasks (status polling, API handlers, the worker's own run loop),
 do not wrap the whole struct in `Arc`. Split it into (a) a cheap, `Clone`-able handle
-holding only the shared, lockable state and a trigger channel, and (b) the owning
+holding only the shared, lockable state and trigger channel(s), and (b) the owning
 task that holds the real struct by value for its own lifetime. Re-deriving this split
 from scratch under task pressure is exactly what produced the `run()`-never-called
-regression — use the shape above directly.
+regression — use the shape above directly. The two divergences from a minimal
+single-shutdown-signal version — the second `force_shutdown_tx` trigger, and
+`join_handle`'s `Arc<Mutex<Option<...>>>` wrapping rather than a bare field — were
+both found necessary during implementation, not stylistic choices: the former closes
+a real orphaned-process gap in `WorkerPool::shutdown_all()`'s straggler-handling path,
+the latter is what makes awaiting or aborting the task possible from any of a
+handle's clones rather than only one specific instance of it.
 
 ### 9.2 Design Principles
 
@@ -1404,26 +1438,77 @@ is incomplete.
 
 ### 9.6 IPC Bridge Task
 
-Two separate tokio tasks, each locking only its own half of the already-split
-`RouterTransport` (§8.3) — there is no combined `select!` loop and no socket-clone
-problem, because nothing here needs to clone a socket:
+One bridge for the whole pool, not one per worker — `RouterTransport` is a single,
+pool-wide ROUTER socket, so multiple reader tasks against it would race for incoming
+messages regardless of which worker each was actually addressed to. Two separate
+tokio tasks, each locking only its own half of the already-split `RouterTransport`
+(§8.3) — there is no combined `select!` loop and no socket-clone problem, because
+nothing here needs to clone a socket:
 
 ```rust
-// writer_task: drains the mpsc channel, sends via RouterTransport::send()
+// The channel item type carries the target worker_id explicitly — a
+// pool-wide writer has no other way to know which worker a given
+// WorkerMessage is for. (An earlier version of this snippet showed
+// worker_id as an ambient variable inside the writer task without
+// explaining where it came from; this is that explanation.)
+let (tx, mut rx) = mpsc::channel::<(String, WorkerMessage)>(CAPACITY);
+
+// writer_task: drains the mpsc channel, sends via RouterTransport::send().
+// Tracks consecutive failures rather than exiting on the first one — see
+// the note below.
 tokio::spawn(async move {
-    while let Some(msg) = rx.recv().await {
-        transport.send(&worker_id, &msg).await?;
+    let mut consecutive_failures = 0u32;
+    while let Some((worker_id, msg)) = rx.recv().await {
+        match transport.send(&worker_id, &msg).await {
+            Ok(()) => consecutive_failures = 0,
+            Err(e) => {
+                consecutive_failures += 1;
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                    return; // likely permanently broken transport
+                }
+                tokio::time::sleep(RETRY_BACKOFF).await;
+            }
+        }
     }
 });
 
-// reader_task: pumps RouterTransport::recv(), routes via demux
+// reader_task: pumps RouterTransport::recv(), routes via demux. Same
+// consecutive-failure tracking, mirrored.
 tokio::spawn(async move {
+    let mut consecutive_failures = 0u32;
     loop {
-        let (id, event) = transport.recv().await?;
-        demux.route(&id, event).await?;
+        match transport.recv().await {
+            Ok((id, event)) => {
+                consecutive_failures = 0;
+                let _ = demux.route(&id, event).await; // scoped to one worker, not the transport — log and continue regardless
+            }
+            Err(_) => {
+                consecutive_failures += 1;
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                    return;
+                }
+                tokio::time::sleep(RETRY_BACKOFF).await;
+            }
+        }
     }
 });
 ```
+
+**Why consecutive-failure tracking, not exit-on-first-error:** an earlier version of
+this snippet used `?` on both `send()` and `recv()`, propagating and exiting on the
+first failure. Found during implementation to be a severe bug, not a simplification:
+because this bridge is pool-wide, one worker's single malformed message — a
+transient, single-message problem — would permanently kill event delivery for every
+worker sharing the pool, with no crash signal for the other workers at all (they
+would eventually be caught by `KeepaliveWatchdog`'s own independent Ping/Pong
+timeout, since the watchdog sends directly via the shared transport rather than
+through this bridge — but only after a delay, and even then they would respawn into
+generations that also can't receive events, since nothing restarts a dead bridge).
+`IpcError` has no variant distinguishing a permanent condition (the transport itself
+is closed) from a transient one (a single bad message), so this counts *consecutive*
+failures instead: a transient issue recovers on the very next attempt and resets the
+counter to zero; only repeated, back-to-back failures — the actual signature of a
+permanently broken transport — cross the threshold and end the task.
 
 ### 9.7 Environment Variables Injected Into Worker
 
@@ -1433,9 +1518,9 @@ tokio::spawn(async move {
 | `ANVILML_WORKER_ID` | Bare device index as a decimal string (e.g. `"0"`) — also the ZMQ DEALER identity |
 | `ANVILML_DEVICE_INDEX` | GPU device index (u32 decimal) |
 | `ANVILML_DEVICE_TYPE` | `"cuda"`, `"rocm"`, or `"cpu"` |
-| `ANVILML_WORKER_MOCK` | `"1"` if the `mock-hardware` cargo feature is active, else unset |
-| `ANVILML_FORCE_WORKER_MOCK` | Runtime override — forces `ANVILML_WORKER_MOCK="1"` regardless of compiled features |
-| `ANVILML_LOG_LEVEL` | Inherited from server config |
+| `ANVILML_WORKER_MOCK` | `"1"` if the `mock-hardware` cargo feature is active at compile time, or `ANVILML_FORCE_WORKER_MOCK` is exactly `"1"` at runtime; else unset |
+| `ANVILML_FORCE_WORKER_MOCK` | Runtime override, read from the supervisor's own environment — forces `ANVILML_WORKER_MOCK="1"` regardless of compiled features. Must be exactly `"1"`; any other value (including `"0"` or `"true"`) has no effect |
+| `ANVILML_LOG_LEVEL` | The supervisor's own log level: `ANVILML_LOG`, falling back to `RUST_LOG`, falling back to `"info"` — not a `ServerConfig` field, since neither env var is one |
 | `ANVILML_MAX_IPC_PAYLOAD_MIB` | Maximum IPC message size in MiB |
 
 ---

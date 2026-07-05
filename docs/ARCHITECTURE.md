@@ -446,7 +446,10 @@ ownership split) and §14 (Python-side startup) for full detail.
 **`ManagedWorker::run()` owns its own lifecycle task end-to-end** — there is no
 separate by-value `shutdown()` method competing with it for ownership of `self`.
 `WorkerPool` holds a `Vec<WorkerHandle>` (a cheap, `Clone`-able struct sharing a
-status lock and a shutdown-trigger channel), never `Arc<ManagedWorker>` directly.
+status lock, a join handle, and two independent shutdown-trigger channels — a
+graceful one and a force-now one, the latter closing a straggler-orphaning gap
+found during implementation; see `ANVILML_DESIGN.md §9.1` for why there are two),
+never `Arc<ManagedWorker>` directly.
 This shape exists specifically because the earlier shape (`Arc`-wrapping a struct
 with by-value `run(self)`/`shutdown(self)` methods) made `run()` impossible to call
 once wrapped — a real, recorded regression. Re-deriving worker ownership from
