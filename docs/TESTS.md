@@ -3700,3 +3700,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `RouterTransport::bind()` on OS-assigned port; `WorkerEnv::build(transport.port, "0", 0, DeviceType::Cpu, false, "info", 256)`; venv path `worker/.venv`; `DealerSocket` connected to `tcp://127.0.0.1:{port}` with `PeerIdentity("0")`.
 **Expected output:** `WorkerEvent::Ready { capabilities_source: "pytorch", node_types: [], .. }` received within 10s; worker identity `"0"` matches; subprocess terminates cleanly.
 **Acceptance:** `cargo test -p anvilml-worker --test real_startup_tests -- --test-threads=1` exits 0.
+
+---
+
+## test_node_registry_starts_empty (anvilml-worker)
+
+**File:** `worker/tests/test_base.py`
+**Context:** The `worker.nodes.base` module is importable. `NODE_REGISTRY` is a module-level `dict` initialized to `{}`. No nodes have been registered yet.
+**Tests:** `NODE_REGISTRY` is an empty dict immediately after importing the `base` module — no nodes have been registered yet. This is the precondition for all subsequent registration tests.
+**Mode:** both
+**Inputs:** Import of `worker.nodes.base` (fresh Python process).
+**Expected output:** `base.NODE_REGISTRY == {}`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_node_registry_starts_empty -v` exits 0.
+
+---
+
+## test_slotspec_optional_defaults_to_false (anvilml-worker)
+
+**File:** `worker/tests/test_base.py`
+**Context:** The `worker.nodes.base` module is importable. `SlotSpec` is a `@dataclass` with fields `name: str`, `slot_type: str`, and `optional: bool = False`.
+**Tests:** Constructing a `SlotSpec` with only the required fields (`name`, `slot_type`) produces an instance where `optional` is `False` by default, confirming the dataclass default is applied correctly.
+**Mode:** both
+**Inputs:** `SlotSpec(name="x", slot_type="MODEL")`.
+**Expected output:** `spec.optional == False`, `spec.name == "x"`, `spec.slot_type == "MODEL"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_slotspec_optional_defaults_to_false -v` exits 0.
+
+---
+
+## test_slotspec_accepts_explicit_optional_true (anvilml-worker)
+
+**File:** `worker/tests/test_base.py`
+**Context:** The `worker.nodes.base` module is importable. `SlotSpec` is a `@dataclass` with `optional: bool = False` default.
+**Tests:** Constructing a `SlotSpec` with `optional=True` explicitly produces an instance where `optional` is `True`, confirming the optional parameter is accepted and stored correctly.
+**Mode:** both
+**Inputs:** `SlotSpec(name="y", slot_type="IMAGE", optional=True)`.
+**Expected output:** `spec.optional == True`, `spec.name == "y"`, `spec.slot_type == "IMAGE"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_slotspec_accepts_explicit_optional_true -v` exits 0.
