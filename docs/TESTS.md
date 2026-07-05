@@ -3409,3 +3409,114 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Different worker_id on second call, port 15557.
 **Expected output:** New DEALER socket with updated identity; context is the same singleton instance.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_ipc.py::TestContextReuse::test_connect_twice_reuses_context -v` exits 0.
+
+---
+
+## test_fp32_cpu_returns_true (worker/capability)
+
+**File:** `worker/tests/test_capability.py`
+**Context:** The `worker.capability` module has `probe_capabilities()` and `_probe_dtype()` functions. torch 2.12.1+cpu is installed in the worker venv.
+**Tests:** fp32 probe on CPU returns True. Calls `probe_capabilities("cpu", 0)` and asserts `result["fp32"]` is True. This is the sanity check that the probe infrastructure itself is functional.
+**Mode:** real
+**Inputs:** `device_type="cpu"`, `device_index=0`.
+**Expected output:** `result["fp32"] == True`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_capability.py::TestProbeDtypes::test_fp32_cpu_returns_true -v` exits 0.
+
+---
+
+## test_fp16_cpu_returns_true (worker/capability)
+
+**File:** `worker/tests/test_capability.py`
+**Context:** The `worker.capability` module has `probe_capabilities()` and `_probe_dtype()` functions. torch 2.12.1+cpu is installed in the worker venv.
+**Tests:** fp16 probe on CPU returns True. CPU supports fp16/bf16 on modern torch builds. Calls `probe_capabilities("cpu", 0)` and asserts `result["fp16"]` is True.
+**Mode:** real
+**Inputs:** `device_type="cpu"`, `device_index=0`.
+**Expected output:** `result["fp16"] == True`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_capability.py::TestProbeDtypes::test_fp16_cpu_returns_true -v` exits 0.
+
+---
+
+## test_bf16_cpu_returns_true (worker/capability)
+
+**File:** `worker/tests/test_capability.py`
+**Context:** The `worker.capability` module has `probe_capabilities()` and `_probe_dtype()` functions. torch 2.12.1+cpu is installed in the worker venv.
+**Tests:** bf16 probe on CPU returns True. CPU supports bfloat16 on modern torch builds. Calls `probe_capabilities("cpu", 0)` and asserts `result["bf16"]` is True.
+**Mode:** real
+**Inputs:** `device_type="cpu"`, `device_index=0`.
+**Expected output:** `result["bf16"] == True`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_capability.py::TestProbeDtypes::test_bf16_cpu_returns_true -v` exits 0.
+
+---
+
+## test_fp8_cpu_returns_false (worker/capability)
+
+**File:** `worker/tests/test_capability.py`
+**Context:** The `worker.capability` module has `probe_capabilities()` and `_probe_dtype()` functions. torch 2.12.1+cpu is installed in the worker venv.
+**Tests:** fp8 probe on CPU returns False. ``torch.float8_e4m3fn`` on CPU raises ``NotImplementedError``, and the probe catches it and returns False. This is correct behavior — fp8 compute is a GPU-only feature.
+**Mode:** real
+**Inputs:** `device_type="cpu"`, `device_index=0`.
+**Expected output:** `result["fp8"] == False`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_capability.py::TestProbeDtypes::test_fp8_cpu_returns_false -v` exits 0.
+
+---
+
+## test_fp4_cpu_returns_false (worker/capability)
+
+**File:** `worker/tests/test_capability.py`
+**Context:** The `worker.capability` module has `probe_capabilities()` and `_probe_dtype()` functions. torch 2.12.1+cpu is installed in the worker venv.
+**Tests:** fp4 probe on CPU returns False. Torch 2.x does not expose a native fp4 dtype. The probe attempts ``torch.float8_e4m3fn`` as the closest available format; on CPU this raises NotImplementedError, so fp4 is correctly False.
+**Mode:** real
+**Inputs:** `device_type="cpu"`, `device_index=0`.
+**Expected output:** `result["fp4"] == False`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_capability.py::TestProbeDtypes::test_fp4_cpu_returns_false -v` exits 0.
+
+---
+
+## test_flash_attention_cpu_returns_true (worker/capability)
+
+**File:** `worker/tests/test_capability.py`
+**Context:** The `worker.capability` module has `probe_capabilities()` and `_probe_flash_attention()` functions. torch 2.12.1+cpu is installed in the worker venv.
+**Tests:** Flash attention probe on CPU returns True. ``torch.nn.functional.scaled_dot_product_attention`` works on CPU — it falls back to standard math attention rather than raising. The probe correctly returns True because the function executes successfully (even though acceleration is not available).
+**Mode:** real
+**Inputs:** `device_type="cpu"`, `device_index=0`.
+**Expected output:** `result["flash_attention"] == True`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_capability.py::TestProbeFlashAttention::test_flash_attention_cpu_returns_true -v` exits 0.
+
+---
+
+## test_returns_dict_with_exactly_six_bool_keys (worker/capability)
+
+**File:** `worker/tests/test_capability.py`
+**Context:** The `worker.capability` module has `probe_capabilities()` function. torch 2.12.1+cpu is installed in the worker venv.
+**Tests:** Return dict has exactly 6 keys matching ``InferenceCaps`` field names. Calls ``probe_capabilities("cpu", 0)`` and asserts the result is a dict with exactly 6 keys matching the ``InferenceCaps`` struct field names, and all values are ``bool`` type.
+**Mode:** real
+**Inputs:** `device_type="cpu"`, `device_index=0`.
+**Expected output:** Dict with keys ``fp32``, ``fp16``, ``bf16``, ``fp8``, ``fp4``, ``flash_attention``, all bool values.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_capability.py::TestProbeStructure::test_returns_dict_with_exactly_six_bool_keys -v` exits 0.
+
+---
+
+## test_never_raises_for_cpu (worker/capability)
+
+**File:** `worker/tests/test_capability.py`
+**Context:** The `worker.capability` module has `probe_capabilities()` function. torch 2.12.1+cpu is installed in the worker venv.
+**Tests:** probe_capabilities("cpu", 0) never raises any exception. The probe must be resilient on CPU — no matter what dtypes are available or unavailable, the function must return a dict and never propagate an exception.
+**Mode:** real
+**Inputs:** `device_type="cpu"`, `device_index=0`.
+**Expected output:** No exception raised; returns a dict.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_capability.py::TestProbeStructure::test_never_raises_for_cpu -v` exits 0.
+
+---
+
+## test_device_selection_cpu (worker/capability)
+
+**File:** `worker/tests/test_capability.py`
+**Context:** The `worker.capability` module has `probe_capabilities()` function. torch 2.12.1+cpu is installed in the worker venv.
+**Tests:** CPU device is correctly selected (device_index ignored). Verifies that when ``device_type="cpu"``, the function does not raise and returns a valid result. The device_index parameter is ignored for CPU devices.
+**Mode:** real
+**Inputs:** `device_type="cpu"`, `device_index=0`.
+**Expected output:** No exception; dict with 6 capability keys.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_capability.py::TestProbeStructure::test_device_selection_cpu -v` exits 0.
+
+---
+
