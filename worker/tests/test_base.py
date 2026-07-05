@@ -299,3 +299,57 @@ def test_node_context_caps_accepts_arbitrary_dict() -> None:
         mock=False,
     )
     assert ctx.caps == {"some_key": "some_value", "numeric": 42}
+
+
+def test_base_node_cannot_be_instantiated() -> None:
+    """BaseNode cannot be instantiated directly — ABC machinery enforces this.
+
+    Asserts that calling BaseNode() raises TypeError, confirming that
+    Python's ABC machinery prevents direct instantiation of the abstract
+    base class. This is enforced by the abstract method decorator, not
+    by custom code.
+    """
+    try:
+        base.BaseNode()
+    except TypeError:
+        pass
+    else:
+        assert False, "BaseNode() should have raised TypeError"
+
+
+def test_concrete_subclass_instantiates() -> None:
+    """A concrete subclass implementing execute() instantiates without error.
+
+    Defines a minimal subclass that provides execute() returning an empty
+    dict, and asserts that instantiation succeeds. This confirms that the
+    abstract method requirement is satisfied by providing execute().
+    """
+    class ConcreteNode(base.BaseNode):
+        def execute(self, ctx, **inputs) -> dict:
+            return {}
+
+    node = ConcreteNode()
+    assert isinstance(node, base.BaseNode)
+
+
+def test_execute_calls_subclass_impl() -> None:
+    """Calling execute() on a concrete subclass invokes the subclass's implementation.
+
+    Defines a concrete subclass that sets self.called = True in execute(),
+    instantiates it, calls execute(), and asserts the flag is True. This
+    proves the subclass's implementation runs rather than a base no-op.
+
+    This guards against a future regression where a base no-op is
+    accidentally called instead of the subclass's overridden method.
+    """
+    class FlagNode(base.BaseNode):
+        def __init__(self) -> None:
+            self.called = False
+
+        def execute(self, ctx, **inputs) -> dict:
+            self.called = True
+            return {}
+
+    node = FlagNode()
+    node.execute(None)
+    assert node.called is True

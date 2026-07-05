@@ -57,3 +57,32 @@ class NodeContext:
         self.emit = emit
         self.pipeline_cache = pipeline_cache
         self.mock = mock
+
+
+class BaseNode(ABC):
+    """Abstract base class for all node types.
+
+    Subclasses must implement execute(). Direct instantiation is
+    prevented by Python's ABC machinery.
+    """
+
+    @abstractmethod
+    def execute(self, ctx: NodeContext, **inputs) -> dict:
+        """Execute this node's computation.
+
+        Subclasses override this method to perform inference or
+        data transformation. The base class provides no default
+        implementation — a subclass missing this method cannot be
+        instantiated.
+
+        Args:
+            ctx: Runtime context carrying job_id, device, caps,
+                cancel_flag, emit, pipeline_cache, and mock flag.
+            **inputs: Named input values keyed by slot name,
+                matching the node's INPUT_SLOTS.
+
+        Returns:
+            Dict of output values keyed by slot name,
+            matching the node's OUTPUT_SLOTS.
+        """
+        ...

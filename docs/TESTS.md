@@ -3878,3 +3878,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `NodeContext(caps={"some_key": "some_value", "numeric": 42}, ...)` with minimal valid values for other params.
 **Expected output:** `ctx.caps == {"some_key": "some_value", "numeric": 42}`.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_node_context_caps_accepts_arbitrary_dict -v` exits 0.
+
+---
+
+## test_base_node_cannot_be_instantiated (anvilml-worker)
+
+**File:** `worker/tests/test_base.py`
+**Context:** The `worker.nodes.base` module is importable and defines the `BaseNode` ABC class with an abstract `execute()` method.
+**Tests:** `BaseNode()` raises `TypeError` per ABC semantics — confirms the abstract base class cannot be directly instantiated. Python's ABC machinery enforces this via the `@abstractmethod` decorator, not custom code.
+**Mode:** both
+**Inputs:** Direct call `base.BaseNode()` with no arguments.
+**Expected output:** `TypeError` raised.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_base_node_cannot_be_instantiated -v` exits 0.
+
+---
+
+## test_concrete_subclass_instantiates (anvilml-worker)
+
+**File:** `worker/tests/test_base.py`
+**Context:** The `worker.nodes.base` module is importable and defines the `BaseNode` ABC class with an abstract `execute()` method.
+**Tests:** A minimal concrete subclass implementing `execute()` instantiates without error — confirms the abstract method requirement is satisfied by providing `execute()`.
+**Mode:** both
+**Inputs:** A subclass of `BaseNode` with an `execute(self, ctx, **inputs) -> dict` method returning `{}`.
+**Expected output:** Instance created successfully; `isinstance(node, base.BaseNode)` is `True`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_concrete_subclass_instantiates -v` exits 0.
+
+---
+
+## test_execute_calls_subclass_impl (anvilml-worker)
+
+**File:** `worker/tests/test_base.py`
+**Context:** The `worker.nodes.base` module is importable and defines the `BaseNode` ABC class with an abstract `execute()` method.
+**Tests:** Calling `execute()` on a concrete subclass invokes the subclass's own implementation, not a base no-op — guards against a future regression where a base no-op is accidentally called.
+**Mode:** both
+**Inputs:** A subclass of `BaseNode` with `execute()` that sets `self.called = True` and returns `{}`.
+**Expected output:** After calling `node.execute(None)`, `node.called is True`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_execute_calls_subclass_impl -v` exits 0.
