@@ -3568,3 +3568,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Subprocess runs `import worker.worker_main; import sys; assert 'torch' not in sys.modules`.
 **Expected output:** Subprocess exit code 0, stdout contains "OK".
 **Acceptance:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py::TestNoTorchImport::test_no_torch_import_on_module_load -v` exits 0.
+
+---
+
+## test_real_startup_calls_ipc_connect (anvilml-worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** The `worker.worker_main` module provides `_real_startup_sequence()` which implements the real-mode startup path: reads env vars, calls `ipc.connect()`, imports torch, selects device, and runs `capability.probe_capabilities()`.
+**Tests:** `_real_startup_sequence()` calls `ipc.connect(5555, "test-worker-0")` with the correct port and worker_id values from environment variables `ANVILML_IPC_PORT` and `ANVILML_WORKER_ID`.
+**Mode:** real
+**Inputs:** Env vars `ANVILML_IPC_PORT=5555`, `ANVILML_WORKER_ID=test-worker-0`, `ANVILML_DEVICE_TYPE=cpu`, `ANVILML_DEVICE_INDEX=0`; `ipc.connect` and `probe_capabilities` patched.
+**Expected output:** `ipc.connect(5555, "test-worker-0")` called exactly once.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py::TestRealStartupSequence::test_real_startup_calls_ipc_connect -v` exits 0.
+
+---
+
+## test_real_startup_cpu_skips_cuda_set_device (anvilml-worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** The `_real_startup_sequence()` function skips `torch.cuda.set_device()` for CPU devices — CPU has no per-device selection.
+**Tests:** With `ANVILML_DEVICE_TYPE=cpu`, `torch.cuda.set_device` is NOT called; `probe_capabilities("cpu", 0)` IS called.
+**Mode:** real
+**Inputs:** Env vars `ANVILML_IPC_PORT=5555`, `ANVILML_WORKER_ID=cpu-worker`, `ANVILML_DEVICE_TYPE=cpu`, `ANVILML_DEVICE_INDEX=0`; `ipc.connect`, `probe_capabilities`, and `torch.cuda.set_device` patched.
+**Expected output:** `torch.cuda.set_device` not called; `probe_capabilities("cpu", 0)` called once.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py::TestRealStartupSequence::test_real_startup_cpu_skips_cuda_set_device -v` exits 0.
+
+---
+
+## test_real_startup_calls_probe_capabilities (anvilml-worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** For non-CPU device types, `_real_startup_sequence()` calls both `torch.cuda.set_device(device_index)` and `capability.probe_capabilities(device_type, device_index)`.
+**Tests:** With `ANVILML_DEVICE_TYPE=cuda` and `ANVILML_DEVICE_INDEX=1`, `torch.cuda.set_device(1)` is called; `probe_capabilities("cuda", 1)` is called; returned dict has exactly 6 bool keys.
+**Mode:** real
+**Inputs:** Env vars `ANVILML_IPC_PORT=5555`, `ANVILML_WORKER_ID=cuda-worker`, `ANVILML_DEVICE_TYPE=cuda`, `ANVILML_DEVICE_INDEX=1`; `ipc.connect`, `probe_capabilities`, and `torch.cuda.set_device` patched.
+**Expected output:** `torch.cuda.set_device(1)` called once; `probe_capabilities("cuda", 1)` called once; returned dict has 6 keys, all bool.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py::TestRealStartupSequence::test_real_startup_calls_probe_capabilities -v` exits 0.
+
+---
+
+## test_no_mock_gate_exit_path (anvilml-worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** The v3 defect pattern of an env-var guard (`if ANVILML_WORKER_MOCK != "1": exit(1)`) must not exist in `worker_main.py`.
+**Tests:** Reads `worker_main.py` source text and asserts no line matches the mock-gate pattern — a guard that calls `exit` when not in mock mode.
+**Mode:** real
+**Inputs:** Source file `worker/worker_main.py` read as text.
+**Expected output:** Zero lines contain both `ANVILML_WORKER_MOCK` and `exit` outside comments.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py::TestNoMockGate::test_no_mock_gate_exit_path -v` exits 0.
