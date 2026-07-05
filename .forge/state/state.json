@@ -93,16 +93,17 @@
     "P8-F2",
     "P8-G1",
     "P8-H1",
-    "P9-A1"
+    "P9-A1",
+    "P9-A2"
   ],
-  "in_progress": "P9-A2",
+  "in_progress": "P9-A3",
   "plan_approved": true,
-  "current_plan": "1. **Resolve torch version via MCP.** Query `pypi-query_get_package_info` for `torch`. The MCP reports `latest_version: \"2.12.1\"`. Record this as the version to pin.\n\n2. **Write `worker/requirements/cpu-linux-agent.txt`.** Create the file with two lines:\n   ```\n   --index-url https://download.pytorch.org/whl/cpu\n   \n   torch==2.12.1\n   ```\n   The empty line between `--index-url` and the package pin matches the pattern used in `cpu-linux-agents.txt` (which already exists with this structure). The `--index-url` directive tells pip to resolve all packages from PyTorch's CPU wheel index, ensuring only the CPU-only build is selected.\n\n3. **Write `worker/requirements/cpu-runner-reqs.txt` with identical content.** Copy the exact content from step 2 into this file. Both files must be byte-identical.\n\n4. **Verify acceptance criteria.** Run `pip install --dry-run -r worker/requirements/cpu-linux-agent.txt` \u2014 must exit 0. Run `cmp worker/requirements/cpu-linux-agent.txt worker/requirements/cpu-runner-reqs.txt` \u2014 must produce no diff output (exit 0).",
+  "current_plan": "1. Create `worker/pyproject.toml` with the following exact content:\n\n```toml\n[tool.pytest.ini_options]\nmarkers = [\n    \"real_mode: test requires real torch import, never runs under ANVILML_WORKER_MOCK=1\",\n]\n```\n\n   Rationale: `pyproject.toml` is preferred over `pytest.ini` per the task context (\"preferred over pytest.ini for a single consolidated config\"). The marker description matches the task context verbatim. The `[tool.pytest.ini_options]` table is the standard pytest configuration location in pyproject.toml (pytest 6.0+).\n\n2. Verify the marker is registered by running:\n   ```bash\n   cd worker && python -m pytest --markers | grep real_mode\n   ```\n   This must exit 0 and produce a line containing `real_mode` with the description.\n\nNo source code, tests, logging, or documentation changes are needed. This is a pure config file creation.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-05T11:33:00+0200",
-  "plan_approval_message_id": "1523260170967449758",
+  "last_updated": "2026-07-05T12:09:55+0200",
+  "plan_approval_message_id": "1523265612858658866",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1523260168823898153",
+  "plan_report_message_id": "1523265611159961611",
   "impl_report_message_id": null
 }
