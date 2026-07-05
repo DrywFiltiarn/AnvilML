@@ -116,9 +116,13 @@ from some other source.
   real `torch` CPU wheel pin.
 
 **Key implementation notes:**
-- Both files get the **identical** pin — `cpu-linux-agent.txt` is consumed by this
-  project's own CI `worker-test` job (P9-F1); `cpu-runner-reqs.txt` is the same
-  content under the name later real-mode tasks expect.
+- Both files get the **identical** pin, but they serve different consumers per
+  `ANVILML_DESIGN.md §3.1`: `cpu-linux-agent.txt` is for the Forge agent's own
+  environment; `cpu-runner-reqs.txt` is what this project's own CI `worker-test`
+  job (P9-F1, `.github/workflows/ci.yml`) actually installs. They are separate
+  files, not one shared file, so a CI-only pin change never touches the Forge
+  agent's own environment file, and vice versa — content is identical today
+  only because both currently need the same CPU wheel.
 - The CPU-only build comes from the official PyTorch CPU wheel index
   (`https://download.pytorch.org/whl/cpu` or equivalent) — never the default
   index, which would pull in a CUDA-bundled wheel unnecessarily.

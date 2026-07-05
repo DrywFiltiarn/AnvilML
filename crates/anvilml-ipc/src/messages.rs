@@ -78,7 +78,12 @@ pub enum WorkerMessage {
 pub enum WorkerEvent {
     /// Worker startup report — sent once when the worker first connects.
     ///
-    /// Carries full device capabilities and the registered node type catalogue.
+    /// Carries the four variable capability fields (`fp16`/`bf16`/`fp8`/
+    /// `flash_attention`) and the registered node type catalogue, per
+    /// `ANVILML_DESIGN.md §8.6`. Deliberately narrower than `InferenceCaps`
+    /// (6 fields) — `fp32` and `fp4` are omitted here because they don't vary
+    /// across current torch builds (fp32 universally supported, fp4
+    /// universally unsupported), so they carry no diagnostic signal over IPC.
     Ready {
         /// Stable worker identity (e.g. `"gpu:0"`).
         worker_id: String,
