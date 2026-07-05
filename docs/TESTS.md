@@ -3337,3 +3337,75 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** ROUTER/DEALER pair, `Ready` event, shutdown signal.
 **Expected output:** Worker completes within 500ms, status is `Dying`.
 **Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_watchdog_channel_cleans_up_on_exit` exits 0.
+
+---
+
+## test_connect_sets_identity (worker/ipc)
+
+**File:** `worker/tests/test_ipc.py`
+**Context:** The `worker.ipc` module has been created with `connect()`, `send_event()`, and `recv_message()` functions. pyzmq and msgpack are installed in the worker venv.
+**Tests:** DEALER socket connects with correct ZEROMQ identity. Starts a ROUTER socket on a random port, calls `connect(port, "test-worker")` on a DEALER socket, then verifies the ROUTER receives a message from the correct identity. The ROUTER socket's first `recv()` returns the identity frame.
+**Mode:** mock
+**Inputs:** port 15555, worker_id="test-worker".
+**Expected output:** ROUTER receives identity frame equal to `b"test-worker"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_ipc.py::TestConnectIdentity::test_connect_sets_identity -v` exits 0.
+
+---
+
+## test_send_event_before_connect_raises (worker/ipc)
+
+**File:** `worker/tests/test_ipc.py`
+**Context:** The `worker.ipc` module has `_ctx` and `_sock` module-level globals initialized to `None`.
+**Tests:** `send_event()` raises RuntimeError when not connected. Calls `send_event()` without calling `connect()` first, asserts RuntimeError is raised with the expected message.
+**Mode:** mock
+**Inputs:** `{"_type": "Ping"}`.
+**Expected output:** RuntimeError with message containing "ipc: not connected".
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_ipc.py::TestPreConnectErrors::test_send_event_before_connect_raises -v` exits 0.
+
+---
+
+## test_recv_message_before_connect_raises (worker/ipc)
+
+**File:** `worker/tests/test_ipc.py`
+**Context:** The `worker.ipc` module has `_ctx` and `_sock` module-level globals initialized to `None`.
+**Tests:** `recv_message()` raises RuntimeError when not connected. Calls `recv_message()` without calling `connect()` first, asserts RuntimeError is raised with the expected message.
+**Mode:** mock
+**Inputs:** (none).
+**Expected output:** RuntimeError with message containing "ipc: not connected".
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_ipc.py::TestPreConnectErrors::test_recv_message_before_connect_raises -v` exits 0.
+
+---
+
+## test_roundtrip_send_recv (worker/ipc)
+
+**File:** `worker/tests/test_ipc.py`
+**Context:** The `worker.ipc` module has `connect()`, `send_event()`, and `recv_message()` functions. pyzmq and msgpack are installed in the worker venv.
+**Tests:** Full msgpack round-trip via ROUTER/DEALER pair. Sets up a ROUTER socket in the test process, connects a DEALER via `ipc.connect()`, sends a dict via `ipc.send_event()`, receives it from the ROUTER side via `router.recv()` (identity frame) + `router.recv()` (payload), unpacks with `msgpack.unpackb(raw=False)`, and asserts the dict matches the sent payload. This is the real integration test that proves the full send/recv path works end-to-end within a single process.
+**Mode:** mock
+**Inputs:** dict `{"_type": "Ping", "payload": "hello"}`, port 15556, worker_id="roundtrip-worker".
+**Expected output:** ROUTER receives identical dict after stripping identity frame.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_ipc.py::TestRoundtrip::test_roundtrip_send_recv -v` exits 0.
+
+---
+
+## test_module_no_torch_import (worker/ipc)
+
+**File:** `worker/tests/test_ipc.py`
+**Context:** The `worker.ipc` module imports only `zmq` and `msgpack` — no torch. The worker venv's base.txt includes pyzmq and msgpack but not torch.
+**Tests:** Module does not transitively import torch. Uses `subprocess.run()` to spawn a fresh Python process that imports `worker.ipc` and asserts `"torch" not in sys.modules`. This confirms the module has no transitive torch dependency at import time (required by the mock-mode CI jobs that install only base.txt without torch).
+**Mode:** mock
+**Inputs:** Fresh subprocess that imports `worker.ipc`.
+**Expected output:** `"torch" not in sys.modules` succeeds; subprocess exits 0.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_ipc.py::TestNoTorchImport::test_module_no_torch_import -v` exits 0.
+
+---
+
+## test_connect_twice_reuses_context (worker/ipc)
+
+**File:** `worker/tests/test_ipc.py`
+**Context:** The `worker.ipc` module uses `zmq.Context.instance()` for process-wide singleton context management.
+**Tests:** Second `connect()` call reuses zmq.Context singleton. Calls `connect()` twice with different worker IDs; verifies the second call reuses the existing context but creates a new socket with the new identity. This tests the singleton pattern works correctly.
+**Mode:** mock
+**Inputs:** Different worker_id on second call, port 15557.
+**Expected output:** New DEALER socket with updated identity; context is the same singleton instance.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_ipc.py::TestContextReuse::test_connect_twice_reuses_context -v` exits 0.
