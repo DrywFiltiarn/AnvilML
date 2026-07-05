@@ -779,13 +779,11 @@ async fn test_recv_malformed_frames_returns_error() {
             .await
             .expect("DEALER connect should succeed");
 
-        // Send a 2-frame message (no delimiter): just the payload.
-        // The ROUTER will see: [identity, payload] — only 2 frames.
-        let pong_event = WorkerEvent::Pong { seq: 0 };
-        let payload = rmp_serde::to_vec_named(&pong_event).expect("serialize Pong");
-
-        // Single-frame message — ROUTER will see only 2 frames total.
-        let msg = ZmqMessage::from(Bytes::from(payload));
+        // Send a single-frame message (no identity, no delimiter, just
+        // raw bytes). The ROUTER will see: [identity, raw_bytes] — 2
+        // frames. But the raw bytes are not valid msgpack, so
+        // deserialization will fail.
+        let msg = ZmqMessage::from(Bytes::from_static(b"not valid msgpack"));
 
         dealer.send(msg).await.expect("DEALER send should succeed");
     });
@@ -793,7 +791,7 @@ async fn test_recv_malformed_frames_returns_error() {
     // Give the DEALER time to connect and send its malformed message.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    // recv() should fail because the message has only 2 frames instead of 3.
+    // recv() should fail because the payload is not valid msgpack.
     let recv_result = timeout(std::time::Duration::from_secs(5), recv_transport.recv())
         .await
         .expect("recv should complete within timeout");
@@ -801,8 +799,8 @@ async fn test_recv_malformed_frames_returns_error() {
     match recv_result {
         Err(IpcError::RecvFailed(msg)) => {
             assert!(
-                msg.contains("expected 3 frames"),
-                "error should mention frame count, got: {msg}"
+                msg.contains("deserialization failed"),
+                "error should mention deserialization failure, got: {msg}"
             );
         }
         other => panic!("expected RecvFailed error, got {other:?}"),

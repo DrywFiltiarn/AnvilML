@@ -3688,3 +3688,15 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Source file `worker/worker_main.py` read as text.
 **Expected output:** Zero lines contain both `ANVILML_WORKER_MOCK` and `exit` outside comments.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py::TestNoMockGate::test_no_mock_gate_in_main_block -v` exits 0.
+
+---
+
+## test_real_subprocess_sends_ready (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/real_startup_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `tokio` (process, rt, sync, time features), `anvilml-ipc`, `anvilml-core`, and `zeromq` (tokio-runtime feature) dev-dependencies. The Python worker venv is provisioned at `worker/.venv` with torch installed (real-mode requirements).
+**Tests:** A real `worker_main.py` subprocess spawned with `ANVILML_DEVICE_TYPE=cpu` and no `ANVILML_WORKER_MOCK` flag connects over IPC, runs the real torch capability probe, and sends a `Ready` event with `capabilities_source="pytorch"` and empty `node_types` within 10 seconds. The test binds a `RouterTransport`, builds a `WorkerEnv` targeting CPU real mode, spawns the worker via `spawn_worker()`, connects a `DealerSocket` with peer identity `"0"`, and asserts on the `Ready` event fields.
+**Mode:** real
+**Inputs:** `RouterTransport::bind()` on OS-assigned port; `WorkerEnv::build(transport.port, "0", 0, DeviceType::Cpu, false, "info", 256)`; venv path `worker/.venv`; `DealerSocket` connected to `tcp://127.0.0.1:{port}` with `PeerIdentity("0")`.
+**Expected output:** `WorkerEvent::Ready { capabilities_source: "pytorch", node_types: [], .. }` received within 10s; worker identity `"0"` matches; subprocess terminates cleanly.
+**Acceptance:** `cargo test -p anvilml-worker --test real_startup_tests -- --test-threads=1` exits 0.

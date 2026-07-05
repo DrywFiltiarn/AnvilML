@@ -137,8 +137,44 @@ def _real_startup_sequence() -> None:
     # is operational and what capabilities/nodes it supports.
     # capabilities_source="pytorch" in this branch (real mode);
     # "mock" in the mock-mode branch (ANVILML_WORKER_MOCK=1).
+    #
+    # All fields must match the Rust `WorkerEvent::Ready` struct for
+    # msgpack deserialization to succeed on the supervisor side.
+    # device_name: for CPU, synthesize a name from torch's CPU info;
+    #   for CUDA/ROCm, use torch.cuda.get_device_name().
+    # vram_total_mib / vram_free_mib: for CPU, report 0 (no GPU VRAM);
+    #   for CUDA/ROCm, query via torch.cuda.mem_get_info().
+    # torch_version: from torch.__version__.
+    if device_type == "cpu":
+        device_name = "CPU"
+        vram_total_mib = 0
+        vram_free_mib = 0
+    else:
+        try:
+            device_name = torch.cuda.get_device_name(device_index)
+        except Exception:
+            device_name = f"{device_type}:{device_index}"
+        try:
+            total, free = torch.cuda.mem_get_info(device_index)
+            vram_total_mib = total // (1024 * 1024)
+            vram_free_mib = free // (1024 * 1024)
+        except Exception:
+            vram_total_mib = 0
+            vram_free_mib = 0
+
     ready_event = {
         "_type": "Ready",
+        "worker_id": worker_id,
+        "device_index": device_index,
+        "device_name": device_name,
+        "device_type": device_type,
+        "vram_total_mib": vram_total_mib,
+        "vram_free_mib": vram_free_mib,
+        "torch_version": torch.__version__,
+        "fp16": caps["fp16"],
+        "bf16": caps["bf16"],
+        "fp8": caps["fp8"],
+        "flash_attention": caps["flash_attention"],
         "capabilities_source": "pytorch",
         "node_types": node_types,
     }
@@ -189,8 +225,26 @@ def _mock_startup_sequence() -> None:
 
     node_types = _import_nodes()
 
+    # Build the Ready event with all fields expected by the Rust
+    # `WorkerEvent::Ready` struct. Mock-mode uses synthetic values
+    # for device_name, vram, and torch_version since torch is not
+    # imported in this branch.
+    # device_name: synthetic GPU name for mock mode.
+    # vram_total_mib / vram_free_mib: synthetic VRAM values.
+    # torch_version: synthetic version string.
     ready_event = {
         "_type": "Ready",
+        "worker_id": worker_id,
+        "device_index": device_index,
+        "device_name": "Mock GPU",
+        "device_type": device_type,
+        "vram_total_mib": 1024,
+        "vram_free_mib": 900,
+        "torch_version": "0.0.0-mock",
+        "fp16": caps["fp16"],
+        "bf16": caps["bf16"],
+        "fp8": caps["fp8"],
+        "flash_attention": caps["flash_attention"],
         "capabilities_source": "mock",
         "node_types": node_types,
     }

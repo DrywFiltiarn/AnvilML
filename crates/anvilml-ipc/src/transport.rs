@@ -298,15 +298,26 @@ impl RouterTransport {
         };
 
         // Convert the message into individual frames.
-        // ROUTER always returns: [identity, delimiter, payload].
+        // ROUTER delivers:
+        //   - [identity, delimiter, payload] when the sender sent a 2-frame message
+        //     (the ROUTER prepends identity + delimiter before the 2 original frames)
+        //   - [identity, payload] when the sender sent a 1-frame message
+        //     (the ROUTER prepends only identity, no delimiter for single-frame)
+        // This difference exists because the ROUTER protocol only inserts the
+        // delimiter between the identity and the *first original frame* when there
+        // are multiple original frames — for a single-frame message there's nothing
+        // to delimit, so the delimiter is omitted. Both pyzmq and the Rust zeromq
+        // crate follow this behavior; the Rust test in bridge_tests.rs sends a
+        // 2-frame ZmqMessage which triggers the delimiter, but the Python worker
+        // sends a 1-frame msgpack message which does not.
         let frames = message.into_vec();
 
-        // Validate frame count — ROUTER multipart messages must have exactly 3
-        // frames: worker identity, empty delimiter, msgpack payload.
-        // A wrong count indicates a protocol violation or a partial message.
-        if frames.len() != 3 {
+        // Validate frame count — ROUTER multipart messages have either 2 or 3
+        // frames depending on whether the sender used a 1-frame or 2-frame
+        // message. Both are valid.
+        if frames.len() < 2 {
             return Err(IpcError::RecvFailed(format!(
-                "expected 3 frames, got {}",
+                "expected 2 or 3 frames, got {}",
                 frames.len()
             )));
         }
@@ -316,9 +327,10 @@ impl RouterTransport {
         let identity = String::from_utf8(frames[0].to_vec())
             .map_err(|e| IpcError::RecvFailed(format!("invalid UTF-8 identity: {e}")))?;
 
-        // Extract the msgpack payload from frame 2, skipping frame 1 (empty delimiter).
-        // The delimiter is a ROUTER protocol marker with no semantic information.
-        let payload = &frames[2];
+        // Extract the msgpack payload from frame 1 (2-frame message) or
+        // frame 2 (3-frame message with delimiter). The payload is always
+        // the last frame.
+        let payload = &frames[frames.len() - 1];
 
         // Deserialize the msgpack payload into a WorkerEvent.
         // from_slice reads the flat dict and dispatches on the "_type" field
