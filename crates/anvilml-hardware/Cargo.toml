@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-hardware"
-version = "0.1.9"
+version = "0.1.10"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -19,3 +19,15 @@ mock-hardware = []
 [dev-dependencies]
 serial_test = "3.5.0"
 tokio = { version = "1.47.0", features = ["full"] }
+
+# mock_tests.rs is entirely mock-hardware-only (unlike detect_tests.rs, which
+# mixes always-on tests with a handful of #[cfg(feature = "mock-hardware")]
+# functions in one file). Declaring it explicitly here with required-features
+# tells Cargo to skip building this test binary when the feature is off,
+# instead of failing with an unresolved-import compile error — `mock_tests.rs`
+# unconditionally imports `anvilml_hardware::mock::MockDetector`, which does
+# not exist without the feature.
+[[test]]
+name = "mock_tests"
+path = "tests/mock_tests.rs"
+required-features = ["mock-hardware"]
