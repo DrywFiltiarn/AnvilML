@@ -96,16 +96,17 @@
     "P9-A1",
     "P9-A2",
     "P9-A3",
-    "P9-B1"
+    "P9-B1",
+    "P9-C1"
   ],
-  "in_progress": "P9-C1",
+  "in_progress": "P9-C2",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "1. **Create `worker/worker_main.py`** with:\n   - Module-level docstring (Google style) describing the file's purpose: entry point for the Python worker process, and noting that real-mode startup (torch import, real probe) is the default branch while mock mode is the explicit alternate.\n   - The function `def _mock_probe_capabilities() -> dict:` with a Google-style docstring explaining it returns fixed synthetic capability values matching `InferenceCaps` field names, never imports torch, and is the mock-mode equivalent of `capability.probe_capabilities()`.\n   - The function body returns the dict literal:\n     ```python\n     return {\n         \"fp32\": True,\n         \"fp16\": True,\n         \"bf16\": True,\n         \"fp8\": True,\n         \"fp4\": False,\n         \"flash_attention\": True,\n     }\n     ```\n   - Rationale for `fp4=False`: Torch 2.x has no native `torch.float4` dtype. The real probe in `capability.py` attempts `torch.float8_e4m3fn` for both `fp8` and `fp4` (line 143), and on CPU that raises `NotImplementedError`. Since `fp4` is universally unsupported on current torch builds, the mock correctly returns `False`.\n   - Rationale for `fp8=True`: While the real probe returns `fp8=False` on CPU (because `torch.float8_e4m3fn` raises on CPU), the mock-mode synthetic values are device-agnostic defaults \u2014 they represent what a GPU-capable device would report. The mock is a synthetic baseline, not a CPU simulation. (This matches the pattern: mock returns \"all capable except fp4\".)\n   - Rationale for `flash_attention=True`: On modern torch builds, `scaled_dot_product_attention` is always available (at minimum via the math fallback), so this is correctly `True` for the synthetic baseline.\n\n2. **Create `worker/tests/test_worker_main.py`** with:\n   - Module docstring describing the test file's purpose.\n   - Test class `TestMockProbeCapabilities` with:\n     - `test_returns_six_required_keys()`: Imports `_mock_probe_capabilities`, calls it, asserts the result has exactly the 6 expected keys matching `InferenceCaps` field names.\n     - `test_all_values_are_bool()`: Iterates over all returned values, asserts each is `isinstance(value, bool)`.\n   - Test class `TestNoTorchImport` with:\n     - `test_no_torch_import_on_module_load()`: Spawns a fresh subprocess via `subprocess.run([sys.executable, \"-c\", \"...\"])` that imports `worker.worker_main` and asserts `\"torch\" not in sys.modules`. Uses `timeout=10` per `ENVIRONMENT.md \u00a711.3`. Checks `returncode == 0`.\n\n3. **No `__main__` block**: The file contains only the function \u2014 no `if __name__ == \"__main__\"` block, no startup logic. Those are added in later tasks (P9-D1, P9-D3).",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-05T13:44:21+0200",
-  "plan_approval_message_id": "1523293269528805472",
+  "last_updated": "2026-07-05T14:38:22+0200",
+  "plan_approval_message_id": "1523306819538255946",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1523293267712540794",
+  "plan_report_message_id": "1523306817403355360",
   "impl_report_message_id": null
 }

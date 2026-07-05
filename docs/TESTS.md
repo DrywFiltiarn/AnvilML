@@ -3520,3 +3520,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 ---
 
+
+---
+
+## test_returns_six_required_keys (anvilml-worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** The `worker.worker_main` module provides `_mock_probe_capabilities()` which returns a dict with 6 keys matching `InferenceCaps` field names.
+**Tests:** `_mock_probe_capabilities()` returns a dict with exactly the 6 required keys (`fp32`, `fp16`, `bf16`, `fp8`, `fp4`, `flash_attention`) matching `InferenceCaps` struct field names.
+**Mode:** mock
+**Inputs:** None (pure function, no args).
+**Expected output:** Dict with exactly 6 keys, no more, no fewer.
+**Acceptance:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py::TestMockProbeCapabilities::test_returns_six_required_keys -v` exits 0.
+
+---
+
+## test_all_values_are_bool (anvilml-worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** The `worker.worker_main` module provides `_mock_probe_capabilities()` which returns a dict with 6 boolean values.
+**Tests:** All 6 values in the returned dict are `bool` type (not `int`, `str`, or other).
+**Mode:** mock
+**Inputs:** None (pure function, no args).
+**Expected output:** Every `isinstance(v, bool)` is True.
+**Acceptance:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py::TestMockProbeCapabilities::test_all_values_are_bool -v` exits 0.
+
+---
+
+## test_fp4_is_false (anvilml-worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** The `worker.worker_main` module provides `_mock_probe_capabilities()` which returns synthetic capability values. Torch 2.x has no native `torch.float4` dtype, so `fp4` is universally False.
+**Tests:** The `fp4` key specifically maps to `False` — the one deliberate exception in synthetic values.
+**Mode:** mock
+**Inputs:** None (pure function, no args).
+**Expected output:** `result["fp4"] is False`.
+**Acceptance:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py::TestMockProbeCapabilities::test_fp4_is_false -v` exits 0.
+
+---
+
+## test_no_torch_import_on_module_load (anvilml-worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** The `worker.worker_main` module is a pure Python module with no external dependencies. Importing it must not transitively import `torch`.
+**Tests:** Importing `worker.worker_main` does not transitively import `torch`, confirmed via subprocess isolation. The subprocess spawns a fresh Python process that imports `worker.worker_main` and asserts `"torch" not in sys.modules`.
+**Mode:** mock
+**Inputs:** Subprocess runs `import worker.worker_main; import sys; assert 'torch' not in sys.modules`.
+**Expected output:** Subprocess exit code 0, stdout contains "OK".
+**Acceptance:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_worker_main.py::TestNoTorchImport::test_no_torch_import_on_module_load -v` exits 0.
