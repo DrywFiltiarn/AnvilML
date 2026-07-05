@@ -70,7 +70,9 @@ jobs:
 
       - name: Run mock-mode tests
         if: matrix.mode == 'mock'
-        run: ANVILML_WORKER_MOCK=1 python -m pytest worker/tests -v -m "not real_mode"
+        env:
+          ANVILML_WORKER_MOCK: "1"
+        run: python -m pytest worker/tests -v -m "not real_mode"
 
       # --- Real-mode steps (ubuntu + windows) ---
       - name: Set up Python
