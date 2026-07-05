@@ -82,10 +82,10 @@ Provisioning scripts create and populate it:
 
 ```bash
 # Linux / macOS
-bash scripts/install_worker_deps.sh
+bash scripts/install_worker_deps.sh --mode=agent
 
 # Windows (PowerShell)
-powershell -ExecutionPolicy Bypass -File scripts\install_worker_deps.ps1
+powershell -ExecutionPolicy Bypass -File scripts\install_worker_deps.ps1 --mode=agent
 ```
 
 These scripts detect the available hardware backend (CUDA / ROCm / CPU) and install
@@ -116,8 +116,8 @@ cargo build --workspace --features mock-hardware
 cargo test --workspace --features mock-hardware
 
 # 3. Provision the Python worker venv
-bash scripts/install_worker_deps.sh     # Linux
-# powershell -ExecutionPolicy Bypass -File scripts\install_worker_deps.ps1   # Windows
+bash scripts/install_worker_deps.sh --mode=agent     # Linux
+# powershell -ExecutionPolicy Bypass -File scripts\install_worker_deps.ps1 --mode=agent   # Windows
 
 # 4. Run Python mock-mode tests (invoke the venv interpreter directly — never bare python)
 # Linux / macOS:

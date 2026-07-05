@@ -21,12 +21,12 @@ jobs:
 
       - name: Provision worker venv (Linux)
         if: matrix.os == 'ubuntu-latest'
-        run: bash scripts/install_worker_deps.sh
+        run: bash scripts/install_worker_deps.sh --mode=ci
 
       - name: Provision worker venv (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
-        run: .\scripts\install_worker_deps.ps1
+        run: .\scripts\install_worker_deps.ps1 --mode=ci
 
       - name: Check formatting (Linux only)
         if: matrix.os == 'ubuntu-latest'

@@ -2586,8 +2586,9 @@ Python source.
 
 1. Place model files in configured model directories (default:
    `./models/{diffusion,text_encoders,vae}/`).
-2. Run `./scripts/install_worker_deps.sh` (Linux) / `install_worker_deps.ps1`
-   (Windows) to create the Python venv, or let AnvilML auto-provision on startup.
+2. Run `./scripts/install_worker_deps.sh --mode=agent` (Linux) /
+   `install_worker_deps.ps1 --mode=agent` (Windows) to create the Python venv,
+   or let AnvilML auto-provision on startup.
 3. Start: `./anvilml` (or `anvilml.exe`). Binds `127.0.0.1:8488`.
 
 ### 19.2 Ghost Job Reset
