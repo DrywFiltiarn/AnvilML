@@ -3830,3 +3830,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** A class with all 6 required attributes.
 **Expected output:** `result is TestNode` is `True`; entry removed from `NODE_REGISTRY` for test isolation.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_register_returns_class_identity -v` exits 0.
+
+---
+
+## test_node_context_assigns_all_attrs (anvilml-worker)
+
+**File:** `worker/tests/test_base.py`
+**Context:** The `worker.nodes.base` module is importable and defines the `NodeContext` class with 7 `__init__` parameters. A `threading.Event` is used for `cancel_flag`.
+**Tests:** Constructs a `NodeContext` with concrete values for all 7 parameters and asserts each attribute is stored correctly — `job_id`, `device`, `caps`, `cancel_flag`, `emit`, `pipeline_cache`, and `mock`.
+**Mode:** both
+**Inputs:** `NodeContext(job_id="test-job", device="cpu", caps={"bf16": True, "fp8": False}, cancel_flag=threading.Event(), emit=lambda e: None, pipeline_cache={}, mock=True)`.
+**Expected output:** All 7 attributes match their corresponding inputs exactly.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_node_context_assigns_all_attrs -v` exits 0.
+
+---
+
+## test_node_context_mock_true (anvilml-worker)
+
+**File:** `worker/tests/test_base.py`
+**Context:** The `worker.nodes.base` module is importable and defines the `NodeContext` class.
+**Tests:** Constructs a `NodeContext` with `mock=True` and asserts the mock attribute is `True`, confirming the flag is stored without transformation.
+**Mode:** both
+**Inputs:** `NodeContext(mock=True, ...)` with minimal valid values for other params.
+**Expected output:** `ctx.mock is True`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_node_context_mock_true -v` exits 0.
+
+---
+
+## test_node_context_mock_false (anvilml-worker)
+
+**File:** `worker/tests/test_base.py`
+**Context:** The `worker.nodes.base` module is importable and defines the `NodeContext` class.
+**Tests:** Constructs a `NodeContext` with `mock=False` and asserts the mock attribute is `False`, confirming the flag is stored without transformation.
+**Mode:** both
+**Inputs:** `NodeContext(mock=False, ...)` with minimal valid values for other params.
+**Expected output:** `ctx.mock is False`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_node_context_mock_false -v` exits 0.
+
+---
+
+## test_node_context_caps_accepts_arbitrary_dict (anvilml-worker)
+
+**File:** `worker/tests/test_base.py`
+**Context:** The `worker.nodes.base` module is importable and defines the `NodeContext` class.
+**Tests:** Constructs a `NodeContext` with a non-standard dict (arbitrary keys and mixed-value types) and asserts it is stored unchanged, confirming that `NodeContext` imposes no validation on the caps payload.
+**Mode:** both
+**Inputs:** `NodeContext(caps={"some_key": "some_value", "numeric": 42}, ...)` with minimal valid values for other params.
+**Expected output:** `ctx.caps == {"some_key": "some_value", "numeric": 42}`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_node_context_caps_accepts_arbitrary_dict -v` exits 0.

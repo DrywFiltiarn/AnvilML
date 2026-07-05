@@ -1,5 +1,6 @@
 """Tests for worker.nodes.base — SlotSpec dataclass, NODE_REGISTRY dict, and @register decorator."""
 
+import threading
 from worker.nodes import base
 
 
@@ -215,3 +216,86 @@ def test_register_returns_class_identity() -> None:
     assert result is TestNode
     # Clean up: remove the entry so subsequent tests see a clean registry.
     del base.NODE_REGISTRY["test.node"]
+
+
+def test_node_context_assigns_all_attrs() -> None:
+    """NodeContext constructor assigns all 7 attributes to matching self attributes.
+
+    Constructs a NodeContext with concrete values for every parameter and
+    asserts each attribute is stored correctly — job_id, device, caps,
+    cancel_flag, emit, pipeline_cache, and mock.
+    """
+    import threading
+
+    cancel = threading.Event()
+    ctx = base.NodeContext(
+        job_id="test-job",
+        device="cpu",
+        caps={"bf16": True, "fp8": False},
+        cancel_flag=cancel,
+        emit=lambda e: None,
+        pipeline_cache={},
+        mock=True,
+    )
+    assert ctx.job_id == "test-job"
+    assert ctx.device == "cpu"
+    assert ctx.caps == {"bf16": True, "fp8": False}
+    assert ctx.cancel_flag is cancel
+    assert ctx.emit is not None
+    assert ctx.pipeline_cache == {}
+    assert ctx.mock is True
+
+
+def test_node_context_mock_true() -> None:
+    """NodeContext constructs cleanly with mock=True.
+
+    Constructs a NodeContext with mock=True and asserts the mock attribute
+    is True, confirming the flag is stored without transformation.
+    """
+    ctx = base.NodeContext(
+        job_id="test-job",
+        device="cpu",
+        caps={},
+        cancel_flag=threading.Event(),
+        emit=lambda e: None,
+        pipeline_cache={},
+        mock=True,
+    )
+    assert ctx.mock is True
+
+
+def test_node_context_mock_false() -> None:
+    """NodeContext constructs cleanly with mock=False.
+
+    Constructs a NodeContext with mock=False and asserts the mock attribute
+    is False, confirming the flag is stored without transformation.
+    """
+    ctx = base.NodeContext(
+        job_id="test-job",
+        device="cpu",
+        caps={},
+        cancel_flag=threading.Event(),
+        emit=lambda e: None,
+        pipeline_cache={},
+        mock=False,
+    )
+    assert ctx.mock is False
+
+
+def test_node_context_caps_accepts_arbitrary_dict() -> None:
+    """caps accepts any arbitrary dict without validation.
+
+    Constructs a NodeContext with a non-standard dict (arbitrary keys and
+    mixed-value types) and asserts it is stored unchanged, confirming that
+    NodeContext imposes no validation on the caps payload.
+    """
+    ctx = base.NodeContext(
+        job_id="test-job",
+        device="cpu",
+        caps={"some_key": "some_value", "numeric": 42},
+        cancel_flag=threading.Event(),
+        emit=lambda e: None,
+        pipeline_cache={},
+        mock=False,
+    )
+    assert ctx.caps == {"some_key": "some_value", "numeric": 42}

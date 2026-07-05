@@ -32,3 +32,28 @@ class SlotSpec:
     name: str
     slot_type: str          # Must match a SlotType value (e.g. "MODEL", "CLIP")
     optional: bool = False
+
+
+class NodeContext:
+    """Runtime context passed to every node's execute() method.
+
+    Attributes:
+        job_id: The UUID string of the currently executing job.
+        device: The torch device string (e.g. "cuda:0", "cpu"). Unused in mock mode.
+        caps: The worker's own InferenceCaps dict from capability.probe_capabilities()
+            (or the mock equivalent). Arch modules read dtype decisions from this —
+            never from a Rust-side hint — per §6.6/§11.5.
+        cancel_flag: threading.Event; set when the job is cancelled.
+        emit: Callable for emitting WorkerEvent dicts back to the supervisor.
+        pipeline_cache: The shared LRU model/pipeline cache.
+        mock: bool — True if ANVILML_WORKER_MOCK=1. Nodes branch on this exactly
+            once, at the top of execute(), never deeper inside arch dispatch.
+    """
+    def __init__(self, job_id, device, caps, cancel_flag, emit, pipeline_cache, mock):
+        self.job_id = job_id
+        self.device = device
+        self.caps = caps
+        self.cancel_flag = cancel_flag
+        self.emit = emit
+        self.pipeline_cache = pipeline_cache
+        self.mock = mock
