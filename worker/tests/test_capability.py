@@ -3,9 +3,22 @@
 All tests are marked ``@pytest.mark.real_mode`` because they require
 a real torch import and actual forward passes. They do not run under
 ``ANVILML_WORKER_MOCK=1``.
+
+``pytest.importorskip("torch")`` below is required, not decorative: the
+``@pytest.mark.real_mode`` marker only filters which *test items* execute,
+after collection. Collection itself still imports this module — and this
+module imports ``worker.capability``, which imports torch unconditionally
+at module scope (by design; see its own docstring). Without the guard
+below, collection fails with ImportError in any environment lacking
+torch (e.g. the mock-mode CI job), instead of cleanly skipping. Any
+future test module for a real-mode-only, torch-importing unit must use
+the same guard — see ``ANVILML_DESIGN.md §18.3``'s pytest marker
+convention.
 """
 
 import pytest
+
+torch = pytest.importorskip("torch")
 
 import worker.capability as capability
 

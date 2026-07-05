@@ -2535,7 +2535,15 @@ able to point at exactly which job is red).
 **pytest marker convention:** real-mode-only tests are marked `@pytest.mark.real_mode`
 (registered in `worker/pytest.ini` or `pyproject.toml`). A test with no marker is
 assumed mock-compatible and runs in both jobs unless it imports torch unconditionally
-(which only `real_mode`-marked tests may do).
+(which only `real_mode`-marked tests may do). The marker alone does not protect
+collection — pytest must import a test module to discover its markers, so any test
+module that imports torch (directly, or transitively via a module like
+`worker.capability` that imports torch at module scope by design) must additionally
+start with `torch = pytest.importorskip("torch")` before that import. Without it,
+collecting the module in a torch-less environment (the mock-mode CI job, or the
+`worker-*-real` jobs' own pre-torch-install collection check below) raises
+`ImportError` and aborts the whole collection run, instead of cleanly skipping just
+that module's tests.
 
 **No OS gate on worker job ordering.** Within `worker-linux-real` and
 `worker-windows-real`, the install order is always: `base.txt` → mock-mode collection
