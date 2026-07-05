@@ -54,9 +54,44 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
-      - name: Run worker tests
-        run: |
-          echo "worker tests: no worker/ source yet (mode=${{ matrix.mode }})"
+
+      # --- Mock-mode steps (ubuntu + windows) ---
+      - name: Set up Python
+        if: matrix.mode == 'mock'
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install base dependencies
+        if: matrix.mode == 'mock'
+        run: pip install -r worker/requirements/base.txt
+
+      - name: Run mock-mode tests
+        if: matrix.mode == 'mock'
+        run: ANVILML_WORKER_MOCK=1 python -m pytest worker/tests -v -m "not real_mode"
+
+      # --- Real-mode steps (ubuntu + windows) ---
+      - name: Set up Python
+        if: matrix.mode == 'real'
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install base dependencies
+        if: matrix.mode == 'real'
+        run: pip install -r worker/requirements/base.txt
+
+      - name: Check mock suite collection (no torch)
+        if: matrix.mode == 'real'
+        run: python -m pytest worker/tests --collect-only -m "not real_mode"
+
+      - name: Install torch CPU wheel
+        if: matrix.mode == 'real'
+        run: pip install -r worker/requirements/cpu-runner-reqs.txt
+
+      - name: Run real-mode tests
+        if: matrix.mode == 'real'
+        run: python -m pytest worker/tests -v -m real_mode
 
   openapi-drift:
     runs-on: ubuntu-latest
