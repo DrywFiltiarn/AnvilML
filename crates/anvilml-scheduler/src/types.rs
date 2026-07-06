@@ -31,3 +31,44 @@ impl ValidatedGraph {
         &self.0
     }
 }
+
+/// Errors produced by graph validation.
+///
+/// Each variant corresponds to one of the six validation checks defined
+/// in ANVILML_DESIGN.md §12.3, plus the structural root check (check 1).
+/// All variants derive `Debug`, `Clone`, and `thiserror::Error`.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum GraphError {
+    /// The root JSON value is not an object (e.g. it is an array, string, or null).
+    #[error("root is not an object")]
+    NotAnObject,
+
+    /// The root object does not contain a `"nodes"` key.
+    #[error(r#"missing "nodes" array"#)]
+    MissingNodesArray,
+
+    /// A node `id` value appeared more than once in the nodes array.
+    #[error("duplicate node id: {0}")]
+    DuplicateNodeId(String),
+
+    /// A node referenced a `type` that is not registered in the node type registry.
+    #[error(r#"unknown node type "{type_name}" for node {node_id}"#)]
+    UnknownNodeType { node_id: String, type_name: String },
+
+    /// An edge references an output slot that the source node does not declare.
+    #[error(r#"dangling edge: node {node_id} missing output slot "{slot_name}""#)]
+    DanglingEdge { node_id: String, slot_name: String },
+
+    /// An edge's output slot type is incompatible with the receiving input slot type.
+    #[error(r#"slot type mismatch on node {node_id} slot "{slot_name}": expected {expected}, found {found}"#)]
+    SlotTypeMismatch {
+        node_id: String,
+        slot_name: String,
+        expected: String,
+        found: String,
+    },
+
+    /// The graph contains a cycle; the Vec lists every node participating in the cycle.
+    #[error("cycle detected involving nodes: {0:?}")]
+    CycleDetected(Vec<String>),
+}

@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-scheduler"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anvilml-artifacts",
  "anvilml-core",
@@ -189,6 +189,7 @@ dependencies = [
  "anvilml-registry",
  "anvilml-worker",
  "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

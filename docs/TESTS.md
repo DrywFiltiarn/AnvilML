@@ -4155,3 +4155,99 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Expected output:** `format!("{:?}", ...)` produces a non-empty string containing "ValidatedGraph"; cloned value produces an identical Debug representation.
 **Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validated_graph_derives_debug_and_clone` exits 0.
 
+
+---
+
+## test_graph_error_not_an_object_display (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `thiserror = "2.0.18"` and the `types` module providing `GraphError` with all 7 variants. The `thiserror::Error` derive provides `Display` via `#[error("...")]` attributes on each variant.
+**Tests:** `GraphError::NotAnObject` produces a non-empty Display string that equals the exact expected message `"root is not an object"`.
+**Mode:** both
+**Inputs:** `GraphError::NotAnObject` with no arguments.
+**Expected output:** `to_string()` returns `"root is not an object"`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_graph_error_not_an_object_display` exits 0.
+
+---
+
+## test_graph_error_missing_nodes_array_display (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `thiserror = "2.0.18"` and the `types` module providing `GraphError::MissingNodesArray`.
+**Tests:** `GraphError::MissingNodesArray` produces a non-empty Display string, confirming the `#[error(...)]` attribute is correctly wired.
+**Mode:** both
+**Inputs:** `GraphError::MissingNodesArray` with no arguments.
+**Expected output:** `to_string()` returns a non-empty string.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_graph_error_missing_nodes_array_display` exits 0.
+
+---
+
+## test_graph_error_duplicate_node_id_display (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `thiserror = "2.0.18"` and the `types` module providing `GraphError::DuplicateNodeId(String)`. Struct-field interpolation via `{0}` is used in the `#[error(...)]` attribute.
+**Tests:** `DuplicateNodeId("node_a")` Display output contains the node ID string `"node_a"`, confirming positional struct-field interpolation works.
+**Mode:** both
+**Inputs:** `GraphError::DuplicateNodeId("node_a".into())`.
+**Expected output:** `to_string()` contains `"node_a"`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_graph_error_duplicate_node_id_display` exits 0.
+
+---
+
+## test_graph_error_unknown_node_type_display (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `thiserror = "2.0.18"` and the `types` module providing `GraphError::UnknownNodeType { node_id, type_name }`. Named struct-field interpolation is used in `#[error(...)]`.
+**Tests:** `UnknownNodeType { node_id: "n1", type_name: "BadNode" }` Display output contains both `"n1"` and `"BadNode"`, confirming named struct-field interpolation works.
+**Mode:** both
+**Inputs:** `GraphError::UnknownNodeType { node_id: "n1".into(), type_name: "BadNode".into() }`.
+**Expected output:** `to_string()` contains both `"n1"` and `"BadNode"`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_graph_error_unknown_node_type_display` exits 0.
+
+---
+
+## test_graph_error_dangling_edge_display (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `thiserror = "2.0.18"` and the `types` module providing `GraphError::DanglingEdge { node_id, slot_name }`. Named struct-field interpolation is used in `#[error(...)]`.
+**Tests:** `DanglingEdge { node_id: "n2", slot_name: "output" }` Display output contains both `"n2"` and `"output"`.
+**Mode:** both
+**Inputs:** `GraphError::DanglingEdge { node_id: "n2".into(), slot_name: "output".into() }`.
+**Expected output:** `to_string()` contains both `"n2"` and `"output"`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_graph_error_dangling_edge_display` exits 0.
+
+---
+
+## test_graph_error_slot_type_mismatch_display (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `thiserror = "2.0.18"` and the `types` module providing `GraphError::SlotTypeMismatch { node_id, slot_name, expected, found }`. Named struct-field interpolation is used in `#[error(...)]`.
+**Tests:** `SlotTypeMismatch { node_id: "n3", slot_name: "in", expected: "FLOAT", found: "INT" }` Display output contains all four values.
+**Mode:** both
+**Inputs:** `GraphError::SlotTypeMismatch { node_id: "n3".into(), slot_name: "in".into(), expected: "FLOAT".into(), found: "INT".into() }`.
+**Expected output:** `to_string()` contains `"n3"`, `"in"`, `"FLOAT"`, and `"INT"`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_graph_error_slot_type_mismatch_display` exits 0.
+
+---
+
+## test_graph_error_cycle_detected_display (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `thiserror = "2.0.18"` and the `types` module providing `GraphError::CycleDetected(Vec<String>)`. The `#[error("...")]` attribute uses `{0:?}` to include the full vector in the display output.
+**Tests:** `CycleDetected(vec!["A", "B", "C"])` Display output contains the string `"cycle detected"`.
+**Mode:** both
+**Inputs:** `GraphError::CycleDetected(vec!["A".into(), "B".into(), "C".into()])`.
+**Expected output:** `to_string()` contains `"cycle detected"`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_graph_error_cycle_detected_display` exits 0.
+
+---
+
+## test_graph_error_display_distinct (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `thiserror = "2.0.18"` and the `types` module providing all 7 `GraphError` variants. Each variant has a unique `#[error("...")]` message.
+**Tests:** All 7 `GraphError` variants produce pairwise distinct Display strings, confirming the error messages are useful for operator diagnosis — no two variants produce the same string.
+**Mode:** both
+**Inputs:** All 7 `GraphError` variants constructed with minimal test values.
+**Expected output:** No two `to_string()` outputs are equal; the set of 7 strings has cardinality 7.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_graph_error_display_distinct` exits 0.
