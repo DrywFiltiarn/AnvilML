@@ -19,6 +19,7 @@ fn test_app_state_constructs() {
     let state = AppState {
         config: Arc::new(ServerConfig::default()),
         node_registry: Arc::new(NodeTypeRegistry::new()),
+        start_time: std::time::Instant::now(),
     };
 
     // Verify both fields are accessible and the registry starts empty.
@@ -40,6 +41,7 @@ fn test_app_state_clone_shares_node_registry() {
     let state = AppState {
         config: Arc::new(ServerConfig::default()),
         node_registry: Arc::new(NodeTypeRegistry::new()),
+        start_time: std::time::Instant::now(),
     };
 
     // Clone before mutation — both clones share the same Arc.

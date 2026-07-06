@@ -11,14 +11,13 @@ pub use state::AppState;
 /// module wired to its route path. Callers pass the resulting router
 /// to `axum::serve()` to start the HTTP server.
 ///
-/// The `start_time` argument is captured at process startup and used by
-/// the `/health` handler to compute elapsed uptime in seconds.
-pub fn build_router(start_time: std::time::Instant) -> axum::Router {
-    // Wrap the start instant in `HealthState` and set it as the router's
-    // state type via `with_state()`, making it available to handlers
-    // through `axum::extract::State<HealthState>`.
-    let state = handlers::health::HealthState { start_time };
+/// The `app_state` argument is a pre-constructed `AppState` that holds
+/// the server configuration, node registry, and process-start instant.
+/// The router uses `.with_state()` to inject this state into handlers
+/// via `axum::extract::State<AppState>`.
+pub fn build_router(app_state: AppState) -> axum::Router {
     axum::Router::new()
         .route("/health", axum::routing::get(handlers::health::health))
-        .with_state(state)
+        .route("/v1/nodes", axum::routing::get(handlers::nodes::list_nodes))
+        .with_state(app_state)
 }

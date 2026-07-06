@@ -5,3 +5,4 @@
 //! parent `lib.rs`.
 
 pub mod health;
+pub mod nodes;

@@ -4,11 +4,13 @@ use tracing_subscriber::EnvFilter;
 
 use anvilml::shutdown;
 use anvilml_core::CliOverrides;
+use anvilml_core::NodeTypeRegistry;
 use anvilml_core::config_load;
 use anvilml_hardware::detect_all_devices;
 use anvilml_registry::create_pool;
-use anvilml_server::build_router;
+use anvilml_server::{AppState, build_router};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::net::TcpListener;
 
@@ -143,14 +145,24 @@ async fn main() {
     // Capture process-start instant once, before binding, so the health
     // handler returns a real elapsed-time measurement.
     let start_time = Instant::now();
-    let router = build_router(start_time);
-    let listener = TcpListener::bind(format!("{}:{}", config.host, config.port))
-        .await
-        .unwrap();
-    tracing::info!(
-        addr = %format!("{}:{}", config.host, config.port),
-        "listening"
-    );
+
+    // Construct `AppState` with the loaded config, a fresh empty node
+    // registry (populated later when the Python worker sends Ready),
+    // and the captured start instant for uptime calculation.
+    let app_state = AppState {
+        config: Arc::new(config),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
+        start_time,
+    };
+
+    // Extract the listen address from the Arc-wrapped config before moving
+    // `app_state` into `build_router`. The `Arc` ensures the config data
+    // is shared, not copied, so this is zero-cost.
+    let addr = format!("{}:{}", app_state.config.host, app_state.config.port);
+
+    let router = build_router(app_state);
+    let listener = TcpListener::bind(&addr).await.unwrap();
+    tracing::info!(addr = %addr, "listening");
     tokio::select! {
         _ = axum::serve(listener, router) => {},
         _ = shutdown::wait_for_shutdown_signal() => {

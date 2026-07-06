@@ -3,11 +3,13 @@
 //! Tests use the crate's public API (`build_router()`) to make
 //! in-process HTTP requests without opening a real socket.
 
-use anvilml_server::build_router;
+use anvilml_core::{NodeTypeRegistry, ServerConfig};
+use anvilml_server::{AppState, build_router};
 use axum::body::Body;
 use axum::body::to_bytes;
 use axum::http::Request;
 use serde_json::Value;
+use std::sync::Arc;
 use tower::util::ServiceExt;
 
 /// Verify that GET /health returns 200 OK with a JSON body containing
@@ -20,7 +22,12 @@ use tower::util::ServiceExt;
 #[tokio::test]
 async fn test_health_returns_200() {
     let start = std::time::Instant::now();
-    let router = build_router(start);
+    let state = AppState {
+        config: Arc::new(ServerConfig::default()),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
+        start_time: start,
+    };
+    let router = build_router(state);
     let req = Request::get("/health").body(Body::empty()).unwrap();
     let res = router.oneshot(req).await.unwrap();
     assert_eq!(res.status(), axum::http::StatusCode::OK);

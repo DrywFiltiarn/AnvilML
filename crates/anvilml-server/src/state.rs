@@ -21,4 +21,8 @@ pub struct AppState {
     /// Dynamic registry of Python-worker node types, populated at
     /// worker Ready time.
     pub node_registry: Arc<NodeTypeRegistry>,
+
+    /// Monotonic clock instant captured at process startup.
+    /// Used by the `/health` handler to compute elapsed uptime.
+    pub start_time: std::time::Instant,
 }

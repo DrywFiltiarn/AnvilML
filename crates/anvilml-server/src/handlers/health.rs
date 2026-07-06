@@ -1,19 +1,12 @@
+//! Liveness-check handler.
+//!
+//! Returns `200 OK` with a JSON body containing the server status, version,
+//! and elapsed uptime — per `ANVILML_DESIGN.md §13.4`.
+
 use axum::Json;
-/// Liveness-check handler.
-///
-/// Returns `200 OK` with a JSON body containing the server status, version,
-/// and elapsed uptime — per `ANVILML_DESIGN.md §13.4`.
-///
-/// State is injected via `axum::extract::State<HealthState>` which carries the
-/// process-start instant for uptime calculation.
 use axum::extract::State;
 
-/// Application state carrying the process-start instant for uptime calculation.
-#[derive(Clone)]
-pub(crate) struct HealthState {
-    /// Monotonic clock instant captured at process startup.
-    pub(crate) start_time: std::time::Instant,
-}
+use crate::AppState;
 
 /// JSON response body for the `/health` liveness probe.
 ///
@@ -28,7 +21,14 @@ pub(crate) struct HealthResponse {
     uptime_s: u64,
 }
 
-pub(crate) async fn health(State(state): State<HealthState>) -> Json<HealthResponse> {
+/// Health-check handler.
+///
+/// Returns `200 OK` with a JSON body containing the server status, version,
+/// and elapsed uptime — per `ANVILML_DESIGN.md §13.4`.
+///
+/// State is injected via `axum::extract::State<AppState>` which carries the
+/// process-start instant for uptime calculation.
+pub(crate) async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     // Compute elapsed seconds since process start using monotonic clock.
     let uptime_s = (std::time::Instant::now() - state.start_time).as_secs();
     Json(HealthResponse {
