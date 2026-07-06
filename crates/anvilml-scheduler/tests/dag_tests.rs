@@ -988,3 +988,423 @@ fn test_validate_graph_multiple_slot_type_mismatches_collected() {
         );
     }
 }
+
+// ====== Check 6: Cycle detection (Kahn's algorithm) ======
+
+/// Test check 6: a 2-node cycle (a→b, b→a) produces a CycleDetected
+/// error containing both node IDs.
+///
+/// The registry contains "NodeA" with output "OUT" and "NodeB" with
+/// input "IN". The graph has nodes "a" and "b" connected in both
+/// directions, forming a cycle. validate_graph must detect both nodes
+/// as cycle participants.
+#[test]
+fn test_validate_graph_simple_two_node_cycle() {
+    let registry = NodeTypeRegistry::new();
+    registry.register_all(vec![
+        NodeTypeDescriptor {
+            type_name: "NodeA".into(),
+            display_name: "Node A".into(),
+            category: "test".into(),
+            description: "Node A".into(),
+            inputs: vec![SlotDescriptor {
+                name: "IN".into(),
+                slot_type: SlotType::Model,
+                optional: false,
+            }],
+            outputs: vec![SlotDescriptor {
+                name: "OUT".into(),
+                slot_type: SlotType::Model,
+                optional: false,
+            }],
+        },
+        NodeTypeDescriptor {
+            type_name: "NodeB".into(),
+            display_name: "Node B".into(),
+            category: "test".into(),
+            description: "Node B".into(),
+            inputs: vec![SlotDescriptor {
+                name: "IN".into(),
+                slot_type: SlotType::Model,
+                optional: false,
+            }],
+            outputs: vec![SlotDescriptor {
+                name: "OUT".into(),
+                slot_type: SlotType::Model,
+                optional: false,
+            }],
+        },
+    ]);
+
+    let graph = serde_json::json!({
+        "nodes": [
+            {"id": "a", "type": "NodeA"},
+            {"id": "b", "type": "NodeB"}
+        ],
+        "edges": [
+            {"from": "a:OUT", "to": "b:IN"},
+            {"from": "b:OUT", "to": "a:IN"}
+        ]
+    });
+    let result = validate_graph(graph, &registry);
+
+    assert!(result.is_err(), "Expected Err for 2-node cycle");
+    let errors = result.unwrap_err();
+    assert_eq!(errors.len(), 1, "Expected exactly one error");
+    match &errors[0] {
+        GraphError::CycleDetected(nodes) => {
+            assert_eq!(
+                nodes.len(),
+                2,
+                "Expected both nodes in cycle, got: {:?}",
+                nodes
+            );
+            assert!(
+                nodes.contains(&"a".to_string()),
+                "Cycle must include node 'a'"
+            );
+            assert!(
+                nodes.contains(&"b".to_string()),
+                "Cycle must include node 'b'"
+            );
+        }
+        other => panic!("Expected CycleDetected, got: {:?}", other),
+    }
+}
+
+/// Test check 6: a 3-node cycle (a→b→c→a) produces a CycleDetected
+/// error containing all three node IDs.
+///
+/// The registry contains "NodeX" with output "OUT" and input "IN".
+/// The graph has nodes "a", "b", "c" connected in a cycle.
+/// validate_graph must detect all three nodes as cycle participants.
+#[test]
+fn test_validate_graph_three_node_cycle() {
+    let registry = NodeTypeRegistry::new();
+    registry.register_all(vec![NodeTypeDescriptor {
+        type_name: "NodeX".into(),
+        display_name: "Node X".into(),
+        category: "test".into(),
+        description: "Node X".into(),
+        inputs: vec![SlotDescriptor {
+            name: "IN".into(),
+            slot_type: SlotType::Model,
+            optional: false,
+        }],
+        outputs: vec![SlotDescriptor {
+            name: "OUT".into(),
+            slot_type: SlotType::Model,
+            optional: false,
+        }],
+    }]);
+
+    let graph = serde_json::json!({
+        "nodes": [
+            {"id": "a", "type": "NodeX"},
+            {"id": "b", "type": "NodeX"},
+            {"id": "c", "type": "NodeX"}
+        ],
+        "edges": [
+            {"from": "a:OUT", "to": "b:IN"},
+            {"from": "b:OUT", "to": "c:IN"},
+            {"from": "c:OUT", "to": "a:IN"}
+        ]
+    });
+    let result = validate_graph(graph, &registry);
+
+    assert!(result.is_err(), "Expected Err for 3-node cycle");
+    let errors = result.unwrap_err();
+    assert_eq!(errors.len(), 1, "Expected exactly one error");
+    match &errors[0] {
+        GraphError::CycleDetected(nodes) => {
+            assert_eq!(
+                nodes.len(),
+                3,
+                "Expected all 3 nodes in cycle, got: {:?}",
+                nodes
+            );
+            assert!(nodes.contains(&"a".to_string()), "Cycle must include 'a'");
+            assert!(nodes.contains(&"b".to_string()), "Cycle must include 'b'");
+            assert!(nodes.contains(&"c".to_string()), "Cycle must include 'c'");
+        }
+        other => panic!("Expected CycleDetected, got: {:?}", other),
+    }
+}
+
+/// Test check 6: a fully valid acyclic graph with all six checks passing
+/// returns Ok(ValidatedGraph).
+///
+/// The registry contains "LoadModel" (outputs MODEL, CLIP) and
+/// "ClipTextEncode" (input CLIP). The graph has two nodes connected
+/// with a single edge a→b (no cycles), all types registered, and
+/// correct slot types. validate_graph must return Ok.
+#[test]
+fn test_validate_graph_acyclic_graph_with_all_checks_passing() {
+    let registry = NodeTypeRegistry::new();
+    registry.register_all(vec![
+        NodeTypeDescriptor {
+            type_name: "LoadModel".into(),
+            display_name: "Load Model".into(),
+            category: "loaders".into(),
+            description: "Loads a model checkpoint".into(),
+            inputs: vec![],
+            outputs: vec![
+                SlotDescriptor {
+                    name: "MODEL".into(),
+                    slot_type: SlotType::Model,
+                    optional: false,
+                },
+                SlotDescriptor {
+                    name: "CLIP".into(),
+                    slot_type: SlotType::Clip,
+                    optional: false,
+                },
+            ],
+        },
+        NodeTypeDescriptor {
+            type_name: "ClipTextEncode".into(),
+            display_name: "Clip Text Encode".into(),
+            category: "conditioning".into(),
+            description: "Encodes text with CLIP".into(),
+            inputs: vec![SlotDescriptor {
+                name: "CLIP".into(),
+                slot_type: SlotType::Clip,
+                optional: false,
+            }],
+            outputs: vec![],
+        },
+    ]);
+
+    let graph = serde_json::json!({
+        "nodes": [
+            {"id": "load_model_0", "type": "LoadModel"},
+            {"id": "clip_encode_0", "type": "ClipTextEncode"}
+        ],
+        "edges": [
+            {"from": "load_model_0:CLIP", "to": "clip_encode_0:CLIP"}
+        ]
+    });
+    let result = validate_graph(graph.clone(), &registry);
+
+    assert!(
+        result.is_ok(),
+        "Expected Ok for fully valid acyclic graph, got errors: {:?}",
+        result.err()
+    );
+    let validated = result.unwrap();
+    assert_eq!(validated._test_inner(), &graph);
+}
+
+/// Test check 6 combined with check 3: a graph with both a cycle
+/// and an unknown node type produces errors for both violations
+/// in a single Err(Vec).
+///
+/// The registry is empty (no types registered). The graph has nodes
+/// "a" and "b" with unregistered types, connected in a cycle.
+/// validate_graph must collect both UnknownNodeType and CycleDetected
+/// errors in one Err.
+#[test]
+fn test_validate_graph_cycle_with_other_violations() {
+    let registry = NodeTypeRegistry::new();
+    let graph = serde_json::json!({
+        "nodes": [
+            {"id": "a", "type": "UnknownType1"},
+            {"id": "b", "type": "UnknownType2"}
+        ],
+        "edges": [
+            {"from": "a:OUT", "to": "b:IN"},
+            {"from": "b:OUT", "to": "a:IN"}
+        ]
+    });
+    let result = validate_graph(graph, &registry);
+
+    assert!(
+        result.is_err(),
+        "Expected Err for graph with cycle + unknown types"
+    );
+    let errors = result.unwrap_err();
+    // Should have: 2 UnknownNodeType + 1 CycleDetected = 3 errors
+    assert_eq!(
+        errors.len(),
+        3,
+        "Expected 3 errors (2 UnknownNodeType + 1 CycleDetected), got {}",
+        errors.len()
+    );
+
+    // Verify the first two are UnknownNodeType
+    match &errors[0] {
+        GraphError::UnknownNodeType { node_id, type_name } => {
+            assert_eq!(node_id, "a");
+            assert_eq!(type_name, "UnknownType1");
+        }
+        other => panic!("Expected UnknownNodeType, got: {:?}", other),
+    }
+    match &errors[1] {
+        GraphError::UnknownNodeType { node_id, type_name } => {
+            assert_eq!(node_id, "b");
+            assert_eq!(type_name, "UnknownType2");
+        }
+        other => panic!("Expected UnknownNodeType, got: {:?}", other),
+    }
+    // Verify the third is CycleDetected
+    match &errors[2] {
+        GraphError::CycleDetected(nodes) => {
+            assert_eq!(
+                nodes.len(),
+                2,
+                "Cycle must include both nodes, got: {:?}",
+                nodes
+            );
+        }
+        other => panic!("Expected CycleDetected, got: {:?}", other),
+    }
+}
+
+/// Test check 6: a graph with nodes but no edges is trivially acyclic.
+///
+/// With no edges, in-degrees are all 0, so all nodes are processed
+/// and no cycle is detected. validate_graph must return Ok.
+#[test]
+fn test_validate_graph_no_edges_no_cycle() {
+    let registry = NodeTypeRegistry::new();
+    registry.register_all(vec![NodeTypeDescriptor {
+        type_name: "NodeX".into(),
+        display_name: "Node X".into(),
+        category: "test".into(),
+        description: "Node X".into(),
+        inputs: vec![],
+        outputs: vec![],
+    }]);
+
+    let graph = serde_json::json!({
+        "nodes": [
+            {"id": "a", "type": "NodeX"},
+            {"id": "b", "type": "NodeX"},
+            {"id": "c", "type": "NodeX"}
+        ]
+    });
+    let result = validate_graph(graph.clone(), &registry);
+
+    assert!(
+        result.is_ok(),
+        "Expected Ok for graph with nodes but no edges, got errors: {:?}",
+        result.err()
+    );
+    let validated = result.unwrap();
+    assert_eq!(validated._test_inner(), &graph);
+}
+
+/// Test check 6: a single-node self-loop (a→a) produces
+/// CycleDetected(["a"]).
+///
+/// The registry contains "NodeX" with matching input/output slots.
+/// The graph has one node "a" with an edge from "a" to "a".
+/// validate_graph must detect this as a cycle.
+#[test]
+fn test_validate_graph_self_loop_cycle() {
+    let registry = NodeTypeRegistry::new();
+    registry.register_all(vec![NodeTypeDescriptor {
+        type_name: "NodeX".into(),
+        display_name: "Node X".into(),
+        category: "test".into(),
+        description: "Node X".into(),
+        inputs: vec![SlotDescriptor {
+            name: "IN".into(),
+            slot_type: SlotType::Model,
+            optional: false,
+        }],
+        outputs: vec![SlotDescriptor {
+            name: "OUT".into(),
+            slot_type: SlotType::Model,
+            optional: false,
+        }],
+    }]);
+
+    let graph = serde_json::json!({
+        "nodes": [{"id": "a", "type": "NodeX"}],
+        "edges": [{"from": "a:OUT", "to": "a:IN"}]
+    });
+    let result = validate_graph(graph, &registry);
+
+    assert!(result.is_err(), "Expected Err for self-loop cycle");
+    let errors = result.unwrap_err();
+    assert_eq!(errors.len(), 1, "Expected exactly one error");
+    match &errors[0] {
+        GraphError::CycleDetected(nodes) => {
+            assert_eq!(
+                nodes.len(),
+                1,
+                "Expected exactly one node in cycle, got: {:?}",
+                nodes
+            );
+            assert_eq!(nodes[0], "a", "Cycle must include only node 'a'");
+        }
+        other => panic!("Expected CycleDetected, got: {:?}", other),
+    }
+}
+
+/// Test check 6: a 4-node graph where 3 form a cycle and 1 is a
+/// valid leaf — only the 3 cycle nodes appear in CycleDetected.
+///
+/// The registry contains "NodeX" with matching input/output slots.
+/// Nodes "a", "b", "c" form a cycle (a→b→c→a). Node "d" is a valid
+/// leaf with no incoming or outgoing edges. validate_graph must
+/// detect only {a, b, c} as cycle nodes — "d" must NOT be listed.
+#[test]
+fn test_validate_graph_partial_cycle_in_larger_graph() {
+    let registry = NodeTypeRegistry::new();
+    registry.register_all(vec![NodeTypeDescriptor {
+        type_name: "NodeX".into(),
+        display_name: "Node X".into(),
+        category: "test".into(),
+        description: "Node X".into(),
+        inputs: vec![SlotDescriptor {
+            name: "IN".into(),
+            slot_type: SlotType::Model,
+            optional: false,
+        }],
+        outputs: vec![SlotDescriptor {
+            name: "OUT".into(),
+            slot_type: SlotType::Model,
+            optional: false,
+        }],
+    }]);
+
+    let graph = serde_json::json!({
+        "nodes": [
+            {"id": "a", "type": "NodeX"},
+            {"id": "b", "type": "NodeX"},
+            {"id": "c", "type": "NodeX"},
+            {"id": "d", "type": "NodeX"}
+        ],
+        "edges": [
+            {"from": "a:OUT", "to": "b:IN"},
+            {"from": "b:OUT", "to": "c:IN"},
+            {"from": "c:OUT", "to": "a:IN"}
+        ]
+    });
+    let result = validate_graph(graph, &registry);
+
+    assert!(result.is_err(), "Expected Err for partial cycle, got Ok");
+    let errors = result.unwrap_err();
+    assert_eq!(errors.len(), 1, "Expected exactly one error");
+    match &errors[0] {
+        GraphError::CycleDetected(nodes) => {
+            assert_eq!(
+                nodes.len(),
+                3,
+                "Expected exactly 3 nodes in cycle, got: {:?}",
+                nodes
+            );
+            assert!(nodes.contains(&"a".to_string()), "Cycle must include 'a'");
+            assert!(nodes.contains(&"b".to_string()), "Cycle must include 'b'");
+            assert!(nodes.contains(&"c".to_string()), "Cycle must include 'c'");
+            assert!(
+                !nodes.contains(&"d".to_string()),
+                "Non-cycle node 'd' must NOT be in CycleDetected, got: {:?}",
+                nodes
+            );
+        }
+        other => panic!("Expected CycleDetected, got: {:?}", other),
+    }
+}

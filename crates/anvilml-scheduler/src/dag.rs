@@ -1,16 +1,16 @@
 /// DAG graph validation for job submission.
 ///
 /// Implements the collect-all-errors validation pipeline defined in
-/// ANVILML_DESIGN.md §12.3. This module implements checks 1–5:
+/// ANVILML_DESIGN.md §12.3. This module implements checks 1–6:
 /// (1) root is an object with a "nodes" array,
 /// (2) no duplicate node id values,
 /// (3) every node's type exists in the node type registry,
 /// (4) every edge references a node that exists and declares the
 ///     referenced output slot,
 /// (5) every edge's output slot type is compatible with the
-///     destination input slot type (exact match or `Any` on either side).
-///
-/// Check 6 (cycle detection) is added by a subsequent task in Phase 12.
+///     destination input slot type (exact match or `Any` on either side),
+/// (6) the directed graph of node connections contains no cycles
+///     (detected via Kahn's algorithm).
 ///
 /// # Arguments
 ///
@@ -22,7 +22,7 @@
 ///
 /// # Returns
 ///
-/// `Ok(ValidatedGraph)` if checks 1–5 pass with zero errors, or
+/// `Ok(ValidatedGraph)` if checks 1–6 pass with zero errors, or
 /// `Err(Vec<GraphError>)` containing all collected errors (collect-all-errors
 /// semantics: never short-circuit on the first error, except where a
 /// violation makes further checking structurally meaningless).
@@ -58,19 +58,20 @@ fn slot_type_label(t: SlotType) -> String {
 }
 
 /// Validate a DAG graph: structural root check, duplicate-ID check,
-/// node-type validation, and dangling-edge check.
+/// node-type validation, dangling-edge check, slot-type compatibility,
+/// and cycle detection.
 ///
-/// Runs checks 1–5 of the six-check validation pipeline. The non-object
-/// root case is the only early return permitted by the collect-all-errors
+/// Runs all six checks of the validation pipeline. The non-object root
+/// case is the only early return permitted by the collect-all-errors
 /// contract — if the root is not an object there is no "nodes" key to
 /// inspect, so further checks would be meaningless.
 ///
 /// # Collect-all-errors behaviour
 ///
-/// Duplicate node IDs, unknown node types, dangling edges, and slot-type
-/// mismatches are all collected into a single `Err(Vec)` — the iteration
-/// continues past each violation rather than returning immediately. This
-/// lets callers report all structural problems at once.
+/// Duplicate node IDs, unknown node types, dangling edges, slot-type
+/// mismatches, and cycles are all collected into a single `Err(Vec)` —
+/// the iteration continues past each violation rather than returning
+/// immediately. This lets callers report all structural problems at once.
 pub fn validate_graph(
     graph: Value,
     registry: &NodeTypeRegistry,
@@ -346,6 +347,120 @@ pub fn validate_graph(
                 });
             }
         }
+    }
+
+    // Check 6: cycle detection via Kahn's algorithm.
+    // Build a directed adjacency list from the edge list, compute in-degrees,
+    // and iteratively remove zero-in-degree nodes. Any node not processed
+    // is part of a cycle. This runs in O(V + E) time.
+    let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
+    if let Some(Value::Array(edges)) = obj.get("edges") {
+        for edge in edges {
+            // Parse the "from" field (same format as checks 4–5).
+            let from = match edge.get("from") {
+                Some(Value::String(s)) => s.clone(),
+                _ => continue,
+            };
+
+            let mut parts = from.splitn(2, ':');
+            let source_node_id = match parts.next() {
+                Some(id) => id.to_string(),
+                None => continue,
+            };
+
+            // Only add the edge if the source node actually exists in the
+            // graph — edges from nonexistent nodes were already flagged as
+            // DanglingEdge in check 4 and should not contribute to cycles.
+            if !seen_ids.contains(&source_node_id) {
+                continue;
+            }
+
+            // Parse the "to" field (same format as check 5).
+            let to = match edge.get("to") {
+                Some(Value::String(s)) => s.clone(),
+                _ => continue,
+            };
+
+            let mut to_parts = to.splitn(2, ':');
+            let dest_node_id = match to_parts.next() {
+                Some(id) => id.to_string(),
+                None => continue,
+            };
+
+            // Only add the edge if the destination node also exists.
+            if !seen_ids.contains(&dest_node_id) {
+                continue;
+            }
+
+            // Add the directed edge source → dest to the adjacency list.
+            // An edge from a node to itself (self-loop) is a valid cycle
+            // candidate and is included here.
+            adjacency
+                .entry(source_node_id)
+                .or_default()
+                .push(dest_node_id);
+        }
+    }
+
+    // Compute in-degree for every node in the graph.
+    // Initialize all nodes to 0, then increment for each edge destination.
+    let mut in_degree: HashMap<String, usize> = HashMap::new();
+    for node in nodes {
+        // Extract the node id from the JSON object. If the node is not
+        // an object (e.g. a JSON string), skip it — it has no "id" field.
+        if let Some(obj_node) = node.as_object()
+            && let Some(Value::String(id)) = obj_node.get("id")
+        {
+            in_degree.insert(id.clone(), 0);
+        }
+    }
+    // Increment in-degree for each destination node in the adjacency list.
+    // Use entry().or_insert(0) to safely handle the (shouldn't happen)
+    // case where a destination node is missing from the nodes array.
+    for neighbors in adjacency.values() {
+        for dest in neighbors {
+            *in_degree.entry(dest.clone()).or_insert(0) += 1;
+        }
+    }
+
+    // Initialize the queue with all nodes that have in-degree 0.
+    // These are the nodes that have no incoming edges and can be
+    // topologically sorted first.
+    let mut queue: Vec<String> = in_degree
+        .iter()
+        .filter(|(_, degree)| **degree == 0)
+        .map(|(id, _)| id.clone())
+        .collect();
+
+    // Process the queue using Kahn's algorithm: pop a node, add it to
+    // the processed set, decrement in-degrees of its neighbors, and
+    // push any neighbor whose in-degree reaches 0.
+    let mut processed: HashSet<String> = HashSet::new();
+    while let Some(node) = queue.pop() {
+        processed.insert(node.clone());
+        // Decrement in-degree for each neighbor and enqueue if it reaches 0.
+        if let Some(neighbors) = adjacency.get(&node) {
+            for neighbor in neighbors {
+                if let Some(degree) = in_degree.get_mut(neighbor) {
+                    *degree -= 1;
+                    if *degree == 0 {
+                        queue.push(neighbor.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Any node not in the processed set is part of a cycle.
+    // Collect these remaining node IDs into a Vec for the error.
+    let remaining: Vec<String> = in_degree
+        .keys()
+        .filter(|id| !processed.contains(*id))
+        .cloned()
+        .collect();
+
+    if !remaining.is_empty() {
+        errors.push(GraphError::CycleDetected(remaining));
     }
 
     if errors.is_empty() {

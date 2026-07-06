@@ -4455,3 +4455,87 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `{"nodes": [{"id":"a","type":"NodeA"},{"id":"b","type":"NodeB"},{"id":"c","type":"NodeC"}], "edges": [{"from":"a:MODEL","to":"c:CLIP"},{"from":"b:CLIP","to":"c:MODEL"}]}`, registry with `"NodeA"`, `"NodeB"`, and `"NodeC"`.
 **Expected output:** `Err([SlotTypeMismatch { c, CLIP, Clip, Model }, SlotTypeMismatch { c, MODEL, Model, Clip }])` — two errors in one `Err`.
 **Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_multiple_slot_type_mismatches_collected` exits 0.
+
+---
+
+## test_validate_graph_simple_two_node_cycle (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json` and `anvilml-core` dependencies, and the `dag` module providing `validate_graph()`.
+**Tests:** A 2-node cycle (a→b, b→a) produces a `CycleDetected` error containing both node IDs, confirming Kahn's algorithm detects all cycle participants.
+**Mode:** both
+**Inputs:** Registry with "NodeA" and "NodeB" (each with MODEL output and MODEL input). Graph with nodes "a" and "b" connected bidirectionally.
+**Expected output:** `Err([CycleDetected(["a", "b"])])` — both nodes in the cycle.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_simple_two_node_cycle` exits 0.
+
+---
+
+## test_validate_graph_three_node_cycle (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json` and `anvilml-core` dependencies, and the `dag` module providing `validate_graph()`.
+**Tests:** A 3-node cycle (a→b→c→a) produces a `CycleDetected` error containing all three node IDs, confirming Kahn's algorithm detects longer cycles.
+**Mode:** both
+**Inputs:** Registry with "NodeX" (MODEL output/input). Graph with nodes "a", "b", "c" connected in a cycle.
+**Expected output:** `Err([CycleDetected(["a", "b", "c"])])` — all three nodes in the cycle.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_three_node_cycle` exits 0.
+
+---
+
+## test_validate_graph_acyclic_graph_with_all_checks_passing (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json` and `anvilml-core` dependencies, and the `dag` module providing `validate_graph()`.
+**Tests:** A fully valid acyclic graph (registered types, correct slot types, no cycles) returns `Ok(ValidatedGraph)`, exercising the final `Ok(...)` return path with all six checks passing.
+**Mode:** both
+**Inputs:** Registry with "LoadModel" (outputs MODEL, CLIP) and "ClipTextEncode" (input CLIP). Graph with valid edge a:CLIP→b:CLIP.
+**Expected output:** `Ok(ValidatedGraph)` — the inner value matches the input graph.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_acyclic_graph_with_all_checks_passing` exits 0.
+
+---
+
+## test_validate_graph_cycle_with_other_violations (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json` and `anvilml-core` dependencies, and the `dag` module providing `validate_graph()`.
+**Tests:** A graph with both a cycle and an unknown node type produces errors for both violations in a single `Err(Vec)`, confirming collect-all-errors semantics across check 3 and check 6.
+**Mode:** both
+**Inputs:** Empty registry. Graph with nodes "a" and "b" with unregistered types, connected in a cycle.
+**Expected output:** `Err([UnknownNodeType{a, UnknownType1}, UnknownNodeType{b, UnknownType2}, CycleDetected(["a", "b"])])` — 3 errors total.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_cycle_with_other_violations` exits 0.
+
+---
+
+## test_validate_graph_no_edges_no_cycle (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json` and `anvilml-core` dependencies, and the `dag` module providing `validate_graph()`.
+**Tests:** A graph with nodes but no edges is trivially acyclic (all in-degrees are 0), returning `Ok(ValidatedGraph)`.
+**Mode:** both
+**Inputs:** Registry with "NodeX". Graph with 3 nodes and no edges array.
+**Expected output:** `Ok(ValidatedGraph)` — the inner value matches the input graph.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_no_edges_no_cycle` exits 0.
+
+---
+
+## test_validate_graph_self_loop_cycle (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json` and `anvilml-core` dependencies, and the `dag` module providing `validate_graph()`.
+**Tests:** A single-node self-loop (a→a) produces `CycleDetected(["a"])`, confirming Kahn's algorithm detects self-loops as cycles.
+**Mode:** both
+**Inputs:** Registry with "NodeX" (MODEL output/input). Graph with one node "a" and edge a:OUT→a:IN.
+**Expected output:** `Err([CycleDetected(["a"])])` — single node in cycle.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_self_loop_cycle` exits 0.
+
+---
+
+## test_validate_graph_partial_cycle_in_larger_graph (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json` and `anvilml-core` dependencies, and the `dag` module providing `validate_graph()`.
+**Tests:** A 4-node graph where 3 form a cycle (a→b→c→a) and 1 is a valid leaf — only the 3 cycle nodes appear in `CycleDetected`, confirming Kahn's algorithm correctly distinguishes cycle nodes from non-cycle nodes.
+**Mode:** both
+**Inputs:** Registry with "NodeX" (MODEL output/input). Graph with nodes "a", "b", "c" in a cycle and node "d" as a leaf.
+**Expected output:** `Err([CycleDetected(["a", "b", "c"])])` — "d" is NOT listed.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_partial_cycle_in_larger_graph` exits 0.
