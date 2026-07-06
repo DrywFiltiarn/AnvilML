@@ -1,4 +1,5 @@
-use anvilml_scheduler::{GraphError, ValidatedGraph};
+use anvilml_core::NodeTypeRegistry;
+use anvilml_scheduler::{GraphError, ValidatedGraph, validate_graph};
 
 /// Test that the inner serde_json::Value is accessible within the crate
 /// via the #[cfg(test)] _test_inner() method, confirming pub(crate)
@@ -212,6 +213,130 @@ fn test_graph_error_display_distinct() {
                 "Variant {} and variant {} produce the same Display string: {}",
                 i, j, all[i]
             );
+        }
+    }
+}
+
+/// Test validate_graph check 1: a non-object root (JSON array) returns
+/// Err containing exactly one NotAnObject error.
+///
+/// The root is a JSON array `[]`, which is not an object. validate_graph
+/// must detect this and return Err([NotAnObject]) immediately, since
+/// a non-object root has no "nodes" key to inspect.
+#[test]
+fn test_validate_graph_non_object_root_returns_not_an_object() {
+    let registry = NodeTypeRegistry::new();
+    let result = validate_graph(serde_json::json!([]), &registry);
+
+    assert!(result.is_err(), "Expected Err for non-object root");
+    let errors = result.unwrap_err();
+    assert_eq!(errors.len(), 1, "Expected exactly one error");
+    assert!(matches!(errors[0], GraphError::NotAnObject));
+}
+
+/// Test validate_graph check 1: an object without a "nodes" key returns
+/// Err containing exactly one MissingNodesArray error.
+///
+/// The root is a JSON object but lacks the required "nodes" key.
+/// validate_graph must detect this and return Err([MissingNodesArray]).
+#[test]
+fn test_validate_graph_missing_nodes_array_returns_missing_nodes_array() {
+    let registry = NodeTypeRegistry::new();
+    let result = validate_graph(serde_json::json!({"edges": []}), &registry);
+
+    assert!(result.is_err(), "Expected Err for missing nodes array");
+    let errors = result.unwrap_err();
+    assert_eq!(errors.len(), 1, "Expected exactly one error");
+    assert!(matches!(errors[0], GraphError::MissingNodesArray));
+}
+
+/// Test validate_graph check 2: duplicate node IDs are all collected in
+/// a single Err, not just the first duplicate.
+///
+/// The graph has three nodes: id "a", id "b", id "a" (duplicate).
+/// validate_graph must report the second occurrence of "a" as a
+/// DuplicateNodeId error, confirming collect-all-errors semantics.
+/// Only the 2nd+ occurrence of each ID is reported.
+#[test]
+fn test_validate_graph_duplicate_ids_all_reported() {
+    let registry = NodeTypeRegistry::new();
+    let graph = serde_json::json!({
+        "nodes": [
+            {"id": "a"},
+            {"id": "b"},
+            {"id": "a"}
+        ]
+    });
+    let result = validate_graph(graph, &registry);
+
+    assert!(result.is_err(), "Expected Err for duplicate IDs");
+    let errors = result.unwrap_err();
+    assert_eq!(
+        errors.len(),
+        1,
+        "Expected one DuplicateNodeId error (second occurrence of 'a')"
+    );
+    assert!(matches!(errors[0], GraphError::DuplicateNodeId(ref id) if id == "a"));
+}
+
+/// Test validate_graph checks 1–2 pass with zero errors, returning
+/// Ok(ValidatedGraph).
+///
+/// The graph has two nodes with unique IDs ("a" and "b"). Both checks
+/// pass: root is an object with a "nodes" array, and no duplicates exist.
+#[test]
+fn test_validate_graph_no_duplicates_passes_cleanly() {
+    let registry = NodeTypeRegistry::new();
+    let graph = serde_json::json!({
+        "nodes": [
+            {"id": "a"},
+            {"id": "b"}
+        ]
+    });
+    let result = validate_graph(graph.clone(), &registry);
+
+    assert!(result.is_ok(), "Expected Ok for clean graph");
+    let validated = result.unwrap();
+    assert_eq!(validated._test_inner(), &graph);
+}
+
+/// Test validate_graph check 2: multiple different duplicate IDs are all
+/// reported in one Err, preserving the order of second-occurrence detection.
+///
+/// The graph has five nodes: a, b, a, c, b. The duplicates detected are:
+/// the second "a" (3rd position), and the second "b" (5th position).
+/// validate_graph must report both duplicate occurrences in order.
+#[test]
+fn test_validate_graph_multiple_duplicate_violations_collected() {
+    let registry = NodeTypeRegistry::new();
+    let graph = serde_json::json!({
+        "nodes": [
+            {"id": "a"},
+            {"id": "b"},
+            {"id": "a"},
+            {"id": "c"},
+            {"id": "b"}
+        ]
+    });
+    let result = validate_graph(graph, &registry);
+
+    assert!(result.is_err(), "Expected Err for multiple duplicate IDs");
+    let errors = result.unwrap_err();
+    assert_eq!(
+        errors.len(),
+        2,
+        "Expected two DuplicateNodeId errors (second 'a' and second 'b')"
+    );
+    // Verify each error is a DuplicateNodeId with the expected id
+    for err in &errors {
+        match err {
+            GraphError::DuplicateNodeId(id) => {
+                assert!(
+                    id == "a" || id == "b",
+                    "Unexpected id in DuplicateNodeId: {id}"
+                );
+            }
+            other => panic!("Expected DuplicateNodeId, got: {other:?}"),
         }
     }
 }

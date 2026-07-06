@@ -4251,3 +4251,63 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** All 7 `GraphError` variants constructed with minimal test values.
 **Expected output:** No two `to_string()` outputs are equal; the set of 7 strings has cardinality 7.
 **Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_graph_error_display_distinct` exits 0.
+
+---
+
+## test_validate_graph_non_object_root_returns_not_an_object (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json`, `anvilml-core`, and `thiserror` dependencies. The `dag` module provides `validate_graph()` which implements checks 1–2 of the six-check validation pipeline (ANVILML_DESIGN.md §12.3). A `NodeTypeRegistry` is constructed empty (not needed for checks 1–2).
+**Tests:** `validate_graph(serde_json::json!([]), &registry)` — a non-object root (JSON array) returns `Err` containing exactly one `NotAnObject` error. Proves check 1a fires when the root is not a JSON object.
+**Mode:** both
+**Inputs:** `serde_json::json!([])` (JSON array as root), empty `NodeTypeRegistry`.
+**Expected output:** `Err([NotAnObject])` — exactly one error variant.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_non_object_root_returns_not_an_object` exits 0.
+
+---
+
+## test_validate_graph_missing_nodes_array_returns_missing_nodes_array (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json`, `anvilml-core`, and `thiserror` dependencies. The `dag` module provides `validate_graph()` which implements checks 1–2 of the six-check validation pipeline (ANVILML_DESIGN.md §12.3). A `NodeTypeRegistry` is constructed empty.
+**Tests:** `validate_graph(serde_json::json!({"edges": []}), &registry)` — an object without a "nodes" key returns `Err` containing exactly one `MissingNodesArray` error. Proves check 1b fires when the "nodes" key is absent.
+**Mode:** both
+**Inputs:** `serde_json::json!({"edges": []})` (object without "nodes"), empty `NodeTypeRegistry`.
+**Expected output:** `Err([MissingNodesArray])` — exactly one error variant.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_missing_nodes_array_returns_missing_nodes_array` exits 0.
+
+---
+
+## test_validate_graph_duplicate_ids_all_reported (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json`, `anvilml-core`, and `thiserror` dependencies. The `dag` module provides `validate_graph()` which implements checks 1–2 of the six-check validation pipeline (ANVILML_DESIGN.md §12.3). A `NodeTypeRegistry` is constructed empty.
+**Tests:** `validate_graph` with three nodes (ids: "a", "b", "a") — the second occurrence of "a" is reported as a `DuplicateNodeId("a")` error. Proves collect-all-errors semantics: the duplicate is detected and reported, not silently ignored.
+**Mode:** both
+**Inputs:** `{"nodes": [{"id":"a"},{"id":"b"},{"id":"a"}]}`, empty `NodeTypeRegistry`.
+**Expected output:** `Err([DuplicateNodeId("a")])` — one error for the second occurrence of "a".
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_duplicate_ids_all_reported` exits 0.
+
+---
+
+## test_validate_graph_no_duplicates_passes_cleanly (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json`, `anvilml-core`, and `thiserror` dependencies. The `dag` module provides `validate_graph()` which implements checks 1–2 of the six-check validation pipeline (ANVILML_DESIGN.md §12.3). A `NodeTypeRegistry` is constructed empty.
+**Tests:** `validate_graph` with two nodes having unique ids ("a" and "b") — both checks 1 and 2 pass, returning `Ok(ValidatedGraph(...))`. Proves the happy path works correctly.
+**Mode:** both
+**Inputs:** `{"nodes": [{"id":"a"},{"id":"b"}]}`, empty `NodeTypeRegistry`.
+**Expected output:** `Ok(ValidatedGraph)` with inner value equal to the input graph.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_no_duplicates_passes_cleanly` exits 0.
+
+---
+
+## test_validate_graph_multiple_duplicate_violations_collected (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json`, `anvilml-core`, and `thiserror` dependencies. The `dag` module provides `validate_graph()` which implements checks 1–2 of the six-check validation pipeline (ANVILML_DESIGN.md §12.3). A `NodeTypeRegistry` is constructed empty.
+**Tests:** `validate_graph` with five nodes (ids: "a", "b", "a", "c", "b") — both the second "a" and the second "b" are reported as `DuplicateNodeId` errors in a single `Err(Vec)`. Proves that multiple different duplicate IDs are all collected in one error vector, preserving insertion order.
+**Mode:** both
+**Inputs:** `{"nodes": [{"id":"a"},{"id":"b"},{"id":"a"},{"id":"c"},{"id":"b"}]}`, empty `NodeTypeRegistry`.
+**Expected output:** `Err([DuplicateNodeId("a"), DuplicateNodeId("b")])` — two errors, one for each duplicate second-occurrence.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_multiple_duplicate_violations_collected` exits 0.
