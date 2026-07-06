@@ -227,16 +227,23 @@ pub fn validate_graph(
 
     // Check 5: for every edge that has a "to" field, compare the
     // source output slot type with the destination input slot type.
-    // Only run this check on edges whose source node ID was NOT flagged
-    // as DanglingEdge in check 4 — this prevents double-reporting the
-    // same edge with both DanglingEdge and SlotTypeMismatch errors.
+    // Only run this check on the specific edge whose (source_node_id,
+    // source_slot_name) pair was NOT flagged as DanglingEdge in check 4 —
+    // this prevents double-reporting that same edge with both DanglingEdge
+    // and SlotTypeMismatch, without suppressing type-checking on a
+    // *different*, non-dangling edge that happens to share the same
+    // source node (e.g. a node with two output slots, one dangling and
+    // one declared — the declared one must still be type-checked).
     //
-    // First, build a set of source node IDs that were reported as
-    // DanglingEdge during check 4, so we can skip them here.
-    let dangling_sources: HashSet<String> = errors
+    // First, build a set of (node_id, slot_name) pairs that were reported
+    // as DanglingEdge during check 4, so we can skip exactly those edges
+    // here — keyed on the pair, not on node_id alone.
+    let dangling_sources: HashSet<(String, String)> = errors
         .iter()
         .filter_map(|e| match e {
-            GraphError::DanglingEdge { node_id, .. } => Some(node_id.clone()),
+            GraphError::DanglingEdge { node_id, slot_name } => {
+                Some((node_id.clone(), slot_name.clone()))
+            }
             _ => None,
         })
         .collect();
@@ -267,10 +274,12 @@ pub fn validate_graph(
                 None => continue,
             };
 
-            // Skip edges whose source node was flagged as DanglingEdge
-            // in check 4 — it was already reported and we don't want
-            // to double-report it as a SlotTypeMismatch too.
-            if dangling_sources.contains(&source_node_id) {
+            // Skip this specific edge if its (node, slot) pair was flagged
+            // as DanglingEdge in check 4 — it was already reported and we
+            // don't want to double-report it as a SlotTypeMismatch too.
+            // A *different* edge sharing the same source node but a
+            // different (declared) output slot is unaffected by this skip.
+            if dangling_sources.contains(&(source_node_id.clone(), source_slot_name.clone())) {
                 continue;
             }
 

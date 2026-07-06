@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-scheduler"
-version = "0.1.6"
+version = "0.1.7"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -13,5 +13,18 @@ anvilml-hardware = { path = "../anvilml-hardware" }
 serde_json = "1"
 thiserror = "2.0.18"
 
+[dev-dependencies]
+# Self-reference with test-util enabled: this is what makes ValidatedGraph's
+# _test_new()/_test_inner() available to integration tests under tests/
+# (a separate crate, per Cargo's compilation model) without those methods
+# existing in any normal, release, or dependent-crate build. `cargo test`
+# activates this; nothing else does.
+anvilml-scheduler = { path = ".", features = ["test-util"] }
+
 [features]
 mock-hardware = ["anvilml-hardware/mock-hardware"]
+# Gates ValidatedGraph::_test_new()/_test_inner() (types.rs) — test-only
+# construction bypass, never enabled outside cargo test. See the
+# [dev-dependencies] self-reference above and the P12-A1 gap note in
+# docs/PHASES_GRAPH.md (gap #24).
+test-util = []

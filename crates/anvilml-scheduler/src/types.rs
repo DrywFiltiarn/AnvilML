@@ -5,28 +5,35 @@
 /// `validate_graph()` (implemented in dag.rs, P12-A3). The inner
 /// `serde_json::Value` field is `pub(crate)` so code within the
 /// crate can inspect the validated graph, but there is no public
-/// bypass constructor.
+/// bypass constructor in a normal (non-test) build — see the
+/// `test-util`-gated block below for the one exception, which does
+/// not exist outside `cargo test`.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // The inner field is read via pub(crate) accessors and by validate_graph()
 pub struct ValidatedGraph(pub(crate) serde_json::Value);
 
 impl ValidatedGraph {
-    /// Construct a ValidatedGraph from a serde_json::Value.
+    /// Construct a `ValidatedGraph` from a `serde_json::Value`, bypassing
+    /// `validate_graph()`.
     ///
-    /// This method is `pub` only so that integration test crates can
-    /// exercise the construction-gated invariant. It is prefixed with
-    /// `_test_` to signal it is an internal implementation detail and
-    /// must not be used in production code. The only production
-    /// constructor is `validate_graph()` in `dag.rs`.
+    /// Gated behind the `test-util` feature, which is enabled **only** via
+    /// this crate's own `[dev-dependencies]` self-reference (see
+    /// `Cargo.toml`) — that feature is never active in a normal build, a
+    /// release build, or as a transitive dependency of any other crate.
+    /// This is what makes the construction-gate invariant real: outside
+    /// `cargo test`, no code anywhere, in this crate or any dependent, can
+    /// construct a `ValidatedGraph` except via a successful `validate_graph()`
+    /// call. Integration tests under `tests/` need this because they compile
+    /// as a separate crate and cannot see `pub(crate)` items or plain
+    /// `#[cfg(test)]` items from the library.
+    #[cfg(feature = "test-util")]
     pub fn _test_new(value: serde_json::Value) -> Self {
         Self(value)
     }
 
-    /// Access the inner value.
-    ///
-    /// `pub` only so that integration test crates can verify the
-    /// `pub(crate)` field is accessible within the crate. Prefixed
-    /// with `_test_` to signal it is an internal detail.
+    /// Access the inner value. Same `test-util` gating and rationale as
+    /// `_test_new` above.
+    #[cfg(feature = "test-util")]
     pub fn _test_inner(&self) -> &serde_json::Value {
         &self.0
     }

@@ -825,15 +825,15 @@ fn test_validate_graph_any_on_dest_side_passes() {
     );
 }
 
-/// Test check 5: an edge flagged DanglingEdge in check 4 is not also
-/// reported as SlotTypeMismatch.
+/// Test check 5 in the simple case: no dangling edges at all.
 ///
-/// The registry is empty (no types registered). The graph has two nodes
-/// with unregistered types and an edge from "a:MODEL" to "b:CLIP".
-/// Check 4 will flag both nodes as DanglingEdge (unknown types → skip).
-/// Check 5 must not double-report this edge.
+/// Both "a" and "b" reference registered types, so check 4 passes cleanly.
+/// The edge from "a:MODEL" to "b:CLIP" is a genuine type mismatch and must
+/// be reported — this test does not exercise the dangling/mismatch
+/// interaction (see `test_validate_graph_dangling_edge_does_not_suppress_unrelated_mismatch`
+/// below for that).
 #[test]
-fn test_validate_graph_dangling_edge_not_double_reported() {
+fn test_validate_graph_slot_type_mismatch_reported_with_no_dangling_edges() {
     let registry = NodeTypeRegistry::new();
     registry.register_all(vec![
         NodeTypeDescriptor {
@@ -893,6 +893,104 @@ fn test_validate_graph_dangling_edge_not_double_reported() {
         "Expected SlotTypeMismatch, got: {:?}",
         errors[0]
     );
+}
+
+/// Regression test for gap #25: a dangling edge from one output slot of a
+/// node must not suppress SlotTypeMismatch checking on a *different*,
+/// validly-declared output slot of that same node.
+///
+/// "a" (type "Foo") declares only a "MODEL" output. Two edges originate
+/// from "a": one from an undeclared slot ("a:UNDECLARED" — dangling, per
+/// check 4) and one from the declared "MODEL" slot to "c:VAE_IN", which
+/// is a genuine type mismatch (Model -> Vae) and must be reported
+/// independently of the unrelated dangling edge sharing the same source
+/// node. Before the gap #25 fix, `dangling_sources` was keyed on
+/// `node_id` alone, so flagging "a:UNDECLARED" as dangling silently
+/// suppressed the SlotTypeMismatch check for "a:MODEL" too — this test
+/// fails against that prior behavior (1 error instead of 2) and passes
+/// once the skip set is keyed on the (node_id, slot_name) pair.
+#[test]
+fn test_validate_graph_dangling_edge_does_not_suppress_unrelated_mismatch() {
+    let registry = NodeTypeRegistry::new();
+    registry.register_all(vec![
+        NodeTypeDescriptor {
+            type_name: "Foo".into(),
+            display_name: "Foo".into(),
+            category: "test".into(),
+            description: "Foo node".into(),
+            inputs: vec![],
+            // Foo declares ONLY "MODEL" as an output.
+            outputs: vec![SlotDescriptor {
+                name: "MODEL".into(),
+                slot_type: SlotType::Model,
+                optional: false,
+            }],
+        },
+        NodeTypeDescriptor {
+            type_name: "Bar".into(),
+            display_name: "Bar".into(),
+            category: "test".into(),
+            description: "Bar node".into(),
+            inputs: vec![SlotDescriptor {
+                name: "CLIP".into(),
+                slot_type: SlotType::Clip,
+                optional: false,
+            }],
+            outputs: vec![],
+        },
+        NodeTypeDescriptor {
+            type_name: "Baz".into(),
+            display_name: "Baz".into(),
+            category: "test".into(),
+            description: "Baz node".into(),
+            // Baz expects a VAE input, not a MODEL — so a:MODEL -> c:VAE_IN
+            // is a genuine, independently-reportable type mismatch.
+            inputs: vec![SlotDescriptor {
+                name: "VAE_IN".into(),
+                slot_type: SlotType::Vae,
+                optional: false,
+            }],
+            outputs: vec![],
+        },
+    ]);
+
+    let graph = serde_json::json!({
+        "nodes": [
+            {"id": "a", "type": "Foo"},
+            {"id": "b", "type": "Bar"},
+            {"id": "c", "type": "Baz"}
+        ],
+        "edges": [
+            // a:UNDECLARED is dangling — Foo does not declare this output.
+            {"from": "a:UNDECLARED", "to": "b:CLIP"},
+            // a:MODEL IS declared — this edge must be checked independently
+            // and must report SlotTypeMismatch (Model -> Vae), not be
+            // silently swallowed because "a" also has a dangling edge.
+            {"from": "a:MODEL", "to": "c:VAE_IN"}
+        ]
+    });
+
+    let result = validate_graph(graph, &registry);
+    assert!(result.is_err(), "expected errors");
+    let errors = result.unwrap_err();
+
+    assert_eq!(
+        errors.len(),
+        2,
+        "expected DanglingEdge (a:UNDECLARED) AND SlotTypeMismatch (a:MODEL -> c:VAE_IN), got {}: {:?}",
+        errors.len(),
+        errors
+    );
+    assert!(errors.iter().any(|e| matches!(
+        e,
+        GraphError::DanglingEdge { node_id, slot_name }
+            if node_id == "a" && slot_name == "UNDECLARED"
+    )));
+    assert!(errors.iter().any(|e| matches!(
+        e,
+        GraphError::SlotTypeMismatch { node_id, slot_name, .. }
+            if node_id == "c" && slot_name == "VAE_IN"
+    )));
 }
 
 /// Test check 5: two edges with different mismatches produce two

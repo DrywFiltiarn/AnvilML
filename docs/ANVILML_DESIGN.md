@@ -1863,15 +1863,26 @@ shared dependency both already have without creating a new edge.
 
 ```rust
 pub struct NodeTypeRegistry {
-    types: Arc<RwLock<HashMap<String, NodeTypeDescriptor>>>,
+    types: RwLock<HashMap<String, NodeTypeDescriptor>>,
 }
 
 impl NodeTypeRegistry {
-    pub async fn update_from_worker(&self, types: Vec<NodeTypeDescriptor>);
-    pub async fn get(&self, type_name: &str) -> Option<NodeTypeDescriptor>;
-    pub async fn all_types(&self) -> Vec<NodeTypeDescriptor>;
+    pub fn new() -> Self;
+    pub fn register_all(&self, descs: Vec<NodeTypeDescriptor>);
+    pub fn get(&self, type_name: &str) -> Option<NodeTypeDescriptor>;
+    pub fn list(&self) -> Vec<NodeTypeDescriptor>;
+    pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
 }
 ```
+
+Every method takes `&self` — `std::sync::RwLock` provides interior mutability,
+so no `Arc` wrapper is needed inside the struct itself (callers wrap the whole
+registry in `Arc<NodeTypeRegistry>` where shared ownership is needed, e.g.
+`AppState`). All methods are synchronous: the registry is plain in-memory
+data protected by a lock, not an async resource. `register_all` replaces the
+entire map on every call (a worker's `Ready` event reports its full node set,
+not a delta) rather than merging.
 
 If the registry is empty (no worker has reached `Ready` yet), all job submissions
 return `503 workers_unavailable`.
