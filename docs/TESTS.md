@@ -3914,3 +3914,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** A subclass of `BaseNode` with `execute()` that sets `self.called = True` and returns `{}`.
 **Expected output:** After calling `node.execute(None)`, `node.called is True`.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_base.py::test_execute_calls_subclass_impl -v` exits 0.
+
+---
+
+## test_get_module_returns_none_when_empty (anvilml-worker)
+
+**File:** `worker/tests/test_arch_dispatch.py`
+**Context:** The `worker.nodes.arch.diffusion` module is importable and defines `get_module()` which scans `_REGISTERED_MODULES` (an empty list at this phase). No concrete diffusion arch modules are registered yet.
+**Tests:** `get_module("zit")` returns `None` when `_REGISTERED_MODULES` is empty — proves the dispatcher returns None rather than raising when no modules are registered.
+**Mode:** both
+**Inputs:** `get_module("zit")` called on the freshly-imported module.
+**Expected output:** `None`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_dispatch.py::test_get_module_returns_none_when_empty -v` exits 0.
+
+---
+
+## test_get_module_does_not_raise_for_various_key_types (anvilml-worker)
+
+**File:** `worker/tests/test_arch_dispatch.py`
+**Context:** The `worker.nodes.arch.diffusion` module is importable and defines `get_module()` which accepts `Any` as the key type. The registry is empty.
+**Tests:** `get_module()` does not raise for `str`, `None`, or arbitrary object keys — proves the dispatch loop is safe against any key type even when no modules are registered.
+**Mode:** both
+**Inputs:** `get_module("zit")`, `get_module(None)`, `get_module(object())`.
+**Expected output:** All three calls return `None` without raising.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_dispatch.py::test_get_module_does_not_raise_for_various_key_types -v` exits 0.
+
+---
+
+## test_get_module_skips_module_with_can_handle_false (anvilml-worker)
+
+**File:** `worker/tests/test_arch_dispatch.py`
+**Context:** The `worker.nodes.arch.diffusion` module is importable. `_REGISTERED_MODULES` is a mutable list that tests can append to (with cleanup via `finally`). A `Mock(spec=ModuleType)` with `can_handle=Mock(return_value=False)` is used as a test double.
+**Tests:** When a module's `can_handle` returns `False`, `get_module` continues scanning and returns `None` — proves the dispatcher does not return a non-matching module.
+**Mode:** both
+**Inputs:** A `Mock(spec=ModuleType)` with `can_handle` returning `False`, appended to `_REGISTERED_MODULES`.
+**Expected output:** `get_module("zit")` returns `None`; `can_handle` was called once with `"zit"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_dispatch.py::test_get_module_skips_module_with_can_handle_false -v` exits 0.
