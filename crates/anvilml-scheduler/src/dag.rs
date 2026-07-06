@@ -1,52 +1,76 @@
 /// DAG graph validation for job submission.
 ///
 /// Implements the collect-all-errors validation pipeline defined in
-/// ANVILML_DESIGN.md §12.3. This module implements checks 1–4:
+/// ANVILML_DESIGN.md §12.3. This module implements checks 1–5:
 /// (1) root is an object with a "nodes" array,
 /// (2) no duplicate node id values,
 /// (3) every node's type exists in the node type registry,
 /// (4) every edge references a node that exists and declares the
-///     referenced output slot.
+///     referenced output slot,
+/// (5) every edge's output slot type is compatible with the
+///     destination input slot type (exact match or `Any` on either side).
 ///
-/// Checks 5–6 (slot-type compatibility, cycle detection) are added by
-/// subsequent tasks in Phase 12.
+/// Check 6 (cycle detection) is added by a subsequent task in Phase 12.
 ///
 /// # Arguments
 ///
 /// * `graph` — A JSON object representing the job graph. Must contain
 ///   a `"nodes"` array with objects having an `"id"` field. May also
-///   contain an `"edges"` array with `"from"` fields in
+///   contain an `"edges"` array with `"from"` and `"to"` fields in
 ///   `"node_id:slot_name"` format.
-/// * `registry` — The node type registry, used for checks 3–4 (and
-///   5–6 in future tasks).
+/// * `registry` — The node type registry, used for checks 3–5.
 ///
 /// # Returns
 ///
-/// `Ok(ValidatedGraph)` if checks 1–4 pass with zero errors, or
+/// `Ok(ValidatedGraph)` if checks 1–5 pass with zero errors, or
 /// `Err(Vec<GraphError>)` containing all collected errors (collect-all-errors
 /// semantics: never short-circuit on the first error, except where a
 /// violation makes further checking structurally meaningless).
 use std::collections::{HashMap, HashSet};
 
-use anvilml_core::NodeTypeRegistry;
+use anvilml_core::{NodeTypeRegistry, SlotType};
 use serde_json::Value;
 
 use crate::types::{GraphError, ValidatedGraph};
 
+/// Convert a `SlotType` to its `SCREAMING_SNAKE_CASE` label string.
+///
+/// `SlotType` derives `Debug` (which uses PascalCase, e.g. `Model`) and
+/// uses `#[serde(rename_all = "SCREAMING_SNAKE_CASE")]` (which produces
+/// `MODEL`). This function matches the serde serialization form, which
+/// is the form used in the `SlotTypeMismatch` error message fields
+/// `expected` and `found`.
+fn slot_type_label(t: SlotType) -> String {
+    match t {
+        SlotType::Model => "Model",
+        SlotType::Clip => "Clip",
+        SlotType::Vae => "Vae",
+        SlotType::Conditioning => "Conditioning",
+        SlotType::Latent => "Latent",
+        SlotType::Image => "Image",
+        SlotType::String => "String",
+        SlotType::Int => "Int",
+        SlotType::Float => "Float",
+        SlotType::Bool => "Bool",
+        SlotType::Any => "Any",
+    }
+    .to_string()
+}
+
 /// Validate a DAG graph: structural root check, duplicate-ID check,
 /// node-type validation, and dangling-edge check.
 ///
-/// Runs checks 1–4 of the six-check validation pipeline. The non-object
+/// Runs checks 1–5 of the six-check validation pipeline. The non-object
 /// root case is the only early return permitted by the collect-all-errors
 /// contract — if the root is not an object there is no "nodes" key to
 /// inspect, so further checks would be meaningless.
 ///
 /// # Collect-all-errors behaviour
 ///
-/// Duplicate node IDs, unknown node types, and dangling edges are all
-/// collected into a single `Err(Vec)` — the iteration continues past
-/// each violation rather than returning immediately. This lets callers
-/// report all structural problems at once.
+/// Duplicate node IDs, unknown node types, dangling edges, and slot-type
+/// mismatches are all collected into a single `Err(Vec)` — the iteration
+/// continues past each violation rather than returning immediately. This
+/// lets callers report all structural problems at once.
 pub fn validate_graph(
     graph: Value,
     registry: &NodeTypeRegistry,
@@ -116,26 +140,27 @@ pub fn validate_graph(
         }
     }
 
+    // Build a map from node id to the node's type_name, so we can
+    // look up the NodeTypeDescriptor when checking slot declarations.
+    // We only include nodes that have both an id and a type.
+    // This map is shared by checks 4 and 5.
+    let mut id_to_type: HashMap<String, String> = HashMap::new();
+    for node in nodes {
+        let node_id = match node.get("id") {
+            Some(Value::String(id)) => id.clone(),
+            _ => continue,
+        };
+        let type_name = match node.get("type") {
+            Some(Value::String(t)) => t.clone(),
+            _ => continue,
+        };
+        id_to_type.insert(node_id, type_name);
+    }
+
     // Check 4: every edge must reference a node that exists and declares
     // the referenced output slot. Only run this check if the graph has
     // an "edges" array — a graph without edges has no dangling edges.
     if let Some(Value::Array(edges)) = obj.get("edges") {
-        // Build a map from node id to the node's type_name, so we can
-        // look up the NodeTypeDescriptor when checking slot declarations.
-        // We only include nodes that have both an id and a type.
-        let mut id_to_type: HashMap<String, String> = HashMap::new();
-        for node in nodes {
-            let node_id = match node.get("id") {
-                Some(Value::String(id)) => id.clone(),
-                _ => continue,
-            };
-            let type_name = match node.get("type") {
-                Some(Value::String(t)) => t.clone(),
-                _ => continue,
-            };
-            id_to_type.insert(node_id, type_name);
-        }
-
         for edge in edges {
             // Extract the "from" field. This is a string in the format
             // "node_id:slot_name" (e.g. "load_model_0:MODEL"). Split on
@@ -196,6 +221,130 @@ pub fn validate_graph(
             }
             // If the node has no "type" field, we cannot determine the
             // slot declaration; skip the check.
+        }
+    }
+
+    // Check 5: for every edge that has a "to" field, compare the
+    // source output slot type with the destination input slot type.
+    // Only run this check on edges whose source node ID was NOT flagged
+    // as DanglingEdge in check 4 — this prevents double-reporting the
+    // same edge with both DanglingEdge and SlotTypeMismatch errors.
+    //
+    // First, build a set of source node IDs that were reported as
+    // DanglingEdge during check 4, so we can skip them here.
+    let dangling_sources: HashSet<String> = errors
+        .iter()
+        .filter_map(|e| match e {
+            GraphError::DanglingEdge { node_id, .. } => Some(node_id.clone()),
+            _ => None,
+        })
+        .collect();
+
+    // Only proceed if the graph has an "edges" array.
+    if let Some(Value::Array(edges)) = obj.get("edges") {
+        for edge in edges {
+            // Only process edges that have a "to" field — edges without
+            // "to" have no destination input to check.
+            let to = match edge.get("to") {
+                Some(Value::String(s)) => s.clone(),
+                _ => continue, // no "to" field; skip this edge
+            };
+
+            // Parse the "from" field (source_node_id:source_slot_name).
+            let from = match edge.get("from") {
+                Some(Value::String(s)) => s.clone(),
+                _ => continue, // missing or non-string "from"; skip edge
+            };
+
+            let mut parts = from.splitn(2, ':');
+            let source_node_id = match parts.next() {
+                Some(id) => id.to_string(),
+                None => continue,
+            };
+            let source_slot_name = match parts.next() {
+                Some(slot) => slot.to_string(),
+                None => continue,
+            };
+
+            // Skip edges whose source node was flagged as DanglingEdge
+            // in check 4 — it was already reported and we don't want
+            // to double-report it as a SlotTypeMismatch too.
+            if dangling_sources.contains(&source_node_id) {
+                continue;
+            }
+
+            // Parse the "to" field (dest_node_id:dest_slot_name).
+            let mut to_parts = to.splitn(2, ':');
+            let dest_node_id = match to_parts.next() {
+                Some(id) => id.to_string(),
+                None => continue,
+            };
+            let dest_slot_name = match to_parts.next() {
+                Some(slot) => slot.to_string(),
+                None => continue,
+            };
+
+            // Look up the source node's descriptor from id_to_type.
+            // If the source node doesn't have a registered type, skip —
+            // the UnknownNodeType error from check 3 already flags it.
+            let source_descriptor = if let Some(type_name) = id_to_type.get(&source_node_id) {
+                registry.get(type_name)
+            } else {
+                None
+            };
+
+            // Look up the destination node's descriptor.
+            let dest_descriptor = if let Some(type_name) = id_to_type.get(&dest_node_id) {
+                registry.get(type_name)
+            } else {
+                None
+            };
+
+            // If either node's type is unknown, skip — already covered
+            // by check 3 errors.
+            let (source_desc, dest_desc) = match (source_descriptor, dest_descriptor) {
+                (Some(s), Some(d)) => (s, d),
+                _ => continue,
+            };
+
+            // Find the matching output slot on the source node.
+            // If not found, skip — the DanglingEdge error from check 4
+            // already flags this slot.
+            let output_slot = match source_desc
+                .outputs
+                .iter()
+                .find(|slot| slot.name == source_slot_name)
+            {
+                Some(slot) => slot,
+                None => continue,
+            };
+
+            // Find the matching input slot on the destination node.
+            // If not found, skip — the DanglingEdge error from check 4
+            // already flags this slot.
+            let input_slot = match dest_desc
+                .inputs
+                .iter()
+                .find(|slot| slot.name == dest_slot_name)
+            {
+                Some(slot) => slot,
+                None => continue,
+            };
+
+            // Compare slot types: a mismatch is only an error if the
+            // types differ AND neither side is SlotType::Any. Any acts
+            // as a wildcard that accepts any connection.
+            if output_slot.slot_type != input_slot.slot_type
+                && output_slot.slot_type != SlotType::Any
+                && input_slot.slot_type != SlotType::Any
+            {
+                errors.push(GraphError::SlotTypeMismatch {
+                    node_id: dest_node_id,
+                    slot_name: dest_slot_name,
+                    expected: slot_type_label(input_slot.slot_type),
+                    found: slot_type_label(output_slot.slot_type),
+                });
+            }
         }
     }
 

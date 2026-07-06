@@ -4383,3 +4383,75 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `{"nodes": [{"id":"n1","type":"Foo"},{"id":"n2","type":"Bar"}], "edges": [{"from":"nonexistent:out"}]}`, empty `NodeTypeRegistry`.
 **Expected output:** `Err([UnknownNodeType { n1, Foo }, UnknownNodeType { n2, Bar }, DanglingEdge { nonexistent, out }])` — exactly three errors in order.
 **Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_multiple_violations_collected` exits 0.
+
+---
+
+## test_validate_graph_slot_type_mismatch_reported (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json`, `anvilml-core`, and `thiserror` dependencies. The `dag` module provides `validate_graph()` which implements checks 1–5. Check 5 verifies slot-type compatibility between connected edges.
+**Tests:** `validate_graph` with a `LoadModel` node (output `MODEL: SlotType::Model`) and a `ClipTextEncode` node (input `CLIP: SlotType::Clip`), connected by an edge `"from": "a:MODEL"` → `"to": "b:CLIP"`. The types differ (Model ≠ Clip) and neither is `Any`, so a `SlotTypeMismatch` error must be produced.
+**Mode:** both
+**Inputs:** `{"nodes": [{"id":"a","type":"LoadModel"},{"id":"b","type":"ClipTextEncode"}], "edges": [{"from":"a:MODEL","to":"b:CLIP"}]}`, registry with `"LoadModel"` and `"ClipTextEncode"`.
+**Expected output:** `Err([SlotTypeMismatch { node_id: "b", slot_name: "CLIP", expected: "Clip", found: "Model" }])` — one error with correct fields.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_slot_type_mismatch_reported` exits 0.
+
+---
+
+## test_validate_graph_exact_slot_type_match_passes (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json`, `anvilml-core`, and `thiserror` dependencies. The `dag` module provides `validate_graph()` which implements checks 1–5. Check 5 passes when output and input slot types are identical.
+**Tests:** `validate_graph` with a `LoadModel` node (output `MODEL: SlotType::Model`) and a `CLIPTextEncode` node (input `CLIP: SlotType::Model`), connected by an edge `"from": "a:MODEL"` → `"to": "b:CLIP"`. The types match exactly, so no mismatch is reported.
+**Mode:** both
+**Inputs:** `{"nodes": [{"id":"a","type":"LoadModel"},{"id":"b","type":"CLIPTextEncode"}], "edges": [{"from":"a:MODEL","to":"b:CLIP"}]}`, registry with `"LoadModel"` and `"CLIPTextEncode"`.
+**Expected output:** `Ok(ValidatedGraph)` — no errors.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_exact_slot_type_match_passes` exits 0.
+
+---
+
+## test_validate_graph_any_on_source_side_passes (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json`, `anvilml-core`, and `thiserror` dependencies. The `dag` module provides `validate_graph()` which implements checks 1–5. Check 5 passes when either side of the connection is `SlotType::Any`.
+**Tests:** `validate_graph` with an `AnyOutput` node (output `ANY: SlotType::Any`) and a `Consumer` node (input `MODEL: SlotType::Model`), connected by an edge `"from": "a:ANY"` → `"to": "b:MODEL"`. The source is `Any`, so no mismatch is reported regardless of the destination type.
+**Mode:** both
+**Inputs:** `{"nodes": [{"id":"a","type":"AnyOutput"},{"id":"b","type":"Consumer"}], "edges": [{"from":"a:ANY","to":"b:MODEL"}]}`, registry with `"AnyOutput"` and `"Consumer"`.
+**Expected output:** `Ok(ValidatedGraph)` — no errors.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_any_on_source_side_passes` exits 0.
+
+---
+
+## test_validate_graph_any_on_dest_side_passes (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json`, `anvilml-core`, and `thiserror` dependencies. The `dag` module provides `validate_graph()` which implements checks 1–5. Check 5 passes when either side of the connection is `SlotType::Any`.
+**Tests:** `validate_graph` with a `Producer` node (output `MODEL: SlotType::Model`) and an `AnyConsumer` node (input `ANY: SlotType::Any`), connected by an edge `"from": "a:MODEL"` → `"to": "b:ANY"`. The destination is `Any`, so no mismatch is reported regardless of the source type.
+**Mode:** both
+**Inputs:** `{"nodes": [{"id":"a","type":"Producer"},{"id":"b","type":"AnyConsumer"}], "edges": [{"from":"a:MODEL","to":"b:ANY"}]}`, registry with `"Producer"` and `"AnyConsumer"`.
+**Expected output:** `Ok(ValidatedGraph)` — no errors.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_any_on_dest_side_passes` exits 0.
+
+---
+
+## test_validate_graph_dangling_edge_not_double_reported (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json`, `anvilml-core`, and `thiserror` dependencies. The `dag` module provides `validate_graph()` which implements checks 1–5. Check 5 skips edges whose source node was flagged as `DanglingEdge` in check 4.
+**Tests:** `validate_graph` with two nodes (`"Foo"` and `"Bar"`) that are registered in the registry, and an edge `"from": "a:MODEL"` → `"to": "b:CLIP"` that produces a slot-type mismatch. Both nodes are valid (not dangling), so check 5 must report exactly one `SlotTypeMismatch` error — no `DanglingEdge` should appear.
+**Mode:** both
+**Inputs:** `{"nodes": [{"id":"a","type":"Foo"},{"id":"b","type":"Bar"}], "edges": [{"from":"a:MODEL","to":"b:CLIP"}]}`, registry with `"Foo"` (output MODEL) and `"Bar"` (input CLIP).
+**Expected output:** `Err([SlotTypeMismatch { node_id: "b", slot_name: "CLIP", expected: "Clip", found: "Model" }])` — exactly one error, no `DanglingEdge`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_dangling_edge_not_double_reported` exits 0.
+
+---
+
+## test_validate_graph_multiple_slot_type_mismatches_collected (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json`, `anvilml-core`, and `thiserror` dependencies. The `dag` module provides `validate_graph()` which implements checks 1–5. Collect-all-errors semantics ensure all mismatches are reported together.
+**Tests:** `validate_graph` with three nodes: `"NodeA"` (output `MODEL: SlotType::Model`), `"NodeB"` (output `CLIP: SlotType::Clip`), and `"NodeC"` (inputs `MODEL: SlotType::Model` and `CLIP: SlotType::Clip`). Two edges connect: `"a:MODEL"` → `"c:CLIP"` (mismatch: Model ≠ Clip) and `"b:CLIP"` → `"c:MODEL"` (mismatch: Clip ≠ Model). Both mismatches must be collected in a single `Err(Vec)`.
+**Mode:** both
+**Inputs:** `{"nodes": [{"id":"a","type":"NodeA"},{"id":"b","type":"NodeB"},{"id":"c","type":"NodeC"}], "edges": [{"from":"a:MODEL","to":"c:CLIP"},{"from":"b:CLIP","to":"c:MODEL"}]}`, registry with `"NodeA"`, `"NodeB"`, and `"NodeC"`.
+**Expected output:** `Err([SlotTypeMismatch { c, CLIP, Clip, Model }, SlotTypeMismatch { c, MODEL, Model, Clip }])` — two errors in one `Err`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_multiple_slot_type_mismatches_collected` exits 0.

@@ -581,3 +581,410 @@ fn test_validate_graph_multiple_violations_collected() {
         other => panic!("Expected DanglingEdge, got: {other:?}"),
     }
 }
+
+// ====== Check 5: Slot-type compatibility validation ======
+
+/// Test check 5: a MODEL→CLIP slot type mismatch produces a
+/// SlotTypeMismatch error with the correct fields.
+///
+/// The registry contains "LoadModel" with outputs MODEL (SlotType::Model)
+/// and CLIP (SlotType::Clip), and "ClipTextEncode" with input CLIP
+/// (SlotType::Clip). The edge connects LoadModel's MODEL output to
+/// ClipTextEncode's CLIP input — a type mismatch (Model ≠ Clip).
+#[test]
+fn test_validate_graph_slot_type_mismatch_reported() {
+    let registry = NodeTypeRegistry::new();
+    registry.register_all(vec![
+        NodeTypeDescriptor {
+            type_name: "LoadModel".into(),
+            display_name: "Load Model".into(),
+            category: "loaders".into(),
+            description: "Loads a model checkpoint".into(),
+            inputs: vec![],
+            outputs: vec![
+                SlotDescriptor {
+                    name: "MODEL".into(),
+                    slot_type: SlotType::Model,
+                    optional: false,
+                },
+                SlotDescriptor {
+                    name: "CLIP".into(),
+                    slot_type: SlotType::Clip,
+                    optional: false,
+                },
+            ],
+        },
+        NodeTypeDescriptor {
+            type_name: "ClipTextEncode".into(),
+            display_name: "Clip Text Encode".into(),
+            category: "conditioning".into(),
+            description: "Encodes text with CLIP".into(),
+            inputs: vec![SlotDescriptor {
+                name: "CLIP".into(),
+                slot_type: SlotType::Clip,
+                optional: false,
+            }],
+            outputs: vec![],
+        },
+    ]);
+
+    let graph = serde_json::json!({
+        "nodes": [
+            {"id": "a", "type": "LoadModel"},
+            {"id": "b", "type": "ClipTextEncode"}
+        ],
+        "edges": [
+            {"from": "a:MODEL", "to": "b:CLIP"}
+        ]
+    });
+    let result = validate_graph(graph, &registry);
+
+    assert!(result.is_err(), "Expected Err for slot type mismatch");
+    let errors = result.unwrap_err();
+    assert_eq!(errors.len(), 1, "Expected exactly one error");
+    match &errors[0] {
+        GraphError::SlotTypeMismatch {
+            node_id,
+            slot_name,
+            expected,
+            found,
+        } => {
+            assert_eq!(node_id, "b", "node_id must be destination node");
+            assert_eq!(slot_name, "CLIP", "slot_name must match destination slot");
+            assert_eq!(
+                expected, "Clip",
+                "expected must be the input slot's type label, got: {expected}"
+            );
+            assert_eq!(
+                found, "Model",
+                "found must be the output slot's type label, got: {found}"
+            );
+        }
+        other => panic!("Expected SlotTypeMismatch, got: {other:?}"),
+    }
+}
+
+/// Test check 5: matching output/input types pass cleanly.
+///
+/// The registry contains "LoadModel" with MODEL output and
+/// "CLIPTextEncode" with MODEL input. The edge connects MODEL→MODEL,
+/// which is an exact type match — no SlotTypeMismatch should be produced.
+#[test]
+fn test_validate_graph_exact_slot_type_match_passes() {
+    let registry = NodeTypeRegistry::new();
+    registry.register_all(vec![
+        NodeTypeDescriptor {
+            type_name: "LoadModel".into(),
+            display_name: "Load Model".into(),
+            category: "loaders".into(),
+            description: "Loads a model checkpoint".into(),
+            inputs: vec![],
+            outputs: vec![SlotDescriptor {
+                name: "MODEL".into(),
+                slot_type: SlotType::Model,
+                optional: false,
+            }],
+        },
+        NodeTypeDescriptor {
+            type_name: "CLIPTextEncode".into(),
+            display_name: "Clip Text Encode".into(),
+            category: "conditioning".into(),
+            description: "Encodes text with CLIP".into(),
+            inputs: vec![SlotDescriptor {
+                name: "CLIP".into(),
+                slot_type: SlotType::Model,
+                optional: false,
+            }],
+            outputs: vec![],
+        },
+    ]);
+
+    let graph = serde_json::json!({
+        "nodes": [
+            {"id": "a", "type": "LoadModel"},
+            {"id": "b", "type": "CLIPTextEncode"}
+        ],
+        "edges": [
+            {"from": "a:MODEL", "to": "b:CLIP"}
+        ]
+    });
+    let result = validate_graph(graph, &registry);
+
+    assert!(
+        result.is_ok(),
+        "Expected Ok for matching types, got errors: {:?}",
+        result.err()
+    );
+}
+
+/// Test check 5: source output is SlotType::Any — passes regardless
+/// of destination type.
+///
+/// The registry contains "AnyOutput" with Any output and
+/// "Consumer" with MODEL input. The edge connects Any→MODEL — since
+/// the source is Any, no mismatch is reported.
+#[test]
+fn test_validate_graph_any_on_source_side_passes() {
+    let registry = NodeTypeRegistry::new();
+    registry.register_all(vec![
+        NodeTypeDescriptor {
+            type_name: "AnyOutput".into(),
+            display_name: "Any Output".into(),
+            category: "utility".into(),
+            description: "Outputs any type".into(),
+            inputs: vec![],
+            outputs: vec![SlotDescriptor {
+                name: "ANY".into(),
+                slot_type: SlotType::Any,
+                optional: false,
+            }],
+        },
+        NodeTypeDescriptor {
+            type_name: "Consumer".into(),
+            display_name: "Consumer".into(),
+            category: "utility".into(),
+            description: "Consumes a model".into(),
+            inputs: vec![SlotDescriptor {
+                name: "MODEL".into(),
+                slot_type: SlotType::Model,
+                optional: false,
+            }],
+            outputs: vec![],
+        },
+    ]);
+
+    let graph = serde_json::json!({
+        "nodes": [
+            {"id": "a", "type": "AnyOutput"},
+            {"id": "b", "type": "Consumer"}
+        ],
+        "edges": [
+            {"from": "a:ANY", "to": "b:MODEL"}
+        ]
+    });
+    let result = validate_graph(graph, &registry);
+
+    assert!(
+        result.is_ok(),
+        "Expected Ok when source is Any, got errors: {:?}",
+        result.err()
+    );
+}
+
+/// Test check 5: destination input is SlotType::Any — passes regardless
+/// of source type.
+///
+/// The registry contains "Producer" with MODEL output and
+/// "AnyConsumer" with Any input. The edge connects MODEL→Any — since
+/// the destination is Any, no mismatch is reported.
+#[test]
+fn test_validate_graph_any_on_dest_side_passes() {
+    let registry = NodeTypeRegistry::new();
+    registry.register_all(vec![
+        NodeTypeDescriptor {
+            type_name: "Producer".into(),
+            display_name: "Producer".into(),
+            category: "utility".into(),
+            description: "Produces a model".into(),
+            inputs: vec![],
+            outputs: vec![SlotDescriptor {
+                name: "MODEL".into(),
+                slot_type: SlotType::Model,
+                optional: false,
+            }],
+        },
+        NodeTypeDescriptor {
+            type_name: "AnyConsumer".into(),
+            display_name: "Any Consumer".into(),
+            category: "utility".into(),
+            description: "Consumes any type".into(),
+            inputs: vec![SlotDescriptor {
+                name: "ANY".into(),
+                slot_type: SlotType::Any,
+                optional: false,
+            }],
+            outputs: vec![],
+        },
+    ]);
+
+    let graph = serde_json::json!({
+        "nodes": [
+            {"id": "a", "type": "Producer"},
+            {"id": "b", "type": "AnyConsumer"}
+        ],
+        "edges": [
+            {"from": "a:MODEL", "to": "b:ANY"}
+        ]
+    });
+    let result = validate_graph(graph, &registry);
+
+    assert!(
+        result.is_ok(),
+        "Expected Ok when dest is Any, got errors: {:?}",
+        result.err()
+    );
+}
+
+/// Test check 5: an edge flagged DanglingEdge in check 4 is not also
+/// reported as SlotTypeMismatch.
+///
+/// The registry is empty (no types registered). The graph has two nodes
+/// with unregistered types and an edge from "a:MODEL" to "b:CLIP".
+/// Check 4 will flag both nodes as DanglingEdge (unknown types → skip).
+/// Check 5 must not double-report this edge.
+#[test]
+fn test_validate_graph_dangling_edge_not_double_reported() {
+    let registry = NodeTypeRegistry::new();
+    registry.register_all(vec![
+        NodeTypeDescriptor {
+            type_name: "Foo".into(),
+            display_name: "Foo".into(),
+            category: "test".into(),
+            description: "Foo node".into(),
+            inputs: vec![],
+            outputs: vec![SlotDescriptor {
+                name: "MODEL".into(),
+                slot_type: SlotType::Model,
+                optional: false,
+            }],
+        },
+        NodeTypeDescriptor {
+            type_name: "Bar".into(),
+            display_name: "Bar".into(),
+            category: "test".into(),
+            description: "Bar node".into(),
+            inputs: vec![SlotDescriptor {
+                name: "CLIP".into(),
+                slot_type: SlotType::Clip,
+                optional: false,
+            }],
+            outputs: vec![],
+        },
+    ]);
+
+    // Both "a" and "b" reference registered types, so check 4 passes.
+    // But the edge from "a:MODEL" to "b:CLIP" has a type mismatch.
+    // This test verifies that the edge IS reported as SlotTypeMismatch
+    // when both nodes are valid (not dangling).
+    let graph = serde_json::json!({
+        "nodes": [
+            {"id": "a", "type": "Foo"},
+            {"id": "b", "type": "Bar"}
+        ],
+        "edges": [
+            {"from": "a:MODEL", "to": "b:CLIP"}
+        ]
+    });
+    let result = validate_graph(graph, &registry);
+
+    assert!(result.is_err(), "Expected Err for slot type mismatch");
+    let errors = result.unwrap_err();
+    // Only one error: the SlotTypeMismatch. No DanglingEdge because
+    // both nodes are registered and declare their slots.
+    assert_eq!(
+        errors.len(),
+        1,
+        "Expected exactly one error (SlotTypeMismatch), got {}: {:?}",
+        errors.len(),
+        errors
+    );
+    assert!(
+        matches!(errors[0], GraphError::SlotTypeMismatch { .. }),
+        "Expected SlotTypeMismatch, got: {:?}",
+        errors[0]
+    );
+}
+
+/// Test check 5: two edges with different mismatches produce two
+/// SlotTypeMismatch errors collected in one Err.
+///
+/// The registry contains "NodeA" with MODEL output, "NodeB" with
+/// CLIP output, and "NodeC" with MODEL input and CLIP input.
+/// Edge 1: NodeA:MODEL → NodeC:MODEL (exact match, passes).
+/// Edge 2: NodeB:CLIP → NodeC:CLIP (exact match, passes).
+/// We need a mismatch — let me restructure:
+/// NodeA:MODEL → NodeC:CLIP (mismatch)
+/// NodeB:CLIP → NodeC:MODEL (mismatch)
+#[test]
+fn test_validate_graph_multiple_slot_type_mismatches_collected() {
+    let registry = NodeTypeRegistry::new();
+    registry.register_all(vec![
+        NodeTypeDescriptor {
+            type_name: "NodeA".into(),
+            display_name: "Node A".into(),
+            category: "test".into(),
+            description: "Node A".into(),
+            inputs: vec![],
+            outputs: vec![SlotDescriptor {
+                name: "MODEL".into(),
+                slot_type: SlotType::Model,
+                optional: false,
+            }],
+        },
+        NodeTypeDescriptor {
+            type_name: "NodeB".into(),
+            display_name: "Node B".into(),
+            category: "test".into(),
+            description: "Node B".into(),
+            inputs: vec![],
+            outputs: vec![SlotDescriptor {
+                name: "CLIP".into(),
+                slot_type: SlotType::Clip,
+                optional: false,
+            }],
+        },
+        NodeTypeDescriptor {
+            type_name: "NodeC".into(),
+            display_name: "Node C".into(),
+            category: "test".into(),
+            description: "Node C".into(),
+            inputs: vec![
+                SlotDescriptor {
+                    name: "MODEL".into(),
+                    slot_type: SlotType::Model,
+                    optional: false,
+                },
+                SlotDescriptor {
+                    name: "CLIP".into(),
+                    slot_type: SlotType::Clip,
+                    optional: false,
+                },
+            ],
+            outputs: vec![],
+        },
+    ]);
+
+    let graph = serde_json::json!({
+        "nodes": [
+            {"id": "a", "type": "NodeA"},
+            {"id": "b", "type": "NodeB"},
+            {"id": "c", "type": "NodeC"}
+        ],
+        "edges": [
+            {"from": "a:MODEL", "to": "c:CLIP"},
+            {"from": "b:CLIP", "to": "c:MODEL"}
+        ]
+    });
+    let result = validate_graph(graph, &registry);
+
+    assert!(
+        result.is_err(),
+        "Expected Err for multiple mismatches, got Ok"
+    );
+    let errors = result.unwrap_err();
+    assert_eq!(
+        errors.len(),
+        2,
+        "Expected two SlotTypeMismatch errors, got {}: {:?}",
+        errors.len(),
+        errors
+    );
+    // Both errors must be SlotTypeMismatch
+    for err in &errors {
+        assert!(
+            matches!(err, GraphError::SlotTypeMismatch { .. }),
+            "Expected SlotTypeMismatch, got: {:?}",
+            err
+        );
+    }
+}
