@@ -107,16 +107,17 @@
     "P10-A1",
     "P10-A2",
     "P10-A3",
-    "P10-A4"
+    "P10-A4",
+    "P10-B1"
   ],
-  "in_progress": "P10-B1",
+  "in_progress": "P10-B2",
   "plan_approved": true,
-  "current_plan": "1. **Create the `worker/nodes/arch/` directory.**\n   - No `__init__.py` is needed here \u2014 arch packages are imported by their family\n     dispatcher (this file), not by the top-level node auto-import loop.\n   - Command: `mkdir -p worker/nodes/arch/diffusion`\n\n2. **Create `worker/nodes/arch/diffusion/__init__.py`** with the following content:\n   - Module docstring describing the diffusion arch family dispatcher.\n   - Import `Any` from `typing` and `ModuleType` from `types`.\n   - Define `_REGISTERED_MODULES: list[ModuleType] = []` \u2014 an empty list that will be\n     populated by concrete arch modules in later phases.\n   - Define `get_module(key: Any) -> ModuleType | None`:\n     - Iterate over `_REGISTERED_MODULES`.\n     - For each module, call `module.can_handle(key)`.\n     - Return the first module whose `can_handle(key)` returns `True`.\n     - If no match is found (or the list is empty), return `None`.\n     - No logging is needed at this stage \u2014 `get_module` is a pure function called\n       from node execute paths, and logging would be added when concrete modules\n       are wired in later phases.\n   - No dual-mode parity markers (`REAL_PATH_VERIFIED`/`MOCK_PATH_VERIFIED`) are\n     applied to `get_module` \u2014 the \u00a710.6 convention covers `execute()`, `load()`,\n     `sample()`, `decode()`, and `compute_latent_shape()` methods; `get_module` is\n     a shared dispatcher function, not one of those categories.\n\n   Rationale: The design doc (\u00a710.4) explicitly states that `get_module` is \"the ONE\n   shared dispatcher per family \u2014 never reimplemented per module.\" Each concrete module\n   defines its own `can_handle(key)` independently; `get_module` only orchestrates the\n   scan. With an empty registry, the function must return `None` silently \u2014 never raise.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-06T08:30:58+0200",
-  "plan_approval_message_id": "1523570726844497961",
+  "last_updated": "2026-07-06T09:24:11+0200",
+  "plan_approval_message_id": "1523587358664949810",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1523570724659265637",
+  "plan_report_message_id": "1523587356202893446",
   "impl_report_message_id": null
 }

@@ -3950,3 +3950,75 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** A `Mock(spec=ModuleType)` with `can_handle` returning `False`, appended to `_REGISTERED_MODULES`.
 **Expected output:** `get_module("zit")` returns `None`; `can_handle` was called once with `"zit"`.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_dispatch.py::test_get_module_skips_module_with_can_handle_false -v` exits 0.
+
+---
+
+## test_clip_get_module_returns_none_when_empty (anvilml-worker)
+
+**File:** `worker/tests/test_arch_dispatch.py`
+**Context:** The `worker.nodes.arch.clip` module is importable. `_REGISTERED_MODULES` is empty by default (no concrete arch modules wired in yet).
+**Tests:** `clip.get_module("qwen3")` returns `None` when the registry is empty — proves the dispatcher handles the empty-registry case gracefully without raising.
+**Mode:** both
+**Inputs:** `clip.get_module("qwen3")` with empty `_REGISTERED_MODULES`.
+**Expected output:** `None`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_dispatch.py::test_clip_get_module_returns_none_when_empty -v` exits 0.
+
+---
+
+## test_clip_get_module_does_not_raise_for_various_key_types (anvilml-worker)
+
+**File:** `worker/tests/test_arch_dispatch.py`
+**Context:** The `worker.nodes.arch.clip` module is importable. `_REGISTERED_MODULES` is empty by default.
+**Tests:** `clip.get_module()` does not raise for `str`, `None`, or arbitrary `object()` keys — proves the dispatch loop never throws on unexpected key types.
+**Mode:** both
+**Inputs:** `"qwen3"`, `None`, `object()` as keys.
+**Expected output:** All calls return `None` without raising.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_dispatch.py::test_clip_get_module_does_not_raise_for_various_key_types -v` exits 0.
+
+---
+
+## test_clip_get_module_skips_module_with_can_handle_false (anvilml-worker)
+
+**File:** `worker/tests/test_arch_dispatch.py`
+**Context:** The `worker.nodes.arch.clip` module is importable. `_REGISTERED_MODULES` is a mutable list that tests can append to (with cleanup via `finally`). A `Mock(spec=ModuleType)` with `can_handle=Mock(return_value=False)` is used as a test double.
+**Tests:** When a CLIP module's `can_handle` returns `False`, `clip.get_module` continues scanning and returns `None` — proves the dispatcher does not return a non-matching module.
+**Mode:** both
+**Inputs:** A `Mock(spec=ModuleType)` with `can_handle` returning `False`, appended to `clip._REGISTERED_MODULES`.
+**Expected output:** `clip.get_module("qwen3")` returns `None`; `can_handle` was called once with `"qwen3"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_dispatch.py::test_clip_get_module_skips_module_with_can_handle_false -v` exits 0.
+
+---
+
+## test_vae_get_module_returns_none_when_empty (anvilml-worker)
+
+**File:** `worker/tests/test_arch_dispatch.py`
+**Context:** The `worker.nodes.arch.vae` module is importable. `_REGISTERED_MODULES` is empty by default (no concrete arch modules wired in yet).
+**Tests:** `vae.get_module("zit_vae")` returns `None` when the registry is empty — proves the dispatcher handles the empty-registry case gracefully without raising.
+**Mode:** both
+**Inputs:** `vae.get_module("zit_vae")` with empty `_REGISTERED_MODULES`.
+**Expected output:** `None`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_dispatch.py::test_vae_get_module_returns_none_when_empty -v` exits 0.
+
+---
+
+## test_vae_get_module_does_not_raise_for_various_key_types (anvilml-worker)
+
+**File:** `worker/tests/test_arch_dispatch.py`
+**Context:** The `worker.nodes.arch.vae` module is importable. `_REGISTERED_MODULES` is empty by default.
+**Tests:** `vae.get_module()` does not raise for `str`, `None`, or arbitrary `object()` keys — proves the dispatch loop never throws on unexpected key types.
+**Mode:** both
+**Inputs:** `"zit_vae"`, `None`, `object()` as keys.
+**Expected output:** All calls return `None` without raising.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_dispatch.py::test_vae_get_module_does_not_raise_for_various_key_types -v` exits 0.
+
+---
+
+## test_vae_get_module_skips_module_with_can_handle_false (anvilml-worker)
+
+**File:** `worker/tests/test_arch_dispatch.py`
+**Context:** The `worker.nodes.arch.vae` module is importable. `_REGISTERED_MODULES` is a mutable list that tests can append to (with cleanup via `finally`). A `Mock(spec=ModuleType)` with `can_handle=Mock(return_value=False)` is used as a test double.
+**Tests:** When a VAE module's `can_handle` returns `False`, `vae.get_module` continues scanning and returns `None` — proves the dispatcher does not return a non-matching module.
+**Mode:** both
+**Inputs:** A `Mock(spec=ModuleType)` with `can_handle` returning `False`, appended to `vae._REGISTERED_MODULES`.
+**Expected output:** `vae.get_module("zit_vae")` returns `None`; `can_handle` was called once with `"zit_vae"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_dispatch.py::test_vae_get_module_skips_module_with_can_handle_false -v` exits 0.
