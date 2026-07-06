@@ -4131,3 +4131,27 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Expected output:** `cloned.node_registry.list().len() == 1` and `list[0].type_name == "TestNode"`.
 **Acceptance:** `cargo test -p anvilml-server --test state_tests test_app_state_clone_shares_node_registry` exits 0.
 
+---
+
+## test_validated_graph_inner_is_pub_crate (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json` dependency and the `types` module providing `ValidatedGraph`. The `#[cfg(test)]`-gated `_test_new()` and `_test_inner()` methods are available only when tests are compiled.
+**Tests:** The inner `serde_json::Value` field is accessible within the crate via the `#[cfg(test)] pub fn _test_inner()` method, confirming `pub(crate)` visibility works correctly: same-crate test code can inspect the graph through the helper, proving the field is not `pub` (no direct field access from the test crate) but is accessible within the crate boundary.
+**Mode:** both
+**Inputs:** A `serde_json::json!({"nodes": []})` value wrapped in `ValidatedGraph` via `_test_new()`.
+**Expected output:** `_test_inner()` returns a reference to the same `serde_json::Value` passed to `_test_new()`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validated_graph_inner_is_pub_crate` exits 0.
+
+---
+
+## test_validated_graph_derives_debug_and_clone (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json` dependency and the `types` module providing `ValidatedGraph` with `#[derive(Debug, Clone)]`. The `#[cfg(test)]`-gated `_test_new()` method is available only when tests are compiled.
+**Tests:** `ValidatedGraph` correctly derives `Debug` and `Clone`. The Debug output includes the inner value's debug representation; cloning produces an equal value. This verifies the derives are correct and the type is usable as a proper newtype.
+**Mode:** both
+**Inputs:** A `serde_json::json!({"nodes": [], "edges": []})` value.
+**Expected output:** `format!("{:?}", ...)` produces a non-empty string containing "ValidatedGraph"; cloned value produces an identical Debug representation.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validated_graph_derives_debug_and_clone` exits 0.
+
