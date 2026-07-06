@@ -4022,3 +4022,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** A `Mock(spec=ModuleType)` with `can_handle` returning `False`, appended to `vae._REGISTERED_MODULES`.
 **Expected output:** `vae.get_module("zit_vae")` returns `None`; `can_handle` was called once with `"zit_vae"`.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_dispatch.py::test_vae_get_module_skips_module_with_can_handle_false -v` exits 0.
+
+---
+
+## test_import_does_not_raise (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_init.py`
+**Context:** The `worker.nodes` package has been created with an auto-import loop in `__init__.py` that uses `pkgutil.iter_modules()` to discover sibling `.py` modules and `importlib.util` to execute them. No concrete node files exist yet — only `base.py` and the `arch/` subdirectory are present.
+**Tests:** Importing `worker.nodes` does not raise an exception — proves the auto-import loop completes cleanly even with no importable sibling modules.
+**Mode:** both
+**Inputs:** None.
+**Expected output:** `import worker.nodes` succeeds silently.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_init.py::test_import_does_not_raise -v` exits 0.
+
+---
+
+## test_node_registry_empty_after_import (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_init.py`
+**Context:** The `worker.nodes` package has been imported (triggering the auto-import loop), and `worker.nodes.base` provides `NODE_REGISTRY` as a module-level `dict[str, type["BaseNode"]]`. No concrete node files exist yet.
+**Tests:** After importing `worker.nodes`, `NODE_REGISTRY` is empty — proves the auto-import loop does not register anything when no sibling node modules exist.
+**Mode:** both
+**Inputs:** None.
+**Expected output:** `base.NODE_REGISTRY == {}`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_init.py::test_node_registry_empty_after_import -v` exits 0.
+
+---
+
+## test_reimport_is_idempotent (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_init.py`
+**Context:** The `worker.nodes` package has been imported once. The `_imported` flag in `__init__.py` prevents re-execution of the auto-import loop.
+**Tests:** Calling `_import_nodes()` a second time (or re-importing `worker.nodes`) does not raise or duplicate registrations — proves the idempotency guard works correctly.
+**Mode:** both
+**Inputs:** None.
+**Expected output:** No exception on second call; `NODE_REGISTRY` remains empty.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_init.py::test_reimport_is_idempotent -v` exits 0.
