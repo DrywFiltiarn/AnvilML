@@ -4539,3 +4539,111 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Registry with "NodeX" (MODEL output/input). Graph with nodes "a", "b", "c" in a cycle and node "d" as a leaf.
 **Expected output:** `Err([CycleDetected(["a", "b", "c"])])` — "d" is NOT listed.
 **Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_partial_cycle_in_larger_graph` exits 0.
+
+---
+
+## test_fifo_order (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/queue_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-core` (providing `Job`, `JobStatus`, `JobSettings`), `uuid` (v4 feature), `serde_json`, and `chrono` dev-dependencies, and the `queue` module providing `JobQueue`.
+**Tests:** Two jobs with distinct UUIDs are pushed in order A then B. Calling `pop_front()` twice returns job A first, then job B, confirming FIFO ordering.
+**Mode:** both
+**Inputs:** Fresh `JobQueue`, two `Job` values constructed with `Uuid::new_v4()`.
+**Expected output:** First `pop_front()` returns job A, second returns job B.
+**Acceptance:** `cargo test -p anvilml-scheduler --test queue_tests test_fifo_order` exits 0.
+
+---
+
+## test_cancel_then_pop_front_skips (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/queue_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-core`, `uuid`, `serde_json`, and `chrono` dev-dependencies, and the `queue` module providing `JobQueue`.
+**Tests:** Two jobs are pushed, the first is cancelled via `cancel()`, then `pop_front()` is called. The cancelled job is lazily skipped and the second job is returned. A second `pop_front()` returns `None`.
+**Mode:** both
+**Inputs:** Fresh `JobQueue`, two `Job` values, `cancel()` called on the first job's ID.
+**Expected output:** First `pop_front()` returns job B (A skipped), second returns `None`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test queue_tests test_cancel_then_pop_front_skips` exits 0.
+
+---
+
+## test_cancel_new_id_returns_true (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/queue_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-core`, `uuid`, `serde_json`, and `chrono` dev-dependencies, and the `queue` module providing `JobQueue`.
+**Tests:** Cancelling a freshly-generated UUID (not in the queue) returns `true`, confirming `HashSet::insert()` returns `true` for a newly-marked ID.
+**Mode:** both
+**Inputs:** Fresh `JobQueue`, `cancel(Uuid::new_v4())`.
+**Expected output:** `true` (ID was newly marked in the cancelled set).
+**Acceptance:** `cargo test -p anvilml-scheduler --test queue_tests test_cancel_new_id_returns_true` exits 0.
+
+---
+
+## test_cancel_already_cancelled_returns_false (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/queue_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-core`, `uuid`, `serde_json`, and `chrono` dev-dependencies, and the `queue` module providing `JobQueue`.
+**Tests:** A job is pushed and cancelled, then cancelled again. The second `cancel()` call returns `false`, confirming that `HashSet::insert()` returns `false` for an already-present key.
+**Mode:** both
+**Inputs:** Fresh `JobQueue`, one `Job` pushed, `cancel()` called twice on the same ID.
+**Expected output:** First `cancel()` returns `true`, second returns `false`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test queue_tests test_cancel_already_cancelled_returns_false` exits 0.
+
+---
+
+## test_get_returns_job_by_id (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/queue_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-core`, `uuid`, `serde_json`, and `chrono` dev-dependencies, and the `queue` module providing `JobQueue`.
+**Tests:** A job is pushed, then `get()` is called with its UUID. Must return `Some(&Job)` with a matching ID.
+**Mode:** both
+**Inputs:** Fresh `JobQueue`, one `Job` pushed, `get()` called with the job's ID.
+**Expected output:** `Some(&Job)` with matching ID.
+**Acceptance:** `cargo test -p anvilml-scheduler --test queue_tests test_get_returns_job_by_id` exits 0.
+
+---
+
+## test_get_unknown_id_returns_none (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/queue_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-core`, `uuid`, `serde_json`, and `chrono` dev-dependencies, and the `queue` module providing `JobQueue`.
+**Tests:** `get()` is called with a freshly-generated UUID on an empty queue. Must return `None`.
+**Mode:** both
+**Inputs:** Fresh `JobQueue`, `get(Uuid::new_v4())`.
+**Expected output:** `None`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test queue_tests test_get_unknown_id_returns_none` exits 0.
+
+---
+
+## test_list_returns_all_jobs (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/queue_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-core`, `uuid`, `serde_json`, and `chrono` dev-dependencies, and the `queue` module providing `JobQueue`.
+**Tests:** Three jobs are pushed, then `list()` is called. Must return a `Vec<&Job>` of length 3 with IDs matching the pushed jobs in FIFO order.
+**Mode:** both
+**Inputs:** Fresh `JobQueue`, three `Job` values pushed.
+**Expected output:** `Vec<&Job>` of length 3 in FIFO order.
+**Acceptance:** `cargo test -p anvilml-scheduler --test queue_tests test_list_returns_all_jobs` exits 0.
+
+---
+
+## test_len_after_mixed_ops (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/queue_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-core`, `uuid`, `serde_json`, and `chrono` dev-dependencies, and the `queue` module providing `JobQueue`.
+**Tests:** Three jobs are pushed, one is cancelled, then `len()` is called. Must return 3 because cancelled jobs remain in the deque until `pop_front()` encounters them.
+**Mode:** both
+**Inputs:** Fresh `JobQueue`, three `Job` values pushed, one cancelled.
+**Expected output:** `len() == 3` (cancelled jobs still in deque).
+**Acceptance:** `cargo test -p anvilml-scheduler --test queue_tests test_len_after_mixed_ops` exits 0.
+
+---
+
+## test_pop_front_discards_cancelled_and_returns_remaining (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/queue_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-core`, `uuid`, `serde_json`, and `chrono` dev-dependencies, and the `queue` module providing `JobQueue`.
+**Tests:** Three jobs (A, B, C) are pushed, B is cancelled. Two `pop_front()` calls return A then C (B was skipped). A third call returns `None`.
+**Mode:** both
+**Inputs:** Fresh `JobQueue`, three `Job` values, B cancelled.
+**Expected output:** First pop returns A, second returns C, third returns `None`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test queue_tests test_pop_front_discards_cancelled_and_returns_remaining` exits 0.

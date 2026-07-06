@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-scheduler"
-version = "0.1.7"
+version = "0.1.8"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -12,6 +12,7 @@ anvilml-core = { path = "../anvilml-core" }
 anvilml-hardware = { path = "../anvilml-hardware" }
 serde_json = "1"
 thiserror = "2.0.18"
+uuid = { version = "1.23.4", features = ["v4"] }
 
 [dev-dependencies]
 # Self-reference with test-util enabled: this is what makes ValidatedGraph's
@@ -20,6 +21,8 @@ thiserror = "2.0.18"
 # existing in any normal, release, or dependent-crate build. `cargo test`
 # activates this; nothing else does.
 anvilml-scheduler = { path = ".", features = ["test-util"] }
+# chrono is needed for Utc::now() when constructing Job values in tests.
+chrono = "0.4"
 
 [features]
 mock-hardware = ["anvilml-hardware/mock-hardware"]
