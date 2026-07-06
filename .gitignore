@@ -27,3 +27,6 @@ artifacts/
 
 # macOS metadata
 .DS_Store
+
+# git patch files
+*.patch

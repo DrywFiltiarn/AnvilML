@@ -20,6 +20,16 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Cache pip downloads (worker deps)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/AppData/Local/pip/Cache
+          key: ${{ runner.os }}-pip-worker-${{ hashFiles('worker/requirements/base.txt', 'worker/requirements/cpu-runner-reqs.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-worker-
+
       - name: Provision worker venv (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: bash scripts/install_worker_deps.sh --mode=ci
@@ -63,6 +73,8 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: worker/requirements/base.txt
 
       - name: Install base dependencies
         if: matrix.mode == 'mock'
@@ -80,6 +92,10 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            worker/requirements/base.txt
+            worker/requirements/cpu-runner-reqs.txt
 
       - name: Install base dependencies
         if: matrix.mode == 'real'
