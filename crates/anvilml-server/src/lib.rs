@@ -1,6 +1,9 @@
 //! axum HTTP/WS server, all handlers.
 
 pub mod handlers;
+pub mod state;
+
+pub use state::AppState;
 
 /// Build the application router with all registered HTTP routes.
 ///

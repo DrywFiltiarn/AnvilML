@@ -4106,3 +4106,28 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Ready event with 1 `NodeTypeDescriptor`.
 **Expected output:** After Ready: `registry.len() > 0` AND `status == Idle` both true simultaneously.
 **Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_ready_populates_registry_before_idle_transition` exits 0.
+
+---
+
+## test_app_state_constructs (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/state_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `anvilml-core` path dependency providing `ServerConfig` (with `Default` impl) and `NodeTypeRegistry` (with `new()` constructor). The `AppState` struct is re-exported from `anvilml_server` via `pub use state::AppState;` in `lib.rs`.
+**Tests:** `AppState` constructs with a default `ServerConfig` and an empty `NodeTypeRegistry`. Asserts the `config.host` field is non-empty and the registry reports `is_empty() == true`.
+**Mode:** both
+**Inputs:** `ServerConfig::default()` and `NodeTypeRegistry::new()`, both wrapped in `Arc::new()`.
+**Expected output:** `AppState` is constructed; `config.host` is non-empty; `node_registry.is_empty()` is `true`.
+**Acceptance:** `cargo test -p anvilml-server --test state_tests test_app_state_constructs` exits 0.
+
+---
+
+## test_app_state_clone_shares_node_registry (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/state_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `anvilml-core` providing `NodeTypeDescriptor` and `NodeTypeRegistry`. `AppState` derives `Clone` and is re-exported from `anvilml_server`. The `NodeTypeRegistry` uses `Arc<RwLock<HashMap>>` internally, so cloning the outer `Arc<NodeTypeRegistry>` shares the same heap allocation.
+**Tests:** Cloning `AppState` produces a second `AppState` that shares the same `Arc<NodeTypeRegistry>` heap allocation. After registering a single `NodeTypeDescriptor` via one clone, `list()` on the other clone returns exactly one descriptor with the correct `type_name`.
+**Mode:** both
+**Inputs:** `AppState` with `Arc<ServerConfig>` and `Arc<NodeTypeRegistry>`, cloned via `AppState::clone()`, then `register_all(vec![descriptor])` on the original.
+**Expected output:** `cloned.node_registry.list().len() == 1` and `list[0].type_name == "TestNode"`.
+**Acceptance:** `cargo test -p anvilml-server --test state_tests test_app_state_clone_shares_node_registry` exits 0.
+
