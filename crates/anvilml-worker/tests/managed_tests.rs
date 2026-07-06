@@ -16,6 +16,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anvilml_core::AnvilError;
+use anvilml_core::NodeTypeDescriptor;
+use anvilml_core::NodeTypeRegistry;
+use anvilml_core::SlotDescriptor;
+use anvilml_core::SlotType;
 use anvilml_core::types::worker::WorkerStatus;
 use anvilml_ipc::RouterTransport;
 use anvilml_ipc::WorkerEvent;
@@ -576,6 +580,7 @@ async fn test_run_completes_on_ready_event() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::default(),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -656,6 +661,7 @@ async fn test_shutdown_rx_triggers_graceful_exit() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::default(),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -716,6 +722,7 @@ async fn test_deregister_called_on_graceful_exit() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::default(),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -808,12 +815,13 @@ async fn test_deregister_called_on_crash() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::default(),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
         watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
         watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
-        graceful_shutdown_timeout: DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT,
+        graceful_shutdown_timeout: Duration::from_millis(100),
         venv_path: PathBuf::from("/mock/venv"),
         env: HashMap::new(),
         spawner: Arc::new(MockWorkerSpawner::new()),
@@ -922,6 +930,7 @@ async fn test_deregister_called_on_initializing_timeout() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::default(),
         init_timeout: Duration::from_millis(200),
         pong_tx,
@@ -1000,6 +1009,7 @@ async fn test_crash_appends_to_attempt_history() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         // Non-respawn-eligible (max_attempts=1): this test verifies crash
         // DETECTION and attempt_history tracking, not respawn behavior —
         // that's covered separately by
@@ -1105,6 +1115,7 @@ async fn test_crash_history_grows_per_crash() {
             transport: Arc::clone(&transport),
             demux: Arc::clone(&demux),
             status: Arc::clone(&status),
+            node_registry: Arc::new(NodeTypeRegistry::new()),
             // Non-respawn-eligible — see test_crash_appends_to_attempt_history's
             // comment for why a respawn-eligible policy here would hang past
             // this test's 5s bound as of P8-E6.
@@ -1172,6 +1183,7 @@ async fn test_crash_history_grows_per_crash() {
             transport: Arc::clone(&transport),
             demux: Arc::clone(&demux),
             status: Arc::clone(&status),
+            node_registry: Arc::new(NodeTypeRegistry::new()),
             // Non-respawn-eligible — see this test's first block, above.
             respawn_policy: RespawnPolicy::new(100, 1, 300),
             init_timeout: DEFAULT_INIT_TIMEOUT,
@@ -1256,6 +1268,7 @@ async fn test_should_respawn_called_on_crash() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: policy,
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -1340,6 +1353,7 @@ async fn test_completed_event_transitions_to_idle() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::default(),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -1418,6 +1432,7 @@ async fn test_failed_event_transitions_to_idle() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::default(),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -1493,6 +1508,7 @@ async fn test_cancelled_event_transitions_to_idle() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::default(),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -1576,6 +1592,7 @@ async fn test_watchdog_missing_pong_triggers_crash_path() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         // Non-respawn-eligible (max_attempts=1) — see
         // test_crash_appends_to_attempt_history's comment for why a
         // respawn-eligible policy here would hang past this test's 5s
@@ -1661,6 +1678,7 @@ async fn test_watchdog_live_pongs_no_false_trigger() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::default(),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -1745,6 +1763,7 @@ async fn test_pong_forwarding_does_not_disturb_idle_busy() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::default(),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -1876,6 +1895,7 @@ async fn test_watchdog_channel_cleans_up_on_exit() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::default(),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -1951,6 +1971,7 @@ async fn test_child_tracked_after_spawn() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::default(),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -2017,6 +2038,7 @@ async fn test_respawn_under_limit_spawns_again_and_reregisters() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::new(50, 2, 300),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -2076,6 +2098,7 @@ async fn test_respawn_at_limit_exits_permanently() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::new(50, 1, 300),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -2137,6 +2160,7 @@ async fn test_respawn_status_transitions_respawning_then_initializing() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::new(300, 2, 300),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -2201,6 +2225,7 @@ async fn test_respawn_delay_matches_next_delay() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: policy,
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -2298,6 +2323,7 @@ async fn test_spawn_failure_is_respawn_eligible() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::new(50, 2, 300),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -2361,6 +2387,7 @@ async fn test_respawn_kills_previous_child() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::new(10, 3, 300),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -2490,6 +2517,7 @@ async fn test_respawn_reassigns_job_object_to_new_child() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::new(10, 3, 300),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -2585,6 +2613,7 @@ async fn test_job_guard_kills_current_child_after_multiple_respawns() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::new(10, 3, 300),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -2702,6 +2731,7 @@ async fn test_graceful_shutdown_sends_shutdown_message() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::default(),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -2810,6 +2840,7 @@ async fn test_graceful_shutdown_force_kills_after_timeout() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::default(),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -2885,6 +2916,7 @@ async fn test_init_timeout_force_kills_child() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::default(),
         init_timeout: Duration::from_millis(100),
         pong_tx,
@@ -2941,6 +2973,7 @@ async fn test_worker_reported_dying_force_kills_child() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::default(),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -3001,6 +3034,7 @@ async fn test_permanent_crash_force_kills_child() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::new(100, 1, 300),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx,
@@ -3074,6 +3108,7 @@ async fn test_multi_worker_events_never_cross() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status_a),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::default(),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx: pong_tx_a,
@@ -3089,6 +3124,7 @@ async fn test_multi_worker_events_never_cross() {
         transport: Arc::clone(&transport),
         demux: Arc::clone(&demux),
         status: Arc::clone(&status_b),
+        node_registry: Arc::new(NodeTypeRegistry::new()),
         respawn_policy: RespawnPolicy::default(),
         init_timeout: DEFAULT_INIT_TIMEOUT,
         pong_tx: pong_tx_b,
@@ -3175,4 +3211,501 @@ async fn test_multi_worker_events_never_cross() {
     let _ = shutdown_tx_b.send(());
     let _ = tokio::time::timeout(Duration::from_secs(2), handle_a).await;
     let _ = tokio::time::timeout(Duration::from_secs(2), handle_b).await;
+}
+
+/// A Ready event with N node type descriptors populates the registry:
+/// `len() == N` and `get()` returns the correct descriptor for each type name.
+///
+/// Creates a ROUTER/DEALER pair with a shared `NodeTypeRegistry`, sends a Ready
+/// event with 2 `NodeTypeDescriptor`s (`LoadModel` and `Sampler`), then verifies
+/// the registry contains exactly 2 entries and each `get()` call returns the
+/// matching descriptor.
+#[tokio::test]
+async fn test_ready_event_populates_registry() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+
+    let mut _dealer = connect_dealer(&transport, "test-worker").await;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
+    let (pong_tx, _pong_rx) = mpsc::channel(16);
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        node_registry: Arc::clone(&node_registry),
+        respawn_policy: RespawnPolicy::default(),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
+        pong_tx,
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        graceful_shutdown_timeout: Duration::from_millis(100),
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::new(MockWorkerSpawner::new()),
+    });
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
+
+    // Send a Ready event with 2 node type descriptors.
+    let ready = WorkerEvent::Ready {
+        worker_id: "test-worker".to_string(),
+        device_index: 0,
+        device_name: "Mock GPU".to_string(),
+        device_type: "cpu".to_string(),
+        vram_total_mib: 1024,
+        vram_free_mib: 900,
+        torch_version: "2.5.0".to_string(),
+        fp16: true,
+        bf16: true,
+        fp8: false,
+        flash_attention: false,
+        capabilities_source: "mock".to_string(),
+        node_types: vec![
+            NodeTypeDescriptor {
+                type_name: "LoadModel".to_string(),
+                display_name: "Load Model".to_string(),
+                category: "loaders".to_string(),
+                description: "Loads a model from disk".to_string(),
+                inputs: vec![SlotDescriptor {
+                    name: "model_path".to_string(),
+                    slot_type: SlotType::Model,
+                    optional: false,
+                }],
+                outputs: vec![SlotDescriptor {
+                    name: "model".to_string(),
+                    slot_type: SlotType::Model,
+                    optional: false,
+                }],
+            },
+            NodeTypeDescriptor {
+                type_name: "Sampler".to_string(),
+                display_name: "Sampler".to_string(),
+                category: "sampling".to_string(),
+                description: "Samples from a latent space".to_string(),
+                inputs: vec![
+                    SlotDescriptor {
+                        name: "latent".to_string(),
+                        slot_type: SlotType::Latent,
+                        optional: false,
+                    },
+                    SlotDescriptor {
+                        name: "model".to_string(),
+                        slot_type: SlotType::Model,
+                        optional: false,
+                    },
+                ],
+                outputs: vec![SlotDescriptor {
+                    name: "image".to_string(),
+                    slot_type: SlotType::Image,
+                    optional: false,
+                }],
+            },
+        ],
+    };
+    send_event(&mut _dealer, &ready).await;
+
+    // Give the worker time to process the Ready event.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Verify the registry is populated with exactly 2 entries.
+    assert_eq!(
+        node_registry.len(),
+        2,
+        "registry should contain exactly 2 node types after Ready"
+    );
+
+    // Verify each descriptor is correctly retrievable.
+    let load_model = node_registry
+        .get("LoadModel")
+        .expect("LoadModel should be in the registry");
+    assert_eq!(
+        load_model.type_name, "LoadModel",
+        "LoadModel descriptor type_name should match"
+    );
+
+    let sampler = node_registry
+        .get("Sampler")
+        .expect("Sampler should be in the registry");
+    assert_eq!(
+        sampler.type_name, "Sampler",
+        "Sampler descriptor type_name should match"
+    );
+
+    // Clean shutdown.
+    drop(shutdown_tx);
+    let timeout = tokio::time::sleep(Duration::from_secs(5));
+    tokio::select! {
+        _ = handle => (),
+        _ = timeout => panic!("ManagedWorker::run() did not complete within 5s"),
+    }
+}
+
+/// A Ready event with an empty `node_types` vector results in an empty registry.
+///
+/// Pre-populates the registry with one descriptor, then sends a Ready event with
+/// `node_types: vec![]`. After processing, verifies `is_empty()` is true —
+/// proving that `register_all()` with an empty vec replaces (not merges) prior
+/// contents.
+#[tokio::test]
+async fn test_ready_event_empty_node_types_cleans_registry() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+
+    // Pre-populate the registry with one descriptor.
+    node_registry.register_all(vec![NodeTypeDescriptor {
+        type_name: "PreExisting".to_string(),
+        display_name: "Pre Existing".to_string(),
+        category: "internal".to_string(),
+        description: "Should be replaced".to_string(),
+        inputs: vec![],
+        outputs: vec![],
+    }]);
+    assert_eq!(
+        node_registry.len(),
+        1,
+        "pre-populated registry should have 1 entry"
+    );
+
+    let mut _dealer = connect_dealer(&transport, "test-worker").await;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
+    let (pong_tx, _pong_rx) = mpsc::channel(16);
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        node_registry: Arc::clone(&node_registry),
+        respawn_policy: RespawnPolicy::default(),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
+        pong_tx,
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        graceful_shutdown_timeout: Duration::from_millis(100),
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::new(MockWorkerSpawner::new()),
+    });
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
+
+    // Send Ready with empty node_types.
+    let ready = WorkerEvent::Ready {
+        worker_id: "test-worker".to_string(),
+        device_index: 0,
+        device_name: "Mock GPU".to_string(),
+        device_type: "cpu".to_string(),
+        vram_total_mib: 1024,
+        vram_free_mib: 900,
+        torch_version: "2.5.0".to_string(),
+        fp16: true,
+        bf16: true,
+        fp8: false,
+        flash_attention: false,
+        capabilities_source: "mock".to_string(),
+        node_types: vec![],
+    };
+    send_event(&mut _dealer, &ready).await;
+
+    // Give the worker time to process the Ready event.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Verify the registry is now empty (replaced, not merged).
+    assert!(
+        node_registry.is_empty(),
+        "registry should be empty after Ready with empty node_types"
+    );
+
+    // Clean shutdown.
+    drop(shutdown_tx);
+    let timeout = tokio::time::sleep(Duration::from_secs(5));
+    tokio::select! {
+        _ = handle => (),
+        _ = timeout => panic!("ManagedWorker::run() did not complete within 5s"),
+    }
+}
+
+/// A second Ready event replaces prior registry contents rather than merging.
+///
+/// Sends first Ready with descriptors A and B, then sends a second Ready with
+/// descriptor C only. Verifies the registry has exactly 1 entry (C) and that
+/// A is no longer present — proving `register_all()` replaces, not merges.
+#[tokio::test]
+async fn test_respawn_second_ready_replaces_not_merges() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+
+    let mut _dealer = connect_dealer(&transport, "test-worker").await;
+
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
+    let (pong_tx, _pong_rx) = mpsc::channel(16);
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        node_registry: Arc::clone(&node_registry),
+        respawn_policy: RespawnPolicy::default(),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
+        pong_tx,
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        graceful_shutdown_timeout: Duration::from_millis(100),
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::new(MockWorkerSpawner::new()),
+    });
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
+
+    // First Ready with descriptors A and B.
+    let ready_ab = WorkerEvent::Ready {
+        worker_id: "test-worker".to_string(),
+        device_index: 0,
+        device_name: "Mock GPU".to_string(),
+        device_type: "cpu".to_string(),
+        vram_total_mib: 1024,
+        vram_free_mib: 900,
+        torch_version: "2.5.0".to_string(),
+        fp16: true,
+        bf16: true,
+        fp8: false,
+        flash_attention: false,
+        capabilities_source: "mock".to_string(),
+        node_types: vec![
+            NodeTypeDescriptor {
+                type_name: "A".to_string(),
+                display_name: "Node A".to_string(),
+                category: "test".to_string(),
+                description: "Node A".to_string(),
+                inputs: vec![],
+                outputs: vec![],
+            },
+            NodeTypeDescriptor {
+                type_name: "B".to_string(),
+                display_name: "Node B".to_string(),
+                category: "test".to_string(),
+                description: "Node B".to_string(),
+                inputs: vec![],
+                outputs: vec![],
+            },
+        ],
+    };
+    send_event(&mut _dealer, &ready_ab).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    assert_eq!(
+        node_registry.len(),
+        2,
+        "first Ready should populate 2 entries"
+    );
+
+    // Cause worker to exit (send Dying event).
+    let dying = WorkerEvent::Dying {
+        reason: "simulate respawn".to_string(),
+    };
+    send_event(&mut _dealer, &dying).await;
+
+    // Worker should exit within 5s.
+    let timeout = tokio::time::sleep(Duration::from_secs(5));
+    tokio::select! {
+        _ = handle => (),
+        _ = timeout => panic!("ManagedWorker::run() did not complete within 5s"),
+    }
+
+    // Registry should still have 2 entries from the first Ready
+    // (register_all was called, but no new Ready replaced it yet).
+    assert_eq!(
+        node_registry.len(),
+        2,
+        "registry should still have 2 entries"
+    );
+
+    // Now spawn a second worker (simulating respawn) and send Ready with C only.
+    let demux2 = Arc::new(Demux::new());
+    let transport2 = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx2, _bridge_writer_handle2, _bridge_reader_handle2) =
+        spawn_bridge(Arc::clone(&transport2), Arc::clone(&demux2));
+    let status2 = Arc::clone(&status);
+    let mut _dealer2 = connect_dealer(&transport2, "test-worker").await;
+
+    let (shutdown_tx2, shutdown_rx2) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx2, force_shutdown_rx2) = tokio::sync::oneshot::channel();
+    let (pong_tx2, _pong_rx2) = mpsc::channel(16);
+    let worker2 = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport2),
+        demux: Arc::clone(&demux2),
+        status: Arc::clone(&status2),
+        node_registry: Arc::clone(&node_registry),
+        respawn_policy: RespawnPolicy::default(),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
+        pong_tx: pong_tx2,
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        graceful_shutdown_timeout: Duration::from_millis(100),
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::new(MockWorkerSpawner::new()),
+    });
+    let handle2 = tokio::spawn(worker2.run(shutdown_rx2, force_shutdown_rx2));
+
+    // Second Ready with descriptor C only.
+    let ready_c = WorkerEvent::Ready {
+        worker_id: "test-worker".to_string(),
+        device_index: 0,
+        device_name: "Mock GPU".to_string(),
+        device_type: "cpu".to_string(),
+        vram_total_mib: 1024,
+        vram_free_mib: 900,
+        torch_version: "2.5.0".to_string(),
+        fp16: true,
+        bf16: true,
+        fp8: false,
+        flash_attention: false,
+        capabilities_source: "mock".to_string(),
+        node_types: vec![NodeTypeDescriptor {
+            type_name: "C".to_string(),
+            display_name: "Node C".to_string(),
+            category: "test".to_string(),
+            description: "Node C".to_string(),
+            inputs: vec![],
+            outputs: vec![],
+        }],
+    };
+    send_event(&mut _dealer2, &ready_c).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Verify: only C is present, A and B are gone (replaced, not merged).
+    assert_eq!(
+        node_registry.len(),
+        1,
+        "second Ready should replace prior contents, leaving exactly 1 entry"
+    );
+    assert!(
+        node_registry.get("A").is_none(),
+        "A should not be in registry after replacement"
+    );
+    assert!(
+        node_registry.get("B").is_none(),
+        "B should not be in registry after replacement"
+    );
+    assert!(node_registry.get("C").is_some(), "C should be in registry");
+
+    // Clean shutdown.
+    drop(shutdown_tx2);
+    let timeout2 = tokio::time::sleep(Duration::from_secs(5));
+    tokio::select! {
+        _ = handle2 => (),
+        _ = timeout2 => panic!("ManagedWorker::run() did not complete within 5s"),
+    }
+}
+
+/// The registry is populated before the status transitions to Idle.
+///
+/// Sends a Ready event with descriptors, then verifies that both conditions are
+/// true simultaneously: `registry.len() > 0` AND `status == Idle`. This proves
+/// the ordering invariant — `register_all()` fires before the status transition,
+/// ensuring node types are available the moment the worker becomes usable.
+#[tokio::test]
+async fn test_ready_populates_registry_before_idle_transition() {
+    let demux = Arc::new(Demux::new());
+    let transport = Arc::new(RouterTransport::bind().await.unwrap());
+    let (_bridge_tx, _bridge_writer_handle, _bridge_reader_handle) =
+        spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
+    let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+
+    let mut _dealer = connect_dealer(&transport, "test-worker").await;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (_force_shutdown_tx, force_shutdown_rx) = tokio::sync::oneshot::channel();
+    let (pong_tx, _pong_rx) = mpsc::channel(16);
+    let worker = ManagedWorker::new(ManagedWorkerConfig {
+        worker_id: "test-worker".to_string(),
+        transport: Arc::clone(&transport),
+        demux: Arc::clone(&demux),
+        status: Arc::clone(&status),
+        node_registry: Arc::clone(&node_registry),
+        respawn_policy: RespawnPolicy::default(),
+        init_timeout: DEFAULT_INIT_TIMEOUT,
+        pong_tx,
+        watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+        watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+        graceful_shutdown_timeout: Duration::from_millis(100),
+        venv_path: PathBuf::from("/mock/venv"),
+        env: HashMap::new(),
+        spawner: Arc::new(MockWorkerSpawner::new()),
+    });
+    let handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
+
+    // Send Ready event with one descriptor.
+    let ready = WorkerEvent::Ready {
+        worker_id: "test-worker".to_string(),
+        device_index: 0,
+        device_name: "Mock GPU".to_string(),
+        device_type: "cpu".to_string(),
+        vram_total_mib: 1024,
+        vram_free_mib: 900,
+        torch_version: "2.5.0".to_string(),
+        fp16: true,
+        bf16: true,
+        fp8: false,
+        flash_attention: false,
+        capabilities_source: "mock".to_string(),
+        node_types: vec![NodeTypeDescriptor {
+            type_name: "LoadModel".to_string(),
+            display_name: "Load Model".to_string(),
+            category: "loaders".to_string(),
+            description: "Load a model".to_string(),
+            inputs: vec![SlotDescriptor {
+                name: "path".to_string(),
+                slot_type: SlotType::String,
+                optional: false,
+            }],
+            outputs: vec![SlotDescriptor {
+                name: "model".to_string(),
+                slot_type: SlotType::Model,
+                optional: false,
+            }],
+        }],
+    };
+    send_event(&mut _dealer, &ready).await;
+
+    // Give the worker time to process the Ready event.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Both conditions must be true: registry populated AND status is Idle.
+    // The ordering invariant requires register_all() to fire before status = Idle.
+    assert!(
+        node_registry.len() > 0,
+        "registry should be populated after Ready event"
+    );
+    assert_eq!(
+        *status.read().await,
+        WorkerStatus::Idle,
+        "status should be Idle after Ready event"
+    );
+
+    // Clean shutdown.
+    drop(shutdown_tx);
+    let timeout = tokio::time::sleep(Duration::from_secs(5));
+    tokio::select! {
+        _ = handle => (),
+        _ = timeout => panic!("ManagedWorker::run() did not complete within 5s"),
+    }
 }

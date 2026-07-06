@@ -28,6 +28,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio::sync::oneshot;
 
+use anvilml_core::NodeTypeRegistry;
 use anvilml_core::types::worker::WorkerStatus;
 use anvilml_ipc::WorkerEvent;
 use anvilml_ipc::WorkerMessage;
@@ -371,6 +372,11 @@ pub struct ManagedWorker {
     /// spawn; `run()`'s outer loop deregisters after every generation exits.
     demux: Arc<Demux>,
 
+    /// Dynamic node type registry — populated from worker Ready events.
+    ///
+    /// `register_all()` is called in `handle_event()` on every Ready event.
+    node_registry: Arc<NodeTypeRegistry>,
+
     /// Shared status lock — used by `run()` to track the worker's lifecycle state.
     ///
     /// The pool creates this and passes it into `ManagedWorker`. The `WorkerHandle`
@@ -508,6 +514,12 @@ pub struct ManagedWorkerConfig {
     /// Externally-readable status handle — cloned into `WorkerHandle` so
     /// callers can observe status without going through `ManagedWorker`.
     pub status: Arc<RwLock<WorkerStatus>>,
+    /// Dynamic node type registry — populated from worker Ready events.
+    ///
+    /// `register_all()` is called exactly once per Ready event (in `handle_event()`),
+    /// replacing the prior contents. This is the one and only call site that ever
+    /// populates the registry, per ANVILML_DESIGN.md §10.2.
+    pub node_registry: Arc<NodeTypeRegistry>,
 
     // --- Crash recovery ---
     /// Backoff/max-attempt policy consulted on every crash (spawn failure,
@@ -585,6 +597,7 @@ impl ManagedWorker {
             transport: config.transport,
             demux: config.demux,
             status: config.status,
+            node_registry: config.node_registry,
             respawn_policy: config.respawn_policy,
             attempt_history: Vec::new(),
             init_timeout: config.init_timeout,
@@ -1297,7 +1310,13 @@ impl ManagedWorker {
         // into `try_send()` without first cloning.
         let pong_forward = event.clone();
         match &event {
-            WorkerEvent::Ready { .. } => {
+            WorkerEvent::Ready { node_types, .. } => {
+                // Populate the dynamic node registry from the worker's self-reported
+                // node types. register_all() replaces (not merges) prior contents,
+                // which is correct on respawn when the worker re-reports its full set.
+                // Consume the node_types Vec — register_all takes ownership
+                // because it needs to build a new HashMap from scratch.
+                self.node_registry.register_all(node_types.clone());
                 // Worker successfully initialized. run_once()'s phase-1 loop
                 // ends the moment this event is matched in its own recv()
                 // branch — not here, since handle_event() doesn't own that

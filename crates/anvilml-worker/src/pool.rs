@@ -26,6 +26,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use anvilml_core::NodeTypeRegistry;
 use anvilml_core::types::worker::WorkerStatus;
 use anvilml_core::{AnvilError, GpuDevice, ServerConfig};
 use anvilml_ipc::{RouterTransport, WorkerMessage};
@@ -262,6 +263,7 @@ impl WorkerPool {
                 transport: Arc::clone(&self.transport),
                 demux: Arc::clone(&self.demux),
                 status: Arc::clone(&status),
+                node_registry: Arc::new(NodeTypeRegistry::new()),
                 respawn_policy: RespawnPolicy::default(),
                 init_timeout: DEFAULT_INIT_TIMEOUT,
                 pong_tx,

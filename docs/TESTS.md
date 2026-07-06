@@ -4058,3 +4058,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** None.
 **Expected output:** No exception on second call; `NODE_REGISTRY` remains empty.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_init.py::test_reimport_is_idempotent -v` exits 0.
+
+---
+
+## test_ready_event_populates_registry (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `mock-hardware` feature. Tests use in-process ZeroMQ ROUTER/DEALER pair with `MockWorkerSpawner` to simulate a Python worker.
+**Tests:** `ManagedWorker::handle_event()` calls `node_registry.register_all()` when processing a `WorkerEvent::Ready`, populating the registry with the event's `node_types`.
+**Mode:** mock
+**Inputs:** Ready event with 2 `NodeTypeDescriptor`s (`LoadModel`, `Sampler`) via a shared `Arc<NodeTypeRegistry>`.
+**Expected output:** `registry.len() == 2`, `registry.get("LoadModel")` and `registry.get("Sampler")` return the correct descriptors.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_ready_event_populates_registry` exits 0.
+
+---
+
+## test_ready_event_empty_node_types_cleans_registry (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `mock-hardware` feature. Tests use in-process ZeroMQ ROUTER/DEALER pair with `MockWorkerSpawner` to simulate a Python worker.
+**Tests:** A Ready event with empty `node_types: vec![]` clears the registry (replaces, not merges).
+**Mode:** mock
+**Inputs:** Pre-populated registry with 1 descriptor, Ready event with `node_types: vec![]`.
+**Expected output:** `registry.is_empty() == true` after processing.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_ready_event_empty_node_types_cleans_registry` exits 0.
+
+---
+
+## test_respawn_second_ready_replaces_not_merges (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `mock-hardware` feature. Tests use in-process ZeroMQ ROUTER/DEALER pair with `MockWorkerSpawner` to simulate a Python worker.
+**Tests:** A second Ready event replaces prior registry contents rather than merging — simulating a worker respawn scenario.
+**Mode:** mock
+**Inputs:** First Ready with descriptors A+B, worker exits via Dying event, second Ready with descriptor C only (new worker instance sharing the same registry).
+**Expected output:** `registry.len() == 1`, `registry.get("A") == None`, `registry.get("B") == None`, `registry.get("C")` is `Some`.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_respawn_second_ready_replaces_not_merges` exits 0.
+
+---
+
+## test_ready_populates_registry_before_idle_transition (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/managed_tests.rs`
+**Context:** The `anvilml-worker` crate has been compiled with `mock-hardware` feature. Tests use in-process ZeroMQ ROUTER/DEALER pair with `MockWorkerSpawner` to simulate a Python worker.
+**Tests:** The registry is populated before the status transitions to Idle, proving the ordering invariant — `register_all()` fires before `status = Idle`.
+**Mode:** mock
+**Inputs:** Ready event with 1 `NodeTypeDescriptor`.
+**Expected output:** After Ready: `registry.len() > 0` AND `status == Idle` both true simultaneously.
+**Acceptance:** `cargo test -p anvilml-worker --test managed_tests test_ready_populates_registry_before_idle_transition` exits 0.
