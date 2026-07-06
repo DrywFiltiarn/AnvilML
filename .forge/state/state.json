@@ -115,16 +115,17 @@
     "P10-E1",
     "P11-A1",
     "P11-B1",
-    "P11-C1"
+    "P11-C1",
+    "P11-D1"
   ],
-  "in_progress": "P11-D1",
+  "in_progress": "P11-E1",
   "plan_approved": true,
-  "current_plan": "The wiring described in this task is already implemented in `backend/src/main.rs`. The approach for this task is to confirm the existing implementation is correct and complete:\n\n1. **Verify `NodeTypeRegistry` construction** (line 154): `Arc::new(NodeTypeRegistry::new())` creates an empty registry. This matches the task requirement \u2014 the registry stays empty until a worker sends a `Ready` event (later phase).\n\n2. **Verify `AppState` construction** (lines 152\u2013156): The struct literal `{ config: Arc::new(config), node_registry: Arc::new(NodeTypeRegistry::new()), start_time }` wraps the loaded config in `Arc`, creates the empty node registry, and captures the process-start instant. This is placed after DB pool creation and seed loading (lines 106\u2013143) and before the TCP bind (line 164).\n\n3. **Verify `build_router()` call** (line 163): `build_router(app_state)` receives the constructed state and returns an `axum::Router` with `/health` and `/v1/nodes` routes, all backed by `.with_state(app_state)`.\n\n4. **Verify `hw-probe` path isolation** (lines 84\u2013100): The `match cli.command { ... }` correctly handles the `HwProbe` subcommand (detect + JSON output + exit) in a separate branch from the `None` (default server-start) path. No changes to this path are needed.\n\n5. **Verify `/health` route continuity** (lib.rs line 20): The `/health` route from Phase 1 is preserved in `build_router()` and now receives state via `.with_state()`, which provides the `start_time` field for uptime calculation.\n\nNo code changes are required. The implementation matches the task specification.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-06T15:04:52+0200",
-  "plan_approval_message_id": "1523668711880523906",
+  "last_updated": "2026-07-06T16:04:23+0200",
+  "plan_approval_message_id": "1523681238643376258",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1523668709984698409",
+  "plan_report_message_id": "1523681236533641278",
   "impl_report_message_id": null
 }
