@@ -1,4 +1,4 @@
-use anvilml_core::NodeTypeRegistry;
+use anvilml_core::{NodeTypeDescriptor, NodeTypeRegistry, SlotDescriptor, SlotType};
 use anvilml_scheduler::{GraphError, ValidatedGraph, validate_graph};
 
 /// Test that the inner serde_json::Value is accessible within the crate
@@ -338,5 +338,246 @@ fn test_validate_graph_multiple_duplicate_violations_collected() {
             }
             other => panic!("Expected DuplicateNodeId, got: {other:?}"),
         }
+    }
+}
+
+// ====== Check 3: Unknown node type validation ======
+
+/// Test check 3: a node with an unregistered type produces an
+/// UnknownNodeType error with the correct node_id and type_name.
+///
+/// The registry is empty (no types registered). The graph has one
+/// node with type "NonExistentType". validate_graph must return
+/// Err containing exactly one UnknownNodeType error.
+#[test]
+fn test_validate_graph_unknown_node_type_reported() {
+    let registry = NodeTypeRegistry::new();
+    let graph = serde_json::json!({
+        "nodes": [{"id": "n1", "type": "NonExistentType"}]
+    });
+    let result = validate_graph(graph, &registry);
+
+    assert!(result.is_err(), "Expected Err for unknown node type");
+    let errors = result.unwrap_err();
+    assert_eq!(errors.len(), 1, "Expected exactly one error");
+    match &errors[0] {
+        GraphError::UnknownNodeType { node_id, type_name } => {
+            assert_eq!(node_id, "n1", "node_id must match");
+            assert_eq!(type_name, "NonExistentType", "type_name must match");
+        }
+        other => panic!("Expected UnknownNodeType, got: {other:?}"),
+    }
+}
+
+/// Test check 3: a node with a registered type passes cleanly.
+///
+/// The registry contains "LoadModel" with two output slots. The graph
+/// has one node with type "LoadModel". validate_graph must return
+/// Ok(ValidatedGraph) — no unknown type errors.
+#[test]
+fn test_validate_graph_valid_type_passes_check3() {
+    let registry = NodeTypeRegistry::new();
+    registry.register_all(vec![NodeTypeDescriptor {
+        type_name: "LoadModel".into(),
+        display_name: "Load Model".into(),
+        category: "loaders".into(),
+        description: "Loads a model checkpoint".into(),
+        inputs: vec![],
+        outputs: vec![
+            SlotDescriptor {
+                name: "MODEL".into(),
+                slot_type: SlotType::Model,
+                optional: false,
+            },
+            SlotDescriptor {
+                name: "CLIP".into(),
+                slot_type: SlotType::Clip,
+                optional: false,
+            },
+        ],
+    }]);
+
+    let graph = serde_json::json!({
+        "nodes": [{"id": "n1", "type": "LoadModel"}]
+    });
+    let result = validate_graph(graph, &registry);
+
+    assert!(
+        result.is_ok(),
+        "Expected Ok for registered type, got errors: {:?}",
+        result.err()
+    );
+}
+
+// ====== Check 4: Dangling edge validation ======
+
+/// Test check 4: an edge referencing a node that does not exist
+/// produces a DanglingEdge error.
+///
+/// The graph has one node "a" and an edge from "nonexistent:output"
+/// which references a node that is not in the nodes array.
+#[test]
+fn test_validate_graph_edge_to_nonexistent_node() {
+    let registry = NodeTypeRegistry::new();
+    let graph = serde_json::json!({
+        "nodes": [{"id": "a"}],
+        "edges": [{"from": "nonexistent:output"}]
+    });
+    let result = validate_graph(graph, &registry);
+
+    assert!(
+        result.is_err(),
+        "Expected Err for dangling edge to nonexistent node"
+    );
+    let errors = result.unwrap_err();
+    assert_eq!(errors.len(), 1, "Expected exactly one error");
+    match &errors[0] {
+        GraphError::DanglingEdge { node_id, slot_name } => {
+            assert_eq!(node_id, "nonexistent", "node_id must match");
+            assert_eq!(slot_name, "output", "slot_name must match");
+        }
+        other => panic!("Expected DanglingEdge, got: {other:?}"),
+    }
+}
+
+/// Test check 4: an edge referencing a valid node but an undeclared
+/// output slot produces a DanglingEdge error.
+///
+/// The registry contains "LoadModel" with outputs ["MODEL", "CLIP"].
+/// The graph has node "a" of type "LoadModel" and an edge from
+/// "a:nonexistent_slot" which does not match any declared output.
+#[test]
+fn test_validate_graph_edge_to_undeclared_slot() {
+    let registry = NodeTypeRegistry::new();
+    registry.register_all(vec![NodeTypeDescriptor {
+        type_name: "LoadModel".into(),
+        display_name: "Load Model".into(),
+        category: "loaders".into(),
+        description: "Loads a model checkpoint".into(),
+        inputs: vec![],
+        outputs: vec![
+            SlotDescriptor {
+                name: "MODEL".into(),
+                slot_type: SlotType::Model,
+                optional: false,
+            },
+            SlotDescriptor {
+                name: "CLIP".into(),
+                slot_type: SlotType::Clip,
+                optional: false,
+            },
+        ],
+    }]);
+
+    let graph = serde_json::json!({
+        "nodes": [{"id": "a", "type": "LoadModel"}],
+        "edges": [{"from": "a:nonexistent_slot"}]
+    });
+    let result = validate_graph(graph, &registry);
+
+    assert!(result.is_err(), "Expected Err for undeclared slot");
+    let errors = result.unwrap_err();
+    assert_eq!(errors.len(), 1, "Expected exactly one error");
+    match &errors[0] {
+        GraphError::DanglingEdge { node_id, slot_name } => {
+            assert_eq!(node_id, "a", "node_id must match");
+            assert_eq!(slot_name, "nonexistent_slot", "slot_name must match");
+        }
+        other => panic!("Expected DanglingEdge, got: {other:?}"),
+    }
+}
+
+/// Test check 4: a graph with valid edges and registered types
+/// passes cleanly.
+///
+/// The registry contains "LoadModel" with outputs ["MODEL", "CLIP"].
+/// The graph has node "a" of type "LoadModel" and an edge from
+/// "a:MODEL" which matches a declared output slot.
+#[test]
+fn test_validate_graph_valid_edges_pass_cleanly() {
+    let registry = NodeTypeRegistry::new();
+    registry.register_all(vec![NodeTypeDescriptor {
+        type_name: "LoadModel".into(),
+        display_name: "Load Model".into(),
+        category: "loaders".into(),
+        description: "Loads a model checkpoint".into(),
+        inputs: vec![],
+        outputs: vec![
+            SlotDescriptor {
+                name: "MODEL".into(),
+                slot_type: SlotType::Model,
+                optional: false,
+            },
+            SlotDescriptor {
+                name: "CLIP".into(),
+                slot_type: SlotType::Clip,
+                optional: false,
+            },
+        ],
+    }]);
+
+    let graph = serde_json::json!({
+        "nodes": [{"id": "a", "type": "LoadModel"}],
+        "edges": [{"from": "a:MODEL"}]
+    });
+    let result = validate_graph(graph, &registry);
+
+    assert!(
+        result.is_ok(),
+        "Expected Ok for valid edges, got errors: {:?}",
+        result.err()
+    );
+}
+
+/// Test checks 3 and 4 together: multiple violations across unknown
+/// types and dangling edges are all collected in one Err.
+///
+/// The registry is empty. The graph has two nodes with unregistered
+/// types ("Foo" and "Bar") and one edge referencing a nonexistent node.
+/// validate_graph must return Err with exactly 3 errors: two
+/// UnknownNodeType + one DanglingEdge.
+#[test]
+fn test_validate_graph_multiple_violations_collected() {
+    let registry = NodeTypeRegistry::new();
+    let graph = serde_json::json!({
+        "nodes": [
+            {"id": "n1", "type": "Foo"},
+            {"id": "n2", "type": "Bar"}
+        ],
+        "edges": [{"from": "nonexistent:out"}]
+    });
+    let result = validate_graph(graph, &registry);
+
+    assert!(result.is_err(), "Expected Err for multiple violations");
+    let errors = result.unwrap_err();
+    assert_eq!(
+        errors.len(),
+        3,
+        "Expected exactly 3 errors (2 UnknownNodeType + 1 DanglingEdge), got {}",
+        errors.len()
+    );
+
+    // Verify the first two errors are UnknownNodeType
+    match &errors[0] {
+        GraphError::UnknownNodeType { node_id, type_name } => {
+            assert_eq!(node_id, "n1");
+            assert_eq!(type_name, "Foo");
+        }
+        other => panic!("Expected UnknownNodeType, got: {other:?}"),
+    }
+    match &errors[1] {
+        GraphError::UnknownNodeType { node_id, type_name } => {
+            assert_eq!(node_id, "n2");
+            assert_eq!(type_name, "Bar");
+        }
+        other => panic!("Expected UnknownNodeType, got: {other:?}"),
+    }
+    // Verify the third error is DanglingEdge
+    match &errors[2] {
+        GraphError::DanglingEdge { node_id, slot_name } => {
+            assert_eq!(node_id, "nonexistent");
+            assert_eq!(slot_name, "out");
+        }
+        other => panic!("Expected DanglingEdge, got: {other:?}"),
     }
 }

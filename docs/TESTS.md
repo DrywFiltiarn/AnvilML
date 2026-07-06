@@ -4311,3 +4311,75 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `{"nodes": [{"id":"a"},{"id":"b"},{"id":"a"},{"id":"c"},{"id":"b"}]}`, empty `NodeTypeRegistry`.
 **Expected output:** `Err([DuplicateNodeId("a"), DuplicateNodeId("b")])` — two errors, one for each duplicate second-occurrence.
 **Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_multiple_duplicate_violations_collected` exits 0.
+
+---
+
+## test_validate_graph_unknown_node_type_reported (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json`, `anvilml-core` (providing `NodeTypeRegistry`, `NodeTypeDescriptor`, `SlotDescriptor`, `SlotType`), and `thiserror` dependencies. The `dag` module provides `validate_graph()` which implements checks 1–4 of the six-check validation pipeline (ANVILML_DESIGN.md §12.3).
+**Tests:** `validate_graph` with a single node whose `"type"` is `"NonExistentType"` — not registered in the empty registry. Check 3 must detect this and return `Err` containing exactly one `UnknownNodeType` error with the correct `node_id` and `type_name`.
+**Mode:** both
+**Inputs:** `{"nodes": [{"id":"n1","type":"NonExistentType"}]}`, empty `NodeTypeRegistry`.
+**Expected output:** `Err([UnknownNodeType { node_id: "n1", type_name: "NonExistentType" }])` — exactly one error.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_unknown_node_type_reported` exits 0.
+
+---
+
+## test_validate_graph_valid_type_passes_check3 (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json`, `anvilml-core`, and `thiserror` dependencies. The `dag` module provides `validate_graph()` which implements checks 1–4.
+**Tests:** `validate_graph` with a single node whose `"type"` is `"LoadModel"` — registered in the registry with two output slots (`"MODEL"` and `"CLIP"`). Check 3 must pass cleanly.
+**Mode:** both
+**Inputs:** `{"nodes": [{"id":"n1","type":"LoadModel"}]}`, registry containing `"LoadModel"` with outputs `["MODEL", "CLIP"]`.
+**Expected output:** `Ok(ValidatedGraph)` — no errors.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_valid_type_passes_check3` exits 0.
+
+---
+
+## test_validate_graph_edge_to_nonexistent_node (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json`, `anvilml-core`, and `thiserror` dependencies. The `dag` module provides `validate_graph()` which implements checks 1–4.
+**Tests:** `validate_graph` with one node `"a"` and an edge `"from": "nonexistent:output"` — the edge references a node that does not exist in the nodes array. Check 4 must detect this and return `Err` containing one `DanglingEdge` error.
+**Mode:** both
+**Inputs:** `{"nodes": [{"id":"a"}], "edges": [{"from":"nonexistent:output"}]}`, empty `NodeTypeRegistry`.
+**Expected output:** `Err([DanglingEdge { node_id: "nonexistent", slot_name: "output" }])` — exactly one error.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_edge_to_nonexistent_node` exits 0.
+
+---
+
+## test_validate_graph_edge_to_undeclared_slot (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json`, `anvilml-core`, and `thiserror` dependencies. The `dag` module provides `validate_graph()` which implements checks 1–4.
+**Tests:** `validate_graph` with node `"a"` of type `"LoadModel"` (registered with outputs `["MODEL", "CLIP"]`) and an edge `"from": "a:nonexistent_slot"` — the node exists but the slot does not. Check 4 must detect this and return `Err` containing one `DanglingEdge` error.
+**Mode:** both
+**Inputs:** `{"nodes": [{"id":"a","type":"LoadModel"}], "edges": [{"from":"a:nonexistent_slot"}]}`, registry containing `"LoadModel"` with outputs `["MODEL", "CLIP"]`.
+**Expected output:** `Err([DanglingEdge { node_id: "a", slot_name: "nonexistent_slot" }])` — exactly one error.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_edge_to_undeclared_slot` exits 0.
+
+---
+
+## test_validate_graph_valid_edges_pass_cleanly (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json`, `anvilml-core`, and `thiserror` dependencies. The `dag` module provides `validate_graph()` which implements checks 1–4.
+**Tests:** `validate_graph` with node `"a"` of type `"LoadModel"` (registered with outputs `["MODEL", "CLIP"]`) and an edge `"from": "a:MODEL"` — the node exists and the slot is declared. Check 4 must pass cleanly.
+**Mode:** both
+**Inputs:** `{"nodes": [{"id":"a","type":"LoadModel"}], "edges": [{"from":"a:MODEL"}]}`, registry containing `"LoadModel"` with outputs `["MODEL", "CLIP"]`.
+**Expected output:** `Ok(ValidatedGraph)` — no errors.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_valid_edges_pass_cleanly` exits 0.
+
+---
+
+## test_validate_graph_multiple_violations_collected (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/dag_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `serde_json`, `anvilml-core`, and `thiserror` dependencies. The `dag` module provides `validate_graph()` which implements checks 1–4.
+**Tests:** `validate_graph` with two nodes having unregistered types (`"Foo"` and `"Bar"`) and one edge referencing a nonexistent node (`"nonexistent:out"`). Both check 3 and check 4 violations must be collected in a single `Err(Vec)` with exactly 3 errors: two `UnknownNodeType` + one `DanglingEdge`.
+**Mode:** both
+**Inputs:** `{"nodes": [{"id":"n1","type":"Foo"},{"id":"n2","type":"Bar"}], "edges": [{"from":"nonexistent:out"}]}`, empty `NodeTypeRegistry`.
+**Expected output:** `Err([UnknownNodeType { n1, Foo }, UnknownNodeType { n2, Bar }, DanglingEdge { nonexistent, out }])` — exactly three errors in order.
+**Acceptance:** `cargo test -p anvilml-scheduler --test dag_tests test_validate_graph_multiple_violations_collected` exits 0.
