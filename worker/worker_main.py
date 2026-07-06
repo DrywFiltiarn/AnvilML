@@ -15,19 +15,64 @@ import sys
 logger = logging.getLogger(__name__)
 
 
-def _import_nodes() -> list:
+def _import_nodes() -> list[dict]:
     """Import node modules from ``worker/nodes/`` and return the registered node types.
 
-    Currently returns an empty list — the node system itself is Phase 10's scope.
+    Triggers the ``worker.nodes`` auto-import mechanism (which scans ``nodes/`` for
+    ``.py`` files and registers them via ``@register`` side-effects), then builds
+    a list of type-descriptor dicts from ``NODE_REGISTRY``. Each dict contains
+    ``type_name``, ``display_name``, ``category``, ``description``, ``inputs``,
+    and ``outputs`` — matching the Rust ``NodeTypeDescriptor`` struct fields.
+
     This function is called during worker startup (both real and mock modes) so that
     the ``Ready`` event can carry the node type list even when it is empty.
 
+    Importing ``worker.nodes`` inside this function (not at module level) follows the
+    established pattern — ``worker.ipc`` is also imported inside functions like
+    ``_real_startup_sequence()`` and ``_dispatch_loop()`` — to avoid transitive torch
+    dependencies during test collection.
+
     Returns:
-        Empty list. Node types will be populated when the node system is implemented.
+        List of dicts, one per registered node type. Each dict has keys
+        ``type_name``, ``display_name``, ``category``, ``description``,
+        ``inputs``, and ``outputs``. Returns ``[]`` when no node files exist.
     """
-    # Phase 10 scope: real node import will populate this function.
-    # Returning [] is correct for Phase 9 — the node system does not exist yet.
-    return []
+    # Import worker.nodes to trigger the auto-import loop in __init__.py.
+    # This runs pkgutil.iter_modules() over nodes/ and imports any .py files
+    # that define node classes via @register — populating NODE_REGISTRY.
+    import worker.nodes  # noqa: F401 (side-effect: auto-imports node modules)
+
+    # Access NODE_REGISTRY from its canonical location (worker.nodes.base).
+    # The __init__.py skip-list excludes "base" so it is not auto-imported by
+    # the loop — we must explicitly import it to read the registry.
+    from worker.nodes import base
+
+    registry = base.NODE_REGISTRY
+
+    result: list[dict] = []
+    for type_name, node_cls in registry.items():
+        # Build a descriptor dict from the node class's class attributes.
+        # Each node class must define NODE_TYPE, DISPLAY_NAME, CATEGORY,
+        # DESCRIPTION, INPUT_SLOTS, and OUTPUT_SLOTS (enforced by @register).
+        inputs = [
+            {"name": spec.name, "slot_type": spec.slot_type, "optional": spec.optional}
+            for spec in node_cls.INPUT_SLOTS
+        ]
+        outputs = [
+            {"name": spec.name, "slot_type": spec.slot_type, "optional": spec.optional}
+            for spec in node_cls.OUTPUT_SLOTS
+        ]
+
+        result.append({
+            "type_name": node_cls.NODE_TYPE,
+            "display_name": node_cls.DISPLAY_NAME,
+            "category": node_cls.CATEGORY,
+            "description": node_cls.DESCRIPTION,
+            "inputs": inputs,
+            "outputs": outputs,
+        })
+
+    return result
 
 
 def _dispatch_loop() -> None:
