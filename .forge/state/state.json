@@ -123,16 +123,17 @@
     "P12-A3",
     "P12-A4",
     "P12-A5",
-    "P12-A6"
+    "P12-A6",
+    "P12-B1"
   ],
-  "in_progress": "P12-B1",
+  "in_progress": "P13-A1",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "1. **Create `database/migrations/003_jobs.sql`** with the following content:\n\n   a. A leading comment block:\n      ```\n      -- Migration 003: Jobs table\n      --\n      -- Creates the `jobs` table for persisted Job rows.\n      -- Columns map from Job (anvilml-core/src/types/job.rs):\n      --   id, status, graph, settings, created_at, started_at,\n      --   completed_at, worker_id, error, queue_position\n      -- graph and settings are TEXT (serialized JSON via serde_json),\n      -- not normalized columns \u2014 the Job struct owns the canonical shape.\n      ```\n\n   b. The `jobs` table definition:\n      ```sql\n      CREATE TABLE IF NOT EXISTS jobs (\n          id           TEXT PRIMARY KEY,  -- UUID string (stable unique identifier)\n          status       TEXT NOT NULL,     -- JobStatus enum value as text (\"queued\", \"running\", \"completed\", \"failed\", \"cancelled\")\n          graph        TEXT NOT NULL,     -- serialized JSON computation graph (serde_json::to_string)\n          settings     TEXT NOT NULL,     -- serialized JSON JobSettings (serde_json::to_string)\n          created_at   TEXT NOT NULL,     -- ISO 8601 UTC timestamp when queued\n          started_at   TEXT,              -- ISO 8601 UTC timestamp when execution began (null while queued)\n          completed_at TEXT,              -- ISO 8601 UTC timestamp when finished (null while running/queued)\n          worker_id    TEXT,              -- worker identity string (set after execution begins)\n          error        TEXT,              -- failure diagnostic message (set only for Failed jobs)\n          queue_position INTEGER          -- position in the queue when Queued (cleared when picked up)\n      );\n      ```\n\n      Rationale for column choices:\n      - `id` is `TEXT PRIMARY KEY` (not `INTEGER AUTOINCREMENT`) because `Job.id` is a `Uuid`, serialised to a hex string.\n      - `status` is `TEXT NOT NULL` matching the `#[serde(rename_all = \"snake_case\")]` on `JobStatus` \u2014 values are `\"queued\"`, `\"running\"`, `\"completed\"`, `\"failed\"`, `\"cancelled\"`.\n      - `graph` and `settings` are `TEXT NOT NULL` because the task specifies JSON serialization, not normalised columns.\n      - `started_at`, `completed_at`, `worker_id`, `error`, `queue_position` are nullable (`TEXT`/`INTEGER` without `NOT NULL`) matching the `Option<T>` fields on `Job`.\n      - `queue_position` is `INTEGER` (not `TEXT`) because `Job.queue_position` is `Option<u32>`.\n\n   c. Two indexes:\n      ```sql\n      CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);\n      CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at);\n      ```\n      Rationale: `idx_jobs_status` supports the scheduler's `JobQueue` filtering by status (P13-B1 `JobStore::list()`). `idx_jobs_created_at` supports FIFO ordering and \"list before timestamp\" queries.\n\n2. **Verify the SQL** runs cleanly:\n   ```bash\n   sqlite3 :memory: < database/migrations/003_jobs.sql\n   # exits 0\n   ```",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-06T22:29:01+0200",
-  "plan_approval_message_id": "1523783349305348226",
+  "last_updated": "2026-07-06T23:03:58+0200",
+  "plan_approval_message_id": "1523792437678575878",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1523783347447267463",
+  "plan_report_message_id": "1523792436285935827",
   "impl_report_message_id": null
 }
