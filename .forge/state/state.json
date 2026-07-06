@@ -110,16 +110,17 @@
     "P10-A4",
     "P10-B1",
     "P10-B2",
-    "P10-C1"
+    "P10-C1",
+    "P10-D1"
   ],
-  "in_progress": "P10-D1",
+  "in_progress": "P10-E1",
   "plan_approved": true,
-  "current_plan": "1. **Modify `_import_nodes()` in `worker/worker_main.py`** (lines 18-30):\n   - Add an import of `worker.nodes` at the top of the function body (not at module level, to avoid transitive torch dependencies \u2014 this follows the existing pattern where `worker.ipc` is also imported inside functions).\n   - After importing `worker.nodes`, access `worker.nodes.base.NODE_REGISTRY` (imported via the auto-import side-effect).\n   - Build a list of dicts by iterating over `NODE_REGISTRY.items()`. For each `(type_name, node_cls)`:\n     - Construct a dict with keys: `type_name`, `display_name`, `category`, `description`, `inputs`, `outputs`.\n     - `type_name` = `node_cls.NODE_TYPE`\n     - `display_name` = `node_cls.DISPLAY_NAME`\n     - `category` = `node_cls.CATEGORY`\n     - `description` = `node_cls.DESCRIPTION`\n     - `inputs` = list of dicts: for each `SlotSpec` in `node_cls.INPUT_SLOTS`, build `{\"name\": spec.name, \"slot_type\": spec.slot_type, \"optional\": spec.optional}`.\n     - `outputs` = same transformation applied to `node_cls.OUTPUT_SLOTS`.\n   - Return the list.\n   - Update the return-type annotation from `-> list` to `-> list[dict]`.\n   - Update the docstring to remove the Phase 9 placeholder comment and reflect the new behavior.\n\n   **Rationale for importing `worker.nodes` inside the function (not at module level):** The existing codebase pattern (e.g., `worker.ipc` import inside `_real_startup_sequence()` and `_dispatch_loop()`) avoids module-level imports that could trigger side effects during test collection. Importing `worker.nodes` inside `_import_nodes()` ensures the auto-import runs only when node types are actually needed, matching the startup sequence flow.\n\n   **Rationale for reading `NODE_REGISTRY` from `worker.nodes.base`:** `worker/nodes/__init__.py` re-exports `NODE_REGISTRY` via the auto-import mechanism. However, `worker.nodes.base` is the canonical location where `NODE_REGISTRY` is defined. The `worker.nodes` package's `__init__.py` imports `base` as part of its skip list (line 26: `if mod_name in (\"__init__\", \"base\") or is_pkg`), meaning `base` is NOT auto-imported by the loop \u2014 it must be explicitly imported. Reading from `worker.nodes.base.NODE_REGISTRY` is the correct and explicit path.\n\n2. **No changes to test files.** The existing test `test_import_nodes_returns_empty_list` (line 478-491 of `test_worker_main.py`) asserts `_import_nodes() == []`, which remains true because `NODE_REGISTRY` is empty. No new tests are needed \u2014 the auto-import mechanism is already tested by `test_nodes_init.py`.",
+  "current_plan": "1. **Create `worker/nodes/MARKER_CONVENTION.md`** with the following structure:\n   - A one-sentence header describing what the file documents.\n   - The exact comment-pair format from `ANVILML_DESIGN.md \u00a710.6`, shown as a code\n     block with the `# REAL_PATH_VERIFIED:` and `# MOCK_PATH_VERIFIED:` lines, using\n     the `<module>::<test_function>` placeholder pattern.\n   - A brief note explaining placement: the markers go as comments immediately above\n     the class or function they verify (node `execute()`, arch module `load()`/`sample()`/`decode()`).\n   - A one-line note that Gate 4 in `ENVIRONMENT.md \u00a78` mechanically validates these\n     markers (checks that named tests exist and are collectible, and that every public\n     function in scope carries both markers).\n   - A pointer line: \"Full rule: `ANVILML_DESIGN.md \u00a710.6`.\"\n\n2. **Verify the file** by running `test -s worker/nodes/MARKER_CONVENTION.md` \u2014 it must\n   exit 0 (file exists and is non-empty).\n\nNo code changes, no source files modified, no tests written. This is a pure documentation\ntask.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-06T10:29:28+0200",
-  "plan_approval_message_id": "1523606612822986843",
+  "last_updated": "2026-07-06T11:45:14+0200",
+  "plan_approval_message_id": "1523616171344007259",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1523606609253629983",
+  "plan_report_message_id": "1523616169582530632",
   "impl_report_message_id": null
 }
