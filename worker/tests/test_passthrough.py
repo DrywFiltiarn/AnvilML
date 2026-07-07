@@ -148,13 +148,25 @@ def test_markers_name_collectible_tests() -> None:
     matches = re.findall(pattern, source)
     assert len(matches) == 2, f"Expected 2 markers, found {len(matches)}"
 
-    venv_python = os.path.join(
-        os.path.dirname(__file__), "..", ".venv", "bin", "python"
-    )
-
+    # Use sys.executable rather than a hardcoded worker/.venv path: this
+    # matches the pattern already established by
+    # test_node_in_registry_after_import and
+    # TestNoTorchImport.test_module_no_torch_import above, and is what
+    # actually needs to be true — the currently-running interpreter has
+    # every dependency this test suite needs already installed, since
+    # it's the same interpreter that just collected and ran this test.
+    # A hardcoded "../.venv/bin/python" only exists as a local-dev
+    # convention (matching ManagedWorker's default venv_path used for
+    # spawning *real* workers in production); CI's worker-test job
+    # installs dependencies directly into the runner-managed Python via
+    # `pip install`, without ever provisioning worker/.venv, so this
+    # would (and did) fail there with FileNotFoundError. It was also
+    # POSIX-only ("bin/python", not "Scripts\\python.exe"), so it would
+    # have failed identically on the Windows leg of the mock-mode matrix
+    # even had .venv existed.
     for test_id in matches:
         result = subprocess.run(
-            [venv_python, "-m", "pytest", "--collect-only", test_id, "-q"],
+            [sys.executable, "-m", "pytest", "--collect-only", test_id, "-q"],
             capture_output=True, text=True, timeout=10,
         )
         assert result.returncode == 0, (
