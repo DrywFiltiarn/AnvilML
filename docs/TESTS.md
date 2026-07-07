@@ -5115,3 +5115,75 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** One idle mock worker, one valid job.
 **Expected output:** `dispatch_one_test()` returns `false`; worker status is `Busy`.
 **Acceptance:** `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests test_dispatch_one_status_busy_survives_vram_failure` exits 0.
+
+---
+
+## test_class_attributes (worker/nodes.passthrough)
+
+**File:** `worker/tests/test_passthrough.py`
+**Context:** The `worker.nodes.passthrough` module has been imported, defining the `PassThrough` class with all six required class attributes (`NODE_TYPE`, `CATEGORY`, `DISPLAY_NAME`, `DESCRIPTION`, `INPUT_SLOTS`, `OUTPUT_SLOTS`).
+**Tests:** All six class attributes exist on `PassThrough` and match their expected values exactly — `NODE_TYPE == "PassThrough"`, `CATEGORY == "Debug"`, `DISPLAY_NAME == "Pass Through"`, `DESCRIPTION` matches the full contract string, and both `INPUT_SLOTS` and `OUTPUT_SLOTS` each contain one `SlotSpec("value", "ANY")`.
+**Mode:** both
+**Inputs:** `PassThrough` class attributes accessed directly.
+**Expected output:** All assertions pass — every attribute matches its expected value.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_passthrough.py::test_class_attributes -v` exits 0.
+
+---
+
+## test_execute_mock_returns_input (worker/nodes.passthrough)
+
+**File:** `worker/tests/test_passthrough.py`
+**Context:** The `PassThrough` node class is instantiated. A `NodeContext` is constructed with `mock=True`. No torch import is needed — this test only exercises the mock code path.
+**Tests:** Mock-mode `execute()` returns the input value unchanged, confirming the mock branch of the dual-mode parity marker works correctly.
+**Mode:** mock
+**Inputs:** `NodeContext(mock=True)`, `{"value": "hello"}`.
+**Expected output:** `{"value": "hello"}` returned by execute().
+**Acceptance:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_passthrough.py::test_execute_mock_returns_input -v` exits 0.
+
+---
+
+## test_execute_real_returns_input (worker/nodes.passthrough)
+
+**File:** `worker/tests/test_passthrough.py`
+**Context:** The `PassThrough` node class is instantiated. A `NodeContext` is constructed with `mock=False`. No torch import is needed — the real branch has no torch dependency.
+**Tests:** Real-mode `execute()` returns the input value unchanged, confirming the real branch of the dual-mode parity marker works correctly.
+**Mode:** real
+**Inputs:** `NodeContext(mock=False)`, `{"value": 42}`.
+**Expected output:** `{"value": 42}` returned by execute().
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_passthrough.py::test_execute_real_returns_input -v` exits 0.
+
+---
+
+## test_node_in_registry_after_import (worker/nodes.passthrough)
+
+**File:** `worker/tests/test_passthrough.py`
+**Context:** The `@register` decorator on `PassThrough` runs at module load time, inserting the class into `NODE_REGISTRY`. A subprocess is spawned to avoid cross-test pollution from prior imports.
+**Tests:** Importing `worker.nodes.passthrough` causes `PassThrough` to appear in `NODE_REGISTRY["PassThrough"]`, proving auto-import and registration work end-to-end.
+**Mode:** both
+**Inputs:** Subprocess running `importlib.import_module("worker.nodes.passthrough")` then checking `NODE_REGISTRY`.
+**Expected output:** `NODE_REGISTRY` contains `"PassThrough"` as a key pointing to the `PassThrough` class.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_passthrough.py::test_node_in_registry_after_import -v` exits 0.
+
+---
+
+## test_markers_name_collectible_tests (worker/nodes.passthrough)
+
+**File:** `worker/tests/test_passthrough.py`
+**Context:** The `passthrough.py` source file contains `REAL_PATH_VERIFIED:` and `MOCK_PATH_VERIFIED:` marker comments. The test reads and parses these markers from the file.
+**Tests:** Both marker test identifiers are collectible by pytest (`pytest --collect-only` exits 0), mechanically validating that Gate 4's marker check will pass.
+**Mode:** both
+**Inputs:** Marker strings extracted from `worker/nodes/passthrough.py`.
+**Expected output:** Both named tests are collectible by pytest.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_passthrough.py::test_markers_name_collectible_tests -v` exits 0.
+
+---
+
+## test_execute_returns_new_dict (worker/nodes.passthrough)
+
+**File:** `worker/tests/test_passthrough.py`
+**Context:** The `PassThrough` node class is instantiated. No shared state exists between calls — the node has no instance variables.
+**Tests:** Each `execute()` call returns a new dict object (not a shared singleton), confirming no accidental state leakage between calls.
+**Mode:** both
+**Inputs:** Two calls to `execute()` with the same context and input value.
+**Expected output:** Two distinct dict objects that are equal in content but not identical in identity.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_passthrough.py::test_execute_returns_new_dict -v` exits 0.

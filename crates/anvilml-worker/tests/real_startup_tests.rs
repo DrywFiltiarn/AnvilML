@@ -4,8 +4,8 @@
 //! This test spawns a genuine `worker_main.py` process with `ANVILML_DEVICE_TYPE=cpu`
 //! and no `ANVILML_WORKER_MOCK` flag, connects a ZeroMQ DEALER socket to the worker's
 //! ROUTER transport, and verifies that the worker sends a `Ready` event with
-//! `capabilities_source = "pytorch"` (proving the real torch probe ran) and an empty
-//! `node_types` list (correct for Phase 9, before the node system exists).
+//! `capabilities_source = "pytorch"` (proving the real torch probe ran) and a
+//! `node_types` list containing the registered PassThrough node.
 //!
 //! Acceptance: `cargo test -p anvilml-worker --test real_startup_tests -- --test-threads=1`
 //! exits 0 after the Python venv is provisioned (`bash scripts/install_worker_deps.sh`).
@@ -76,8 +76,9 @@ async fn test_real_subprocess_sends_ready() {
     //    ANVILML_DEVICE_INDEX=0 from the env map.
     // 2. Import torch and select CPU device (no-op for CPU).
     // 3. Run the real probe_capabilities() which returns CPU probe results.
-    // 4. Call _import_nodes() which returns [] (Phase 10 scope).
-    // 5. Send a Ready event with capabilities_source="pytorch" and node_types=[].
+    // 4. Call _import_nodes() which returns descriptors for registered nodes.
+    // 5. Send a Ready event with capabilities_source="pytorch" and
+    //    node_types containing the PassThrough node descriptor.
     // 6. Enter the dispatch loop (blocking).
     let mut child = cmd.spawn().expect("spawn_worker should succeed");
 
@@ -152,11 +153,17 @@ async fn test_real_subprocess_sends_ready() {
         capabilities_source
     );
 
-    // Assert node_types is empty — correct for Phase 9, when the node
-    // system does not yet exist. The _import_nodes() function returns [].
+    // Assert node_types contains the PassThrough node — registered via
+    // auto-import at package load time. The _import_nodes() function
+    // returns a list of node descriptors from NODE_REGISTRY.
     assert!(
-        node_types.is_empty(),
-        "node_types should be empty in Phase 9 (no nodes registered yet)"
+        !node_types.is_empty(),
+        "node_types should contain registered nodes (e.g. PassThrough), got empty list"
+    );
+    assert_eq!(
+        node_types[0].type_name, "PassThrough",
+        "first node_type should be PassThrough, got '{}'",
+        node_types[0].type_name
     );
 
     // Verify the identity matches the worker_id we set — proves the ROUTER

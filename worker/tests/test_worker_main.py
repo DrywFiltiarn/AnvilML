@@ -399,7 +399,7 @@ class TestNoMockGate:
 
         Patches ``ipc.send_event`` to capture the event dict and asserts it
         contains ``_type="Ready"``, ``capabilities_source="pytorch"``, and
-        ``node_types=[]``.
+        ``node_types`` containing the registered PassThrough node.
 
         Env var isolation: saves and restores all four startup env vars
         unconditionally after the test body.
@@ -407,7 +407,8 @@ class TestNoMockGate:
         Preconditions: ``ANVILML_IPC_PORT=5555``, ``ANVILML_WORKER_ID=test-0``,
         ``ANVILML_DEVICE_TYPE=cpu``, ``ANVILML_DEVICE_INDEX=0``.
         Expected output: ``ipc.send_event`` called with a dict containing
-        ``_type="Ready"``, ``capabilities_source="pytorch"``, ``node_types=[]``.
+        ``_type="Ready"``, ``capabilities_source="pytorch"``, and a
+        ``node_types`` list with the PassThrough node descriptor.
         """
         import unittest.mock as mock
 
@@ -466,7 +467,12 @@ class TestNoMockGate:
                             event = captured_events[0]
                             assert event["_type"] == "Ready"
                             assert event["capabilities_source"] == "pytorch"
-                            assert event["node_types"] == []
+                            # PassThrough is registered via auto-import.
+                            assert len(event["node_types"]) >= 1
+                            assert (
+                                event["node_types"][0]["type_name"]
+                                == "PassThrough"
+                            )
         finally:
             for key, value in saved.items():
                 if value is None:
@@ -475,20 +481,23 @@ class TestNoMockGate:
                     os.environ[key] = value
 
     @pytest.mark.real_mode
-    def test_import_nodes_returns_empty_list(self) -> None:
-        """_import_nodes() returns an empty list.
+    def test_import_nodes_returns_registered_nodes(self) -> None:
+        """_import_nodes() returns descriptors for registered nodes.
 
-        Calls ``_import_nodes()`` directly and asserts the result is ``[]``.
-        This confirms the stub behavior is correct for Phase 9 — the node
-        system does not exist yet.
+        Calls ``_import_nodes()`` directly and asserts the result contains
+        the PassThrough node descriptor. This confirms that node modules
+        registered via @register are correctly reported by the import
+        function.
 
         Preconditions: None (pure function, no setup).
-        Expected output: ``_import_nodes() == []``.
+        Expected output: ``_import_nodes()`` returns a list containing
+        at least the PassThrough node descriptor.
         """
         import worker.worker_main as worker_main
 
         result = worker_main._import_nodes()
-        assert result == [], f"Expected [], got {result!r}"
+        assert len(result) >= 1, f"Expected at least one node, got {result!r}"
+        assert result[0]["type_name"] == "PassThrough"
 
     @pytest.mark.real_mode
     def test_dispatch_loop_exists_and_is_callable(self) -> None:
@@ -623,7 +632,7 @@ class TestNoMockGate:
 
         Patches ``ipc.send_event`` to capture the event dict and asserts it
         contains ``_type="Ready"``, ``capabilities_source="mock"``, and
-        ``node_types=[]``.
+        ``node_types`` containing the registered PassThrough node.
 
         Env var isolation: saves and restores all four startup env vars
         unconditionally after the test body.
@@ -631,7 +640,8 @@ class TestNoMockGate:
         Preconditions: ``ANVILML_IPC_PORT=5555``, ``ANVILML_WORKER_ID=test-0``,
         ``ANVILML_DEVICE_TYPE=cpu``, ``ANVILML_DEVICE_INDEX=0``.
         Expected output: ``ipc.send_event`` called with a dict containing
-        ``_type="Ready"``, ``capabilities_source="mock"``, ``node_types=[]``.
+        ``_type="Ready"``, ``capabilities_source="mock"``, and a
+        ``node_types`` list with the PassThrough node descriptor.
         """
         import unittest.mock as mock
 
@@ -678,7 +688,12 @@ class TestNoMockGate:
                         event = captured_events[0]
                         assert event["_type"] == "Ready"
                         assert event["capabilities_source"] == "mock"
-                        assert event["node_types"] == []
+                        # PassThrough is registered via auto-import.
+                        assert len(event["node_types"]) >= 1
+                        assert (
+                            event["node_types"][0]["type_name"]
+                            == "PassThrough"
+                        )
         finally:
             for key, value in saved.items():
                 if value is None:

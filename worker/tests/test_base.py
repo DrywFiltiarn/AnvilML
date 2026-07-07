@@ -22,14 +22,16 @@ class _FullySpecifiedNode:
 
 
 def test_node_registry_starts_empty() -> None:
-    """NODE_REGISTRY is an empty dict immediately after import.
+    """NODE_REGISTRY contains only known auto-registered nodes after import.
 
-    Verifies that the module-level NODE_REGISTRY global starts empty
-    when the base module is first imported — no nodes have been
-    registered yet. This is the precondition for all subsequent
-    registration tests.
+    Verifies that the module-level NODE_REGISTRY global contains at
+    least the PassThrough node (auto-registered by _import_nodes())
+    when the base module is first imported — confirming that the
+    auto-import mechanism works. This is the precondition for all
+    subsequent registration tests.
     """
-    assert base.NODE_REGISTRY == {}
+    # PassThrough is registered via auto-import at package load time.
+    assert "PassThrough" in base.NODE_REGISTRY
 
 
 def test_slotspec_optional_defaults_to_false() -> None:
