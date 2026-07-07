@@ -4827,3 +4827,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** A freshly-generated UUID that has not been inserted.
 **Expected output:** `get()` returns `Ok(None)`.
 **Acceptance:** `cargo test -p anvilml-registry --test job_store_tests test_get_missing_id_returns_none` exits 0.
+
+---
+
+## test_submit_empty_registry_returns_workers_unavailable (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `tokio` (sync, macros), `tracing`, `chrono`, `serde_json`, `uuid` (v4), and `sqlx` (sqlite, runtime-tokio, migrate, chrono, uuid) dev-dependencies, and the `JobScheduler` struct providing `new()` and `submit()` methods.
+**Tests:** An empty `NodeTypeRegistry` causes `submit()` to return `WorkersUnavailable` — the "no workers = reject" guard fires before any validation or persistence work.
+**Mode:** both
+**Inputs:** Valid graph JSON with a "PassThrough" node type, empty `JobSettings`.
+**Expected output:** `Err(AnvilError::WorkersUnavailable("no workers registered"))`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test scheduler_tests test_submit_empty_registry_returns_workers_unavailable` exits 0.
+
+---
+
+## test_submit_invalid_graph_returns_validation_error (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `tokio` (sync, macros), `tracing`, `chrono`, `serde_json`, `uuid` (v4), and `sqlx` dev-dependencies, and the `JobScheduler` struct.
+**Tests:** A graph referencing an unregistered node type ("NonExistentNode") returns `InvalidGraph` error — the graph validation check catches the unknown type before job construction or persistence.
+**Mode:** both
+**Inputs:** Graph JSON with `"type": "NonExistentNode"`, registry contains only "PassThrough".
+**Expected output:** `Err(AnvilError::InvalidGraph(_))` containing "NonExistentNode".
+**Acceptance:** `cargo test -p anvilml-scheduler --test scheduler_tests test_submit_invalid_graph_returns_validation_error` exits 0.
+
+---
+
+## test_submit_valid_persists_and_queues (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `tokio` (sync, macros), `tracing`, `chrono`, `serde_json`, `uuid` (v4), and `sqlx` dev-dependencies, and the `JobScheduler` struct.
+**Tests:** A valid submission returns `Ok(uuid)` with a non-nil UUID — the job is persisted to the database (upsert succeeds) and enqueued in the in-memory queue.
+**Mode:** both
+**Inputs:** Valid graph JSON with "PassThrough" node, empty `JobSettings`.
+**Expected output:** `Ok(uuid)` where uuid is non-nil; no panics from DB or queue operations.
+**Acceptance:** `cargo test -p anvilml-scheduler --test scheduler_tests test_submit_valid_persists_and_queues` exits 0.
+
+---
+
+## test_two_submits_get_distinct_ids (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `tokio` (sync, macros), `tracing`, `chrono`, `serde_json`, `uuid` (v4), and `sqlx` dev-dependencies, and the `JobScheduler` struct.
+**Tests:** Two sequential submissions produce different UUIDs — `Uuid::new_v4()` generates a fresh ID for each call.
+**Mode:** both
+**Inputs:** Same valid graph JSON submitted twice with empty `JobSettings`.
+**Expected output:** `id1 != id2`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test scheduler_tests test_two_submits_get_distinct_ids` exits 0.

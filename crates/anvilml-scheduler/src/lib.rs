@@ -3,9 +3,11 @@
 pub mod dag;
 pub mod ledger;
 pub mod queue;
+pub mod scheduler;
 pub mod types;
 pub use dag::validate_graph;
 pub use ledger::VramLedger;
 pub use queue::JobQueue;
+pub use scheduler::JobScheduler;
 pub use types::GraphError;
 pub use types::ValidatedGraph;
