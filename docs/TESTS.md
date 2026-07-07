@@ -4719,3 +4719,111 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Empty ledger, reserve 4096 MiB on device 0, 2048 MiB on device 1, both total 8192 MiB.
 **Expected output:** Device 0: 4096 free, Device 1: 6144 free.
 **Acceptance:** `cargo test -p anvilml-scheduler --test ledger_tests test_multi_device_independent` exits 0.
+
+---
+
+## test_upsert_get_roundtrip (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/job_store_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `chrono` (serde), `serde_json`, `sqlx` (sqlite, runtime-tokio, migrate, chrono), and `uuid` (serde) dependencies, and the `JobStore` struct providing `upsert()` and `get()` methods.
+**Tests:** A `Job` with all fields populated (UUID, `JobStatus::Queued`, graph JSON, `JobSettings { device_preference: Some("cuda") }`, timestamps, `worker_id`, `error`, `queue_position`) is persisted via `upsert()` and retrieved via `get()`, asserting every field matches the original.
+**Mode:** both
+**Inputs:** `Job` constructed with all fields at non-default values.
+**Expected output:** Roundtripped `Job` equals original; all fields (id, status, graph, settings, timestamps, worker_id, error, queue_position) match.
+**Acceptance:** `cargo test -p anvilml-registry --test job_store_tests test_upsert_get_roundtrip` exits 0.
+
+---
+
+## test_list_no_filter (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/job_store_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `chrono` (serde), `serde_json`, `sqlx` (sqlite, runtime-tokio, migrate, chrono), and `uuid` (serde) dependencies, and the `JobStore` struct providing `list()` method.
+**Tests:** Three jobs with different statuses (`Queued`, `Running`, `Completed`) are inserted, then `list(None, None)` returns all three rows.
+**Mode:** both
+**Inputs:** Three `Job` instances with different statuses.
+**Expected output:** `list(None, None)` returns exactly 3 rows.
+**Acceptance:** `cargo test -p anvilml-registry --test job_store_tests test_list_no_filter` exits 0.
+
+---
+
+## test_list_with_status_filter (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/job_store_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `chrono` (serde), `serde_json`, `sqlx` (sqlite, runtime-tokio, migrate, chrono), and `uuid` (serde) dependencies, and the `JobStore` struct providing `list()` method.
+**Tests:** Five jobs across three statuses (2 Queued, 2 Running, 1 Completed) are inserted, then `list(Some(JobStatus::Queued), None)` returns exactly 2 rows — only the queued jobs.
+**Mode:** both
+**Inputs:** Five `Job` instances with mixed statuses.
+**Expected output:** `list(Some(Queued), None)` returns exactly 2 rows, all with `status == Queued`.
+**Acceptance:** `cargo test -p anvilml-registry --test job_store_tests test_list_with_status_filter` exits 0.
+
+---
+
+## test_list_with_limit (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/job_store_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `chrono` (serde), `serde_json`, `sqlx` (sqlite, runtime-tokio, migrate, chrono), and `uuid` (serde) dependencies, and the `JobStore` struct providing `list()` method.
+**Tests:** Five jobs are inserted, then `list(None, Some(2))` returns at most 2 rows, proving the LIMIT clause works correctly.
+**Mode:** both
+**Inputs:** Five `Job` instances, limit = 2.
+**Expected output:** `list(None, Some(2))` returns at most 2 rows.
+**Acceptance:** `cargo test -p anvilml-registry --test job_store_tests test_list_with_limit` exits 0.
+
+---
+
+## test_reset_ghost_jobs_queued_becomes_failed (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/job_store_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `chrono` (serde), `serde_json`, `sqlx` (sqlite, runtime-tokio, migrate, chrono), and `uuid` (serde) dependencies, and the `JobStore` struct providing `reset_ghost_jobs()` method.
+**Tests:** A single `Queued` job is inserted, `reset_ghost_jobs()` is called, then the job is fetched and verified to be `Failed` with `error = "server_restart"`.
+**Mode:** both
+**Inputs:** One `Job` with `status == Queued`.
+**Expected output:** `reset_ghost_jobs()` returns 1; job status is `Failed` with error `"server_restart"`.
+**Acceptance:** `cargo test -p anvilml-registry --test job_store_tests test_reset_ghost_jobs_queued_becomes_failed` exits 0.
+
+---
+
+## test_reset_ghost_jobs_running_becomes_failed (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/job_store_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `chrono` (serde), `serde_json`, `sqlx` (sqlite, runtime-tokio, migrate, chrono), and `uuid` (serde) dependencies, and the `JobStore` struct providing `reset_ghost_jobs()` method.
+**Tests:** A single `Running` job is inserted, `reset_ghost_jobs()` is called, then the job is fetched and verified to be `Failed` with `error = "server_restart"`.
+**Mode:** both
+**Inputs:** One `Job` with `status == Running`.
+**Expected output:** `reset_ghost_jobs()` returns 1; job status is `Failed` with error `"server_restart"`.
+**Acceptance:** `cargo test -p anvilml-registry --test job_store_tests test_reset_ghost_jobs_running_becomes_failed` exits 0.
+
+---
+
+## test_reset_ghost_jobs_completed_not_affected (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/job_store_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `chrono` (serde), `serde_json`, `sqlx` (sqlite, runtime-tokio, migrate, chrono), and `uuid` (serde) dependencies, and the `JobStore` struct providing `reset_ghost_jobs()` method.
+**Tests:** A `Completed` job, a `Cancelled` job, and a `Queued` job are inserted; `reset_ghost_jobs()` is called; only the `Queued` job changes to `Failed` with `error = "server_restart"` — the `Completed` and `Cancelled` jobs are untouched.
+**Mode:** both
+**Inputs:** Three `Job` instances with `Completed`, `Cancelled`, and `Queued` statuses.
+**Expected output:** `reset_ghost_jobs()` returns 1; only the `Queued` job changed; `Completed` and `Cancelled` are unchanged.
+**Acceptance:** `cargo test -p anvilml-registry --test job_store_tests test_reset_ghost_jobs_completed_not_affected` exits 0.
+
+---
+
+## test_reset_ghost_jobs_empty_table (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/job_store_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `chrono` (serde), `serde_json`, `sqlx` (sqlite, runtime-tokio, migrate, chrono), and `uuid` (serde) dependencies, and the `JobStore` struct providing `reset_ghost_jobs()` method.
+**Tests:** `reset_ghost_jobs()` is called on an empty table and returns 0.
+**Mode:** both
+**Inputs:** Empty table (no jobs inserted).
+**Expected output:** `reset_ghost_jobs()` returns 0.
+**Acceptance:** `cargo test -p anvilml-registry --test job_store_tests test_reset_ghost_jobs_empty_table` exits 0.
+
+---
+
+## test_get_missing_id_returns_none (anvilml-registry)
+
+**File:** `crates/anvilml-registry/tests/job_store_tests.rs`
+**Context:** The `anvilml-registry` crate has been compiled with `chrono` (serde), `serde_json`, `sqlx` (sqlite, runtime-tokio, migrate, chrono), and `uuid` (serde) dependencies, and the `JobStore` struct providing `get()` method.
+**Tests:** A nonexistent UUID is queried via `get()`, which returns `Ok(None)` rather than an error.
+**Mode:** both
+**Inputs:** A freshly-generated UUID that has not been inserted.
+**Expected output:** `get()` returns `Ok(None)`.
+**Acceptance:** `cargo test -p anvilml-registry --test job_store_tests test_get_missing_id_returns_none` exits 0.
