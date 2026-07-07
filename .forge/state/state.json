@@ -132,16 +132,17 @@
     "P13-C1",
     "P13-D1",
     "P14-A1",
-    "P14-A2"
+    "P14-A2",
+    "P14-A3"
   ],
-  "in_progress": "P14-A3",
+  "in_progress": "P14-A4",
   "plan_approved": true,
   "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-07T15:08:52+0200",
-  "plan_approval_message_id": "1524039052649824390",
+  "last_updated": "2026-07-07T16:04:52+0200",
+  "plan_approval_message_id": "1524051802994249840",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1524039051026370692",
+  "plan_report_message_id": "1524051801794416892",
   "impl_report_message_id": null
 }

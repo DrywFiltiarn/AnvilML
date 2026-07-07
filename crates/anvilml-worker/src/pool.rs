@@ -50,6 +50,11 @@ use crate::spawn::{ProcessWorkerSpawner, WorkerSpawner};
 /// not one per worker.
 pub struct WorkerPool {
     handles: Vec<WorkerHandle>,
+    /// Device metadata for all workers in this pool, populated at spawn time
+    /// by `spawn_all()`. The device at index `i` corresponds to the worker
+    /// handle at `handles()[i]`. Used by the scheduler's dispatch loop to
+    /// select workers based on device type and VRAM availability (P14-A4).
+    devices: Vec<GpuDevice>,
     transport: Arc<RouterTransport>,
     demux: Arc<Demux>,
     /// Sender half of the bridge's writer channel. See `bridge_sender()`'s
@@ -101,6 +106,7 @@ impl WorkerPool {
 
         Ok(Self {
             handles: Vec::new(),
+            devices: Vec::new(),
             transport,
             demux,
             bridge_tx,
@@ -114,6 +120,19 @@ impl WorkerPool {
     /// handle per device.
     pub fn handles(&self) -> &[WorkerHandle] {
         &self.handles
+    }
+
+    /// Return the device list for all workers in this pool.
+    ///
+    /// Each `GpuDevice` carries `device_type`, `vram_free_mib`, and `index`.
+    /// The device at index `i` corresponds to the worker handle at
+    /// `handles()[i]`. This is used by the scheduler's dispatch loop to
+    /// select workers based on device type and VRAM availability (per
+    /// `ANVILML_DESIGN.md §12.5`).
+    ///
+    /// Empty immediately after `new()`; populated by `spawn_all()`.
+    pub fn devices(&self) -> &[GpuDevice] {
+        &self.devices
     }
 
     /// The pool-wide `RouterTransport` every worker in this pool shares.
@@ -286,6 +305,11 @@ impl WorkerPool {
             );
             self.handles.push(handle);
         }
+
+        // Store the device list for the scheduler's dispatch loop to query
+        // worker device type and VRAM for selection decisions (P14-A4).
+        // The device at index i corresponds to handles()[i].
+        self.devices = devices.to_vec();
 
         Ok(())
     }

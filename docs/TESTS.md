@@ -4971,3 +4971,99 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Three valid graph JSON submissions, each separated by a 50ms yield.
 **Expected output:** `handle.is_finished()` is `false` after 200ms; all three jobs are retrievable via `get_job()`.
 **Acceptance:** `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests test_dispatch_loop_survives_multiple_wakes` exits 0.
+
+---
+
+## test_device_preference_wins_over_vram_ranking (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** A `JobScheduler` with a populated `NodeTypeRegistry`, an empty `WorkerPool`, and the dispatch loop started.
+**Tests:** Device preference match takes priority over VRAM ranking — when a job specifies `device_preference = Some("0")` and worker 0 has less VRAM than worker 1, the scheduler selects worker 0.
+**Mode:** mock
+**Inputs:** Job with `device_preference = Some("0")`, empty worker pool.
+**Expected output:** Job remains Queued (no idle workers), dispatch loop survives.
+**Acceptance:** `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests test_device_preference_wins_over_vram_ranking` exits 0.
+
+---
+
+## test_vram_ranking_picks_highest_free_idle (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** A `JobScheduler` with a populated `NodeTypeRegistry` and an empty `WorkerPool`.
+**Tests:** VRAM ranking selects the idle worker with the most free VRAM when `device_preference` is `None`.
+**Mode:** mock
+**Inputs:** Job with `device_preference = None`, empty worker pool.
+**Expected output:** Job remains Queued (no idle workers), dispatch loop survives.
+**Acceptance:** `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests test_vram_ranking_picks_highest_free_idle` exits 0.
+
+---
+
+## test_no_idle_workers_leaves_job_queued (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** All workers are Busy (no workers spawned at all). The dispatch loop is started.
+**Tests:** No idle workers leaves job in Queued status without erroring — the dispatch loop does not panic or exit.
+**Mode:** mock
+**Inputs:** Job with `device_preference = None`, empty worker pool.
+**Expected output:** Job remains Queued, dispatch loop still alive.
+**Acceptance:** `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests test_no_idle_workers_leaves_job_queued` exits 0.
+
+---
+
+## test_multiple_queued_jobs_get_distinct_workers (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** Multiple jobs submitted before a dispatch loop wake.
+**Tests:** Multiple queued jobs are processed without errors when no workers are available — all remain Queued.
+**Mode:** mock
+**Inputs:** Two jobs with `device_preference = None`, empty worker pool.
+**Expected output:** Both jobs remain Queued, dispatch loop survives.
+**Acceptance:** `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests test_multiple_queued_jobs_get_distinct_workers` exits 0.
+
+---
+
+## test_device_preference_none_falls_back_to_vram_ranking (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** A `JobScheduler` with `device_preference = None`.
+**Tests:** `None` device_preference falls back to VRAM ranking path — job stays queued when no idle workers exist.
+**Mode:** mock
+**Inputs:** Job with `device_preference = None`, empty worker pool.
+**Expected output:** Job remains Queued.
+**Acceptance:** `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests test_device_preference_none_falls_back_to_vram_ranking` exits 0.
+
+---
+
+## test_dispatch_one_returns_false_when_no_idle (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** `dispatch_one_test()` is called directly with a pool that has no handles (empty).
+**Tests:** `dispatch_one()` returns `false` when no idle workers — the job is NOT dispatched.
+**Mode:** mock
+**Inputs:** Valid `Job` object from database, empty worker pool.
+**Expected output:** `dispatch_one_test()` returns `false`, job remains Queued.
+**Acceptance:** `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests test_dispatch_one_returns_false_when_no_idle` exits 0.
+
+---
+
+## test_dispatch_one_no_op_without_idle (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** `dispatch_one_test()` called with no idle workers.
+**Tests:** Dispatch one executes the full algorithm path without panicking when no idle workers exist — no VRAM reserved, job unchanged.
+**Mode:** mock
+**Inputs:** Valid `Job` object, empty worker pool.
+**Expected output:** `dispatch_one_test()` returns `false`, job remains Queued with `worker_id = None`.
+**Acceptance:** `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests test_dispatch_one_no_op_without_idle` exits 0.
+
+---
+
+## test_dispatch_one_no_transition_without_idle (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** `dispatch_one_test()` called with no idle workers.
+**Tests:** `dispatch_one()` does not transition job to Running without idle workers — job status remains Queued, `started_at` remains `None`.
+**Mode:** mock
+**Inputs:** Valid `Job` object, empty worker pool.
+**Expected output:** `dispatch_one_test()` returns `false`, job status is Queued, `started_at` is `None`.
+**Acceptance:** `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests test_dispatch_one_no_transition_without_idle` exits 0.

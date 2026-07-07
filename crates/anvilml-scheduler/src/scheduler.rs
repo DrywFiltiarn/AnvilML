@@ -21,7 +21,9 @@
 /// 7. Return the job ID
 use std::sync::Arc;
 
+use anvilml_core::types::worker::WorkerStatus;
 use anvilml_core::{AnvilError, Job, JobSettings, JobStatus, NodeTypeRegistry};
+use anvilml_ipc::WorkerMessage;
 use anvilml_registry::JobStore;
 use chrono::Utc;
 use serde_json::Value;
@@ -275,27 +277,230 @@ impl JobScheduler {
 
     /// Attempt to dispatch a single job to an idle worker.
     ///
-    /// For this task (P14-A3), always returns `false` — no worker selection
-    /// logic exists yet. The real selection algorithm (device preference then
-    /// VRAM ranking) is implemented in P14-A4, which replaces this stub.
+    /// Implements the two-step worker selection algorithm from
+    /// `ANVILML_DESIGN.md §12.5`:
+    ///
+    /// 1. **Device preference match** — if `job.settings.device_preference`
+    ///    is `Some(id)`, find an `Idle` worker whose `worker_id` matches
+    ///    and select the first one.
+    /// 2. **VRAM ranking** — if no device preference match (or preference
+    ///    is `None`), rank all `Idle` workers by `vram_free_mib` descending
+    ///    (from `workers.devices()`) and pick the top candidate.
+    ///
+    /// On a successful match, reserves VRAM via the ledger, transitions the
+    /// job to `Running`, persists the updated job, sends `WorkerMessage::Execute`
+    /// to the selected worker, and returns `true`. If no `Idle` workers exist,
+    /// returns `false` without error — the job remains queued.
+    ///
+    /// Does NOT mark the selected worker's status as `Busy` — that transition
+    /// is deferred to P14-A5.
     ///
     /// # Arguments
     ///
     /// * `job` — The job to attempt dispatching.
-    /// * `workers` — The worker pool, used for future worker selection.
+    /// * `workers` — The worker pool, used for idle-worker discovery and
+    ///   device metadata.
     ///
     /// # Returns
     ///
-    /// `true` if the job was dispatched to a worker, `false` otherwise.
-    /// For this task, always returns `false`.
-    #[allow(dead_code)] // Stub: real dispatch logic arrives in P14-A4.
-    async fn dispatch_one(&self, _job: &Job, _workers: &anvilml_worker::WorkerPool) -> bool {
-        // P14-A3 stub: always return false — no worker selection yet.
-        // The real algorithm (device_preference then VRAM ranking) is
-        // implemented in P14-A4 and replaces this body.
-        // defers_to: P14-A4 — stub dispatch_one always returns false;
-        // real worker selection arrives in P14-A4
-        false
+    /// `true` if the job was dispatched to a worker, `false` if no idle
+    /// workers were available (job remains queued).
+    #[tracing::instrument(skip(self, job, workers), fields(job_id = %job.id))]
+    async fn dispatch_one(&self, job: &Job, workers: &anvilml_worker::WorkerPool) -> bool {
+        // Step 1: Collect all idle workers with their handle references.
+        // Iterate handles and call status() on each — this acquires a read
+        // lock on the shared status, which is async because the lock is
+        // tokio::sync::RwLock. The pool is expected to have at most a
+        // handful of workers (one per GPU), so this iteration is fast.
+        let mut idle_workers: Vec<anvilml_worker::WorkerHandle> = Vec::new();
+        for handle in workers.handles() {
+            if handle.status().await == WorkerStatus::Idle {
+                idle_workers.push(handle.clone());
+            }
+        }
+
+        // If no idle workers exist, return false — the job stays queued.
+        // This is not an error condition per the design doc.
+        if idle_workers.is_empty() {
+            tracing::debug!("dispatch_one_no_idle_workers");
+            return false;
+        }
+
+        tracing::debug!(idle_count = idle_workers.len(), "dispatch_one_idle_workers");
+
+        // Step 2a: Device preference match.
+        // If the job specifies a device_preference, find an idle worker
+        // whose worker_id (device index as string, e.g. "0") matches.
+        // The worker_id convention is the bare device index as a string,
+        // matching ANVILML_DESIGN.md §12.5.
+        let selected = if let Some(preferred_id) = &job.settings.device_preference {
+            // Look for an idle worker whose worker_id matches the preference.
+            // Use the first match — if multiple workers share the same ID
+            // (shouldn't happen in practice), pick the first one.
+            idle_workers
+                .iter()
+                .find(|h| h.worker_id == *preferred_id)
+                .cloned()
+        } else {
+            None
+        };
+
+        // Step 2b: VRAM ranking fallback.
+        // If no device_preference match (or device_preference is None),
+        // rank all idle workers by vram_free_mib descending.
+        let selected = match selected {
+            Some(handle) => {
+                // Device preference matched — log and use it.
+                tracing::debug!(
+                    worker_id = %handle.worker_id,
+                    "dispatch_one_device_preference_match"
+                );
+                handle
+            }
+            None => {
+                // No device preference match — rank by VRAM.
+                // Build a list of (worker_index, vram_free_mib) pairs from
+                // workers.devices(). The device at index i corresponds to
+                // handles()[i], so we match by index.
+                let devices = workers.devices();
+                let mut ranked: Vec<(usize, u32)> = Vec::with_capacity(idle_workers.len());
+
+                for (idx, handle) in idle_workers.iter().enumerate() {
+                    // Parse worker_id as u32 to look up the device.
+                    // worker_id is the bare device index as a string (e.g. "0").
+                    if let Ok(device_index) = handle.worker_id.parse::<u32>() {
+                        // Find the device in the pool's device list by index.
+                        // devices()[i].index == i, so we can index directly.
+                        if device_index < devices.len() as u32 {
+                            ranked.push((idx, devices[device_index as usize].vram_free_mib));
+                        }
+                    }
+                }
+
+                // Sort descending by vram_free_mib and pick the top.
+                // If the ranked list is empty (no devices matched idle workers),
+                // fall back to the first idle worker as a best-effort choice.
+                if let Some(&(_, _)) = ranked.iter().max_by_key(|&(_, vram)| vram) {
+                    // Find the index of the worker with the most VRAM.
+                    let best_idx = ranked
+                        .iter()
+                        .max_by_key(|&(_, vram)| vram)
+                        .map(|&(idx, _)| idx)
+                        .expect("ranked list is non-empty above");
+                    let handle = idle_workers[best_idx].clone();
+                    let vram = ranked
+                        .iter()
+                        .find(|&&(i, _)| i == best_idx)
+                        .map(|&(_, v)| v)
+                        .unwrap_or(0);
+                    tracing::debug!(
+                        worker_id = %handle.worker_id,
+                        vram_free_mib = vram,
+                        "dispatch_one_vram_ranking_select"
+                    );
+                    handle
+                } else {
+                    // No devices matched — fall back to first idle worker.
+                    // This shouldn't happen in normal operation (devices are
+                    // always populated at spawn time), but we handle it gracefully.
+                    idle_workers[0].clone()
+                }
+            }
+        };
+
+        // On match: four steps must happen together (per §12.5):
+        // (i) Reserve VRAM via ledger
+        // (ii) Transition job to Running
+        // (iii) Persist to database
+        // (iv) Send WorkerMessage::Execute
+
+        let worker_id = selected.worker_id.clone();
+        let device_index = worker_id.parse::<u32>().unwrap_or(0); // worker_id is always a valid index string
+
+        // (i) Reserve VRAM. Acquire the ledger mutex and call reserve()
+        // with the device's vram_free_mib as a placeholder reservation.
+        // The actual reservation amount will be refined in later tasks
+        // based on model metadata. The ledger is advisory, so over-
+        // reservation is recoverable via release() on job completion.
+        // Compute the reservation amount before acquiring the lock.
+        let vram_to_reserve = workers
+            .devices()
+            .get(device_index as usize)
+            .map(|d| d.vram_free_mib)
+            .unwrap_or(0);
+        {
+            let mut ledger = self.ledger.lock().await;
+            // Use the device's reported free VRAM as the reservation amount.
+            // This is a placeholder — the real amount depends on the model
+            // being dispatched, which this task doesn't have access to yet.
+            ledger.reserve(device_index, vram_to_reserve);
+            tracing::debug!(
+                device_index = device_index,
+                vram_reserved_mib = vram_to_reserve,
+                "dispatch_one_vram_reserved"
+            );
+        }
+
+        // (ii) Transition job to Running. Set status, worker_id, and
+        // started_at timestamp. This is in-memory only — the persistent
+        // copy is written in step (iii).
+        let mut job = job.clone();
+        job.status = JobStatus::Running;
+        job.worker_id = Some(worker_id.clone());
+        job.started_at = Some(chrono::Utc::now());
+
+        // (iii) Persist the updated job to the database via upsert().
+        // This writes the Running status, worker_id, and started_at.
+        if let Err(e) = self.job_store.upsert(&job).await {
+            tracing::error!(
+                job_id = %job.id,
+                worker_id = %worker_id,
+                error = %e,
+                "dispatch_one_upsert_failed"
+            );
+            // Release the VRAM reservation we just made, since we couldn't
+            // persist the job. The ledger is advisory, but we should clean
+            // up after ourselves to avoid phantom reservations.
+            {
+                let mut ledger = self.ledger.lock().await;
+                ledger.release(device_index, vram_to_reserve);
+            }
+            return false;
+        }
+
+        // (iv) Send WorkerMessage::Execute to the selected worker.
+        // Build the execute message with job_id, graph, settings, and
+        // device_index. The worker will resolve the graph and dispatch
+        // node execution.
+        let msg = WorkerMessage::Execute {
+            job_id: job.id,
+            graph: job.graph.clone(),
+            settings: job.settings.clone(),
+            device_index,
+        };
+
+        if let Err(e) = workers.transport().send(&worker_id, &msg).await {
+            tracing::error!(
+                job_id = %job.id,
+                worker_id = %worker_id,
+                error = %e,
+                "dispatch_one_send_failed"
+            );
+            // Release VRAM reservation on send failure.
+            {
+                let mut ledger = self.ledger.lock().await;
+                ledger.release(device_index, vram_to_reserve);
+            }
+            return false;
+        }
+
+        tracing::info!(
+            worker_id = %worker_id,
+            job_id = %job.id,
+            "dispatched job to worker"
+        );
+
+        true
     }
 
     /// Start the dispatch loop as a background tokio task.
@@ -370,5 +575,16 @@ impl JobScheduler {
                 }
             }
         })
+    }
+
+    /// Test helper: expose `dispatch_one()` for integration tests.
+    ///
+    /// `dispatch_one()` is private (not `pub`), so tests in the `tests/`
+    /// directory (compiled as a separate crate) cannot call it directly.
+    /// This method is `#[cfg(feature = "test-util")]`-gated, matching the
+    /// existing pattern for test-only public methods in this crate.
+    #[cfg(feature = "test-util")]
+    pub async fn dispatch_one_test(&self, job: &Job, workers: &anvilml_worker::WorkerPool) -> bool {
+        self.dispatch_one(job, workers).await
     }
 }
