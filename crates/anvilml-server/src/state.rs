@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
 use anvilml_core::{NodeTypeRegistry, ServerConfig};
+use anvilml_scheduler::JobScheduler;
+use anvilml_worker::WorkerPool;
+use sqlx::SqlitePool;
 
 /// Shared application state for the AnvilML HTTP server.
 ///
@@ -25,4 +28,27 @@ pub struct AppState {
     /// Monotonic clock instant captured at process startup.
     /// Used by the `/health` handler to compute elapsed uptime.
     pub start_time: std::time::Instant,
+
+    /// Central async dispatcher for generation jobs.
+    ///
+    /// Owns the in-memory job queue, VRAM ledger, and database-backed
+    /// job persistence. The scheduler validates computation graphs,
+    /// selects idle workers, and dispatches `Execute` messages to
+    /// Python worker subprocesses via the shared `WorkerPool`.
+    pub scheduler: Arc<JobScheduler>,
+
+    /// Pool of Python worker subprocesses, one per GPU device.
+    ///
+    /// Manages worker lifecycle (spawn, supervise, respawn, shutdown)
+    /// and provides the shared `RouterTransport` for IPC. The scheduler
+    /// queries the pool for idle-worker discovery and VRAM metadata
+    /// during job dispatch.
+    pub workers: Arc<WorkerPool>,
+
+    /// SQLite connection pool for job persistence.
+    ///
+    /// Shared with `JobStore` (via `JobScheduler`) for CRUD operations
+    /// on the `jobs` table. Uses an in-memory database for tests and a
+    /// file-backed database in production.
+    pub db: SqlitePool,
 }

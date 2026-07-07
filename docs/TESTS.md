@@ -5187,3 +5187,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Two calls to `execute()` with the same context and input value.
 **Expected output:** Two distinct dict objects that are equal in content but not identical in identity.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_passthrough.py::test_execute_returns_new_dict -v` exits 0.
+
+---
+
+## test_app_state_with_new_fields (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/state_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `sqlx` (sqlite, runtime-tokio, migrate, chrono features), `anvilml-scheduler`, and `anvilml-worker` dependencies. `AppState` now has six fields: `config`, `node_registry`, `start_time`, `scheduler`, `workers`, and `db`.
+**Tests:** Constructs `AppState` with all six fields — an in-memory `SqlitePool` with migrations applied, a `JobScheduler` backed by a `JobStore`, and an empty `WorkerPool`. Asserts all six fields are accessible and no panics occur.
+**Mode:** both
+**Inputs:** In-memory `SqlitePool`, empty `JobStore`, fresh `WorkerPool`.
+**Expected output:** All six fields accessible; no panics on construction.
+**Acceptance:** `cargo test -p anvilml-server --test state_tests test_app_state_with_new_fields` exits 0.
+
+---
+
+## test_app_state_clone_preserves_all_fields (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/state_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `sqlx`, `anvilml-scheduler`, and `anvilml-worker` dev-dependencies. `AppState` derives `Clone`.
+**Tests:** Constructs `AppState` with all six fields, clones it, then asserts that all six fields on the clone are accessible and that the `Arc` pointers for `config`, `node_registry`, `scheduler`, and `workers` are identical (verified via `Arc::as_ptr` pointer comparison).
+**Mode:** both
+**Inputs:** A constructed `AppState` with all fields.
+**Expected output:** Clone has all six fields accessible; `Arc` pointers are identical.
+**Acceptance:** `cargo test -p anvilml-server --test state_tests test_app_state_clone_preserves_all_fields` exits 0.
+
+---
+
+## test_app_state_scheduler_arc_sharing (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/state_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `sqlx`, `anvilml-scheduler`, and `anvilml-worker` dev-dependencies. Both the `AppState`'s `node_registry` and the `JobScheduler`'s internal `node_registry` share the same `Arc<NodeTypeRegistry>`.
+**Tests:** Registers a node type via the original state's `node_registry`, then reads back through the cloned state's `node_registry` to verify the scheduler's shared `Arc<NodeTypeRegistry>` is visible through both clones.
+**Mode:** both
+**Inputs:** A constructed `AppState` with a `JobScheduler` containing an `Arc<NodeTypeRegistry>`.
+**Expected output:** `cloned.scheduler.node_registry.list()` returns the same registered nodes as `state.scheduler.node_registry.list()`.
+**Acceptance:** `cargo test -p anvilml-server --test state_tests test_app_state_scheduler_arc_sharing` exits 0.

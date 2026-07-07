@@ -4,13 +4,63 @@
 //! in-process HTTP requests without opening a real socket.
 
 use anvilml_core::{NodeTypeRegistry, ServerConfig};
+use anvilml_registry::JobStore;
+use anvilml_scheduler::JobScheduler;
 use anvilml_server::{AppState, build_router};
+use anvilml_worker::WorkerPool;
 use axum::body::Body;
 use axum::body::to_bytes;
 use axum::http::Request;
 use serde_json::Value;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::sync::Arc;
 use tower::util::ServiceExt;
+
+/// Helper to create an in-memory SQLite pool with migrations applied.
+async fn make_test_pool() -> sqlx::SqlitePool {
+    let connect_opts = SqliteConnectOptions::new()
+        .filename(":memory:")
+        .create_if_missing(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(connect_opts)
+        .await
+        .expect("in-memory SQLite pool must connect");
+
+    let migrator = sqlx::migrate!("../../database/migrations");
+    migrator
+        .run(&pool)
+        .await
+        .expect("migrations must apply to in-memory pool");
+
+    pool
+}
+
+/// Construct a minimal `AppState` suitable for HTTP handler tests.
+///
+/// Creates stub values for `scheduler`, `workers`, and `db` — these
+/// fields are not used by the `/health` or `/v1/nodes` handlers, so
+/// minimal construction is sufficient. The `node_registry` is shared
+/// with the scheduler for consistency.
+async fn make_test_state(node_registry: Arc<NodeTypeRegistry>) -> AppState {
+    let db = make_test_pool().await;
+    let job_store = JobStore::new(db.clone());
+    let scheduler = Arc::new(JobScheduler::new(job_store, Arc::clone(&node_registry)));
+    let workers = Arc::new(
+        WorkerPool::new()
+            .await
+            .expect("WorkerPool::new() must succeed in test"),
+    );
+
+    AppState {
+        config: Arc::new(ServerConfig::default()),
+        node_registry,
+        start_time: std::time::Instant::now(),
+        scheduler,
+        workers,
+        db,
+    }
+}
 
 /// Verify that GET /health returns 200 OK with a JSON body containing
 /// `status="ok"`, a string `version`, and a non-negative integer `uptime_s`.
@@ -21,12 +71,7 @@ use tower::util::ServiceExt;
 /// match the `ANVILML_DESIGN.md §13.4` contract.
 #[tokio::test]
 async fn test_health_returns_200() {
-    let start = std::time::Instant::now();
-    let state = AppState {
-        config: Arc::new(ServerConfig::default()),
-        node_registry: Arc::new(NodeTypeRegistry::new()),
-        start_time: start,
-    };
+    let state = make_test_state(Arc::new(NodeTypeRegistry::new())).await;
     let router = build_router(state);
     let req = Request::get("/health").body(Body::empty()).unwrap();
     let res = router.oneshot(req).await.unwrap();

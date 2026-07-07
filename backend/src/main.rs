@@ -9,7 +9,9 @@ use anvilml_core::config_load;
 use anvilml_hardware::detect_all_devices;
 use anvilml_registry::JobStore;
 use anvilml_registry::create_pool;
+use anvilml_scheduler::JobScheduler;
 use anvilml_server::{AppState, build_router};
+use anvilml_worker::WorkerPool;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -164,13 +166,35 @@ async fn main() {
     // handler returns a real elapsed-time measurement.
     let start_time = Instant::now();
 
+    // Create the node registry — it will be shared between the AppState
+    // and the scheduler, then populated when Python workers send Ready.
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+
+    // Construct the job scheduler with the database pool. The scheduler
+    // owns the in-memory job queue and dispatch loop; it uses the shared
+    // `pool` for job persistence via `JobStore`.
+    let job_store = JobStore::new(pool.clone());
+    let scheduler = Arc::new(JobScheduler::new(job_store, Arc::clone(&node_registry)));
+
+    // Construct an empty worker pool — binds a RouterTransport and spawns
+    // the bridge. Workers are spawned later by `spawn_all()` when device
+    // metadata is available.
+    let workers = Arc::new(
+        WorkerPool::new()
+            .await
+            .expect("WorkerPool::new() must succeed at startup"),
+    );
+
     // Construct `AppState` with the loaded config, a fresh empty node
     // registry (populated later when the Python worker sends Ready),
-    // and the captured start instant for uptime calculation.
+    // the captured start instant, and the three new subsystem fields.
     let app_state = AppState {
         config: Arc::new(config),
-        node_registry: Arc::new(NodeTypeRegistry::new()),
+        node_registry,
         start_time,
+        scheduler,
+        workers,
+        db: pool,
     };
 
     // Extract the listen address from the Arc-wrapped config before moving
