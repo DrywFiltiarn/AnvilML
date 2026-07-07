@@ -4647,3 +4647,75 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Fresh `JobQueue`, three `Job` values, B cancelled.
 **Expected output:** First pop returns A, second returns C, third returns `None`.
 **Acceptance:** `cargo test -p anvilml-scheduler --test queue_tests test_pop_front_discards_cancelled_and_returns_remaining` exits 0.
+
+---
+
+## test_reserve_reduces_free_mib (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/ledger_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-core` and `serde_json` dependencies, and the `ledger` module providing `VramLedger` with `reserve()`, `release()`, and `free_mib()` methods.
+**Tests:** `reserve()` correctly adds to a device's reservation, and `free_mib()` returns the correct remaining capacity.
+**Mode:** both
+**Inputs:** Empty ledger, reserve 4096 MiB on device 0, total 8192 MiB.
+**Expected output:** `free_mib(0, 8192)` returns 4096.
+**Acceptance:** `cargo test -p anvilml-scheduler --test ledger_tests test_reserve_reduces_free_mib` exits 0.
+
+---
+
+## test_release_restores_capacity (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/ledger_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-core` and `serde_json` dependencies, and the `ledger` module providing `VramLedger` with `reserve()`, `release()`, and `free_mib()` methods.
+**Tests:** `release()` correctly subtracts from a device's reservation, restoring the previously reserved capacity.
+**Mode:** both
+**Inputs:** Ledger with 4096 MiB reserved on device 0, release 4096 MiB, total 8192 MiB.
+**Expected output:** `free_mib(0, 8192)` returns 8192.
+**Acceptance:** `cargo test -p anvilml-scheduler --test ledger_tests test_release_restores_capacity` exits 0.
+
+---
+
+## test_over_release_does_not_panic (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/ledger_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-core` and `serde_json` dependencies, and the `ledger` module providing `VramLedger` with `reserve()`, `release()`, and `free_mib()` methods.
+**Tests:** `release()` uses saturating subtraction so that releasing more than was reserved never panics or underflows; the reservation is clamped to zero.
+**Mode:** both
+**Inputs:** Ledger with 4096 MiB reserved on device 0, release 8192 MiB, total 8192 MiB.
+**Expected output:** `free_mib(0, 8192)` returns 8192 (reservation clamped to 0).
+**Acceptance:** `cargo test -p anvilml-scheduler --test ledger_tests test_over_release_does_not_panic` exits 0.
+
+---
+
+## test_unknown_device_returns_total_mib (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/ledger_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-core` and `serde_json` dependencies, and the `ledger` module providing `VramLedger` with `reserve()`, `release()`, and `free_mib()` methods.
+**Tests:** `free_mib()` returns `total_mib` for a device index that has never been reserved (zero reservation).
+**Mode:** both
+**Inputs:** Empty ledger, no prior ops on device 5, total 16384 MiB.
+**Expected output:** `free_mib(5, 16384)` returns 16384.
+**Acceptance:** `cargo test -p anvilml-scheduler --test ledger_tests test_unknown_device_returns_total_mib` exits 0.
+
+---
+
+## test_reserve_accumulates_on_same_device (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/ledger_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-core` and `serde_json` dependencies, and the `ledger` module providing `VramLedger` with `reserve()`, `release()`, and `free_mib()` methods.
+**Tests:** Multiple `reserve()` calls on the same device accumulate the reservation amount.
+**Mode:** both
+**Inputs:** Empty ledger, reserve 4096 MiB twice on device 0, total 8192 MiB.
+**Expected output:** `free_mib(0, 8192)` returns 0 (8192 - 8192 = 0).
+**Acceptance:** `cargo test -p anvilml-scheduler --test ledger_tests test_reserve_accumulates_on_same_device` exits 0.
+
+---
+
+## test_multi_device_independent (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/ledger_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-core` and `serde_json` dependencies, and the `ledger` module providing `VramLedger` with `reserve()`, `release()`, and `free_mib()` methods.
+**Tests:** Reservations on different device indices are tracked independently — modifying one device's reservation does not affect another.
+**Mode:** both
+**Inputs:** Empty ledger, reserve 4096 MiB on device 0, 2048 MiB on device 1, both total 8192 MiB.
+**Expected output:** Device 0: 4096 free, Device 1: 6144 free.
+**Acceptance:** `cargo test -p anvilml-scheduler --test ledger_tests test_multi_device_independent` exits 0.

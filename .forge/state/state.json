@@ -125,16 +125,17 @@
     "P12-A5",
     "P12-A6",
     "P12-B1",
-    "P13-A1"
+    "P13-A1",
+    "P13-A2"
   ],
-  "in_progress": "P13-A2",
+  "in_progress": "P13-A3",
   "plan_approved": true,
-  "current_plan": "1. **Add `uuid` dependency to `anvilml-scheduler/Cargo.toml`.** Add `uuid = { version = \"1.23.4\", features = [\"v4\"] }` to `[dependencies]`. This gives the crate direct access to `uuid::Uuid` for the `HashSet<Uuid>` in `JobQueue` and `Uuid::new_v4()` in tests.\n\n2. **Create `crates/anvilml-scheduler/src/queue.rs`.** Implement `JobQueue`:\n   - `struct JobQueue { jobs: VecDeque<Job>, cancelled: HashSet<Uuid> }` \u2014 the `VecDeque` holds jobs in FIFO order; the `HashSet` tracks cancelled IDs for O(1) lookup.\n   - `pub fn new() -> Self` \u2014 returns empty queue. Add `///` doc comment.\n   - `pub fn push(&mut self, job: Job)` \u2014 appends to the back of the `VecDeque`. Add `///` doc comment.\n   - `pub fn pop_front(&mut self) -> Option<Job>` \u2014 loop: peek at front; if the job's `id` is in `cancelled`, remove it and continue; otherwise remove and return `Some(job)`. If the deque is empty, return `None`. The loop naturally handles a run of consecutive cancelled entries. Add `///` doc comment.\n   - `pub fn cancel(&mut self, id: Uuid) -> bool` \u2014 insert into `cancelled` HashSet; return `true` if the key was not previously present (i.e., it was newly marked), `false` if it was already present. This is O(1) because it only touches the hash set. Add `///` doc comment.\n   - `pub fn get(&self, id: Uuid) -> Option<&Job>` \u2014 iterate over `jobs` and return a reference to the first job whose `id` matches. Add `///` doc comment.\n   - `pub fn list(&self) -> Vec<&Job>` \u2014 return a `Vec` of references to all jobs currently in the queue (including cancelled ones that haven't been popped yet \u2014 lazy removal means cancelled jobs may still appear in `list()` until `pop_front()` encounters them). Add `///` doc comment.\n   - `pub fn len(&self) -> usize` \u2014 return `self.jobs.len()`. This counts all jobs including cancelled ones still in the deque. Add `///` doc comment.\n   - No `#[tracing::instrument]` needed \u2014 this is a pure in-memory data structure with no I/O or async.\n   - No logging needed \u2014 this is a pure data structure with no side effects.\n\n3. **Update `crates/anvilml-scheduler/src/lib.rs`.** Add `pub mod queue;` and `pub use queue::JobQueue;` after the existing `pub mod dag;` and `pub mod types;` declarations. The file will remain well under 80 lines.\n\n4. **Create `crates/anvilml-scheduler/tests/queue_tests.rs`.** Write >=7 integration tests (see Tests section below). Each test constructs `JobQueue` and `Job` values using the public API. Since `Job` derives `Clone` and has all public fields, test setup uses direct struct literals.\n\n5. **Bump `anvilml-scheduler` version** from `0.1.7` to `0.1.8` in `Cargo.toml` per \u00a712 of ENVIRONMENT.md.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-07T00:32:21+0200",
-  "plan_approval_message_id": "1523814480591589407",
+  "last_updated": "2026-07-07T09:03:56+0200",
+  "plan_approval_message_id": "1523830154944839731",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1523814478875983882",
+  "plan_report_message_id": "1523830152671395981",
   "impl_report_message_id": null
 }
