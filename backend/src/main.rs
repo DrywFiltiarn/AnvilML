@@ -7,6 +7,7 @@ use anvilml_core::CliOverrides;
 use anvilml_core::NodeTypeRegistry;
 use anvilml_core::config_load;
 use anvilml_hardware::detect_all_devices;
+use anvilml_registry::JobStore;
 use anvilml_registry::create_pool;
 use anvilml_server::{AppState, build_router};
 use std::path::Path;
@@ -107,7 +108,7 @@ async fn main() {
     // This is called before binding the TCP listener so that a DB failure
     // prevents the server from starting with no database — matching the
     // config-load failure pattern (eprintln + exit 1).
-    let _pool = create_pool(&config.db_path)
+    let pool = create_pool(&config.db_path)
         .await
         .map_err(|e| {
             eprintln!("Failed to create database pool: {e}");
@@ -132,12 +133,29 @@ async fn main() {
 
     tracing::info!(seed_path = %seed_path.display(), "loading device capabilities seed");
 
-    let loader = anvilml_registry::SeedLoader::new(_pool.clone());
+    let loader = anvilml_registry::SeedLoader::new(pool.clone());
     loader
         .run("devices.sql", &seed_path)
         .await
         .map_err(|e| {
             eprintln!("Failed to apply device capabilities seed: {e}");
+            std::process::exit(1);
+        })
+        .unwrap();
+
+    // Reset any stale "ghost" jobs left over from a previous run.
+    // Ghost jobs are those in Queued or Running state — they may have been
+    // in-flight when the server crashed or was restarted. The reset transitions
+    // them to Failed with error = "server_restart" so they are visible to the
+    // operator and can be retried or discarded.
+    // The pool is cloned for the JobStore; the clone is cheap (shared connection
+    // pool, not a new database connection).
+    let job_store = JobStore::new(pool.clone());
+    let _ghost_count = job_store
+        .reset_ghost_jobs()
+        .await
+        .map_err(|e| {
+            eprintln!("Failed to reset ghost jobs: {e}");
             std::process::exit(1);
         })
         .unwrap();
