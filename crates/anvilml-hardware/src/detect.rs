@@ -138,6 +138,7 @@ pub async fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, Anvi
         let mut gpus = vec![device];
         let cpu_devices = CpuDetector.detect()?;
         gpus.extend(cpu_devices); // CPU fallback is always appended last
+        assign_sequential_indices(&mut gpus);
 
         let inference_caps = compute_caps_union(&gpus); // union of override + CPU caps
 
@@ -170,6 +171,7 @@ pub async fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, Anvi
         let cpu_devices = CpuDetector.detect()?;
         let mut gpus = gpus;
         gpus.extend(cpu_devices); // CPU fallback is always appended last
+        assign_sequential_indices(&mut gpus);
 
         let inference_caps = compute_caps_union(&gpus); // union of mock + CPU caps
 
@@ -211,6 +213,7 @@ pub async fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, Anvi
                     let cpu_devices = CpuDetector.detect()?;
                     let mut gpus = gpus;
                     gpus.extend(cpu_devices); // CPU fallback appended after DXGI devices
+                    assign_sequential_indices(&mut gpus);
 
                     let inference_caps = compute_caps_union(&gpus);
 
@@ -238,6 +241,7 @@ pub async fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, Anvi
                     let cpu_devices = CpuDetector.detect()?;
                     let mut gpus = gpus;
                     gpus.extend(cpu_devices); // CPU fallback appended after sysfs devices
+                    assign_sequential_indices(&mut gpus);
 
                     let inference_caps = compute_caps_union(&gpus);
 
@@ -259,6 +263,7 @@ pub async fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, Anvi
             let mut gpus: Vec<GpuDevice> = vec![];
             let cpu_devices = CpuDetector.detect()?;
             gpus.extend(cpu_devices); // Only CPU device — the fallback guarantee
+            assign_sequential_indices(&mut gpus);
 
             let inference_caps = compute_caps_union(&gpus); // CPU caps only
 
@@ -280,6 +285,7 @@ pub async fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, Anvi
         let cpu_devices = CpuDetector.detect()?;
         let mut gpus = gpus;
         gpus.extend(cpu_devices); // CPU fallback appended after Vulkan devices
+        assign_sequential_indices(&mut gpus);
 
         let inference_caps = compute_caps_union(&gpus); // union of Vulkan + CPU caps
 
@@ -310,4 +316,50 @@ fn compute_caps_union(devices: &[GpuDevice]) -> InferenceCaps {
         caps.flash_attention |= device.caps.flash_attention;
     }
     caps
+}
+
+/// Reassign `index` on every device in `gpus` to its position in the slice.
+///
+/// Every individual `DeviceDetector` (Vulkan, DXGI, sysfs, mock, override,
+/// and — critically — `CpuDetector`, which unconditionally hardcodes
+/// `index: 0` for its single synthesized device) enumerates independently
+/// and has no visibility into how many devices any other detector already
+/// contributed to this call's combined list. `detect_all_devices()` always
+/// appends the CPU fallback *last* via `gpus.extend(cpu_devices)`, so
+/// without this step, any real detector run (Vulkan/DXGI/sysfs finding at
+/// least one device) collides with the CPU fallback: both end up at
+/// `index: 0`.
+///
+/// That collision is not cosmetic. `WorkerPool::spawn_all_impl()` derives
+/// each spawned worker's `worker_id` directly from `device.index` — matching
+/// the documented convention in `scheduler.rs` ("the worker_id convention is
+/// the bare device index as a string, matching `ANVILML_DESIGN.md §12.5`")
+/// — so an index collision means two workers register under the same
+/// `worker_id` with the shared `WorkerDemux`, whose `register()` is a plain
+/// `HashMap::insert()` (last write wins). Whichever worker registers second
+/// silently drops the first's event channel sender, which then reports a
+/// spurious crash (`event_rx.recv()` returning `None`) within milliseconds
+/// of spawning — before the underlying process has done anything wrong.
+///
+/// `scheduler.rs`'s VRAM-ranking dispatch logic separately assumes
+/// `devices()[i].index == i` to index directly into `workers.devices()`
+/// after parsing a candidate `worker_id` back into a `u32` (see the comment
+/// at `scheduler.rs`'s VRAM-ranking site) — this function is what makes
+/// that assumption actually hold, for every combination of detectors this
+/// module can produce.
+///
+/// Called once, on the final combined `gpus` list, immediately before each
+/// `HardwareInfo` is constructed — after every detector (real, mock, or
+/// override) and the CPU fallback have all been appended, never before.
+/// Reindexing a real GPU detector's own output is harmless: the Python
+/// worker only consults `ANVILML_DEVICE_INDEX` for `torch.cuda.set_device()`
+/// on non-CPU device types (`worker_main.py`), and every currently-supported
+/// detector already assigns sequential `0..N` indices matching its own
+/// output's order, so reindexing by final position is a no-op for any
+/// single-detector output and only changes the CPU fallback's index when a
+/// real device precedes it.
+fn assign_sequential_indices(gpus: &mut [GpuDevice]) {
+    for (position, device) in gpus.iter_mut().enumerate() {
+        device.index = position as u32;
+    }
 }

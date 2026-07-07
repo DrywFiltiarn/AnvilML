@@ -574,7 +574,92 @@ async fn test_cpu_device_always_present_and_last() {
     }
 }
 
-/// `inference_caps` is the field-wise OR union of all per-device `InferenceCaps`.
+/// Every device in the combined `gpus` list has a unique `index` matching
+/// its own position in the slice.
+///
+/// Regression test: `CpuDetector` unconditionally hardcodes `index: 0` for
+/// its single synthesized device (it has no visibility into how many
+/// devices any other detector already contributed), and prior to
+/// `assign_sequential_indices()`, `detect_all_devices()` never renumbered
+/// the list after `gpus.extend(cpu_devices)`. With mock-hardware active,
+/// `MockDetector` also assigns its device `index: 0` — so before the fix,
+/// this exact scenario (one non-CPU device + the CPU fallback) produced
+/// two devices both claiming `index: 0`.
+///
+/// This collision is not cosmetic: `WorkerPool::spawn_all_impl()` derives
+/// each worker's `worker_id` directly from `device.index`, so a collision
+/// here means two `ManagedWorker`s register under the same `worker_id`
+/// with the shared `WorkerDemux` — whichever registers second silently
+/// drops the first's event channel sender, producing a spurious
+/// "event channel closed" crash within milliseconds of spawning, on every
+/// respawn attempt, regardless of whether the underlying process is
+/// healthy. `scheduler.rs`'s VRAM-ranking dispatch logic separately
+/// depends on `devices()[i].index == i` to index directly into
+/// `workers.devices()` after parsing a worker_id back into a `u32`.
+#[serial_test::serial]
+#[cfg(feature = "mock-hardware")]
+#[tokio::test]
+async fn test_device_indices_are_unique_and_positional() {
+    let prior_type = std::env::var("ANVILML_MOCK_DEVICE_TYPE").ok();
+    let prior_vram = std::env::var("ANVILML_MOCK_VRAM_MIB").ok();
+    let prior_name = std::env::var("ANVILML_MOCK_DEVICE_NAME").ok();
+
+    unsafe {
+        std::env::set_var("ANVILML_MOCK_DEVICE_TYPE", "cuda");
+        std::env::set_var("ANVILML_MOCK_VRAM_MIB", "24576");
+    }
+
+    let cfg = ServerConfig::default();
+
+    let result = detect_all_devices(&cfg)
+        .await
+        .expect("detect_all_devices should return Ok");
+
+    // Mock GPU + CPU fallback — the exact two-device shape that triggered
+    // the collision (mock/Vulkan/DXGI/sysfs device at index 0, CPU fallback
+    // also hardcoded to index 0) before this fix.
+    assert_eq!(result.gpus.len(), 2, "mock device + CPU fallback");
+
+    // Every device's index must equal its own position in the slice —
+    // this is the exact invariant WorkerPool::spawn_all_impl() and
+    // scheduler.rs's VRAM-ranking lookup both depend on.
+    for (position, device) in result.gpus.iter().enumerate() {
+        assert_eq!(
+            device.index, position as u32,
+            "device at position {position} (device_type={:?}) must have index == {position}, got {}",
+            device.device_type, device.index
+        );
+    }
+
+    // Belt-and-suspenders: indices must be pairwise unique, independent of
+    // the positional check above (catches any future refactor that keeps
+    // indices non-colliding but non-positional in some other way).
+    let mut indices: Vec<u32> = result.gpus.iter().map(|d| d.index).collect();
+    indices.sort_unstable();
+    indices.dedup();
+    assert_eq!(
+        indices.len(),
+        result.gpus.len(),
+        "all device indices must be unique — a collision here means two \
+         spawned workers would register under the same worker_id"
+    );
+
+    // Restore env vars unconditionally.
+    unsafe {
+        match prior_type {
+            Some(v) => std::env::set_var("ANVILML_MOCK_DEVICE_TYPE", v),
+            None => std::env::remove_var("ANVILML_MOCK_DEVICE_TYPE"),
+        }
+        match prior_vram {
+            Some(v) => std::env::set_var("ANVILML_MOCK_VRAM_MIB", v),
+            None => std::env::remove_var("ANVILML_MOCK_VRAM_MIB"),
+        }
+        match prior_name {
+            Some(v) => std::env::set_var("ANVILML_MOCK_DEVICE_NAME", v),
+            None => std::env::remove_var("ANVILML_MOCK_DEVICE_NAME"),
+        }
+    }
+}
 ///
 /// With the mock-hardware feature and default mock caps (all false) plus CPU
 /// fallback caps (all false), the union is all false (default). This test
