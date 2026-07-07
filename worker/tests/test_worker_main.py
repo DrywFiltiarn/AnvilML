@@ -728,3 +728,117 @@ class TestNoMockGate:
             assert 'ANVILML_WORKER_MOCK' not in stripped or "exit" not in stripped, (
                 f"Mock gate pattern found: {stripped!r}"
             )
+
+
+class TestDispatchLoopPing:
+    """Tests for _dispatch_loop()'s handling of keepalive Ping messages.
+
+    Regression coverage for a gap where no task in the project ever wired
+    Pong-sending into the dispatch loop, while the Rust-side
+    KeepaliveWatchdog has been unconditionally active since Phase 8 —
+    meaning every real worker that reached Ready was killed by its own
+    supervisor shortly after, and endlessly respawned. See _dispatch_loop's
+    own doc comment for the full explanation.
+    """
+
+    def test_ping_receives_matching_pong(self, monkeypatch) -> None:
+        """A received Ping is answered with a Pong carrying the same seq.
+
+        Feeds _dispatch_loop() a single Ping message via a mocked
+        ipc.recv_message(), then a recv failure to cleanly break the loop,
+        and asserts ipc.send_event() was called with exactly
+        {"_type": "Pong", "seq": <same seq>} — no other transformation.
+
+        Preconditions: worker.ipc is mockable via monkeypatch.
+        Expected output: send_event() called once with a matching Pong dict.
+        """
+        import worker.ipc as ipc
+
+        sent_events = []
+        monkeypatch.setattr(ipc, "send_event", lambda data: sent_events.append(data))
+
+        messages = iter([{"_type": "Ping", "seq": 42}])
+
+        def fake_recv_message():
+            try:
+                return next(messages)
+            except StopIteration:
+                # Break the loop cleanly, matching a real recv failure —
+                # _dispatch_loop's except-and-break path.
+                raise ConnectionError("test: no more messages")
+
+        monkeypatch.setattr(ipc, "recv_message", fake_recv_message)
+
+        worker_main._dispatch_loop()
+
+        assert sent_events == [{"_type": "Pong", "seq": 42}], (
+            f"expected exactly one matching Pong reply, got {sent_events}"
+        )
+
+    def test_multiple_pings_each_get_matching_pong(self, monkeypatch) -> None:
+        """Each Ping in a sequence gets its own correctly-matched Pong.
+
+        Feeds three Pings with distinct, non-sequential seq values and
+        asserts three Pongs are sent back, each echoing its own Ping's seq
+        in the same order — proving seq is read per-message, not cached
+        or reused from an earlier Ping.
+
+        Preconditions: worker.ipc is mockable via monkeypatch.
+        Expected output: Three Pong events, seqs [7, 3, 100] in that order.
+        """
+        import worker.ipc as ipc
+
+        sent_events = []
+        monkeypatch.setattr(ipc, "send_event", lambda data: sent_events.append(data))
+
+        messages = iter(
+            [
+                {"_type": "Ping", "seq": 7},
+                {"_type": "Ping", "seq": 3},
+                {"_type": "Ping", "seq": 100},
+            ]
+        )
+
+        def fake_recv_message():
+            try:
+                return next(messages)
+            except StopIteration:
+                raise ConnectionError("test: no more messages")
+
+        monkeypatch.setattr(ipc, "recv_message", fake_recv_message)
+
+        worker_main._dispatch_loop()
+
+        assert sent_events == [
+            {"_type": "Pong", "seq": 7},
+            {"_type": "Pong", "seq": 3},
+            {"_type": "Pong", "seq": 100},
+        ]
+
+    def test_non_ping_message_gets_no_pong(self, monkeypatch) -> None:
+        """A non-Ping message does not trigger a Pong reply.
+
+        Feeds a message of an unrelated type (sufficient to prove the type
+        check is exact) and asserts send_event() is never called.
+
+        Preconditions: worker.ipc is mockable via monkeypatch.
+        Expected output: send_event() is never called.
+        """
+        import worker.ipc as ipc
+
+        sent_events = []
+        monkeypatch.setattr(ipc, "send_event", lambda data: sent_events.append(data))
+
+        messages = iter([{"_type": "SomeOtherType", "foo": "bar"}])
+
+        def fake_recv_message():
+            try:
+                return next(messages)
+            except StopIteration:
+                raise ConnectionError("test: no more messages")
+
+        monkeypatch.setattr(ipc, "recv_message", fake_recv_message)
+
+        worker_main._dispatch_loop()
+
+        assert sent_events == [], f"expected no Pong reply, got {sent_events}"

@@ -76,12 +76,28 @@ def _import_nodes() -> list[dict]:
 
 
 def _dispatch_loop() -> None:
-    """Receive and log messages from the supervisor in a loop.
+    """Receive messages from the supervisor in a loop, answering keepalive
+    Pings; all other message types are still logged and skipped.
 
-    This is a placeholder implementation for Phase 9. Real dispatch logic
-    (routing messages to executor, handling Execute/CancelJob/etc.) is a
-    later phase. For now, every received message is logged at DEBUG level
-    and the loop continues.
+    This started as a pure placeholder for Phase 9 (log-and-continue for
+    everything). `Execute`/`CancelJob` routing to a real executor remains a
+    later phase's concern (Phase 17), correctly out of scope here.
+
+    `Ping` handling is the one exception, added here rather than deferred:
+    no task anywhere in the project's task graph ever wires a `Pong` reply
+    into this loop, on either the original placeholder or any later
+    extension — confirmed by an exhaustive search across every phase's task
+    docs, which mention `Pong` only on the Rust-receiving side (`P7-A3`'s
+    enum definition, `P8-A1`'s stress test using a simulated test-double
+    DEALER, and `keepalive.rs`'s own `handle_event()` arm). Meanwhile the
+    Rust-side `KeepaliveWatchdog` (`P8-C2`/`P8-E5`) has been unconditionally
+    active since Phase 8, sending a `Ping` immediately after `Ready` and on
+    every `watchdog_ping_interval` after that, and declaring the worker dead
+    if no matching `Pong` arrives within `watchdog_pong_timeout`. Without
+    this handler, every real (non-mock) worker that successfully reaches
+    `Ready` is unconditionally killed and endlessly respawned shortly after —
+    this was never exercised end-to-end before, since it requires a real
+    subprocess actually reaching `Ready`, which no prior phase's tests did.
 
     The loop runs indefinitely until the process is terminated by the
     supervisor or an external signal.
@@ -105,7 +121,19 @@ def _dispatch_loop() -> None:
             # shutdown instead of exiting cleanly.
             logger.error("dispatch_loop: recv failed, exiting: error=%s", exc)
             break
-        logger.debug("dispatch_loop: received message type=%s", msg.get("_type", "<unknown>"))
+
+        msg_type = msg.get("_type", "<unknown>")
+        logger.debug("dispatch_loop: received message type=%s", msg_type)
+
+        if msg_type == "Ping":
+            # Echo the sequence number back as a Pong — see this function's
+            # own doc comment for why this is handled here rather than
+            # deferred. `seq` must round-trip exactly (matched by the
+            # watchdog against the ping it sent) — no other transformation.
+            seq = msg["seq"]
+            ipc.send_event({"_type": "Pong", "seq": seq})
+            logger.debug("dispatch_loop: replied Pong seq=%s", seq)
+
 
 
 def _real_startup_sequence() -> None:
