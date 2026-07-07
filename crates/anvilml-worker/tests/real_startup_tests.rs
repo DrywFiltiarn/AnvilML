@@ -57,19 +57,26 @@ async fn test_real_subprocess_sends_ready() {
     // Construct the worker command using build_command(), then set the
     // subprocess CWD to the repo root. This is necessary because cargo test
     // runs from target/debug/deps, so relative paths like "worker/.venv"
-    // and "worker/worker_main.py" would not resolve correctly.
-    // The supervisor sets CWD to the repo root before spawning, so we match
-    // that behavior here.
+    // would not resolve correctly. The supervisor's own process (started
+    // directly from the repo root by the operator) doesn't need this —
+    // its CWD already is the repo root — but this test's host process
+    // does not, so it must be set explicitly here.
     //
-    // We also set PYTHONPATH to include the repo root, so that
-    // `import worker.ipc` (and other `worker.*` imports) resolve correctly.
-    // Without this, Python only adds the script's directory (`worker/`) to
-    // sys.path, not the repo root where the `worker` package lives.
+    // No PYTHONPATH override is needed: build_command() invokes the
+    // worker via `-m worker.worker_main`, which puts the current working
+    // directory (the repo root, set above) on sys.path — exactly where
+    // the `worker` namespace package lives. Deliberately NOT working
+    // around this manually here (e.g. via an extra PYTHONPATH env var)
+    // matters: this test exists specifically to prove the supervisor's
+    // real `spawn_worker()` path works end-to-end, so it must exercise
+    // build_command()'s actual invocation exactly as production does —
+    // an env var here would silently mask a regression of the `-m` fix
+    // in spawn.rs the same way its absence from production code
+    // previously masked the ModuleNotFoundError this fix closes.
     let repo = repo_root();
     let venv_path = repo.join("worker/.venv");
     let mut cmd = build_command(&venv_path, env);
     cmd.current_dir(&repo);
-    cmd.env("PYTHONPATH", &repo);
 
     // Spawn the worker subprocess. The subprocess will:
     // 1. Read ANVILML_IPC_PORT, ANVILML_WORKER_ID, ANVILML_DEVICE_TYPE=cpu,

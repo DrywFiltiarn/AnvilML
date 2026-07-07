@@ -3,6 +3,8 @@
 //! Provides `build_command()` to construct a configured `tokio::process::Command`
 //! and `spawn_worker()` to execute it. The interpreter path is platform-specific:
 //! `{venv_path}/bin/python3` on Unix, `{venv_path}\Scripts\python.exe` on Windows.
+//! The worker entry point is invoked as a module (`-m worker.worker_main`), not
+//! a script path — see `build_command()`'s doc comment for why.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -17,9 +19,15 @@ use anvilml_core::AnvilError;
 /// Construct and configure a `Command` to run the Python worker subprocess.
 ///
 /// The command targets the correct Python interpreter in the worker venv
-/// (platform-specific path), passes `worker/worker_main.py` as the script
-/// argument, applies all environment variables from `env`, and pipes both
-/// stdout and stderr so the supervisor can read them.
+/// (platform-specific path), runs `worker.worker_main` as a module via
+/// `-m` (not a script path — `worker` is an implicit namespace package
+/// with no `__init__.py`, and `python worker/worker_main.py` only adds
+/// the script's own directory to `sys.path`, not the repo root where the
+/// `worker` package itself lives; `-m` uses the current working directory
+/// instead, which is correct since `venv_path` is already expressed
+/// relative to that same repo root), applies all environment variables
+/// from `env`, and pipes both stdout and stderr so the supervisor can
+/// read them.
 ///
 /// This function does **not** spawn the process — it returns the configured
 /// `Command` for inspection in tests or for spawning by `spawn_worker()`.
@@ -44,9 +52,20 @@ pub fn build_command(venv_path: &Path, env: HashMap<String, String>) -> Command 
 
     let mut cmd = Command::new(interpreter);
 
-    // The worker script is always `worker/worker_main.py` relative to the
-    // current working directory — the supervisor sets CWD before spawning.
-    cmd.arg("worker/worker_main.py");
+    // Run as a module (`-m worker.worker_main`), not a plain script path.
+    // `worker` has no `__init__.py` — it's an implicit namespace package —
+    // and `worker_main.py` does `import worker.ipc`, `import worker.nodes`,
+    // etc. `python worker/worker_main.py` puts only the script's own
+    // directory (`worker/`) on sys.path[0], so `worker` itself is never
+    // importable and this fails with `ModuleNotFoundError: No module named
+    // 'worker'` on every real invocation. `-m` instead puts the current
+    // working directory (the repo root, which venv_path is already
+    // expressed relative to, e.g. `./worker/.venv`) on sys.path, which is
+    // exactly what's needed. Confirmed against a real venv: without this,
+    // startup fails at the `import worker.ipc` line before ever reaching
+    // the IPC connect step; with it, startup correctly proceeds past that
+    // import.
+    cmd.arg("-m").arg("worker.worker_main");
 
     // Apply all environment variables from the builder (WorkerEnv::build).
     // These include ANVILML_IPC_PORT, ANVILML_WORKER_ID, device info,

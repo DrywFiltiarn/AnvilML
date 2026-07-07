@@ -3,7 +3,7 @@
 //!
 //! All tests exercise `build_command()` (not `spawn_worker()`), since the
 //! actual `worker/worker_main.py` script does not exist until Phase 9.
-//! The tests verify interpreter path, script argument, env var injection,
+//! The tests verify interpreter path, module-invocation args, env var injection,
 //! and stdio piping configuration.
 //!
 //! Windows-specific tests (gated `#[cfg(windows)]`) exercise the `JobObjectGuard`
@@ -52,10 +52,13 @@ fn test_interpreter_path_windows() {
     let _ = cmd;
 }
 
-/// The command has exactly one argument: `worker/worker_main.py`.
+/// The command runs `worker.worker_main` as a module via `-m`.
 ///
-/// Verifies that `build_command()` sets the script argument to the
-/// expected value, ensuring the worker subprocess runs the correct module.
+/// Verifies that `build_command()` sets the module-invocation args to the
+/// expected value, ensuring the worker subprocess runs as
+/// `python -m worker.worker_main` (not `python worker/worker_main.py` —
+/// see `build_command()`'s own doc comment for why the module form is
+/// required for `worker`'s namespace-package imports to resolve).
 #[test]
 fn test_worker_script_arg() {
     let venv = Path::new("/tmp/test_venv");
