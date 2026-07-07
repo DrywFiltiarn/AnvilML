@@ -128,16 +128,17 @@
     "P13-A1",
     "P13-A2",
     "P13-A3",
-    "P13-B1"
+    "P13-B1",
+    "P13-C1"
   ],
-  "in_progress": "P13-C1",
+  "in_progress": "P13-D1",
   "plan_approved": true,
-  "current_plan": "1. **Add `JobStore` import to `main.rs`.** Add `use anvilml_registry::JobStore;` to the existing import block alongside `use anvilml_registry::create_pool;`. This is a single-line addition at line 10, after the `create_pool` import.\n\n2. **Rename `_pool` to `pool`.** The pool is currently bound to `_pool` (unused). Since the task now uses it via `JobStore::new(pool)` and `pool.clone()` for the seed loader, rename to `pool` to suppress the unused-variable warning. This is a mechanical change at line 110.\n\n3. **Construct `JobStore` and call `reset_ghost_jobs()`.** After the seed loader completes (after line 143, after the `.unwrap()` on the seed loader result, and before the `start_time = Instant::now()` capture at line 147), add:\n   ```rust\n   // Reset any stale \"ghost\" jobs left over from a previous run.\n   // Ghost jobs are those in Queued or Running state \u2014 they may have been\n   // in-flight when the server crashed or was restarted. The reset transitions\n   // them to Failed with error = \"server_restart\" so they are visible to the\n   // operator and can be retried or discarded.\n   // The pool is cloned for the JobStore; the clone is cheap (shared connection\n   // pool, not a new database connection).\n   let job_store = JobStore::new(pool.clone());\n   let ghost_count = job_store.reset_ghost_jobs().await.map_err(|e| {\n       eprintln!(\"Failed to reset ghost jobs: {e}\");\n       std::process::exit(1);\n   }).unwrap();\n   ```\n   The `reset_ghost_jobs()` method already logs `tracing::info!(count, \"ghost jobs reset to failed\")` internally when `count > 0`, so no additional logging is needed at the call site. The `map_err`/`.unwrap()` pattern matches the existing error handling style for `create_pool()` and the seed loader.\n\n4. **Verify build.** Run `cargo build -p anvilml` to confirm the change compiles. Run `cargo test --workspace --features mock-hardware` to confirm no regression.",
+  "current_plan": "1. **Read current `lib.rs`** (already done during codebase inspection). Confirm the\n   five `pub use` re-exports and four `pub mod` declarations match the expected set.\n\n2. **Verify completeness.** Compare against ANVILML_DESIGN.md \u00a712.1's module layout:\n   - `pub mod dag;` \u2192 provides `validate_graph` \u2713\n   - `pub mod ledger;` \u2192 provides `VramLedger` \u2713\n   - `pub mod queue;` \u2192 provides `JobQueue` \u2713\n   - `pub mod types;` \u2192 provides `ValidatedGraph` and `GraphError` \u2713\n   - All five `pub use` lines present \u2713\n   - No extraneous items \u2713\n\n3. **Verify 80-line cap.** `wc -l crates/anvilml-scheduler/src/lib.rs` must report \u2264 80.\n   Current count is 10 lines.\n\n4. **Run test suite.** `cargo test -p anvilml-scheduler` must exit 0. This runs the\n   three integration test files (`queue_tests.rs`, `ledger_tests.rs`, `dag_tests.rs`)\n   plus any inline tests.\n\n5. **No changes needed** if all checks pass. The `lib.rs` is already correct.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-07T10:35:48+0200",
-  "plan_approval_message_id": "1523969934399639683",
+  "last_updated": "2026-07-07T11:33:02+0200",
+  "plan_approval_message_id": "1523979738639630380",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1523969932679843931",
+  "plan_report_message_id": "1523979736747999295",
   "impl_report_message_id": null
 }
