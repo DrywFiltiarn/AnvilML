@@ -216,4 +216,59 @@ impl JobScheduler {
         // Step g: Return the job ID.
         Ok(job_id)
     }
+
+    /// Cancel a queued job by its ID.
+    ///
+    /// Delegates to the in-memory `JobQueue::cancel()` which marks the job as cancelled
+    /// (O(1) via HashSet insertion). The job remains in the queue until `pop_front()`
+    /// encounters it and discards it — this is the lazy removal that gives cancel() its
+    /// O(1) guarantee.
+    ///
+    /// Returns `Ok(true)` if the ID was newly marked as cancelled, `Ok(false)` if the
+    /// ID was already cancelled or not present in the queue. The job may have already
+    /// left the queue (e.g. if it completed or was dispatched), in which case the method
+    /// still returns `Ok(false)` — the authoritative state for terminal jobs is the
+    /// database, not the in-memory queue.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` — The job UUID to cancel.
+    ///
+    /// # Errors
+    ///
+    /// This method does not return errors; it always returns `Ok(bool)`. It is declared
+    /// as `Result<bool, AnvilError>` for API consistency with `get_job()` and to allow
+    /// future error propagation (e.g. if database cancellation logging is added).
+    #[tracing::instrument(skip(self), fields(job_id = %id))]
+    pub async fn cancel(&self, id: Uuid) -> Result<bool, AnvilError> {
+        let mut queue = self.queue.lock().await;
+        let cancelled = queue.cancel(id);
+        if cancelled {
+            tracing::info!(job_id = %id, "cancelled job in queue");
+        }
+        Ok(cancelled)
+    }
+
+    /// Look up a job by its ID from the database.
+    ///
+    /// Delegates to `JobStore::get()` which queries the `jobs` table. This is the
+    /// authoritative source for all jobs, including those that have already left the
+    /// in-memory queue (Completed, Failed, Cancelled). A job that is currently in the
+    /// queue is also queryable here since it was persisted before being enqueued.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` — The job UUID to look up.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AnvilError::Db` if the database query fails (e.g. connection error).
+    #[tracing::instrument(skip(self), fields(job_id = %id))]
+    pub async fn get_job(&self, id: Uuid) -> Result<Option<Job>, AnvilError> {
+        let job = self.job_store.get(id).await?;
+        if job.is_some() {
+            tracing::debug!(job_id = %id, "retrieved job from database");
+        }
+        Ok(job)
+    }
 }

@@ -21,6 +21,10 @@ use uuid::Uuid;
 /// the mechanism that makes `cancel()` O(1) rather than requiring an O(n)
 /// scan of the deque to remove the cancelled job.
 ///
+/// An `all_ids` set tracks every job ID currently in the queue, allowing
+/// `cancel()` to return `false` for IDs that are not present (unknown) rather
+/// than blindly inserting them into the cancelled set.
+///
 /// # Cancel semantics
 ///
 /// Calling `cancel(id)` marks the job as cancelled but does not remove it from
@@ -34,25 +38,32 @@ pub struct JobQueue {
     /// IDs of jobs that have been cancelled. A job remains in `jobs` until
     /// `pop_front()` encounters it and discards it.
     cancelled: HashSet<Uuid>,
+    /// All job IDs currently in the queue (including cancelled ones that have
+    /// not yet been discarded by `pop_front()`). Used by `cancel()` to return
+    /// `false` for unknown IDs instead of blindly inserting into the cancelled
+    /// set.
+    all_ids: HashSet<Uuid>,
 }
 
 impl JobQueue {
     /// Create a new, empty `JobQueue`.
     ///
-    /// Both the inner `VecDeque` and `HashSet` start empty.
+    /// All three collections start empty.
     pub fn new() -> Self {
         Self {
             jobs: VecDeque::new(),
             cancelled: HashSet::new(),
+            all_ids: HashSet::new(),
         }
     }
 
     /// Append a job to the back of the queue (FIFO order).
     ///
-    /// The job is added to the back of the internal `VecDeque` and will be
-    /// returned by `pop_front()` after all previously-enqueued non-cancelled
-    /// jobs have been returned.
+    /// The job is added to the back of the internal `VecDeque` and its ID is
+    /// recorded in `all_ids` so that `cancel()` can distinguish unknown IDs
+    /// from IDs that are actually in the queue.
     pub fn push(&mut self, job: Job) {
+        self.all_ids.insert(job.id);
         self.jobs.push_back(job);
     }
 
@@ -61,7 +72,8 @@ impl JobQueue {
     /// If the job at the front of the queue has been cancelled (its ID is in
     /// the `cancelled` set), it is discarded and the method continues to the
     /// next entry. This loop naturally handles runs of consecutive cancelled
-    /// entries.
+    /// entries. The job's ID is removed from `all_ids` when popped, keeping
+    /// the set in sync with the deque.
     ///
     /// Returns `None` if the queue is empty or all remaining entries are
     /// cancelled.
@@ -72,10 +84,13 @@ impl JobQueue {
             // next entry. This is the lazy removal that makes cancel() O(1).
             if self.cancelled.contains(&job_id) {
                 self.jobs.pop_front();
+                self.all_ids.remove(&job_id);
                 continue;
             }
             // Found a non-cancelled job at the front — remove and return it.
-            return Some(self.jobs.pop_front().unwrap());
+            let job = self.jobs.pop_front().unwrap();
+            self.all_ids.remove(&job.id);
+            return Some(job);
         }
         None
     }
@@ -83,10 +98,17 @@ impl JobQueue {
     /// Mark a job as cancelled by its ID.
     ///
     /// Returns `true` if the ID was newly marked (not previously in the set),
-    /// `false` if it was already cancelled. The job remains in the `VecDeque`
-    /// until `pop_front()` encounters it and discards it — cancellation is
-    /// O(1) because it only touches the hash set.
+    /// `false` if it was already cancelled or not present in the queue.
+    /// The job remains in the `VecDeque` until `pop_front()` encounters it
+    /// and discards it — cancellation is O(1) because it only touches the
+    /// hash set.
     pub fn cancel(&mut self, id: Uuid) -> bool {
+        // Only mark as cancelled if the ID is actually in the queue.
+        // This returns false for unknown IDs instead of blindly inserting
+        // them into the cancelled set.
+        if !self.all_ids.contains(&id) {
+            return false;
+        }
         self.cancelled.insert(id)
     }
 

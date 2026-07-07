@@ -4570,9 +4570,9 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 **File:** `crates/anvilml-scheduler/tests/queue_tests.rs`
 **Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-core`, `uuid`, `serde_json`, and `chrono` dev-dependencies, and the `queue` module providing `JobQueue`.
-**Tests:** Cancelling a freshly-generated UUID (not in the queue) returns `true`, confirming `HashSet::insert()` returns `true` for a newly-marked ID.
+**Tests:** Cancelling a job ID that was pushed (but not yet popped) returns `true` — the ID was in `all_ids` and newly marked in the `cancelled` set.
 **Mode:** both
-**Inputs:** Fresh `JobQueue`, `cancel(Uuid::new_v4())`.
+**Inputs:** Fresh `JobQueue`, push a job, then `cancel(job.id)`.
 **Expected output:** `true` (ID was newly marked in the cancelled set).
 **Acceptance:** `cargo test -p anvilml-scheduler --test queue_tests test_cancel_new_id_returns_true` exits 0.
 
@@ -4587,6 +4587,18 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Fresh `JobQueue`, one `Job` pushed, `cancel()` called twice on the same ID.
 **Expected output:** First `cancel()` returns `true`, second returns `false`.
 **Acceptance:** `cargo test -p anvilml-scheduler --test queue_tests test_cancel_already_cancelled_returns_false` exits 0.
+
+---
+
+## test_cancel_unknown_id_returns_false (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/queue_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-core`, `uuid`, `serde_json`, and `chrono` dev-dependencies, and the `queue` module providing `JobQueue` with the `all_ids` tracking set.
+**Tests:** Cancelling a freshly-generated UUID (not pushed to the queue) returns `false` — the ID is not in `all_ids`, so `cancel()` returns `false` instead of blindly inserting it into the `cancelled` set.
+**Mode:** both
+**Inputs:** Fresh `JobQueue`, `cancel(Uuid::new_v4())`.
+**Expected output:** `false` (ID was not in the queue).
+**Acceptance:** `cargo test -p anvilml-scheduler --test queue_tests test_cancel_unknown_id_returns_false` exits 0.
 
 ---
 
@@ -4875,3 +4887,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Same valid graph JSON submitted twice with empty `JobSettings`.
 **Expected output:** `id1 != id2`.
 **Acceptance:** `cargo test -p anvilml-scheduler --test scheduler_tests test_two_submits_get_distinct_ids` exits 0.
+
+---
+
+## test_cancel_queued_job_returns_true (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `tokio` (sync, macros), `tracing`, `chrono`, `serde_json`, `uuid` (v4), and `sqlx` dev-dependencies, and the `JobScheduler` struct with the new `cancel()` method.
+**Tests:** `cancel()` returns `Ok(true)` for a job that is currently in the in-memory queue — the job is submitted (persisted and enqueued), then cancelled, and the result confirms the ID was newly marked as cancelled.
+**Mode:** both
+**Inputs:** Valid graph JSON submitted to get a job ID, then that ID passed to `cancel()`.
+**Expected output:** `Ok(true)` — the ID was newly inserted into the cancelled HashSet.
+**Acceptance:** `cargo test -p anvilml-scheduler --test scheduler_tests test_cancel_queued_job_returns_true` exits 0.
+
+---
+
+## test_cancel_unknown_id_returns_false (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `tokio` (sync, macros), `tracing`, `chrono`, `serde_json`, `uuid` (v4), and `sqlx` dev-dependencies, and the `JobScheduler` struct with the new `cancel()` method.
+**Tests:** `cancel()` returns `Ok(false)` for a job ID that was never submitted — the ID is not in the cancelled HashSet, so the method returns false.
+**Mode:** both
+**Inputs:** A freshly-generated UUID (never submitted) passed to `cancel()`.
+**Expected output:** `Ok(false)` — the ID was not in the cancelled set.
+**Acceptance:** `cargo test -p anvilml-scheduler --test scheduler_tests test_cancel_unknown_id_returns_false` exits 0.
+
+---
+
+## test_get_job_returns_persisted_job (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `tokio` (sync, macros), `tracing`, `chrono`, `serde_json`, `uuid` (v4), and `sqlx` dev-dependencies, and the `JobScheduler` struct with the new `get_job()` method.
+**Tests:** `get_job()` returns `Ok(Some(job))` for a job that was submitted and persisted — the job is looked up by its ID and the returned job's ID matches the submitted ID.
+**Mode:** both
+**Inputs:** A valid graph JSON submitted to get a job ID, then that ID passed to `get_job()`.
+**Expected output:** `Ok(Some(job))` where `job.id == submitted_id` and `job.status == Queued`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test scheduler_tests test_get_job_returns_persisted_job` exits 0.
+
+---
+
+## test_get_job_unknown_id_returns_none (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `tokio` (sync, macros), `tracing`, `chrono`, `serde_json`, `uuid` (v4), and `sqlx` dev-dependencies, and the `JobScheduler` struct with the new `get_job()` method.
+**Tests:** `get_job()` returns `Ok(None)` for a job ID that was never submitted — no row exists in the database for that ID.
+**Mode:** both
+**Inputs:** A freshly-generated UUID (never submitted) passed to `get_job()`.
+**Expected output:** `Ok(None)` — no row in the database for that ID.
+**Acceptance:** `cargo test -p anvilml-scheduler --test scheduler_tests test_get_job_unknown_id_returns_none` exits 0.

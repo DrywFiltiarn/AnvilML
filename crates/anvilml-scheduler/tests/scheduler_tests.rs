@@ -10,6 +10,7 @@ use anvilml_core::{
 use anvilml_registry::JobStore;
 use anvilml_scheduler::JobScheduler;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use uuid::Uuid;
 
 /// Helper to create a `JobStore` backed by an in-memory SQLite pool with
 /// migrations applied.
@@ -213,4 +214,117 @@ async fn test_two_submits_get_distinct_ids() {
         .expect("second submit must succeed");
 
     assert_ne!(id1, id2, "two submissions must produce distinct UUIDs");
+}
+
+/// Test that `cancel()` returns `Ok(true)` for a job currently in the queue.
+///
+/// Populates the registry, submits a valid job (which is both persisted and
+/// enqueued), then calls `cancel()` with the returned job ID. Must return
+/// `Ok(true)` — the ID was newly marked as cancelled in the in-memory queue.
+#[tokio::test]
+async fn test_cancel_queued_job_returns_true() {
+    let store = create_job_store().await;
+    let registry = make_registry();
+    let scheduler = JobScheduler::new(store, registry);
+
+    // Submit a job — it is persisted and enqueued.
+    let job_id = scheduler
+        .submit(
+            make_valid_graph(),
+            JobSettings {
+                device_preference: None,
+            },
+        )
+        .await
+        .expect("submit must succeed");
+
+    // Cancel the job while it is still in the queue.
+    let result = scheduler
+        .cancel(job_id)
+        .await
+        .expect("cancel must not error");
+
+    assert!(result, "cancel() must return true for a job in the queue");
+}
+
+/// Test that `cancel()` returns `Ok(false)` for a job ID that was never submitted.
+///
+/// Populates the registry (so the scheduler is constructible) but never
+/// submits any job. Cancels a freshly-generated UUID that has no corresponding
+/// job in the queue. Must return `Ok(false)` — the ID was not in the
+/// cancelled set.
+#[tokio::test]
+async fn test_cancel_unknown_id_returns_false() {
+    let store = create_job_store().await;
+    let registry = make_registry();
+    let scheduler = JobScheduler::new(store, registry);
+
+    // Cancel a UUID that was never submitted.
+    let unknown_id = Uuid::new_v4();
+    let result = scheduler
+        .cancel(unknown_id)
+        .await
+        .expect("cancel must not error");
+
+    assert!(!result, "cancel() must return false for an unknown job ID");
+}
+
+/// Test that `get_job()` returns `Ok(Some(job))` for a submitted job.
+///
+/// Populates the registry, submits a valid job, then looks it up by its
+/// returned ID. Must return `Ok(Some(job))` where `job.id == submitted_id`
+/// and `job.status == Queued`. This verifies that `get_job()` correctly
+/// delegates to `JobStore::get()` and that the job was persisted.
+#[tokio::test]
+async fn test_get_job_returns_persisted_job() {
+    let store = create_job_store().await;
+    let registry = make_registry();
+    let scheduler = JobScheduler::new(store, registry);
+
+    // Submit a job — it is persisted to the database.
+    let job_id = scheduler
+        .submit(
+            make_valid_graph(),
+            JobSettings {
+                device_preference: None,
+            },
+        )
+        .await
+        .expect("submit must succeed");
+
+    // Look up the job by ID.
+    let result = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error");
+
+    assert!(
+        result.is_some(),
+        "get_job() must return Some for a persisted job"
+    );
+    let job = result.unwrap();
+    assert_eq!(job.id, job_id, "retrieved job ID must match submitted ID");
+}
+
+/// Test that `get_job()` returns `Ok(None)` for a job ID that was never submitted.
+///
+/// Populates the registry but never submits any job. Looks up a freshly-generated
+/// UUID. Must return `Ok(None)` — no row exists in the database for that ID.
+#[tokio::test]
+async fn test_get_job_unknown_id_returns_none() {
+    let store = create_job_store().await;
+    let registry = make_registry();
+    let scheduler = JobScheduler::new(store, registry);
+
+    // Look up a UUID that was never submitted.
+    let unknown_id = Uuid::new_v4();
+    let result = scheduler
+        .get_job(unknown_id)
+        .await
+        .expect("get_job must not error");
+
+    assert!(
+        result.is_none(),
+        "get_job() must return None for an unknown job ID"
+    );
 }

@@ -86,19 +86,22 @@ fn test_cancel_then_pop_front_skips() {
     );
 }
 
-/// Test that cancelling a new (previously unseen) ID returns `true`.
+/// Test that cancelling a job that was pushed (but not yet popped) returns `true`.
 ///
-/// Pushes no jobs. Cancels a freshly-generated UUID. The return value
-/// must be `true` because `HashSet::insert()` returns `true` when the
-/// key was not previously present — this is the "newly marked" signal.
+/// Pushes a job, then cancels its ID. The return value must be `true` because
+/// the ID was newly marked as cancelled — it was in `all_ids` and not yet in
+/// `cancelled`.
 #[test]
 fn test_cancel_new_id_returns_true() {
     let mut queue = JobQueue::new();
-    let new_id = Uuid::new_v4();
-    let result = queue.cancel(new_id);
+    let id = Uuid::new_v4();
+    let job = make_job(id);
+
+    queue.push(job);
+    let result = queue.cancel(id);
     assert!(
         result,
-        "Cancelling a new ID must return true (newly marked)"
+        "Cancelling a job that was pushed must return true (newly marked)"
     );
 }
 
@@ -121,6 +124,19 @@ fn test_cancel_already_cancelled_returns_false() {
         !second_cancel,
         "Second cancel of same ID must return false (already marked)"
     );
+}
+
+/// Test that cancelling an ID that was never pushed returns `false`.
+///
+/// Pushes no jobs, then cancels a freshly-generated UUID. The return value
+/// must be `false` because the ID is not in `all_ids` — it was never in the
+/// queue.
+#[test]
+fn test_cancel_unknown_id_returns_false() {
+    let mut queue = JobQueue::new();
+    let unknown_id = Uuid::new_v4();
+    let result = queue.cancel(unknown_id);
+    assert!(!result, "Cancelling an unknown ID must return false");
 }
 
 /// Test that `get()` finds a job by its UUID.
