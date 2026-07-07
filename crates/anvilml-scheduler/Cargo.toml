@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-scheduler"
-version = "0.1.13"
+version = "0.1.14"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -25,6 +25,10 @@ uuid = { version = "1.23.4", features = ["v4"] }
 # existing in any normal, release, or dependent-crate build. `cargo test`
 # activates this; nothing else does.
 anvilml-scheduler = { path = ".", features = ["test-util"] }
+# anvilml-worker with test-utils: enables WorkerHandle and WorkerPool
+# test-only methods (set_up_test_workers, spawn_all_with_spawner) so
+# integration tests can inject mock handles with controllable status.
+anvilml-worker = { path = "../anvilml-worker", features = ["test-utils"] }
 # chrono is needed for Utc::now() when constructing Job values in tests.
 chrono = "0.4"
 # sqlx for creating in-memory SQLite pools with migrations in tests.

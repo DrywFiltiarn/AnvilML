@@ -5067,3 +5067,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Valid `Job` object, empty worker pool.
 **Expected output:** `dispatch_one_test()` returns `false`, job status is Queued, `started_at` is `None`.
 **Acceptance:** `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests test_dispatch_one_no_transition_without_idle` exits 0.
+
+---
+
+## test_dispatch_one_marks_worker_busy (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `test-util` feature (self-reference in dev-dependencies). `anvilml-worker` is a dev-dependency with `test-utils` feature enabled, providing `WorkerPool::set_up_test_workers()` and `WorkerHandle`. A mock `WorkerHandle` with controllable `WorkerStatus` is constructed via `WorkerHandle::new()` and injected into an empty pool.
+**Tests:** A single idle mock worker is set up via `set_up_test_workers()`. `dispatch_one_test()` is called directly with a valid job. Verifies the worker's status is `Busy` after the call, confirming the Busy status transition is performed immediately upon worker selection.
+**Mode:** mock
+**Inputs:** Single idle mock worker, one valid job.
+**Expected output:** `handle.status().await == WorkerStatus::Busy` after dispatch_one returns.
+**Acceptance:** `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests test_dispatch_one_marks_worker_busy` exits 0.
+
+---
+
+## test_dispatch_one_busy_worker_excluded_from_next_job (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `test-util` feature. `anvilml-worker` is a dev-dependency with `test-utils` feature enabled. Two mock `WorkerHandle` instances with controllable `WorkerStatus` are constructed and injected into an empty pool.
+**Tests:** Two mock idle workers are set up. Two jobs are dispatched sequentially via `dispatch_one_test()`. Verifies each job goes to a different worker and both workers end up `Busy` — no worker was dispatched twice.
+**Mode:** mock
+**Inputs:** Two idle mock workers, two valid jobs.
+**Expected output:** Each job dispatched to a distinct worker; both workers have status `Busy`.
+**Acceptance:** `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests test_dispatch_one_busy_worker_excluded_from_next_job` exits 0.
+
+---
+
+## test_busy_worker_excluded_from_ranking (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `test-util` feature. `anvilml-worker` is a dev-dependency with `test-utils` feature enabled. Three mock workers are constructed: two Idle (one with 8192 MiB VRAM, one with 20480 MiB) and one Busy (20480 MiB VRAM).
+**Tests:** One job is dispatched. Verifies the idle worker with the most VRAM (20480 MiB) is selected — the pre-existing Busy worker is excluded from the idle list and cannot be selected. The low-VRAM Idle worker remains Idle.
+**Mode:** mock
+**Inputs:** Three workers (Idle/low VRAM, Idle/high VRAM, Busy/high VRAM), one valid job.
+**Expected output:** Job dispatched to the Idle worker with most VRAM; low-VRAM Idle remains Idle; Busy remains Busy.
+**Acceptance:** `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests test_busy_worker_excluded_from_ranking` exits 0.
+
+---
+
+## test_dispatch_one_status_busy_survives_vram_failure (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `test-util` feature. `anvilml-worker` is a dev-dependency with `test-utils` feature enabled. A single mock idle worker is set up via `set_up_test_workers()`.
+**Tests:** One job is dispatched via `dispatch_one_test()`. The dispatch returns `false` because there is no real worker to receive the transport message. Verifies the worker is still `Busy` despite the failed dispatch — confirming the status transition happens before VRAM reservation and transport send.
+**Mode:** mock
+**Inputs:** One idle mock worker, one valid job.
+**Expected output:** `dispatch_one_test()` returns `false`; worker status is `Busy`.
+**Acceptance:** `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests test_dispatch_one_status_busy_survives_vram_failure` exits 0.

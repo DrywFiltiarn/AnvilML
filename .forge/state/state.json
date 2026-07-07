@@ -133,16 +133,17 @@
     "P13-D1",
     "P14-A1",
     "P14-A2",
-    "P14-A3"
+    "P14-A3",
+    "P14-A4"
   ],
-  "in_progress": "P14-A4",
+  "in_progress": "P14-A5",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "1. **Add `set_up_test_workers()` to `WorkerPool`** in `crates/anvilml-worker/src/pool.rs`.\n   - Gate with `#[cfg(feature = \"test-utils\")]`.\n   - Signature: `pub fn set_up_test_workers(&mut self, workers: Vec<(WorkerHandle, GpuDevice)>)`\n   - Implementation: iterate the input, push `handle` into `self.handles`, push `device` into `self.devices`. This keeps handles and devices in sync (index `i` maps to device `i`), matching the invariant established in `spawn_all_impl()`.\n   - Rationale: Integration tests in `tests/` compile as a separate crate and cannot access `pub(crate)` items. The `test-utils` feature is the established pattern (used by `spawn_all_with_spawner()`).\n\n2. **Extend `dispatch_one()` in `scheduler.rs`** to mark the selected worker Busy.\n   - Insert `selected.set_status(WorkerStatus::Busy).await;` immediately after extracting `worker_id` and `device_index` (line 418 area), and before the VRAM reservation block (line 426).\n   - This is the correct insertion point: the worker is definitively selected at this point, and setting Busy before VRAM reservation ensures that if VRAM reservation fails and the dispatch returns false, the worker is still marked Busy (the status will be corrected later by the idle-restoration path in a future task).\n   - Add a DEBUG log: `tracing::debug!(worker_id = %worker_id, \"dispatch_one_worker_marked_busy\");`\n   - Rationale: `selected` is a clone of the handle from `idle_workers`, which itself is a clone of the handle from `workers.handles()`. All clones share the same `Arc<RwLock<WorkerStatus>>`, so `set_status` on the clone updates the shared lock that the pool's original handle also reads from.\n\n3. **Update `dispatch_one()` doc comment.**\n   - Remove the sentence: \"Does NOT mark the selected worker's status as `Busy` \u2014 that transition is deferred to P14-A5.\"\n   - Add a note in the \"On a successful match\" paragraph: \"Sets the worker's status to `Busy` immediately (P14-A5).\"\n\n4. **Add four new tests** in `crates/anvilml-scheduler/tests/scheduler_tests.rs`.\n   - Test 1: `test_dispatch_one_marks_worker_busy` \u2014 creates a mock idle worker via `set_up_test_workers`, calls `dispatch_one_test()`, then reads the pool's handle status and asserts it is `Busy`.\n   - Test 2: `test_dispatch_one_busy_worker_excluded_from_next_job` \u2014 creates two mock idle workers, dispatches two jobs in sequence, verifies each job goes to a distinct worker, and verifies both workers are now `Busy` (no worker was dispatched twice).\n   - Test 3: `test_busy_worker_excluded_from_ranking` \u2014 creates three workers: one Idle with low VRAM, one Idle with high VRAM, one Busy. Dispatches one job. Verifies the job goes to the high-VRAM Idle worker (the Busy one is excluded from the idle list).\n   - Test 4: `test_dispatch_one_status_busy_survives_vram_failure` \u2014 creates a mock idle worker, calls `dispatch_one_test()` with a non-existent device index to trigger VRAM reservation path. Verifies the worker status is still `Busy` even if the dispatch returns false (edge case: the status transition happens before VRAM reservation, so it persists regardless).\n\n5. **Update `Cargo.toml`** for `anvilml-scheduler`.\n   - Add `anvilml-worker = { path = \"../anvilml-worker\", features = [\"test-utils\"] }` to `[dev-dependencies]`.\n   - Bump version from `0.1.13` to `0.1.14`.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-07T16:04:52+0200",
-  "plan_approval_message_id": "1524051802994249840",
+  "last_updated": "2026-07-07T17:43:33+0200",
+  "plan_approval_message_id": "1524076737909227661",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1524051801794416892",
+  "plan_report_message_id": "1524076736478843090",
   "impl_report_message_id": null
 }

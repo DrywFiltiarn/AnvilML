@@ -230,6 +230,31 @@ impl WorkerPool {
         self.spawn_all_impl(devices, cfg, spawner).await
     }
 
+    /// Inject mock worker handles and devices into the pool for testing.
+    ///
+    /// `WorkerPool::new()` constructs an empty pool; `spawn_all()` populates
+    /// it from a device list by spawning real Python worker subprocesses,
+    /// which no test environment can do. This method lets integration tests
+    /// populate the pool with pre-constructed handles (e.g. handles whose
+    /// status is manually set to `Idle` or `Busy`) so that `dispatch_one()`
+    /// can exercise the worker-selection logic.
+    ///
+    /// The input is a list of `(WorkerHandle, GpuDevice)` pairs. Each handle
+    /// is pushed into `self.handles` and each device into `self.devices`,
+    /// preserving the invariant that `handles()[i]` corresponds to
+    /// `devices()[i]`. This matches the invariant established in
+    /// `spawn_all_impl()`.
+    ///
+    /// The pool's transport and bridge remain untouched — they were set up
+    /// by `new()`. This method only populates the handles and devices lists.
+    #[cfg(feature = "test-utils")]
+    pub fn set_up_test_workers(&mut self, workers: Vec<(WorkerHandle, GpuDevice)>) {
+        for (handle, device) in workers {
+            self.handles.push(handle);
+            self.devices.push(device);
+        }
+    }
+
     /// Shared implementation for `spawn_all()` and
     /// `spawn_all_with_spawner()` — see either's own doc comment for the
     /// full behavior. Private: not `test-utils`-gated, since it isn't

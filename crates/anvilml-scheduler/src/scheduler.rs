@@ -287,13 +287,11 @@ impl JobScheduler {
     ///    is `None`), rank all `Idle` workers by `vram_free_mib` descending
     ///    (from `workers.devices()`) and pick the top candidate.
     ///
-    /// On a successful match, reserves VRAM via the ledger, transitions the
-    /// job to `Running`, persists the updated job, sends `WorkerMessage::Execute`
-    /// to the selected worker, and returns `true`. If no `Idle` workers exist,
-    /// returns `false` without error — the job remains queued.
-    ///
-    /// Does NOT mark the selected worker's status as `Busy` — that transition
-    /// is deferred to P14-A5.
+    /// On a successful match, sets the worker's status to `Busy` immediately,
+    /// reserves VRAM via the ledger, transitions the job to `Running`, persists
+    /// the updated job, sends `WorkerMessage::Execute` to the selected worker,
+    /// and returns `true`. If no `Idle` workers exist, returns `false` without
+    /// error — the job remains queued.
     ///
     /// # Arguments
     ///
@@ -416,6 +414,19 @@ impl JobScheduler {
 
         let worker_id = selected.worker_id.clone();
         let device_index = worker_id.parse::<u32>().unwrap_or(0); // worker_id is always a valid index string
+
+        // Mark the selected worker as Busy — this prevents the same worker
+        // from being selected again in a concurrent dispatch cycle. The
+        // status transition happens before VRAM reservation so that if
+        // reservation fails, the worker is still marked Busy (the status
+        // will be corrected later by the idle-restoration path in a future
+        // task). `selected` is a clone of the handle from `idle_workers`,
+        // which itself is a clone of the handle from `workers.handles()`.
+        // All clones share the same Arc<RwLock<WorkerStatus>>, so
+        // set_status() on the clone updates the shared lock that the pool's
+        // original handle also reads from.
+        selected.set_status(WorkerStatus::Busy).await;
+        tracing::debug!(worker_id = %worker_id, "dispatch_one_worker_marked_busy");
 
         // (i) Reserve VRAM. Acquire the ledger mutex and call reserve()
         // with the device's vram_free_mib as a placeholder reservation.

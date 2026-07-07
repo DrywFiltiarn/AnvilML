@@ -946,3 +946,426 @@ async fn test_dispatch_one_no_transition_without_idle() {
         "started_at must be None (not dispatched)"
     );
 }
+
+/// Test that dispatch_one marks the selected worker's status as Busy.
+///
+/// Constructs a single idle mock worker via `set_up_test_workers()`,
+/// calls `dispatch_one_test()` directly, and verifies the worker's
+/// status is `Busy` after the call. This confirms the Busy status
+/// transition is performed immediately upon worker selection.
+#[tokio::test]
+async fn test_dispatch_one_marks_worker_busy() {
+    use anvilml_core::GpuDevice;
+    use tokio::sync::{Mutex, RwLock};
+    use tokio::task::JoinHandle;
+
+    let store = create_job_store().await;
+    let registry = make_registry();
+    let scheduler = JobScheduler::new(store, registry);
+
+    // Create a mock idle worker with a controllable status.
+    let status = Arc::new(RwLock::new(anvilml_core::types::worker::WorkerStatus::Idle));
+    let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel();
+    let (force_shutdown_tx, _force_shutdown_rx) = tokio::sync::oneshot::channel();
+    let join_handle: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>> = Arc::new(Mutex::new(None));
+    let handle = anvilml_worker::WorkerHandle::new(
+        "0".into(),
+        Arc::clone(&status),
+        Some(shutdown_tx),
+        Some(force_shutdown_tx),
+        join_handle,
+    );
+
+    let device = GpuDevice {
+        index: 0,
+        name: "Mock GPU 0".into(),
+        device_type: anvilml_core::DeviceType::Cuda,
+        vram_total_mib: 16384,
+        vram_free_mib: 16384,
+        driver_version: "550.54".into(),
+        pci_vendor_id: 0x10de,
+        pci_device_id: 0x2204,
+        arch: Some("Ada Lovelace".into()),
+        caps: anvilml_core::InferenceCaps::default(),
+        enumeration_source: anvilml_core::types::hardware::EnumerationSource::Mock,
+        capabilities_source: anvilml_core::types::hardware::CapabilitySource::DeviceTable,
+    };
+
+    // Clone the handle before moving it into the pool — we need to
+    // read the status after dispatch, and the original handle is the
+    // only one that lets us do that (clones don't have shutdown_tx).
+    let handle_for_read = handle.clone();
+
+    let mut pool = anvilml_worker::WorkerPool::new()
+        .await
+        .expect("empty pool must construct");
+    pool.set_up_test_workers(vec![(handle, device)]);
+
+    // Submit a job to get a valid Job object.
+    let job_id = scheduler
+        .submit(
+            make_valid_graph(),
+            JobSettings {
+                device_preference: None,
+            },
+        )
+        .await
+        .expect("submit must succeed");
+
+    let job = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must exist");
+
+    // Call dispatch_one_test() directly — the worker is idle, so dispatch
+    // will attempt VRAM reservation and transport send. The transport send
+    // will fail (no real worker), so dispatch_one returns false, but the
+    // worker should still be marked Busy before that failure.
+    let dispatched = scheduler.dispatch_one_test(&job, &pool).await;
+
+    // The worker must be Busy regardless of dispatch success/failure.
+    let final_status = handle_for_read.status().await;
+    assert_eq!(
+        final_status,
+        anvilml_core::types::worker::WorkerStatus::Busy,
+        "worker status must be Busy after dispatch_one, dispatched={dispatched}"
+    );
+}
+
+/// Test that two sequential dispatches select distinct workers.
+///
+/// Constructs two mock idle workers, dispatches two jobs in sequence,
+/// and verifies each job goes to a different worker and both workers
+/// end up `Busy`. This confirms no worker is dispatched twice in a
+/// single wake cycle.
+#[tokio::test]
+async fn test_dispatch_one_busy_worker_excluded_from_next_job() {
+    use anvilml_core::GpuDevice;
+    use tokio::sync::{Mutex, RwLock};
+    use tokio::task::JoinHandle;
+
+    let store = create_job_store().await;
+    let registry = make_registry();
+    let scheduler = JobScheduler::new(store, registry);
+
+    // Create two mock idle workers with controllable statuses.
+    let status_0 = Arc::new(RwLock::new(anvilml_core::types::worker::WorkerStatus::Idle));
+    let status_1 = Arc::new(RwLock::new(anvilml_core::types::worker::WorkerStatus::Idle));
+
+    let make_handle =
+        |worker_id: &str, status: Arc<RwLock<anvilml_core::types::worker::WorkerStatus>>| {
+            let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel();
+            let (force_shutdown_tx, _force_shutdown_rx) = tokio::sync::oneshot::channel();
+            let join_handle: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>> =
+                Arc::new(Mutex::new(None));
+            anvilml_worker::WorkerHandle::new(
+                worker_id.into(),
+                status,
+                Some(shutdown_tx),
+                Some(force_shutdown_tx),
+                join_handle,
+            )
+        };
+
+    let handle_0 = make_handle("0", Arc::clone(&status_0));
+    let handle_1 = make_handle("1", Arc::clone(&status_1));
+
+    let device_0 = GpuDevice {
+        index: 0,
+        name: "Mock GPU 0".into(),
+        device_type: anvilml_core::DeviceType::Cuda,
+        vram_total_mib: 16384,
+        vram_free_mib: 8192,
+        driver_version: "550.54".into(),
+        pci_vendor_id: 0x10de,
+        pci_device_id: 0x2204,
+        arch: Some("Ada Lovelace".into()),
+        caps: anvilml_core::InferenceCaps::default(),
+        enumeration_source: anvilml_core::types::hardware::EnumerationSource::Mock,
+        capabilities_source: anvilml_core::types::hardware::CapabilitySource::DeviceTable,
+    };
+    let device_1 = GpuDevice {
+        index: 1,
+        name: "Mock GPU 1".into(),
+        device_type: anvilml_core::DeviceType::Cuda,
+        vram_total_mib: 16384,
+        vram_free_mib: 16384,
+        driver_version: "550.54".into(),
+        pci_vendor_id: 0x10de,
+        pci_device_id: 0x2204,
+        arch: Some("Ada Lovelace".into()),
+        caps: anvilml_core::InferenceCaps::default(),
+        enumeration_source: anvilml_core::types::hardware::EnumerationSource::Mock,
+        capabilities_source: anvilml_core::types::hardware::CapabilitySource::DeviceTable,
+    };
+
+    let mut pool = anvilml_worker::WorkerPool::new()
+        .await
+        .expect("empty pool must construct");
+    pool.set_up_test_workers(vec![(handle_0, device_0), (handle_1, device_1)]);
+
+    // Submit and dispatch two jobs.
+    let job_1 = scheduler
+        .submit(
+            make_valid_graph(),
+            JobSettings {
+                device_preference: None,
+            },
+        )
+        .await
+        .expect("first submit must succeed");
+    let job_1 = scheduler
+        .get_job(job_1)
+        .await
+        .expect("get_job must not error")
+        .expect("job 1 must exist");
+
+    let job_2 = scheduler
+        .submit(
+            make_valid_graph(),
+            JobSettings {
+                device_preference: None,
+            },
+        )
+        .await
+        .expect("second submit must succeed");
+    let job_2 = scheduler
+        .get_job(job_2)
+        .await
+        .expect("get_job must not error")
+        .expect("job 2 must exist");
+
+    // Dispatch job 1 — first dispatch selects one of the two idle workers.
+    scheduler.dispatch_one_test(&job_1, &pool).await;
+
+    // Dispatch job 2 — the previously-selected worker is now Busy, so
+    // the second dispatch must select the other idle worker.
+    scheduler.dispatch_one_test(&job_2, &pool).await;
+
+    // Both workers must now be Busy (neither was dispatched twice).
+    let s0 = status_0.read().await;
+    let s1 = status_1.read().await;
+    assert_eq!(
+        *s0,
+        anvilml_core::types::worker::WorkerStatus::Busy,
+        "worker 0 must be Busy after being dispatched"
+    );
+    assert_eq!(
+        *s1,
+        anvilml_core::types::worker::WorkerStatus::Busy,
+        "worker 1 must be Busy after being dispatched"
+    );
+}
+
+/// Test that a Busy worker is excluded from the idle ranking.
+///
+/// Constructs three workers: two Idle (one with low VRAM, one with
+/// high VRAM) and one Busy. Dispatches one job. Verifies the job
+/// goes to the high-VRAM Idle worker — the Busy worker is excluded
+/// from the idle list and cannot be selected.
+#[tokio::test]
+async fn test_busy_worker_excluded_from_ranking() {
+    use anvilml_core::GpuDevice;
+    use tokio::sync::{Mutex, RwLock};
+    use tokio::task::JoinHandle;
+
+    let store = create_job_store().await;
+    let registry = make_registry();
+    let scheduler = JobScheduler::new(store, registry);
+
+    let make_handle = |worker_id: &str, status: anvilml_core::types::worker::WorkerStatus| {
+        let status = Arc::new(RwLock::new(status));
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel();
+        let (force_shutdown_tx, _force_shutdown_rx) = tokio::sync::oneshot::channel();
+        let join_handle: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>> =
+            Arc::new(Mutex::new(None));
+        let handle = anvilml_worker::WorkerHandle::new(
+            worker_id.into(),
+            Arc::clone(&status),
+            Some(shutdown_tx),
+            Some(force_shutdown_tx),
+            join_handle,
+        );
+        (handle, status)
+    };
+
+    // Worker 0: Idle, low VRAM.
+    let (handle_0, status_0) = make_handle("0", anvilml_core::types::worker::WorkerStatus::Idle);
+    // Worker 1: Idle, high VRAM.
+    let (handle_1, status_1) = make_handle("1", anvilml_core::types::worker::WorkerStatus::Idle);
+    // Worker 2: Busy — should be excluded from idle list.
+    let (handle_2, status_2) = make_handle("2", anvilml_core::types::worker::WorkerStatus::Busy);
+
+    let device_0 = GpuDevice {
+        index: 0,
+        name: "Mock GPU 0".into(),
+        device_type: anvilml_core::DeviceType::Cuda,
+        vram_total_mib: 16384,
+        vram_free_mib: 8192, // low VRAM
+        driver_version: "550.54".into(),
+        pci_vendor_id: 0x10de,
+        pci_device_id: 0x2204,
+        arch: Some("Ada Lovelace".into()),
+        caps: anvilml_core::InferenceCaps::default(),
+        enumeration_source: anvilml_core::types::hardware::EnumerationSource::Mock,
+        capabilities_source: anvilml_core::types::hardware::CapabilitySource::DeviceTable,
+    };
+    let device_1 = GpuDevice {
+        index: 1,
+        name: "Mock GPU 1".into(),
+        device_type: anvilml_core::DeviceType::Cuda,
+        vram_total_mib: 24576,
+        vram_free_mib: 20480, // high VRAM
+        driver_version: "550.54".into(),
+        pci_vendor_id: 0x10de,
+        pci_device_id: 0x2204,
+        arch: Some("Ada Lovelace".into()),
+        caps: anvilml_core::InferenceCaps::default(),
+        enumeration_source: anvilml_core::types::hardware::EnumerationSource::Mock,
+        capabilities_source: anvilml_core::types::hardware::CapabilitySource::DeviceTable,
+    };
+    let device_2 = GpuDevice {
+        index: 2,
+        name: "Mock GPU 2".into(),
+        device_type: anvilml_core::DeviceType::Cuda,
+        vram_total_mib: 24576,
+        vram_free_mib: 20480,
+        driver_version: "550.54".into(),
+        pci_vendor_id: 0x10de,
+        pci_device_id: 0x2204,
+        arch: Some("Ada Lovelace".into()),
+        caps: anvilml_core::InferenceCaps::default(),
+        enumeration_source: anvilml_core::types::hardware::EnumerationSource::Mock,
+        capabilities_source: anvilml_core::types::hardware::CapabilitySource::DeviceTable,
+    };
+
+    let mut pool = anvilml_worker::WorkerPool::new()
+        .await
+        .expect("empty pool must construct");
+    pool.set_up_test_workers(vec![
+        (handle_0, device_0),
+        (handle_1, device_1),
+        (handle_2, device_2),
+    ]);
+
+    // Submit and dispatch one job.
+    let job_id = scheduler
+        .submit(
+            make_valid_graph(),
+            JobSettings {
+                device_preference: None,
+            },
+        )
+        .await
+        .expect("submit must succeed");
+    let job = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must exist");
+
+    scheduler.dispatch_one_test(&job, &pool).await;
+
+    // The idle worker with the most VRAM (worker 1) should be selected.
+    // Worker 0 is still Idle (low VRAM), worker 1 should be Busy (high VRAM),
+    // worker 2 remains Busy (was already Busy).
+    assert_eq!(
+        *status_0.read().await,
+        anvilml_core::types::worker::WorkerStatus::Idle,
+        "low-VRAM idle worker must remain Idle (not selected)"
+    );
+    assert_eq!(
+        *status_1.read().await,
+        anvilml_core::types::worker::WorkerStatus::Busy,
+        "high-VRAM idle worker must be Busy (selected by ranking)"
+    );
+    assert_eq!(
+        *status_2.read().await,
+        anvilml_core::types::worker::WorkerStatus::Busy,
+        "pre-existing Busy worker must remain Busy"
+    );
+}
+
+/// Test that worker status is marked Busy even when dispatch returns false.
+///
+/// Constructs a single idle mock worker, dispatches a job, and verifies
+/// the worker is `Busy` even though the dispatch returns `false` (the
+/// transport send fails because there is no real worker). This confirms
+/// the status transition happens before VRAM reservation and transport
+/// send, so it persists regardless of later failures.
+#[tokio::test]
+async fn test_dispatch_one_status_busy_survives_vram_failure() {
+    use anvilml_core::GpuDevice;
+    use tokio::sync::{Mutex, RwLock};
+    use tokio::task::JoinHandle;
+
+    let store = create_job_store().await;
+    let registry = make_registry();
+    let scheduler = JobScheduler::new(store, registry);
+
+    let status = Arc::new(RwLock::new(anvilml_core::types::worker::WorkerStatus::Idle));
+    let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel();
+    let (force_shutdown_tx, _force_shutdown_rx) = tokio::sync::oneshot::channel();
+    let join_handle: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>> = Arc::new(Mutex::new(None));
+    let handle = anvilml_worker::WorkerHandle::new(
+        "0".into(),
+        Arc::clone(&status),
+        Some(shutdown_tx),
+        Some(force_shutdown_tx),
+        join_handle,
+    );
+
+    let device = GpuDevice {
+        index: 0,
+        name: "Mock GPU 0".into(),
+        device_type: anvilml_core::DeviceType::Cuda,
+        vram_total_mib: 16384,
+        vram_free_mib: 16384,
+        driver_version: "550.54".into(),
+        pci_vendor_id: 0x10de,
+        pci_device_id: 0x2204,
+        arch: Some("Ada Lovelace".into()),
+        caps: anvilml_core::InferenceCaps::default(),
+        enumeration_source: anvilml_core::types::hardware::EnumerationSource::Mock,
+        capabilities_source: anvilml_core::types::hardware::CapabilitySource::DeviceTable,
+    };
+
+    // Clone the handle before moving it into the pool — we need to
+    // read the status after dispatch, and the original handle is the
+    // only one that lets us do that (clones don't have shutdown_tx).
+    let handle_for_read = handle.clone();
+
+    let mut pool = anvilml_worker::WorkerPool::new()
+        .await
+        .expect("empty pool must construct");
+    pool.set_up_test_workers(vec![(handle, device)]);
+
+    // Submit and dispatch a job.
+    let job_id = scheduler
+        .submit(
+            make_valid_graph(),
+            JobSettings {
+                device_preference: None,
+            },
+        )
+        .await
+        .expect("submit must succeed");
+    let job = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must exist");
+
+    let dispatched = scheduler.dispatch_one_test(&job, &pool).await;
+
+    // Dispatch returns false (no real worker to receive the message),
+    // but the worker must still be marked Busy — the status transition
+    // happens before the transport send that fails.
+    assert!(!dispatched, "dispatch must return false (no real worker)");
+    assert_eq!(
+        handle_for_read.status().await,
+        anvilml_core::types::worker::WorkerStatus::Busy,
+        "worker must be Busy even when dispatch returns false"
+    );
+}
