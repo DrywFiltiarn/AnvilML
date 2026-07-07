@@ -136,16 +136,17 @@
     "P14-A3",
     "P14-A4",
     "P14-A5",
-    "P14-B1"
+    "P14-B1",
+    "P14-C1"
   ],
-  "in_progress": "P14-C1",
+  "in_progress": "P14-C2",
   "plan_approved": true,
-  "current_plan": "1. **Add `sqlx` dependency to `crates/anvilml-server/Cargo.toml`.**\n   Add `sqlx = { version = \"0.9.0\", features = [\"sqlite\", \"runtime-tokio\", \"migrate\", \"chrono\"] }` under `[dependencies]`. This makes `sqlx::SqlitePool` importable for the new `db` field type. The feature set matches `anvilml-registry`'s own `sqlx` declaration for consistency.\n\n2. **Add dev-dependencies for test construction.**\n   Add `chrono = { version = \"0.4\", features = [\"serde\"] }` and `uuid = { version = \"1.23\", features = [\"v4\"] }` under `[dev-dependencies]`. These are needed because constructing a `JobScheduler` in tests requires `JobStore` (which needs a `SqlitePool`) and `JobSettings` (which uses `uuid::Uuid` internally). The `chrono` crate is needed because `JobStore::new()` takes a `SqlitePool` and `JobScheduler::new()` is called in test setup.\n\n3. **Extend `AppState` struct in `state.rs`.**\n   Add three fields to the existing struct:\n   ```rust\n   pub scheduler: Arc<JobScheduler>,\n   pub workers: Arc<WorkerPool>,\n   pub db: SqlitePool,\n   ```\n   Update the `use` block to import `JobScheduler` from `anvilml_scheduler`, `WorkerPool` from `anvilml_worker`, and `SqlitePool` from `sqlx`. Add `///` doc comments for each new field explaining what it owns and its role in the server architecture. The field order follows the pattern: config-like fields first, then subsystem fields (`scheduler`, `workers`, `db`), then the existing `node_registry` and `start_time` at the end.\n\n4. **Write \u22653 new integration tests in `state_tests.rs`.**\n   - `test_app_state_with_new_fields`: Constructs `AppState` with all six fields (the three pre-existing + three new). Uses `JobScheduler::new()` with a minimal `JobStore` backed by an in-memory SQLite pool, `WorkerPool::new()` via `#[tokio::test]` (async), and a minimal `SqlitePool`. Verifies all fields are accessible. This test uses `#[tokio::main]` to provide the async runtime for `WorkerPool::new()`.\n   - `test_app_state_clone_preserves_all_fields`: Constructs `AppState`, clones it, then asserts that all six fields on the clone are accessible and that the `Arc`-wrapped fields share the same underlying allocation (same technique as the existing `test_app_state_clone_shares_node_registry` test).\n   - `test_app_state_scheduler_arc_sharing`: Registers a node type via the original state's `node_registry`, then reads through the cloned state's `node_registry` to verify the scheduler's shared `Arc<NodeTypeRegistry>` is visible through both clones (this tests the Arc-sharing of the scheduler's internal registry, building on the existing test pattern).\n\n5. **Bump `anvilml-server` crate version.**\n   Update `crates/anvilml-server/Cargo.toml` `[package] version` from `0.1.4` to `0.1.5`. Per `ENVIRONMENT.md \u00a712`, only the patch version (Z) changes.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-07T21:59:03+0200",
-  "plan_approval_message_id": "1524142676952223954",
+  "last_updated": "2026-07-07T22:43:32+0200",
+  "plan_approval_message_id": "1524153826699907327",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1524142674511270082",
+  "plan_report_message_id": "1524153825299267584",
   "impl_report_message_id": null
 }

@@ -162,28 +162,78 @@ async fn main() {
         })
         .unwrap();
 
-    // Capture process-start instant once, before binding, so the health
-    // handler returns a real elapsed-time measurement.
-    let start_time = Instant::now();
+    // Detect all hardware devices (GPU/CPU) using the loaded config.
+    // The mock-hardware feature replaces real detectors with MockDetector,
+    // which returns synthetic device info driven by ANVILML_MOCK_* env vars.
+    // On Linux/Windows, real detectors (Vulkan, DXGI, sysfs) enumerate
+    // actual GPUs; CPU detection always returns one CPU device as fallback.
+    let hw_info = detect_all_devices(&config)
+        .await
+        .map_err(|e| {
+            eprintln!("Failed to detect hardware devices: {e}");
+            std::process::exit(1);
+        })
+        .unwrap();
+
+    // Log the detected devices for operator visibility.
+    // device_count is the number of GPUs/CPU detected; MockDetector
+    // returns 1 device (mock GPU) when mock-hardware is active.
+    tracing::info!(
+        device_count = hw_info.gpus.len(),
+        "hardware devices detected"
+    );
+
+    // Construct the worker pool (empty), spawn workers for each device,
+    // then wrap in Arc for sharing with AppState and the dispatch loop.
+    // WorkerPool::new() binds a RouterTransport and spawns the bridge;
+    // spawn_all() populates the pool with one ManagedWorker per device.
+    // Use a distinct name from the `pool` SqlitePool to avoid shadowing.
+    let mut worker_pool = WorkerPool::new()
+        .await
+        .expect("WorkerPool::new() must succeed at startup");
+
+    // Spawn a Python worker subprocess for each detected device.
+    // Each worker connects to the RouterTransport's DEALER socket,
+    // registers itself, and enters the message dispatch loop.
+    // With mock-hardware: spawns mock workers (no real Python interpreter).
+    // Without mock-hardware: spawns real Python workers that import torch.
+    worker_pool
+        .spawn_all(&hw_info.gpus, &config)
+        .await
+        .expect("WorkerPool::spawn_all() must succeed at startup");
+
+    // Log worker count for operator visibility.
+    tracing::info!(
+        worker_count = worker_pool.handles().len(),
+        "workers spawned"
+    );
+
+    let workers = Arc::new(worker_pool);
 
     // Create the node registry — it will be shared between the AppState
     // and the scheduler, then populated when Python workers send Ready.
     let node_registry = Arc::new(NodeTypeRegistry::new());
 
-    // Construct the job scheduler with the database pool. The scheduler
-    // owns the in-memory job queue and dispatch loop; it uses the shared
-    // `pool` for job persistence via `JobStore`.
+    // Construct the job scheduler with the database pool.
+    // The scheduler owns the in-memory job queue and dispatch loop;
+    // it uses the shared `pool` (SqlitePool) for job persistence via `JobStore`.
     let job_store = JobStore::new(pool.clone());
     let scheduler = Arc::new(JobScheduler::new(job_store, Arc::clone(&node_registry)));
 
-    // Construct an empty worker pool — binds a RouterTransport and spawns
-    // the bridge. Workers are spawned later by `spawn_all()` when device
-    // metadata is available.
-    let workers = Arc::new(
-        WorkerPool::new()
-            .await
-            .expect("WorkerPool::new() must succeed at startup"),
-    );
+    // Start the dispatch loop as a background tokio task.
+    // The loop wakes on submit() notification, pops queued jobs,
+    // selects idle workers, and dispatches Execute messages.
+    // Returns a JoinHandle — we discard it since the scheduler
+    // lives for the lifetime of the process (held in AppState).
+    // start_dispatch_loop consumes Arc<Self>, so we clone the Arc
+    // first — the clone is cheap (just an atomic ref-count bump).
+    let _dispatch_handle = Arc::clone(&scheduler).start_dispatch_loop(Arc::clone(&workers));
+
+    tracing::info!("dispatch loop started");
+
+    // Capture process-start instant once, before binding, so the health
+    // handler returns a real elapsed-time measurement.
+    let start_time = Instant::now();
 
     // Construct `AppState` with the loaded config, a fresh empty node
     // registry (populated later when the Python worker sends Ready),
