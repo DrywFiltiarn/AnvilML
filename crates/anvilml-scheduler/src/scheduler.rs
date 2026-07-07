@@ -26,6 +26,7 @@ use anvilml_registry::JobStore;
 use chrono::Utc;
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify};
+use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::{JobQueue, VramLedger, validate_graph};
@@ -44,7 +45,6 @@ use crate::{JobQueue, VramLedger, validate_graph};
 /// would block the Tokio runtime thread. The `Arc` on `job_store` and `node_registry`
 /// allows sharing between the scheduler and other subsystems without interior
 /// mutability at this level.
-#[allow(dead_code)] // `ledger` is used by the dispatch loop (P14-A3), not yet implemented.
 pub struct JobScheduler {
     /// In-memory FIFO queue of jobs awaiting dispatch.
     ///
@@ -59,6 +59,7 @@ pub struct JobScheduler {
     /// Protected by `tokio::sync::Mutex` for the same reason as `queue`:
     /// async-safe access when the dispatch loop (later phase) needs to
     /// reserve/release VRAM across `.await` points.
+    #[allow(dead_code)] // Used by the dispatch loop in P14-A4.
     ledger: Mutex<VramLedger>,
 
     /// Database-backed job persistence layer.
@@ -270,5 +271,104 @@ impl JobScheduler {
             tracing::debug!(job_id = %id, "retrieved job from database");
         }
         Ok(job)
+    }
+
+    /// Attempt to dispatch a single job to an idle worker.
+    ///
+    /// For this task (P14-A3), always returns `false` — no worker selection
+    /// logic exists yet. The real selection algorithm (device preference then
+    /// VRAM ranking) is implemented in P14-A4, which replaces this stub.
+    ///
+    /// # Arguments
+    ///
+    /// * `job` — The job to attempt dispatching.
+    /// * `workers` — The worker pool, used for future worker selection.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the job was dispatched to a worker, `false` otherwise.
+    /// For this task, always returns `false`.
+    #[allow(dead_code)] // Stub: real dispatch logic arrives in P14-A4.
+    async fn dispatch_one(&self, _job: &Job, _workers: &anvilml_worker::WorkerPool) -> bool {
+        // P14-A3 stub: always return false — no worker selection yet.
+        // The real algorithm (device_preference then VRAM ranking) is
+        // implemented in P14-A4 and replaces this body.
+        // defers_to: P14-A4 — stub dispatch_one always returns false;
+        // real worker selection arrives in P14-A4
+        false
+    }
+
+    /// Start the dispatch loop as a background tokio task.
+    ///
+    /// The loop waits on `dispatch_notify` (woken by `submit()` via
+    /// `notify_one()`), then iterates the queue front-to-back, calling
+    /// `dispatch_one()` for each job. On each wake, it processes jobs
+    /// until the queue is empty or no idle workers are available.
+    ///
+    /// The loop runs indefinitely until the `JobScheduler` is dropped.
+    /// It must not block the async runtime — all operations inside the
+    /// loop body are async (queue lock, dispatch_one).
+    ///
+    /// # Arguments
+    ///
+    /// * `workers` — The worker pool, passed to `dispatch_one()` for
+    ///   worker selection.
+    ///
+    /// # Returns
+    ///
+    /// A `JoinHandle<()>` for the spawned task. The caller should store
+    /// this handle and await it during shutdown.
+    #[tracing::instrument(skip(self, workers), fields(workers_count = workers.handles().len()))]
+    pub fn start_dispatch_loop(
+        self: Arc<Self>,
+        workers: Arc<anvilml_worker::WorkerPool>,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            loop {
+                // Wait for notification. notified() is cheap (no lock) and
+                // works on Arc<Notify> — multiple callers can share the same
+                // Notify without contention.
+                self.dispatch_notify.notified().await;
+                tracing::debug!("dispatch_loop_wake");
+
+                // Collect all queued jobs while holding the lock briefly,
+                // then release the lock before dispatching. This prevents
+                // holding the queue mutex across await points in dispatch_one(),
+                // which would deadlock if dispatch_one() ever acquires the
+                // same mutex (e.g. P14-A4's VRAM ledger reservation).
+                let jobs: Vec<Job> = {
+                    let mut queue = self.queue.lock().await;
+                    let mut jobs = Vec::new();
+                    while let Some(job) = queue.pop_front() {
+                        jobs.push(job);
+                    }
+                    jobs
+                };
+
+                // Dispatch each collected job without holding the queue lock.
+                // If any job fails to dispatch (P14-A3 stub always returns
+                // false), push the remaining un-dispatched jobs back to the
+                // queue and wait for the next notification.
+                let mut dispatched_count = 0;
+                for job in &jobs {
+                    let dispatched = self.dispatch_one(job, &workers).await;
+                    if dispatched {
+                        dispatched_count += 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                // Push any un-dispatched jobs back to the queue. For P14-A3's
+                // stub, dispatched_count is always 0, so all jobs are pushed
+                // back. The dispatch loop then waits on notified() again.
+                if dispatched_count < jobs.len() {
+                    let mut queue = self.queue.lock().await;
+                    for job in jobs.into_iter().skip(dispatched_count) {
+                        queue.push(job);
+                    }
+                }
+            }
+        })
     }
 }

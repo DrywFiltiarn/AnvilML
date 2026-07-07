@@ -4935,3 +4935,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** A freshly-generated UUID (never submitted) passed to `get_job()`.
 **Expected output:** `Ok(None)` — no row in the database for that ID.
 **Acceptance:** `cargo test -p anvilml-scheduler --test scheduler_tests test_get_job_unknown_id_returns_none` exits 0.
+
+---
+
+## test_dispatch_loop_returns_join_handle (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `tokio` (rt, sync, macros), `tracing`, `chrono`, `serde_json`, `uuid` (v4), and `sqlx` dev-dependencies, and the `JobScheduler` struct with the new `start_dispatch_loop()` method. Uses `anvilml_worker::WorkerPool::new()` to construct an empty pool.
+**Tests:** `start_dispatch_loop()` returns a `JoinHandle` that doesn't immediately finish — the loop task is alive and waiting on `dispatch_notify.notified()`.
+**Mode:** both
+**Inputs:** `JobScheduler::new()` with an empty `WorkerPool`.
+**Expected output:** `handle.is_finished()` is `false` after a 50ms yield.
+**Acceptance:** `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests test_dispatch_loop_returns_join_handle` exits 0.
+
+---
+
+## test_submit_wakes_dispatch_loop (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `tokio` (rt, sync, macros), `tracing`, `chrono`, `serde_json`, `uuid` (v4), and `sqlx` dev-dependencies, and the `JobScheduler` struct with the new `start_dispatch_loop()` method. Uses `anvilml_worker::WorkerPool::new()` to construct an empty pool.
+**Tests:** `submit()`'s `notify_one()` wakes the dispatch loop — the loop survives the wake without panicking and the job remains in the database.
+**Mode:** both
+**Inputs:** A valid graph JSON submitted after starting the dispatch loop.
+**Expected output:** `handle.is_finished()` is `false` after 200ms; `get_job()` returns `Some(job)`.
+**Acceptance:** `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests test_submit_wakes_dispatch_loop` exits 0.
+
+---
+
+## test_dispatch_loop_survives_multiple_wakes (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `tokio` (rt, sync, macros), `tracing`, `chrono`, `serde_json`, `uuid` (v4), and `sqlx` dev-dependencies, and the `JobScheduler` struct with the new `start_dispatch_loop()` method. Uses `anvilml_worker::WorkerPool::new()` to construct an empty pool.
+**Tests:** The dispatch loop survives 3 consecutive submit-triggered wakes without panicking — all three jobs remain persisted in the database.
+**Mode:** both
+**Inputs:** Three valid graph JSON submissions, each separated by a 50ms yield.
+**Expected output:** `handle.is_finished()` is `false` after 200ms; all three jobs are retrievable via `get_job()`.
+**Acceptance:** `cargo test -p anvilml-scheduler --features mock-hardware --test scheduler_tests test_dispatch_loop_survives_multiple_wakes` exits 0.

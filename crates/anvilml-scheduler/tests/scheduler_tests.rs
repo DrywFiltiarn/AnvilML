@@ -328,3 +328,154 @@ async fn test_get_job_unknown_id_returns_none() {
         "get_job() must return None for an unknown job ID"
     );
 }
+
+/// Test that `start_dispatch_loop()` returns a `JoinHandle` that doesn't
+/// immediately finish.
+///
+/// Constructs a `JobScheduler`, calls `start_dispatch_loop()` with an empty
+/// `WorkerPool`, and asserts the returned `JoinHandle` is still alive (hasn't
+/// completed) after a brief yield. This proves the loop task is running and
+/// waiting on `dispatch_notify.notified()`.
+#[tokio::test]
+async fn test_dispatch_loop_returns_join_handle() {
+    let store = create_job_store().await;
+    let registry = make_registry();
+    let scheduler = JobScheduler::new(store, registry);
+    let workers = anvilml_worker::WorkerPool::new()
+        .await
+        .expect("empty pool must construct");
+    let workers = Arc::new(workers);
+
+    let handle = Arc::new(scheduler).start_dispatch_loop(Arc::clone(&workers));
+
+    // Yield to let the task reach the notified().await wait point.
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // The handle should still be alive — it's waiting on notified().await.
+    // is_finished() returns false while the task is still running.
+    assert!(
+        !handle.is_finished(),
+        "dispatch loop handle must still be alive after construction"
+    );
+
+    // Clean up: abort the handle to prevent the task from running forever.
+    handle.abort();
+}
+
+/// Test that `submit()` wakes the dispatch loop.
+///
+/// Constructs a `JobScheduler`, starts the dispatch loop, then submits a job.
+/// The dispatch loop's `dispatch_notify` must be notified by `submit()`'s
+/// `notify_one()` call. We verify the loop survives the wake without panicking
+/// and the job remains in the database.
+#[tokio::test]
+async fn test_submit_wakes_dispatch_loop() {
+    let store = create_job_store().await;
+    let registry = make_registry();
+    let scheduler = JobScheduler::new(store, registry);
+    let workers = anvilml_worker::WorkerPool::new()
+        .await
+        .expect("empty pool must construct");
+    let workers = Arc::new(workers);
+
+    // Wrap in Arc — required by start_dispatch_loop's self: Arc<Self> receiver.
+    let scheduler = Arc::new(scheduler);
+
+    // Clone the Arc for start_dispatch_loop (takes self: Arc<Self>).
+    let handle = scheduler.clone().start_dispatch_loop(Arc::clone(&workers));
+
+    // Submit a job — this calls dispatch_notify.notify_one().
+    let job_id = scheduler
+        .submit(
+            make_valid_graph(),
+            JobSettings {
+                device_preference: None,
+            },
+        )
+        .await
+        .expect("submit must succeed");
+
+    // Give the dispatch loop time to wake, pop the job, attempt dispatch
+    // (which returns false), and push it back.
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+    // The dispatch loop must still be alive — it survived the submit wake.
+    assert!(
+        !handle.is_finished(),
+        "dispatch loop must survive a submit wake"
+    );
+
+    // The job is still in the database (persisted by submit).
+    let result = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error");
+    assert!(result.is_some(), "job must still be in database");
+
+    // Clean up.
+    handle.abort();
+}
+
+/// Test that the dispatch loop survives multiple wake cycles without
+/// panicking.
+///
+/// Starts the dispatch loop, then submits three jobs sequentially.
+/// Each submit wakes the loop. The loop must not panic or exit on any
+/// of the three wakes — it should simply pop each job, attempt dispatch
+/// (always returns false), push it back, and wait for the next wake.
+#[tokio::test]
+async fn test_dispatch_loop_survives_multiple_wakes() {
+    let store = create_job_store().await;
+    let registry = make_registry();
+    let scheduler = JobScheduler::new(store, registry);
+    let workers = anvilml_worker::WorkerPool::new()
+        .await
+        .expect("empty pool must construct");
+    let workers = Arc::new(workers);
+
+    // Wrap in Arc — required by start_dispatch_loop's self: Arc<Self> receiver.
+    let scheduler = Arc::new(scheduler);
+
+    // Clone the Arc for start_dispatch_loop (takes self: Arc<Self>).
+    let handle = scheduler.clone().start_dispatch_loop(Arc::clone(&workers));
+
+    // Collect job IDs for later verification.
+    let mut job_ids = Vec::new();
+
+    // Submit three jobs sequentially, each waking the dispatch loop.
+    for _i in 0..3 {
+        let job_id = scheduler
+            .submit(
+                make_valid_graph(),
+                JobSettings {
+                    device_preference: None,
+                },
+            )
+            .await
+            .expect("submit must succeed");
+        job_ids.push(job_id);
+
+        // Brief yield between submissions to let the loop process.
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+
+    // After all submissions, verify the loop is still alive.
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+    assert!(
+        !handle.is_finished(),
+        "dispatch loop must survive 3 consecutive wakes without panicking"
+    );
+
+    // All three jobs should still be in the database.
+    for job_id in &job_ids {
+        let result = scheduler
+            .get_job(*job_id)
+            .await
+            .expect("get_job must not error");
+        assert!(result.is_some(), "job {:?} must be in database", job_id);
+    }
+
+    // Clean up.
+    handle.abort();
+}
