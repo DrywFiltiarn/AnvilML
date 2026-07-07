@@ -33,6 +33,30 @@ use uuid::Uuid;
 
 use crate::{JobQueue, VramLedger, validate_graph};
 
+/// The outcome of a single `dispatch_one()` attempt.
+///
+/// Distinguishing these three cases (rather than a bare `bool`) matters for
+/// two reasons: (1) only `NoIdleWorkers` is a legitimate reason for
+/// `start_dispatch_loop()` to stop iterating a wake cycle's queued jobs early
+/// per `ANVILML_DESIGN.md §12.5` — `Failed` must not block subsequent jobs
+/// that have their own idle worker available; and (2) `Failed` implies a
+/// worker was tentatively marked `Busy` and has since been reverted to
+/// `Idle`, which callers rely on to know the worker is immediately eligible
+/// for re-selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchOutcome {
+    /// The job was successfully sent to a worker and is now `Running`.
+    Dispatched,
+    /// No `Idle` worker was available. The job remains queued unchanged;
+    /// no worker status was touched.
+    NoIdleWorkers,
+    /// A worker was selected, but persistence or the IPC send failed after
+    /// the worker was marked `Busy`. The VRAM reservation was released and
+    /// the worker's status was reverted to `Idle` before returning. The job
+    /// remains queued for retry on a later wake.
+    Failed,
+}
+
 /// The central async dispatcher for generation jobs.
 ///
 /// `JobScheduler` owns:
@@ -290,8 +314,22 @@ impl JobScheduler {
     /// On a successful match, sets the worker's status to `Busy` immediately,
     /// reserves VRAM via the ledger, transitions the job to `Running`, persists
     /// the updated job, sends `WorkerMessage::Execute` to the selected worker,
-    /// and returns `true`. If no `Idle` workers exist, returns `false` without
-    /// error — the job remains queued.
+    /// and returns `DispatchOutcome::Dispatched`.
+    ///
+    /// If persistence or the IPC send fails *after* the worker was marked
+    /// `Busy`, the VRAM reservation and the worker's `Busy` status are both
+    /// rolled back to `Idle` before returning `DispatchOutcome::Failed` — the
+    /// `Execute` message was never durably delivered in that case, so no
+    /// terminal `WorkerEvent` will ever arrive to trigger the normal
+    /// completion-time `Idle` restoration (a later phase's concern). Without
+    /// this rollback the worker would be stranded `Busy` indefinitely.
+    ///
+    /// The IPC-send-failure path additionally reverts the job's *database*
+    /// record back to `Queued` — step (iii)'s persist already wrote
+    /// `Running` before step (iv)'s send failed, and the caller re-enqueues
+    /// the original (still-`Queued`) `Job` on any `Failed` outcome, so
+    /// without this second write `get_job()` (DB-authoritative) would
+    /// disagree with the in-memory queue about the job's own status.
     ///
     /// # Arguments
     ///
@@ -301,10 +339,28 @@ impl JobScheduler {
     ///
     /// # Returns
     ///
-    /// `true` if the job was dispatched to a worker, `false` if no idle
-    /// workers were available (job remains queued).
+    /// A `(DispatchOutcome, Option<String>)` pair. The second element is the
+    /// selected worker's `worker_id` whenever a selection was made
+    /// (`Dispatched` or `Failed`), and `None` for `NoIdleWorkers` (no
+    /// selection ever happens). This is exposed primarily for the
+    /// `test-util`-gated selection-observability test hook — production
+    /// callers only need the outcome.
+    ///
+    /// * `DispatchOutcome::Dispatched` — the job was sent to a worker.
+    /// * `DispatchOutcome::NoIdleWorkers` — no `Idle` worker exists; the job
+    ///   remains queued. Per `§12.5`, this is the only condition under which
+    ///   the dispatch loop should stop attempting further jobs in a wake cycle,
+    ///   since every subsequent job would fail identically.
+    /// * `DispatchOutcome::Failed` — a selection was made but persistence or
+    ///   IPC send failed; the job remains queued and the worker is `Idle`
+    ///   again. This is unrelated to idle-worker availability, so the caller
+    ///   must keep attempting subsequent jobs in the same wake cycle.
     #[tracing::instrument(skip(self, job, workers), fields(job_id = %job.id))]
-    async fn dispatch_one(&self, job: &Job, workers: &anvilml_worker::WorkerPool) -> bool {
+    async fn dispatch_one(
+        &self,
+        job: &Job,
+        workers: &anvilml_worker::WorkerPool,
+    ) -> (DispatchOutcome, Option<String>) {
         // Step 1: Collect all idle workers with their handle references.
         // Iterate handles and call status() on each — this acquires a read
         // lock on the shared status, which is async because the lock is
@@ -317,11 +373,13 @@ impl JobScheduler {
             }
         }
 
-        // If no idle workers exist, return false — the job stays queued.
-        // This is not an error condition per the design doc.
+        // If no idle workers exist, return NoIdleWorkers — the job stays
+        // queued. This is not an error condition per the design doc, and is
+        // the one outcome that legitimately stops the caller's iteration for
+        // this wake cycle.
         if idle_workers.is_empty() {
             tracing::debug!("dispatch_one_no_idle_workers");
-            return false;
+            return (DispatchOutcome::NoIdleWorkers, None);
         }
 
         tracing::debug!(idle_count = idle_workers.len(), "dispatch_one_idle_workers");
@@ -476,7 +534,17 @@ impl JobScheduler {
                 let mut ledger = self.ledger.lock().await;
                 ledger.release(device_index, vram_to_reserve);
             }
-            return false;
+            // Revert the worker's status to Idle. The Execute message was
+            // never sent (we failed before reaching step (iv)), so no
+            // terminal WorkerEvent will ever arrive for this job to trigger
+            // the normal completion-time Idle restoration — without this,
+            // the worker would be stranded Busy indefinitely.
+            selected.set_status(WorkerStatus::Idle).await;
+            tracing::warn!(
+                worker_id = %worker_id,
+                "dispatch_one_worker_reverted_idle_after_upsert_failure"
+            );
+            return (DispatchOutcome::Failed, Some(worker_id));
         }
 
         // (iv) Send WorkerMessage::Execute to the selected worker.
@@ -502,7 +570,49 @@ impl JobScheduler {
                 let mut ledger = self.ledger.lock().await;
                 ledger.release(device_index, vram_to_reserve);
             }
-            return false;
+            // Revert the worker's status to Idle for the same reason as the
+            // upsert-failure branch above: the message was never delivered,
+            // so nothing else will ever restore this worker to Idle.
+            //
+            // Note: a send failure may also indicate the worker process has
+            // actually died, in which case Phase 8's own crash-detection
+            // path (the child process wait future, §19.4) will independently
+            // observe the exit and transition the worker to Dead, superseding
+            // this Idle write. The two are not mutually exclusive — reverting
+            // to Idle here is always safe in the meantime, since a genuinely
+            // dead worker will never be selected successfully regardless of
+            // the status recorded here (its Ready/handshake state is what the
+            // pool actually depends on for a subsequent respawn).
+            selected.set_status(WorkerStatus::Idle).await;
+            tracing::warn!(
+                worker_id = %worker_id,
+                "dispatch_one_worker_reverted_idle_after_send_failure"
+            );
+
+            // Revert the job's DB record too. Step (iii)'s upsert already
+            // wrote status=Running, worker_id, and started_at *before* this
+            // send attempt failed — left as-is, the database would disagree
+            // with the in-memory queue (the caller re-enqueues the original,
+            // still-Queued `job` parameter on a Failed outcome) about this
+            // job's status. get_job() is documented as DB-authoritative
+            // (P14-A2), so that mismatch would surface directly to
+            // GET /v1/jobs/:id. Best-effort: if this second upsert also
+            // fails, the mismatch is logged but not retried here — the next
+            // successful dispatch attempt for this job will overwrite it
+            // with a consistent Running record anyway.
+            let mut reverted = job.clone();
+            reverted.status = JobStatus::Queued;
+            reverted.worker_id = None;
+            reverted.started_at = None;
+            if let Err(e2) = self.job_store.upsert(&reverted).await {
+                tracing::error!(
+                    job_id = %reverted.id,
+                    error = %e2,
+                    "dispatch_one_failed_to_revert_db_status_after_send_failure"
+                );
+            }
+
+            return (DispatchOutcome::Failed, Some(worker_id));
         }
 
         tracing::info!(
@@ -511,15 +621,19 @@ impl JobScheduler {
             "dispatched job to worker"
         );
 
-        true
+        (DispatchOutcome::Dispatched, Some(worker_id))
     }
 
     /// Start the dispatch loop as a background tokio task.
     ///
     /// The loop waits on `dispatch_notify` (woken by `submit()` via
     /// `notify_one()`), then iterates the queue front-to-back, calling
-    /// `dispatch_one()` for each job. On each wake, it processes jobs
-    /// until the queue is empty or no idle workers are available.
+    /// `dispatch_one()` for each job. On each wake, it processes jobs until
+    /// the queue is empty or `dispatch_one()` reports `NoIdleWorkers`. A
+    /// `Failed` outcome (persistence or IPC error) requeues only that job
+    /// and continues to the next one in the same cycle — per `§12.5`,
+    /// idle-worker exhaustion is the only condition that legitimately
+    /// applies to every remaining job.
     ///
     /// The loop runs indefinitely until the `JobScheduler` is dropped.
     /// It must not block the async runtime — all operations inside the
@@ -562,25 +676,39 @@ impl JobScheduler {
                 };
 
                 // Dispatch each collected job without holding the queue lock.
-                // If any job fails to dispatch (P14-A3 stub always returns
-                // false), push the remaining un-dispatched jobs back to the
-                // queue and wait for the next notification.
-                let mut dispatched_count = 0;
-                for job in &jobs {
-                    let dispatched = self.dispatch_one(job, &workers).await;
-                    if dispatched {
-                        dispatched_count += 1;
-                    } else {
-                        break;
+                // Only DispatchOutcome::NoIdleWorkers is a reason to stop
+                // early per §12.5 — every remaining job would fail
+                // identically since idle-worker availability can't improve
+                // mid-iteration. DispatchOutcome::Failed (a persistence or
+                // IPC error, unrelated to idle-worker availability) must NOT
+                // block subsequent jobs that have their own idle worker
+                // available; that job is simply requeued and iteration
+                // continues.
+                let mut requeue: Vec<Job> = Vec::new();
+                let mut jobs_iter = jobs.into_iter();
+                while let Some(job) = jobs_iter.next() {
+                    let (outcome, _worker_id) = self.dispatch_one(&job, &workers).await;
+                    match outcome {
+                        DispatchOutcome::Dispatched => {}
+                        DispatchOutcome::Failed => {
+                            requeue.push(job);
+                        }
+                        DispatchOutcome::NoIdleWorkers => {
+                            requeue.push(job);
+                            // Every remaining job in this cycle would also
+                            // see zero idle workers, so requeue the rest
+                            // unattempted and stop.
+                            requeue.extend(jobs_iter);
+                            break;
+                        }
                     }
                 }
 
-                // Push any un-dispatched jobs back to the queue. For P14-A3's
-                // stub, dispatched_count is always 0, so all jobs are pushed
-                // back. The dispatch loop then waits on notified() again.
-                if dispatched_count < jobs.len() {
+                // Push any un-dispatched jobs back to the queue. The dispatch
+                // loop then waits on notified() again.
+                if !requeue.is_empty() {
                     let mut queue = self.queue.lock().await;
-                    for job in jobs.into_iter().skip(dispatched_count) {
+                    for job in requeue {
                         queue.push(job);
                     }
                 }
@@ -588,7 +716,9 @@ impl JobScheduler {
         })
     }
 
-    /// Test helper: expose `dispatch_one()` for integration tests.
+    /// Test helper: expose `dispatch_one()` for integration tests as a
+    /// `bool`, preserving the original P14-A4/A5 test suite's assertions
+    /// unchanged (`true` iff `DispatchOutcome::Dispatched`).
     ///
     /// `dispatch_one()` is private (not `pub`), so tests in the `tests/`
     /// directory (compiled as a separate crate) cannot call it directly.
@@ -596,6 +726,41 @@ impl JobScheduler {
     /// existing pattern for test-only public methods in this crate.
     #[cfg(feature = "test-util")]
     pub async fn dispatch_one_test(&self, job: &Job, workers: &anvilml_worker::WorkerPool) -> bool {
+        matches!(
+            self.dispatch_one(job, workers).await.0,
+            DispatchOutcome::Dispatched
+        )
+    }
+
+    /// Test helper: expose `dispatch_one()`'s full `DispatchOutcome` for
+    /// tests that need to distinguish `Failed` from `NoIdleWorkers` (unlike
+    /// `dispatch_one_test()`, which collapses both to `false`).
+    #[cfg(feature = "test-util")]
+    pub async fn dispatch_one_outcome_test(
+        &self,
+        job: &Job,
+        workers: &anvilml_worker::WorkerPool,
+    ) -> DispatchOutcome {
+        self.dispatch_one(job, workers).await.0
+    }
+
+    /// Test helper: expose both the outcome *and* the selected worker's
+    /// `worker_id`, when a selection was made.
+    ///
+    /// Exists because this test harness has no real IPC peer for
+    /// `set_up_test_workers()`-constructed handles, so `transport().send()`
+    /// always fails and the (correctly) reverted `Idle` status can no longer
+    /// be used to infer *which* worker a selection algorithm picked, the way
+    /// earlier tests relied on before the send-failure revert was added.
+    /// This gives selection-logic tests (VRAM ranking, device-preference
+    /// matching, exclusion of already-Busy workers) a way to assert on the
+    /// selection itself, independent of the post-selection revert.
+    #[cfg(feature = "test-util")]
+    pub async fn dispatch_one_selection_test(
+        &self,
+        job: &Job,
+        workers: &anvilml_worker::WorkerPool,
+    ) -> (DispatchOutcome, Option<String>) {
         self.dispatch_one(job, workers).await
     }
 }

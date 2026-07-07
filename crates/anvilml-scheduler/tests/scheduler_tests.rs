@@ -947,14 +947,16 @@ async fn test_dispatch_one_no_transition_without_idle() {
     );
 }
 
-/// Test that dispatch_one marks the selected worker's status as Busy.
+/// Test that the `dispatch_one_test()` bool wrapper correctly collapses a
+/// `Failed` outcome to `false`, and that the worker ends up `Idle`.
 ///
-/// Constructs a single idle mock worker via `set_up_test_workers()`,
-/// calls `dispatch_one_test()` directly, and verifies the worker's
-/// status is `Busy` after the call. This confirms the Busy status
-/// transition is performed immediately upon worker selection.
+/// Constructs a single idle mock worker via `set_up_test_workers()`, calls
+/// the bool-returning `dispatch_one_test()` convenience wrapper (as opposed
+/// to `dispatch_one_outcome_test()`, exercised by the dedicated Failed/Idle
+/// regression test above), and verifies both `false` and the reverted
+/// `Idle` status.
 #[tokio::test]
-async fn test_dispatch_one_marks_worker_busy() {
+async fn test_dispatch_one_test_wrapper_collapses_failed_to_false() {
     use anvilml_core::GpuDevice;
     use tokio::sync::{Mutex, RwLock};
     use tokio::task::JoinHandle;
@@ -1018,29 +1020,37 @@ async fn test_dispatch_one_marks_worker_busy() {
         .expect("get_job must not error")
         .expect("job must exist");
 
-    // Call dispatch_one_test() directly — the worker is idle, so dispatch
-    // will attempt VRAM reservation and transport send. The transport send
-    // will fail (no real worker), so dispatch_one returns false, but the
-    // worker should still be marked Busy before that failure.
+    // Call the bool-returning dispatch_one_test() wrapper — the worker is
+    // idle, so dispatch attempts VRAM reservation and transport send. The
+    // send fails (no real worker listening), so this must collapse to
+    // `false` via matches!(_, DispatchOutcome::Dispatched).
     let dispatched = scheduler.dispatch_one_test(&job, &pool).await;
+    assert!(
+        !dispatched,
+        "dispatch_one_test() must return false when the send fails"
+    );
 
-    // The worker must be Busy regardless of dispatch success/failure.
+    // The worker must end back at Idle, not stranded Busy — see
+    // test_dispatch_one_reverts_worker_idle_after_send_failure for the
+    // dedicated regression test using the outcome-enum helper.
     let final_status = handle_for_read.status().await;
     assert_eq!(
         final_status,
-        anvilml_core::types::worker::WorkerStatus::Busy,
-        "worker status must be Busy after dispatch_one, dispatched={dispatched}"
+        anvilml_core::types::worker::WorkerStatus::Idle,
+        "worker status must be reverted to Idle after the failed send"
     );
 }
 
-/// Test that two sequential dispatches select distinct workers.
+/// Test that VRAM ranking selection is deterministic across independent
+/// dispatch attempts, and that both workers end up `Idle` (not stranded
+/// `Busy`) after their sends fail.
 ///
-/// Constructs two mock idle workers, dispatches two jobs in sequence,
-/// and verifies each job goes to a different worker and both workers
-/// end up `Busy`. This confirms no worker is dispatched twice in a
-/// single wake cycle.
+/// See the in-body comment for exactly what this test can and cannot prove
+/// in a harness with no real IPC peer to receive a successful send — true
+/// cross-job Busy-exclusion within a single wake cycle is a success-path
+/// property, verified elsewhere and end-to-end by Phase 14's Runnable Proof.
 #[tokio::test]
-async fn test_dispatch_one_busy_worker_excluded_from_next_job() {
+async fn test_ranking_selection_deterministic_and_workers_end_idle() {
     use anvilml_core::GpuDevice;
     use tokio::sync::{Mutex, RwLock};
     use tokio::task::JoinHandle;
@@ -1136,26 +1146,51 @@ async fn test_dispatch_one_busy_worker_excluded_from_next_job() {
         .expect("get_job must not error")
         .expect("job 2 must exist");
 
-    // Dispatch job 1 — first dispatch selects one of the two idle workers.
-    scheduler.dispatch_one_test(&job_1, &pool).await;
+    // NOTE on what this test can and cannot prove in this harness: since
+    // set_up_test_workers() has no real IPC peer, transport().send() always
+    // fails, and dispatch_one now correctly reverts the selected worker to
+    // Idle before returning (the bug fixed alongside this test). That means
+    // job_1's dispatch fully completes — selection through revert — before
+    // job_2's dispatch_one call even begins, so both calls independently
+    // observe a fully-Idle worker set. Real cross-job exclusion within a
+    // single wake cycle depends on Busy surviving between two dispatch_one
+    // calls, which only happens on the success path (no revert) — that
+    // structural guarantee (Busy is set unconditionally before any fallible
+    // await, and only reverted on Failed) is what test_dispatch_one_test_wrapper_collapses_failed_to_false
+    // and test_dispatch_one_reverts_worker_idle_after_send_failure verify
+    // directly; true end-to-end exclusion against a real worker is proven
+    // by Phase 14's Runnable Proof (P14-E1). What this test verifies here
+    // is that ranking selection is itself deterministic and correct: given
+    // an identical idle set, both dispatches must select the same top-VRAM
+    // worker ("1").
+    let (outcome_1, selected_1) = scheduler.dispatch_one_selection_test(&job_1, &pool).await;
+    let (outcome_2, selected_2) = scheduler.dispatch_one_selection_test(&job_2, &pool).await;
 
-    // Dispatch job 2 — the previously-selected worker is now Busy, so
-    // the second dispatch must select the other idle worker.
-    scheduler.dispatch_one_test(&job_2, &pool).await;
+    assert_eq!(
+        outcome_1,
+        anvilml_scheduler::scheduler::DispatchOutcome::Failed
+    );
+    assert_eq!(
+        outcome_2,
+        anvilml_scheduler::scheduler::DispatchOutcome::Failed
+    );
+    assert_eq!(
+        selected_1.as_deref(),
+        Some("1"),
+        "job 1 must select the higher-VRAM worker (id \"1\")"
+    );
+    assert_eq!(
+        selected_2.as_deref(),
+        Some("1"),
+        "job 2 independently selects the same top-VRAM worker, since \
+         worker \"1\" reverted to Idle after job 1's failed send"
+    );
 
-    // Both workers must now be Busy (neither was dispatched twice).
+    // Both workers must be back at Idle — neither is stranded Busy.
     let s0 = status_0.read().await;
     let s1 = status_1.read().await;
-    assert_eq!(
-        *s0,
-        anvilml_core::types::worker::WorkerStatus::Busy,
-        "worker 0 must be Busy after being dispatched"
-    );
-    assert_eq!(
-        *s1,
-        anvilml_core::types::worker::WorkerStatus::Busy,
-        "worker 1 must be Busy after being dispatched"
-    );
+    assert_eq!(*s0, anvilml_core::types::worker::WorkerStatus::Idle);
+    assert_eq!(*s1, anvilml_core::types::worker::WorkerStatus::Idle);
 }
 
 /// Test that a Busy worker is excluded from the idle ranking.
@@ -1265,37 +1300,53 @@ async fn test_busy_worker_excluded_from_ranking() {
         .expect("get_job must not error")
         .expect("job must exist");
 
-    scheduler.dispatch_one_test(&job, &pool).await;
+    let (_outcome, selected) = scheduler.dispatch_one_selection_test(&job, &pool).await;
 
-    // The idle worker with the most VRAM (worker 1) should be selected.
-    // Worker 0 is still Idle (low VRAM), worker 1 should be Busy (high VRAM),
-    // worker 2 remains Busy (was already Busy).
+    // The idle worker with the most VRAM (worker 1) must be the one
+    // selected by ranking — proven directly via the selection hook, since
+    // (as of the dispatch_one send-failure fix) worker 1's status reverts
+    // to Idle once its send fails and can no longer be used to infer which
+    // worker was chosen.
+    assert_eq!(
+        selected.as_deref(),
+        Some("1"),
+        "high-VRAM idle worker (id \"1\") must be the one ranking selects"
+    );
+
+    // Worker 0 (low-VRAM, was never selected) must remain untouched Idle.
     assert_eq!(
         *status_0.read().await,
         anvilml_core::types::worker::WorkerStatus::Idle,
         "low-VRAM idle worker must remain Idle (not selected)"
     );
+    // Worker 1 (selected, then reverted after its send failed) ends Idle.
     assert_eq!(
         *status_1.read().await,
-        anvilml_core::types::worker::WorkerStatus::Busy,
-        "high-VRAM idle worker must be Busy (selected by ranking)"
+        anvilml_core::types::worker::WorkerStatus::Idle,
+        "selected worker must be reverted to Idle after its send fails"
     );
+    // Worker 2 (pre-existing Busy, excluded from the idle candidate list
+    // entirely — never touched by dispatch_one at all) remains Busy.
     assert_eq!(
         *status_2.read().await,
         anvilml_core::types::worker::WorkerStatus::Busy,
-        "pre-existing Busy worker must remain Busy"
+        "pre-existing Busy worker must remain Busy (never a candidate)"
     );
 }
 
-/// Test that worker status is marked Busy even when dispatch returns false.
+/// Test that worker status is reverted to Idle after a send failure.
 ///
 /// Constructs a single idle mock worker, dispatches a job, and verifies
-/// the worker is `Busy` even though the dispatch returns `false` (the
-/// transport send fails because there is no real worker). This confirms
-/// the status transition happens before VRAM reservation and transport
-/// send, so it persists regardless of later failures.
+/// the transport send fails (there is no real worker listening), that
+/// `dispatch_one` reports `DispatchOutcome::Failed` (not conflated with
+/// `NoIdleWorkers`), and — critically — that the worker's status ends up
+/// back at `Idle`, not stranded `Busy`. Before this was fixed, a transient
+/// dispatch failure here permanently removed the worker from the pool: no
+/// terminal `WorkerEvent` would ever arrive to trigger the normal
+/// completion-time `Idle` restoration, since the `Execute` message was
+/// never actually delivered.
 #[tokio::test]
-async fn test_dispatch_one_status_busy_survives_vram_failure() {
+async fn test_dispatch_one_reverts_worker_idle_after_send_failure() {
     use anvilml_core::GpuDevice;
     use tokio::sync::{Mutex, RwLock};
     use tokio::task::JoinHandle;
@@ -1357,15 +1408,39 @@ async fn test_dispatch_one_status_busy_survives_vram_failure() {
         .expect("get_job must not error")
         .expect("job must exist");
 
-    let dispatched = scheduler.dispatch_one_test(&job, &pool).await;
+    let outcome = scheduler.dispatch_one_outcome_test(&job, &pool).await;
 
-    // Dispatch returns false (no real worker to receive the message),
-    // but the worker must still be marked Busy — the status transition
-    // happens before the transport send that fails.
-    assert!(!dispatched, "dispatch must return false (no real worker)");
+    // The send fails (no real worker listening), which must be reported as
+    // Failed — distinct from NoIdleWorkers, since an idle worker genuinely
+    // was available and selected.
+    assert_eq!(
+        outcome,
+        anvilml_scheduler::scheduler::DispatchOutcome::Failed,
+        "send failure must report Failed, not NoIdleWorkers"
+    );
+
+    // The worker must be back to Idle, not stranded Busy.
     assert_eq!(
         handle_for_read.status().await,
-        anvilml_core::types::worker::WorkerStatus::Busy,
-        "worker must be Busy even when dispatch returns false"
+        anvilml_core::types::worker::WorkerStatus::Idle,
+        "worker must be reverted to Idle after a failed dispatch attempt"
+    );
+
+    // The job's DB record must agree with the in-memory queue: still
+    // Queued, not left at Running from the persist that happened just
+    // before the send failure.
+    let reloaded = scheduler
+        .get_job(job.id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must still exist");
+    assert_eq!(
+        reloaded.status,
+        anvilml_core::JobStatus::Queued,
+        "job's DB record must be reverted to Queued after send failure"
+    );
+    assert!(
+        reloaded.worker_id.is_none(),
+        "worker_id must be cleared on revert"
     );
 }
