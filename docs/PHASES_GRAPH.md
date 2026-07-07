@@ -266,6 +266,8 @@ P900 Spec-Drift & Logging Retrofit  — inserted between P6 and P7 via `prereqs`
 
 **Wired in:** `JobStore::reset_ghost_jobs()` is wired in this same phase via `P13-C1` — no gap. Note this is the **second** independent call site that constructs a `SqlitePool` via `create_pool()` (the first being `P900-A6`'s retrofit into the same `main.rs`, landing earlier in execution order since it's gated to land before Phase 7) — both call sites are expected to coexist or be consolidated when `P14-C1` later adds a persistent `db: SqlitePool` field to `AppState`; this is noted as a consolidation point, not a defect, since both calls are individually correct and idempotent (migrations are a no-op on an already-migrated database).
 
+**Doc-drift finding, closed:** `ANVILML_DESIGN.md §12.1`'s module-layout comment previously described `queue.rs` as "sorted by priority+created_at." No task ever authored priority-ordering logic, and `JobSettings` (`P3-A1`) has no `priority` field — `P13-A2`'s `JobQueue` is, and was always intended to be, a plain FIFO. Confirmed with the project owner that priority override is not required. Fixed by correcting the `§12.1` comment to "insertion order only"; no code change needed since `P13-A2`'s implementation already matched the intended (FIFO-only) behavior — only the design doc was stale.
+
 ---
 
 ### Phase 14 — Dispatch & Execute

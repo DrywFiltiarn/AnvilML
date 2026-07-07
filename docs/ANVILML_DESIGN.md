@@ -1840,7 +1840,7 @@ allocated memory.
 anvilml-scheduler/src/
 ├── lib.rs          # re-exports JobScheduler and public types; ≤ 80 lines
 ├── scheduler.rs    # JobScheduler: owns queue, ledger; dispatch loop
-├── queue.rs        # JobQueue: FIFO with O(1) cancel; sorted by priority+created_at
+├── queue.rs        # JobQueue: FIFO with O(1) cancel, insertion order only
 ├── ledger.rs       # VramLedger: per-device VRAM accounting
 ├── dag.rs          # GraphValidator: validate_graph() — collect-all-errors mode
 ├── types.rs        # ValidatedGraph newtype; GraphError enum
