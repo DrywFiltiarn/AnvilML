@@ -1444,3 +1444,176 @@ async fn test_dispatch_one_reverts_worker_idle_after_send_failure() {
         "worker_id must be cleared on revert"
     );
 }
+
+/// Test `dispatch_one`'s genuine success path — `DispatchOutcome::Dispatched`
+/// — against a real DEALER peer, rather than the always-fails-with-no-real-peer
+/// path every other `set_up_test_workers()`-based test in this file exercises.
+///
+/// Binds the pool's real `RouterTransport`, connects a `zeromq::DealerSocket`
+/// to it with `peer_identity` set to the same `worker_id` ("0") used by the
+/// mock `WorkerHandle`, then dispatches a job. This follows the exact
+/// ROUTER/DEALER loopback pattern already proven in
+/// `anvilml-ipc/tests/stress_test.rs` — no future phase's work is required
+/// for this; the transport has supported it since Phase 8.
+///
+/// Verifies: the outcome is `Dispatched` (not `Failed`); the worker's status
+/// stays `Busy` (no revert — this is `P14-A5`'s actual acceptance criterion,
+/// untested elsewhere in this file since every other idle-worker scenario
+/// goes through the send-failure path); the DB record shows `Running` with
+/// `worker_id` and `started_at` populated; and the DEALER peer actually
+/// receives a correctly-addressed `Execute` message for the right job.
+#[tokio::test]
+async fn test_dispatch_one_dispatched_via_real_dealer_peer() {
+    use anvilml_core::GpuDevice;
+    use bytes::Bytes;
+    use tokio::sync::{Mutex, RwLock};
+    use tokio::task::JoinHandle;
+    use tokio::time::timeout;
+    use zeromq::prelude::*;
+    use zeromq::util::PeerIdentity;
+    use zeromq::{DealerSocket, SocketOptions, ZmqMessage};
+
+    let store = create_job_store().await;
+    let registry = make_registry();
+    let scheduler = JobScheduler::new(store, registry);
+
+    let mut pool = anvilml_worker::WorkerPool::new()
+        .await
+        .expect("empty pool must construct");
+
+    // Grab the pool's real bound ROUTER port before injecting the mock
+    // handle — set_up_test_workers() only replaces the handle list, not
+    // the transport, so the same real RouterTransport dispatch_one() will
+    // use is already live here.
+    let router_port = pool.transport().port;
+
+    // Connect a real DEALER peer with identity "0", matching the mock
+    // WorkerHandle's worker_id below. Without this connection, ROUTER has
+    // no route for worker_id "0" and send() fails — this is exactly what
+    // every other test in this file relies on (see their docs); this test
+    // is the one place that connection genuinely exists.
+    let dealer_task: JoinHandle<ZmqMessage> = tokio::spawn(async move {
+        let mut opts = SocketOptions::default();
+        opts.peer_identity(PeerIdentity::try_from(Bytes::from("0")).expect("valid identity"));
+        let mut dealer = DealerSocket::with_options(opts);
+        dealer
+            .connect(&format!("tcp://127.0.0.1:{router_port}"))
+            .await
+            .expect("DEALER connect should succeed");
+
+        // Receive exactly one message: the Execute the dispatch attempt
+        // below sends. DEALER frames are [delimiter, payload] (ROUTER
+        // strips its own identity-routing frame on the way out).
+        timeout(std::time::Duration::from_secs(5), dealer.recv())
+            .await
+            .expect("DEALER recv should complete within 5s")
+            .expect("DEALER recv should not error")
+    });
+
+    // Give the DEALER time to connect and register with the ROUTER before
+    // dispatch_one() attempts to send — same 100ms margin stress_test.rs
+    // uses for the same reason.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let status = Arc::new(RwLock::new(anvilml_core::types::worker::WorkerStatus::Idle));
+    let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel();
+    let (force_shutdown_tx, _force_shutdown_rx) = tokio::sync::oneshot::channel();
+    let join_handle: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>> = Arc::new(Mutex::new(None));
+    let handle = anvilml_worker::WorkerHandle::new(
+        "0".into(),
+        Arc::clone(&status),
+        Some(shutdown_tx),
+        Some(force_shutdown_tx),
+        join_handle,
+    );
+    let handle_for_read = handle.clone();
+
+    let device = GpuDevice {
+        index: 0,
+        name: "Mock GPU 0".into(),
+        device_type: anvilml_core::DeviceType::Cuda,
+        vram_total_mib: 16384,
+        vram_free_mib: 16384,
+        driver_version: "550.54".into(),
+        pci_vendor_id: 0x10de,
+        pci_device_id: 0x2204,
+        arch: Some("Ada Lovelace".into()),
+        caps: anvilml_core::InferenceCaps::default(),
+        enumeration_source: anvilml_core::types::hardware::EnumerationSource::Mock,
+        capabilities_source: anvilml_core::types::hardware::CapabilitySource::DeviceTable,
+    };
+
+    pool.set_up_test_workers(vec![(handle, device)]);
+
+    let job_id = scheduler
+        .submit(
+            make_valid_graph(),
+            JobSettings {
+                device_preference: None,
+            },
+        )
+        .await
+        .expect("submit must succeed");
+    let job = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must exist");
+
+    let (outcome, selected) = scheduler.dispatch_one_selection_test(&job, &pool).await;
+
+    assert_eq!(
+        outcome,
+        anvilml_scheduler::scheduler::DispatchOutcome::Dispatched,
+        "dispatch must succeed with a real, connected DEALER peer"
+    );
+    assert_eq!(selected.as_deref(), Some("0"));
+
+    // The worker must stay Busy — no revert on the success path.
+    assert_eq!(
+        handle_for_read.status().await,
+        anvilml_core::types::worker::WorkerStatus::Busy,
+        "worker must remain Busy after a genuinely successful dispatch"
+    );
+
+    // The DB record must show Running with worker_id and started_at set.
+    let reloaded = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must exist");
+    assert_eq!(reloaded.status, anvilml_core::JobStatus::Running);
+    assert_eq!(reloaded.worker_id.as_deref(), Some("0"));
+    assert!(reloaded.started_at.is_some());
+
+    // The DEALER peer must have actually received the Execute message,
+    // addressed to the right job. DEALER-side frames are [delimiter,
+    // payload] — ROUTER's outgoing send() consumed frame 0 (worker_id)
+    // itself for routing and never puts it on the wire to the peer; see
+    // RouterTransport::recv()'s own doc comment for the ROUTER-receiving
+    // side of this same frame-count convention. Payload is always the
+    // last frame, matching that same code's extraction pattern.
+    let received = dealer_task
+        .await
+        .expect("dealer task must not panic/be cancelled");
+    let frames = received.into_vec();
+    assert!(
+        frames.len() >= 2,
+        "expected at least 2 frames (delimiter, payload), got {}",
+        frames.len()
+    );
+    let payload = &frames[frames.len() - 1];
+    let decoded: anvilml_ipc::WorkerMessage =
+        rmp_serde::from_slice(payload).expect("payload must decode as WorkerMessage");
+    match decoded {
+        anvilml_ipc::WorkerMessage::Execute {
+            job_id: received_job_id,
+            device_index,
+            ..
+        } => {
+            assert_eq!(received_job_id, job_id);
+            assert_eq!(device_index, 0);
+        }
+        other => panic!("expected WorkerMessage::Execute, got {other:?}"),
+    }
+}
