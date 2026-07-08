@@ -5,8 +5,18 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-# Forwards through anvilml-scheduler → anvilml-hardware/mock-hardware.
-mock-hardware = ["anvilml-scheduler/mock-hardware"]
+# Forwards to anvilml-scheduler (→ anvilml-hardware/mock-hardware) AND
+# anvilml-worker/mock-hardware. Both are needed: anvilml-worker declares
+# its own separate `mock-hardware` Cargo feature (not the same flag as
+# anvilml-hardware's, despite the shared name — Cargo features are
+# per-package) and gates its own real-vs-mock worker spawn decision on it
+# in `pool.rs`. Before this fix, `cargo build --features mock-hardware`
+# at this crate never reached that flag, so workers always attempted
+# real-hardware startup regardless of this feature — masked in practice
+# only by the pre-existing `ANVILML_FORCE_WORKER_MOCK` runtime escape
+# hatch. Found and worked around (not fixed) during `P14-E1`; fixed here.
+# See docs/PHASES_GRAPH.md's Known Wiring Gaps Closed table.
+mock-hardware = ["anvilml-scheduler/mock-hardware", "anvilml-worker/mock-hardware"]
 
 [dependencies]
 anvilml-core = { path = "../crates/anvilml-core" }

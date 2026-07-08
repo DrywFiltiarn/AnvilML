@@ -359,7 +359,7 @@ JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: applica
   | python3 -c "import sys,json;print(json.load(sys.stdin)['job_id'])")
 sleep 3
 curl -s "http://127.0.0.1:8488/v1/jobs/$JOB_ID" \
-  | python3 -c "import sys,json; assert json.load(sys.stdin)['status']=='Completed'"
+  | python3 -c "import sys,json; assert json.load(sys.stdin)['status']=='completed'"
 # -> exits 0
 kill %1
 ```
@@ -374,7 +374,7 @@ $resp = Invoke-WebRequest -Uri http://127.0.0.1:8488/v1/jobs -Method Post -Body 
 $jobId = ($resp.Content | ConvertFrom-Json).job_id
 Start-Sleep -Seconds 3
 $job = Invoke-WebRequest -Uri "http://127.0.0.1:8488/v1/jobs/$jobId" -UseBasicParsing
-if ((($job.Content | ConvertFrom-Json).status) -ne "Completed") { throw "job did not complete" }
+if ((($job.Content | ConvertFrom-Json).status) -ne "completed") { throw "job did not complete" }
 # -> no exception thrown
 Stop-Process -Id $proc.Id
 ```
@@ -700,7 +700,7 @@ sleep 5
 HASH=$(curl -s "http://127.0.0.1:8488/v1/jobs/$JOB_ID" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
-assert d['status']=='Completed'
+assert d['status']=='completed'
 print(d.get('artifact_hash') or d.get('result',{}).get('artifact_hash'))
 ")
 curl -s -o saved_proof.png "http://127.0.0.1:8488/v1/artifacts/$HASH"
@@ -736,7 +736,7 @@ $resp = Invoke-WebRequest -Uri http://127.0.0.1:8488/v1/jobs -Method Post -Body 
 $jobId = ($resp.Content | ConvertFrom-Json).job_id
 Start-Sleep -Seconds 5
 $job = (Invoke-WebRequest -Uri "http://127.0.0.1:8488/v1/jobs/$jobId" -UseBasicParsing).Content | ConvertFrom-Json
-if ($job.status -ne "Completed") { throw "job did not complete" }
+if ($job.status -ne "completed") { throw "job did not complete" }
 $hash = $job.artifact_hash
 Invoke-WebRequest -Uri "http://127.0.0.1:8488/v1/artifacts/$hash" -OutFile saved_proof.png
 Add-Type -AssemblyName System.Drawing
@@ -784,7 +784,7 @@ sleep 5
 HASH=$(curl -s "http://127.0.0.1:8488/v1/jobs/$JOB_ID" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
-assert d['status']=='Completed'
+assert d['status']=='completed'
 print(d.get('artifact_hash') or d.get('result',{}).get('artifact_hash'))
 ")
 curl -s -o saved_proof.png "http://127.0.0.1:8488/v1/artifacts/$HASH"
@@ -822,7 +822,7 @@ $resp = Invoke-WebRequest -Uri http://127.0.0.1:8488/v1/jobs -Method Post -Body 
 $jobId = ($resp.Content | ConvertFrom-Json).job_id
 Start-Sleep -Seconds 5
 $job = (Invoke-WebRequest -Uri "http://127.0.0.1:8488/v1/jobs/$jobId" -UseBasicParsing).Content | ConvertFrom-Json
-if ($job.status -ne "Completed") { throw "job did not complete" }
+if ($job.status -ne "completed") { throw "job did not complete" }
 $hash = $job.artifact_hash
 Invoke-WebRequest -Uri "http://127.0.0.1:8488/v1/artifacts/$hash" -OutFile saved_proof.png
 Add-Type -AssemblyName System.Drawing
@@ -872,7 +872,7 @@ sleep 5
 HASH=$(curl -s "http://127.0.0.1:8488/v1/jobs/$JOB_ID" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
-assert d['status']=='Completed'
+assert d['status']=='completed'
 print(d.get('artifact_hash') or d.get('result',{}).get('artifact_hash'))
 ")
 curl -s -o saved_proof.png "http://127.0.0.1:8488/v1/artifacts/$HASH"
@@ -911,7 +911,7 @@ $resp = Invoke-WebRequest -Uri http://127.0.0.1:8488/v1/jobs -Method Post -Body 
 $jobId = ($resp.Content | ConvertFrom-Json).job_id
 Start-Sleep -Seconds 5
 $job = (Invoke-WebRequest -Uri "http://127.0.0.1:8488/v1/jobs/$jobId" -UseBasicParsing).Content | ConvertFrom-Json
-if ($job.status -ne "Completed") { throw "job did not complete" }
+if ($job.status -ne "completed") { throw "job did not complete" }
 $hash = $job.artifact_hash
 Invoke-WebRequest -Uri "http://127.0.0.1:8488/v1/artifacts/$hash" -OutFile saved_proof.png
 Add-Type -AssemblyName System.Drawing

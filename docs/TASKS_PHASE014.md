@@ -347,7 +347,7 @@ JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: applica
   | python3 -c "import sys,json;print(json.load(sys.stdin)['job_id'])")
 sleep 3
 curl -s "http://127.0.0.1:8488/v1/jobs/$JOB_ID" \
-  | python3 -c "import sys,json; assert json.load(sys.stdin)['status']=='Completed'"
+  | python3 -c "import sys,json; assert json.load(sys.stdin)['status']=='completed'"
 # -> exits 0
 kill %1
 ```
@@ -372,7 +372,7 @@ JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: applica
   | python3 -c "import sys,json;print(json.load(sys.stdin)['job_id'])")
 sleep 3
 curl -s "http://127.0.0.1:8488/v1/jobs/$JOB_ID" \
-  | python3 -c "import sys,json; assert json.load(sys.stdin)['status']=='Completed'"
+  | python3 -c "import sys,json; assert json.load(sys.stdin)['status']=='completed'"
 # -> exits 0
 kill %1
 ```
@@ -418,7 +418,7 @@ JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: applica
   | python3 -c "import sys,json;print(json.load(sys.stdin)['job_id'])")
 sleep 3
 curl -s "http://127.0.0.1:8488/v1/jobs/$JOB_ID" \
-  | python3 -c "import sys,json; assert json.load(sys.stdin)['status']=='Completed'"
+  | python3 -c "import sys,json; assert json.load(sys.stdin)['status']=='completed'"
 # -> exits 0
 kill %1
 \`\`\`

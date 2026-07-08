@@ -393,7 +393,7 @@ sleep 5
 HASH=$(curl -s "http://127.0.0.1:8488/v1/jobs/$JOB_ID" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
-assert d['status']=='Completed'
+assert d['status']=='completed'
 print(d.get('artifact_hash') or d.get('result',{}).get('artifact_hash'))
 ")
 curl -s -o saved_proof.png "http://127.0.0.1:8488/v1/artifacts/$HASH"
