@@ -29,10 +29,12 @@ use tokio::io::AsyncBufReadExt;
 use tokio::sync::RwLock;
 use tokio::sync::oneshot;
 
+use anvilml_core::JobStatus;
 use anvilml_core::NodeTypeRegistry;
 use anvilml_core::types::worker::WorkerStatus;
 use anvilml_ipc::WorkerEvent;
 use anvilml_ipc::WorkerMessage;
+use uuid::Uuid;
 
 #[cfg(windows)]
 use crate::JobObjectGuard;
@@ -492,6 +494,24 @@ pub struct ManagedWorker {
     /// failing doesn't fail construction of the whole `ManagedWorker`.
     #[cfg(windows)]
     job_guard: Option<JobObjectGuard>,
+
+    /// INTERIM-P14-PATCH (manual retrofit, applied ahead of Phase 16 —
+    /// see `docs/PHASES_GRAPH.md`'s "Interim Job-Completion Patch" note).
+    ///
+    /// `None` by default (every existing `ManagedWorker::new()` call site,
+    /// including every Phase 8 test, is unaffected). `WorkerPool` sets this
+    /// via `set_job_completion_tx()` immediately after construction, before
+    /// spawning, whenever the pool itself has been given a sender by its
+    /// caller (`backend/main.rs`, P14-C2). `handle_event()`'s `Completed`/
+    /// `Failed` arms send through this channel so a listener outside the
+    /// worker crate (`anvilml-scheduler`'s interim completion listener) can
+    /// update the job's row in `JobStore` — a job-status responsibility this
+    /// crate does not otherwise have and should not gain permanently.
+    ///
+    /// Phase 16's `P16-A1`/`P16-A2` must replace this field, its setter, and
+    /// its two `handle_event()` call sites wholesale with the real
+    /// `EventBroadcaster`-based design — not extend or build alongside it.
+    job_completion_tx: Option<tokio::sync::mpsc::UnboundedSender<(Uuid, JobStatus, Option<String>)>>,
 }
 
 /// Construction parameters for `ManagedWorker::new()`.
@@ -612,7 +632,20 @@ impl ManagedWorker {
             child: None,
             #[cfg(windows)]
             job_guard,
+            job_completion_tx: None,
         }
+    }
+
+    /// INTERIM-P14-PATCH (manual retrofit, pre-Phase-16). Registers the
+    /// channel `handle_event()` uses to report job completion/failure
+    /// outside this crate. See the `job_completion_tx` field's own doc
+    /// comment for the full rationale and the note that Phase 16 must
+    /// replace this method (and its call site in `pool.rs`) wholesale.
+    pub fn set_job_completion_tx(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<(Uuid, JobStatus, Option<String>)>,
+    ) {
+        self.job_completion_tx = Some(tx);
     }
 
     /// Returns the number of crash attempts tracked in `attempt_history`.
@@ -1415,6 +1448,14 @@ impl ManagedWorker {
                 // worker can accept the next job.
                 *self.status.write().await = WorkerStatus::Idle;
                 tracing::info!(worker_id = %self.worker_id, job_id = %job_id, elapsed_ms = %elapsed_ms, "job_completed");
+                // INTERIM-P14-PATCH: notify the interim completion listener
+                // (anvilml-scheduler) so JobStore's row is updated. See the
+                // `job_completion_tx` field's doc comment. A closed/absent
+                // channel is not an error here — mirrors the existing
+                // `pong_tx` best-effort-send pattern in this same function.
+                if let Some(tx) = &self.job_completion_tx {
+                    let _ = tx.send((*job_id, JobStatus::Completed, None));
+                }
                 false
             }
             WorkerEvent::Failed {
@@ -1428,6 +1469,10 @@ impl ManagedWorker {
                 tracing::info!(worker_id = %self.worker_id, job_id = %job_id, error = %error, "job_failed");
                 if let Some(tb) = traceback {
                     tracing::debug!(worker_id = %self.worker_id, traceback = %tb, "job failure traceback");
+                }
+                // INTERIM-P14-PATCH: see the Completed arm above.
+                if let Some(tx) = &self.job_completion_tx {
+                    let _ = tx.send((*job_id, JobStatus::Failed, Some(error.clone())));
                 }
                 false
             }

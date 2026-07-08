@@ -500,6 +500,83 @@ This phase exists outside the primary 1–30 sequence — it is inserted via `pr
 
 ---
 
+## Interim Job-Completion Patch (Manual, Pre-Phase-16/17)
+
+**Status:** Applied. **Not a numbered task** — same category as the manual
+retrofit patches in items 16–22 of the [Known Wiring Gaps Closed](#known-wiring-gaps-closed-summary-table)
+table below (e.g. `P8-E3`, `install_worker_deps.sh`/`.ps1`), applied outside
+the Forge task graph by direct patch.
+
+**Why this exists:** `P14-E1` (Phase 14's own Runnable Proof) requires a
+submitted `PassThrough` job to observably reach `Completed` via `GET
+/v1/jobs/:id`. Per this document's own [Phase 19–30 Deep Trace Findings](#phase-1930-deep-trace-findings)
+section (the `execute_graph()` gap — the single most severe finding in this
+document) and the Phase 14 "Wired in" note above, that capability's real
+implementation was scoped to `P17-B3`/`P17-B4` (worker-side `Execute` →
+`execute_graph()` → `Completed`/`Failed`) and `P16-A1`/`P16-A2` (Rust-side
+consumption of the resulting `WorkerEvent` to update `JobStore`) — both
+phases numbered *after* 14. As originally sequenced, `P14-E1` could not
+have passed: the job would dispatch correctly and then hang in `Running`
+forever, identically to the `P24-E1`/`P24-F1` failure mode this document
+already documents at length. This patch closes that gap early, narrowly,
+so Phase 14 can be verified now.
+
+**Scope — deliberately narrow, single-node graphs only:**
+
+- `worker/worker_main.py` — new `_execute_job()` function; `_dispatch_loop()`
+  gains a `device`/`caps`/`mock` parameter set and an `Execute` branch that
+  calls it. Runs each node in `graph["nodes"]` in list order (no
+  topological sort, no edge resolution) and reports `Completed`/`Failed`.
+- `crates/anvilml-worker/src/managed.rs` — `ManagedWorker` gains a
+  `job_completion_tx: Option<mpsc::UnboundedSender<(Uuid, JobStatus,
+  Option<String>)>>` field (default `None`, every existing call site
+  unaffected) and a `set_job_completion_tx()` setter. `handle_event()`'s
+  `Completed`/`Failed` arms send through it, best-effort, alongside the
+  pre-existing `Idle`-restoration behavior (which was already correctly
+  wired in Phase 8 and is untouched by this patch).
+- `crates/anvilml-worker/src/pool.rs` — `WorkerPool` gains the same field/
+  setter pattern; `spawn_all_impl()` propagates the sender into each
+  `ManagedWorker` it constructs.
+- `crates/anvilml-worker/Cargo.toml`, `backend/Cargo.toml` — `uuid`
+  promoted to `[dependencies]` (same pattern `P14-D1` used for
+  `anvilml-server`).
+- `crates/anvilml-scheduler/src/interim_job_completion.rs` — new module;
+  `spawn_interim_job_completion_listener()` receives `(job_id, status,
+  error)` tuples and writes them to `JobStore` directly. Re-exported from
+  `lib.rs`.
+- `backend/src/main.rs` (P14-C2's own file) — constructs the channel before
+  `spawn_all()`, registers it on the pool, and spawns the listener task
+  after `job_store`/`scheduler` are constructed.
+
+**Every touched location is marked `INTERIM-P14-PATCH` or "INTERIM
+STOPGAP" in its own comment**, each pointing back to this section.
+
+**Mandatory replace-not-extend instructions for `P16-A1`/`P16-A2` and
+`P17-B1`–`P17-B4`:**
+
+1. `P17-B1`/`P17-B2`/`P17-B3`/`P17-B4`: delete `_execute_job()` and the
+   `Execute` branch in `_dispatch_loop()` (`worker_main.py`) wholesale;
+   replace with `worker/executor.py::execute_graph()` and its own dispatch
+   wiring, per those tasks' original scope (topological sort, background
+   thread, cancellation checkpoints, `Progress`/`ImageReady` emission).
+   Revert `_dispatch_loop()`'s signature to whatever `P17-B3`/`P17-B4`'s own
+   design calls for — do not preserve this patch's `device`/`caps`/`mock`
+   parameter threading unless the real design also needs it.
+2. `P16-A1`/`P16-A2`: delete `job_completion_tx` and its setter from
+   `ManagedWorker` and `WorkerPool` (`managed.rs`, `pool.rs`); delete
+   `crates/anvilml-scheduler/src/interim_job_completion.rs` and its
+   `lib.rs` re-export; delete the channel construction and listener spawn
+   in `backend/src/main.rs`. Replace with the real design: `AppState`
+   gains a `broadcaster: EventBroadcaster` field (`P16-B1`), and the
+   scheduler subscribes to it directly.
+3. Revert the `uuid` promotions in `anvilml-worker/Cargo.toml` and
+   `backend/Cargo.toml` if nothing else in those crates needs `uuid` as a
+   direct (non-dev) dependency after steps 1–2 remove this patch's usage.
+4. After both phases land, grep the tree for `INTERIM-P14-PATCH` and
+   `INTERIM STOPGAP` — zero hits should remain.
+
+---
+
 ## Known Wiring Gaps Closed (summary table)
 
 These are every confirmed instance, found across two audit passes plus a later targeted P10/P11 compliance audit, of two related defect classes this document exists to make visible: (1) a phase builds a `pub` symbol that compiles and passes its own unit tests, but no later phase's task ever calls it from a reachable execution path (`main.rs`, `AppState`, a handler, or — for the Python side — `worker_main.py`'s dispatch loop); or (2) a task's own documented scope — a struct's declared field list, a claimed field count, or similar — diverges from what its commit actually shipped, even though the shipped code is reachable and functionally correct. Items 1–22 are class (1). Item 23 is the table's sole instance of class (2).

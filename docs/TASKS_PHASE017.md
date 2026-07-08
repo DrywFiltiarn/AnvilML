@@ -79,6 +79,22 @@ the new `P17-B3`.
 `NodeContext.cancel_flag` must exist per Phase 10 (P10-A3). `worker_main.py`'s
 dispatch loop placeholder must exist per Phase 9.
 
+**INTERIM-P14-PATCH (manual, pre-Phase-16/17) is present in `worker_main.py`
+and must be removed as part of `P17-B3`/`P17-B4` — read
+`docs/PHASES_GRAPH.md`'s "Interim Job-Completion Patch" section first.**
+`_dispatch_loop()` currently has an `Execute` branch calling a narrow,
+synchronous `_execute_job()` stopgap (single-node graphs only, no
+topological sort, blocks the loop for the job's duration) — applied ahead
+of this phase so `P14-E1` could pass without waiting for the real
+`execute_graph()` wiring built here. **`P17-B3`/`P17-B4` must delete
+`_execute_job()` and the interim `Execute` branch wholesale** and replace
+them with the real background-thread `execute_graph()` call this phase's
+own task text already specifies — do not merge the two. `_dispatch_loop()`'s
+`device`/`caps`/`mock` parameters were added by the interim patch to
+support `_execute_job()`; keep, rename, or drop them based on what the real
+`ctx_factory` construction in `P17-B3` actually needs, not out of
+obligation to preserve the interim signature.
+
 ---
 
 ## Interfaces and Contracts
@@ -356,6 +372,14 @@ python -m pytest worker/tests -v -m real_mode
 
 ## Known Constraints and Gotchas
 
+- **Interim-patch removal checklist (do this as part of `P17-B3`/`P17-B4`):**
+  delete `_execute_job()` and the `Execute`/interim-stopgap comments in
+  `worker/worker_main.py` (search for `INTERIM STOPGAP`); replace with the
+  real `execute_graph()`-calling handler. After this phase, `grep -r
+  "INTERIM STOPGAP\|INTERIM-P14-PATCH" worker/` should return zero hits.
+  The Rust-side half of the interim patch (`managed.rs`/`pool.rs`/
+  `interim_job_completion.rs`) is Phase 16's cleanup, not this phase's —
+  see `docs/TASKS_PHASE016.md`'s own checklist.
 - Cancellation is **cooperative**, never forceful — the scheduler never kills a
   worker process to enforce a cancel; it only sends a signal the worker's executor
   checks between steps.

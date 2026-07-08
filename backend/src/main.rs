@@ -10,6 +10,11 @@ use anvilml_hardware::detect_all_devices;
 use anvilml_registry::JobStore;
 use anvilml_registry::create_pool;
 use anvilml_scheduler::JobScheduler;
+// INTERIM-P14-PATCH — manual retrofit, pre-Phase-16. Remove this import
+// along with the wiring below when P16-A1/A2 land. See
+// crates/anvilml-scheduler/src/interim_job_completion.rs's module doc
+// comment for the full replacement checklist.
+use anvilml_scheduler::spawn_interim_job_completion_listener;
 use anvilml_server::{AppState, build_router};
 use anvilml_worker::WorkerPool;
 use std::path::Path;
@@ -192,6 +197,15 @@ async fn main() {
         .await
         .expect("WorkerPool::new() must succeed at startup");
 
+    // INTERIM-P14-PATCH — manual retrofit, pre-Phase-16. Must be set before
+    // spawn_all() below: WorkerPool::spawn_all_impl() only propagates this
+    // channel into ManagedWorkers constructed after it's registered. See
+    // crates/anvilml-scheduler/src/interim_job_completion.rs's module doc
+    // comment for the full rationale and the Phase-16 replacement checklist.
+    let (job_completion_tx, job_completion_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(uuid::Uuid, anvilml_core::JobStatus, Option<String>)>();
+    worker_pool.set_job_completion_tx(job_completion_tx);
+
     // Spawn a Python worker subprocess for each detected device.
     // Each worker connects to the RouterTransport's DEALER socket,
     // registers itself, and enters the message dispatch loop.
@@ -219,6 +233,19 @@ async fn main() {
     // it uses the shared `pool` (SqlitePool) for job persistence via `JobStore`.
     let job_store = JobStore::new(pool.clone());
     let scheduler = Arc::new(JobScheduler::new(job_store, Arc::clone(&node_registry)));
+
+    // INTERIM-P14-PATCH — manual retrofit, pre-Phase-16. A second, separate
+    // JobStore handle for the interim completion listener — cheap to
+    // construct (SqlitePool::clone() is an Arc-based ref-count bump), since
+    // JobScheduler::new() takes ownership of its own JobStore and does not
+    // expose it back out. See interim_job_completion.rs's module doc
+    // comment for the full rationale and the Phase-16 replacement checklist.
+    let job_store_for_completion_listener = Arc::new(JobStore::new(pool.clone()));
+    let _job_completion_listener_handle = spawn_interim_job_completion_listener(
+        job_store_for_completion_listener,
+        job_completion_rx,
+    );
+    tracing::info!("interim job-completion listener started (INTERIM-P14-PATCH)");
 
     // Keep the dispatch loop's JoinHandle (not discarded via `_`) — the
     // graceful shutdown sequence below needs to abort and await it, to

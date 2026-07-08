@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-worker"
-version = "0.1.30"
+version = "0.1.31"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -10,6 +10,10 @@ anvilml-hardware = { path = "../anvilml-hardware" }
 anvilml-core = { path = "../anvilml-core" }
 tokio = { version = "1.52.3", features = ["process", "rt", "sync", "time"] }
 tracing = "0.1"
+# Promoted from [dev-dependencies] below by an INTERIM-P14-PATCH (manual
+# retrofit, pre-Phase-16/17): needed in production code for the interim
+# job-completion channel's `Uuid` element. See managed.rs/pool.rs.
+uuid = { version = "1.23.4", features = ["v4", "serde"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
@@ -23,7 +27,8 @@ windows = { version = "0.58", features = [
 rmp-serde = "1"
 zeromq = { version = "0.6", default-features = false, features = ["tokio-runtime"] }
 bytes = "1"
-uuid = { version = "1.23.4", features = ["v4", "serde"] }
+# uuid moved to [dependencies] above (INTERIM-P14-PATCH) — no longer needs
+# a separate dev-dependency entry; test code picks it up transitively.
 # Self-referential dependency: enables `test-utils` automatically for every
 # `cargo test` build of this crate (unit tests AND integration tests in
 # `tests/`), with no command-line changes needed. [dev-dependencies] are only

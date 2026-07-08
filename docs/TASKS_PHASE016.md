@@ -58,6 +58,26 @@ real `PassThrough` job's `JobCompleted` event arrive live.
 `EventBroadcaster` must exist per Phase 7 (P7-C1). `JobScheduler`'s dispatch loop and
 `PassThrough` must work end-to-end per Phase 14.
 
+**INTERIM-P14-PATCH (manual, pre-Phase-16) is present and must be removed as
+part of this phase — read `docs/PHASES_GRAPH.md`'s "Interim Job-Completion
+Patch" section before starting `P16-A1`.** Phase 14's own Runnable Proof
+(`P14-E1`) could not otherwise pass, since the real event-loop/JobStore
+wiring this phase builds did not exist yet when Phase 14 executed. A manual
+patch was applied ahead of this phase to close that gap narrowly:
+`ManagedWorker`/`WorkerPool` gained an interim `job_completion_tx` channel,
+and a temporary `anvilml-scheduler::interim_job_completion` module consumes
+it to write terminal status directly to `JobStore`, bypassing the (not-yet-
+built) broadcaster entirely. **This phase's job is to delete all of that and
+replace it with the real design** — do not build alongside it, and do not
+assume `JobStore` has never seen a terminal status before `P16-A2` runs
+(the interim patch already writes `Completed`/`Failed`/`completed_at`/
+`error` — `P16-A2` overwrites/supersedes those writes with the real path,
+it doesn't introduce them from nothing). Worker `Idle` restoration on
+`Completed`/`Failed`/`Cancelled` already happens independently in Phase 8's
+`ManagedWorker::handle_event()`, untouched by the interim patch — `P16-A3`'s
+own scope is genuinely just the dispatch-loop wake (`dispatch_notify.notify_one()`),
+not first-time `Idle` restoration.
+
 ---
 
 ## Interfaces and Contracts
@@ -296,6 +316,16 @@ cargo test --workspace --features mock-hardware
 
 ## Known Constraints and Gotchas
 
+- **Interim-patch removal checklist (do this as part of `P16-A2`/`P16-B1`):**
+  delete `job_completion_tx` and `set_job_completion_tx()` from
+  `crates/anvilml-worker/src/managed.rs` and `pool.rs`; delete
+  `crates/anvilml-scheduler/src/interim_job_completion.rs` and its `lib.rs`
+  re-export; delete the channel construction and listener spawn in
+  `backend/src/main.rs` (search for `INTERIM-P14-PATCH`). Revert the `uuid`
+  promotion in `anvilml-worker/Cargo.toml` and `backend/Cargo.toml` if
+  nothing else needs it as a direct dependency afterward. After this phase,
+  `grep -r INTERIM-P14-PATCH` should return zero hits in the Rust tree
+  (Python-side hits are Phase 17's cleanup, not this phase's).
 - Before this phase, no job could ever be observed reaching a terminal status —
   this was a real, latent gap since Phase 14, not a regression introduced here.
   P16-A2 is what actually fixes it.
