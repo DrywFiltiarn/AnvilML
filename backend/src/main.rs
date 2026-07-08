@@ -238,8 +238,20 @@ async fn main() {
     // Construct the job scheduler with the database pool.
     // The scheduler owns the in-memory job queue and dispatch loop;
     // it uses the shared `pool` (SqlitePool) for job persistence via `JobStore`.
+    // Construct the artifact store before the scheduler so it can be passed
+    // to JobScheduler::new() — the scheduler needs the artifact store for
+    // the event_loop module's handle_image_ready() function.
+    let artifact_store = Arc::new(ArtifactStore::new(
+        config.artifact_dir.clone(),
+        pool.clone(),
+    ));
+
     let job_store = JobStore::new(pool.clone());
-    let scheduler = Arc::new(JobScheduler::new(job_store, Arc::clone(&node_registry)));
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        Arc::clone(&node_registry),
+        Arc::clone(&artifact_store),
+    ));
 
     // INTERIM-P14-PATCH — manual retrofit, pre-Phase-16. A second, separate
     // JobStore handle for the interim completion listener — cheap to
@@ -264,16 +276,6 @@ async fn main() {
     // Capture process-start instant once, before binding, so the health
     // handler returns a real elapsed-time measurement.
     let start_time = Instant::now();
-
-    // Construct the artifact store with the configured artifact directory
-    // and a clone of the same SQLite pool used by JobStore — the clone
-    // is a cheap Arc ref-count bump, so both stores share the same
-    // database connection pool. The pool is cloned here (not moved)
-    // because it is moved into AppState below.
-    let artifact_store = Arc::new(ArtifactStore::new(
-        config.artifact_dir.clone(),
-        pool.clone(),
-    ));
 
     // Construct `AppState` with the loaded config, a fresh empty node
     // registry (populated later when the Python worker sends Ready),

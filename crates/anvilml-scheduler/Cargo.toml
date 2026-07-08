@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-scheduler"
-version = "0.1.19"
+version = "0.1.20"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -11,6 +11,7 @@ anvilml-registry = { path = "../anvilml-registry" }
 anvilml-artifacts = { path = "../anvilml-artifacts" }
 anvilml-core = { path = "../anvilml-core" }
 anvilml-hardware = { path = "../anvilml-hardware" }
+base64 = "0.22.1"
 chrono = "0.4"
 serde_json = "1"
 thiserror = "2.0.18"

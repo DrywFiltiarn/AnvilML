@@ -47,7 +47,12 @@ async fn make_full_state(
 ) -> AppState {
     let db = create_test_pool().await;
     let job_store = JobStore::new(db.clone());
-    let scheduler = Arc::new(JobScheduler::new(job_store, Arc::clone(&node_registry)));
+
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        Arc::clone(&node_registry),
+        artifact_store.clone(),
+    ));
     let workers = Arc::new(
         WorkerPool::new()
             .await
@@ -81,6 +86,10 @@ fn test_app_state_constructs() {
         scheduler: Arc::new(JobScheduler::new(
             JobStore::new(create_test_pool_sync()),
             Arc::new(NodeTypeRegistry::new()),
+            Arc::new(ArtifactStore::new(
+                std::env::temp_dir().join("anvilml-test-artifacts-state"),
+                create_test_pool_sync(),
+            )),
         )),
         workers: Arc::new(
             tokio::runtime::Builder::new_current_thread()

@@ -48,19 +48,25 @@ async fn make_test_pool() -> sqlx::SqlitePool {
 async fn make_test_state(node_registry: Arc<NodeTypeRegistry>) -> AppState {
     let db = make_test_pool().await;
     let job_store = JobStore::new(db.clone());
-    let scheduler = Arc::new(JobScheduler::new(job_store, Arc::clone(&node_registry)));
+
+    // Construct the artifact store before the scheduler so it can be passed
+    // to JobScheduler::new(). The artifact directory is a temp path and the
+    // pool is in-memory, so no real files are created.
+    let artifact_store = Arc::new(ArtifactStore::new(
+        std::env::temp_dir().join("anvilml-test-artifacts"),
+        db.clone(),
+    ));
+
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        Arc::clone(&node_registry),
+        artifact_store.clone(),
+    ));
     let workers = Arc::new(
         WorkerPool::new()
             .await
             .expect("WorkerPool::new() must succeed in test"),
     );
-    // Construct a minimal ArtifactStore for tests — the artifact
-    // directory is a temp path and the pool is in-memory, so no
-    // real files are created.
-    let artifact_store = Arc::new(ArtifactStore::new(
-        std::env::temp_dir().join("anvilml-test-artifacts"),
-        db.clone(),
-    ));
 
     AppState {
         config: Arc::new(ServerConfig::default()),

@@ -21,6 +21,7 @@
 /// 7. Return the job ID
 use std::sync::Arc;
 
+use anvilml_artifacts::ArtifactStore;
 use anvilml_core::types::worker::WorkerStatus;
 use anvilml_core::{AnvilError, Job, JobSettings, JobStatus, NodeTypeRegistry};
 use anvilml_ipc::WorkerMessage;
@@ -65,6 +66,7 @@ pub enum DispatchOutcome {
 /// - A `JobStore` (`Arc`) for database-backed job persistence.
 /// - A `NodeTypeRegistry` (`Arc`) for graph validation.
 /// - A `Notify` (`Arc`) for waking the dispatch loop after each submission.
+/// - An `ArtifactStore` (`Arc`) for persisting generated image artifacts.
 ///
 /// The `tokio::sync::Mutex` on `queue` and `ledger` is required because these
 /// are held across `.await` points during `job_store.upsert()` — a `std::sync::Mutex`
@@ -106,6 +108,14 @@ pub struct JobScheduler {
     /// `submit()` calls `notify_one()` after enqueuing a job, waking a single
     /// waiter (the dispatch loop task, introduced in a later phase).
     dispatch_notify: Arc<Notify>,
+
+    /// Content-addressed artifact storage for generated image outputs.
+    ///
+    /// Used by the `event_loop` module to persist decoded PNG images from
+    /// `WorkerEvent::ImageReady` events. The field is not accessed directly
+    /// by the dispatch loop — it is passed through to `handle_image_ready()`.
+    #[allow(dead_code)]
+    artifact_store: Arc<ArtifactStore>,
 }
 
 impl JobScheduler {
@@ -121,13 +131,20 @@ impl JobScheduler {
     ///   takes ownership and wraps it in an `Arc` for sharing.
     /// * `node_registry` — The node type registry for graph validation. The caller
     ///   constructs this; it is wrapped in an `Arc` for sharing.
-    pub fn new(job_store: JobStore, node_registry: Arc<NodeTypeRegistry>) -> Self {
+    /// * `artifact_store` — The artifact storage backend for persisting generated
+    ///   images. Passed through to the `event_loop` module for `ImageReady` handling.
+    pub fn new(
+        job_store: JobStore,
+        node_registry: Arc<NodeTypeRegistry>,
+        artifact_store: Arc<ArtifactStore>,
+    ) -> Self {
         Self {
             queue: Mutex::new(JobQueue::new()),
             ledger: Mutex::new(VramLedger::new()),
             job_store: Arc::new(job_store),
             node_registry,
             dispatch_notify: Arc::new(Notify::new()),
+            artifact_store,
         }
     }
 

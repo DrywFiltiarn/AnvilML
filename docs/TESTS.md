@@ -5463,3 +5463,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `make_test_state()` with a fresh pool; one artifact saved; request to `/v1/artifacts/<hash>`.
 **Expected output:** Response status is `StatusCode::OK` and `Content-Type` header is exactly `image/png`.
 **Acceptance:** `cargo test -p anvilml-server --test artifacts_tests test_get_artifact_content_type_header` exits 0.
+
+---
+
+## test_image_ready_saves_artifact (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-artifacts` (path dependency), `anvilml-ipc` (path dependency), `anvilml-core` (path dependency), `base64` (0.22.1), `chrono`, `sqlx` (sqlite, dev), and `uuid` (dev). A valid 1x1 red PNG is base64-encoded and placed in a `WorkerEvent::ImageReady`.
+**Tests:** `handle_image_ready()` decodes the base64 payload, saves the PNG to the artifact store, and returns the SHA-256 hash. The saved artifact is then retrieved by hash and verified to be byte-identical to the decoded payload.
+**Mode:** mock
+**Inputs:** `create_test_artifact_store()` with in-memory SQLite + temp dir; `WorkerEvent::ImageReady` with 512x512 PNG, seed=42, steps=20.
+**Expected output:** `store.get(&hash)` returns `Ok(Some(bytes))` matching the decoded payload.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_image_ready_saves_artifact` exits 0.
+
+---
+
+## test_image_ready_artifact_meta_fields_match (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-artifacts` (path dependency), `anvilml-ipc` (path dependency), `anvilml-core` (path dependency), `base64` (0.22.1), `chrono`, `sqlx` (sqlite, dev), and `uuid` (dev). An artifact is saved with known metadata values.
+**Tests:** After saving, `store.list(Some(job_id))` returns one row and all persisted fields (`width`, `height`, `seed`, `steps`, `job_id`) match the event's values.
+**Mode:** mock
+**Inputs:** `WorkerEvent::ImageReady` with known width=512, height=512, seed=42, steps=20, job_id=known-uuid.
+**Expected output:** `store.list(Some(job_id))` returns one row with matching fields.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_image_ready_artifact_meta_fields_match` exits 0.
+
+---
+
+## test_image_ready_malformed_base64_errors (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-artifacts` (path dependency), `anvilml-ipc` (path dependency), `anvilml-core` (path dependency), `base64` (0.22.1), `chrono`, `sqlx` (sqlite, dev), and `uuid` (dev). A deliberately malformed base64 string is placed in the event.
+**Tests:** `handle_image_ready()` returns `Err(AnvilError::Serde(...))` rather than panicking, confirming graceful error handling for encoding failures.
+**Mode:** mock
+**Inputs:** `WorkerEvent::ImageReady` with `image_b64 = "not-valid-base64!!!@@@"`.
+**Expected output:** Returns `Err(AnvilError::Serde(...))` — no panic.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_image_ready_malformed_base64_errors` exits 0.
+
+---
+
+## test_image_ready_empty_image_b64 (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-artifacts` (path dependency), `anvilml-ipc` (path dependency), `anvilml-core` (path dependency), `base64` (0.22.1), `chrono`, `sqlx` (sqlite, dev), and `uuid` (dev). An empty base64 string is placed in the event.
+**Tests:** `handle_image_ready()` decodes the empty string to empty bytes, `save()` succeeds and returns a hash. The artifact is stored with zero bytes and is retrievable.
+**Mode:** mock
+**Inputs:** `WorkerEvent::ImageReady` with `image_b64 = ""`.
+**Expected output:** Returns `Ok(hash)`; artifact stored with 0 bytes, retrievable by hash.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_image_ready_empty_image_b64` exits 0.

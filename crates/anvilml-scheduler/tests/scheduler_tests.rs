@@ -4,6 +4,7 @@
 /// validation, job construction, persistence, enqueueing, and notification.
 use std::sync::Arc;
 
+use anvilml_artifacts::ArtifactStore;
 use anvilml_core::{
     AnvilError, JobSettings, NodeTypeDescriptor, NodeTypeRegistry, SlotDescriptor, SlotType,
 };
@@ -42,6 +43,34 @@ async fn create_job_store() -> JobStore {
         .expect("migrations must apply to in-memory pool");
 
     JobStore::new(pool)
+}
+
+/// Helper to create an `ArtifactStore` backed by an in-memory SQLite pool and a
+/// temporary directory.
+///
+/// Creates a fresh in-memory SQLite pool with the `artifacts` table (via the
+/// inline DDL in `ArtifactStore::save()`), a unique temp directory for artifact
+/// files, and returns an `Arc<ArtifactStore>`. Each call creates isolated state
+/// for test independence.
+async fn create_test_artifact_store() -> Arc<ArtifactStore> {
+    // Create an in-memory SQLite pool. `:memory:` creates a database that
+    // exists only for the lifetime of this connection — isolated from all
+    // other pools, including other test runs.
+    let connect_opts = SqliteConnectOptions::new()
+        .filename(":memory:")
+        .create_if_missing(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(connect_opts)
+        .await
+        .expect("in-memory SQLite pool must connect");
+
+    // Create a unique temp directory for this test's artifacts. Using a UUID
+    // suffix ensures no collision with other tests running in parallel.
+    let artifact_dir =
+        std::env::temp_dir().join(format!("anvilml-test-artifacts-{}", Uuid::new_v4()));
+
+    Arc::new(ArtifactStore::new(artifact_dir, pool))
 }
 
 /// Helper to create a `NodeTypeRegistry` with a single "PassThrough" node type
@@ -88,7 +117,7 @@ fn make_valid_graph() -> serde_json::Value {
 async fn test_submit_empty_registry_returns_workers_unavailable() {
     let store = create_job_store().await;
     let registry: Arc<NodeTypeRegistry> = Arc::new(NodeTypeRegistry::new());
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
 
     let result = scheduler
         .submit(
@@ -122,7 +151,7 @@ async fn test_submit_empty_registry_returns_workers_unavailable() {
 async fn test_submit_invalid_graph_returns_validation_error() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
 
     // Submit a graph with an unknown node type.
     let invalid_graph = serde_json::json!({
@@ -165,7 +194,7 @@ async fn test_submit_invalid_graph_returns_validation_error() {
 async fn test_submit_valid_persists_and_queues() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
 
     let result = scheduler
         .submit(
@@ -191,7 +220,7 @@ async fn test_submit_valid_persists_and_queues() {
 async fn test_two_submits_get_distinct_ids() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
 
     let id1 = scheduler
         .submit(
@@ -225,7 +254,7 @@ async fn test_two_submits_get_distinct_ids() {
 async fn test_cancel_queued_job_returns_true() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
 
     // Submit a job — it is persisted and enqueued.
     let (job_id, _queue_position) = scheduler
@@ -257,7 +286,7 @@ async fn test_cancel_queued_job_returns_true() {
 async fn test_cancel_unknown_id_returns_false() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
 
     // Cancel a UUID that was never submitted.
     let unknown_id = Uuid::new_v4();
@@ -279,7 +308,7 @@ async fn test_cancel_unknown_id_returns_false() {
 async fn test_get_job_returns_persisted_job() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
 
     // Submit a job — it is persisted to the database.
     let (job_id, _queue_position) = scheduler
@@ -314,7 +343,7 @@ async fn test_get_job_returns_persisted_job() {
 async fn test_get_job_unknown_id_returns_none() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
 
     // Look up a UUID that was never submitted.
     let unknown_id = Uuid::new_v4();
@@ -340,7 +369,7 @@ async fn test_get_job_unknown_id_returns_none() {
 async fn test_dispatch_loop_returns_join_handle() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
     let workers = anvilml_worker::WorkerPool::new()
         .await
         .expect("empty pool must construct");
@@ -372,7 +401,7 @@ async fn test_dispatch_loop_returns_join_handle() {
 async fn test_submit_wakes_dispatch_loop() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
     let workers = anvilml_worker::WorkerPool::new()
         .await
         .expect("empty pool must construct");
@@ -427,7 +456,7 @@ async fn test_submit_wakes_dispatch_loop() {
 async fn test_dispatch_loop_survives_multiple_wakes() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
     let workers = anvilml_worker::WorkerPool::new()
         .await
         .expect("empty pool must construct");
@@ -492,7 +521,7 @@ async fn test_device_preference_wins_over_vram_ranking() {
 
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
     let workers = anvilml_worker::WorkerPool::new()
         .await
         .expect("empty pool must construct");
@@ -576,7 +605,7 @@ async fn test_device_preference_wins_over_vram_ranking() {
 async fn test_vram_ranking_picks_highest_free_idle() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
     let workers = anvilml_worker::WorkerPool::new()
         .await
         .expect("empty pool must construct");
@@ -623,7 +652,7 @@ async fn test_vram_ranking_picks_highest_free_idle() {
 async fn test_no_idle_workers_leaves_job_queued() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
     let workers = anvilml_worker::WorkerPool::new()
         .await
         .expect("empty pool must construct");
@@ -678,7 +707,7 @@ async fn test_no_idle_workers_leaves_job_queued() {
 async fn test_multiple_queued_jobs_get_distinct_workers() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
     let workers = anvilml_worker::WorkerPool::new()
         .await
         .expect("empty pool must construct");
@@ -752,7 +781,7 @@ async fn test_multiple_queued_jobs_get_distinct_workers() {
 async fn test_device_preference_none_falls_back_to_vram_ranking() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
     let workers = anvilml_worker::WorkerPool::new()
         .await
         .expect("empty pool must construct");
@@ -798,7 +827,7 @@ async fn test_device_preference_none_falls_back_to_vram_ranking() {
 async fn test_dispatch_one_returns_false_when_no_idle() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
     let workers = anvilml_worker::WorkerPool::new()
         .await
         .expect("empty pool must construct");
@@ -852,7 +881,7 @@ async fn test_dispatch_one_returns_false_when_no_idle() {
 async fn test_dispatch_one_no_op_without_idle() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
     let workers = anvilml_worker::WorkerPool::new()
         .await
         .expect("empty pool must construct");
@@ -901,7 +930,7 @@ async fn test_dispatch_one_no_op_without_idle() {
 async fn test_dispatch_one_no_transition_without_idle() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
     let workers = anvilml_worker::WorkerPool::new()
         .await
         .expect("empty pool must construct");
@@ -963,7 +992,7 @@ async fn test_dispatch_one_test_wrapper_collapses_failed_to_false() {
 
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
 
     // Create a mock idle worker with a controllable status.
     let status = Arc::new(RwLock::new(anvilml_core::types::worker::WorkerStatus::Idle));
@@ -1057,7 +1086,7 @@ async fn test_ranking_selection_deterministic_and_workers_end_idle() {
 
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
 
     // Create two mock idle workers with controllable statuses.
     let status_0 = Arc::new(RwLock::new(anvilml_core::types::worker::WorkerStatus::Idle));
@@ -1207,7 +1236,7 @@ async fn test_busy_worker_excluded_from_ranking() {
 
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
 
     let make_handle = |worker_id: &str, status: anvilml_core::types::worker::WorkerStatus| {
         let status = Arc::new(RwLock::new(status));
@@ -1353,7 +1382,7 @@ async fn test_dispatch_one_reverts_worker_idle_after_send_failure() {
 
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
 
     let status = Arc::new(RwLock::new(anvilml_core::types::worker::WorkerStatus::Idle));
     let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel();
@@ -1475,7 +1504,7 @@ async fn test_dispatch_one_dispatched_via_real_dealer_peer() {
 
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry);
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
 
     let mut pool = anvilml_worker::WorkerPool::new()
         .await
