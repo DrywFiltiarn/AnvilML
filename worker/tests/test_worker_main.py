@@ -842,3 +842,151 @@ class TestDispatchLoopPing:
         worker_main._dispatch_loop()
 
         assert sent_events == [], f"expected no Pong reply, got {sent_events}"
+
+
+class TestDispatchLoopShutdown:
+    """Tests for _dispatch_loop()'s handling of Shutdown and KeyboardInterrupt.
+
+    Regression coverage for two related gaps: (1) ManagedWorker::
+    graceful_shutdown_child() (Rust side) sends WorkerMessage::Shutdown and
+    waits for this process to exit on its own, but nothing here ever
+    handled that message, so the wait always timed out; (2) Windows
+    propagates a console Ctrl+C directly to this process (not spawned into
+    its own process group), raising KeyboardInterrupt mid-recv(), which
+    `except Exception` never catches (KeyboardInterrupt inherits from
+    BaseException), producing an unhandled traceback on every shutdown.
+    See _dispatch_loop's own doc comment for the full explanation.
+    """
+
+    def test_shutdown_message_exits_loop_cleanly(self, monkeypatch) -> None:
+        """A Shutdown message breaks the loop without sending a reply.
+
+        Feeds _dispatch_loop() a single Shutdown message and asserts the
+        loop returns (does not hang or raise) and that no event was sent
+        back — unlike Ping, Shutdown has no reply, just a clean exit.
+
+        Preconditions: worker.ipc is mockable via monkeypatch.
+        Expected output: _dispatch_loop() returns; send_event() never
+        called.
+        """
+        import worker.ipc as ipc
+
+        sent_events = []
+        monkeypatch.setattr(ipc, "send_event", lambda data: sent_events.append(data))
+
+        messages = iter([{"_type": "Shutdown"}])
+
+        def fake_recv_message():
+            try:
+                return next(messages)
+            except StopIteration:
+                # Should not be reached — the loop must break on
+                # Shutdown itself, not fall through to another recv().
+                raise AssertionError(
+                    "recv_message() called again after Shutdown — "
+                    "the loop did not break on receiving it"
+                )
+
+        monkeypatch.setattr(ipc, "recv_message", fake_recv_message)
+
+        worker_main._dispatch_loop()  # Must return, not hang or raise.
+
+        assert sent_events == [], (
+            f"Shutdown must not trigger any reply, got {sent_events}"
+        )
+
+    def test_shutdown_after_other_messages_still_exits(self, monkeypatch) -> None:
+        """Shutdown correctly ends the loop even after prior messages.
+
+        Feeds a Ping (answered normally) followed by a Shutdown, and
+        asserts the loop processes the Ping, replies with a Pong, then
+        exits cleanly on the Shutdown without attempting a third recv().
+
+        Preconditions: worker.ipc is mockable via monkeypatch.
+        Expected output: One Pong sent, then a clean exit.
+        """
+        import worker.ipc as ipc
+
+        sent_events = []
+        monkeypatch.setattr(ipc, "send_event", lambda data: sent_events.append(data))
+
+        messages = iter(
+            [
+                {"_type": "Ping", "seq": 1},
+                {"_type": "Shutdown"},
+            ]
+        )
+
+        def fake_recv_message():
+            try:
+                return next(messages)
+            except StopIteration:
+                raise AssertionError(
+                    "recv_message() called again after Shutdown — "
+                    "the loop did not break on receiving it"
+                )
+
+        monkeypatch.setattr(ipc, "recv_message", fake_recv_message)
+
+        worker_main._dispatch_loop()
+
+        assert sent_events == [{"_type": "Pong", "seq": 1}], (
+            f"expected exactly one Pong before the Shutdown, got {sent_events}"
+        )
+
+    def test_keyboard_interrupt_during_recv_exits_cleanly(self, monkeypatch) -> None:
+        """KeyboardInterrupt from recv_message() exits the loop cleanly.
+
+        Simulates the Windows console Ctrl+C propagation case: recv_message()
+        raises KeyboardInterrupt directly, as it would if the OS delivered
+        the interrupt while the underlying blocking socket call was in
+        progress. Asserts _dispatch_loop() catches it and returns normally
+        — no traceback propagates out of this function.
+
+        Preconditions: worker.ipc is mockable via monkeypatch.
+        Expected output: _dispatch_loop() returns without raising.
+        """
+        import worker.ipc as ipc
+
+        def fake_recv_message():
+            raise KeyboardInterrupt()
+
+        monkeypatch.setattr(ipc, "recv_message", fake_recv_message)
+
+        # Must not raise — this is the regression this test guards
+        # against: KeyboardInterrupt previously propagated straight out
+        # of this function as an unhandled traceback.
+        worker_main._dispatch_loop()
+
+    def test_keyboard_interrupt_after_other_messages_still_exits_cleanly(
+        self, monkeypatch
+    ) -> None:
+        """KeyboardInterrupt correctly ends the loop even after prior messages.
+
+        Feeds a Ping (answered normally), then raises KeyboardInterrupt on
+        the next recv_message() call, matching a Ctrl+C arriving mid-loop
+        rather than on the very first receive.
+
+        Preconditions: worker.ipc is mockable via monkeypatch.
+        Expected output: One Pong sent, then a clean exit (no raise).
+        """
+        import worker.ipc as ipc
+
+        sent_events = []
+        monkeypatch.setattr(ipc, "send_event", lambda data: sent_events.append(data))
+
+        call_count = {"n": 0}
+
+        def fake_recv_message():
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return {"_type": "Ping", "seq": 5}
+            raise KeyboardInterrupt()
+
+        monkeypatch.setattr(ipc, "recv_message", fake_recv_message)
+
+        worker_main._dispatch_loop()
+
+        assert sent_events == [{"_type": "Pong", "seq": 5}], (
+            f"expected exactly one Pong before the interrupt, got {sent_events}"
+        )

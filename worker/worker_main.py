@@ -77,27 +77,39 @@ def _import_nodes() -> list[dict]:
 
 def _dispatch_loop() -> None:
     """Receive messages from the supervisor in a loop, answering keepalive
-    Pings; all other message types are still logged and skipped.
+    Pings and exiting cleanly on Shutdown; all other message types are
+    still logged and skipped.
 
     This started as a pure placeholder for Phase 9 (log-and-continue for
     everything). `Execute`/`CancelJob` routing to a real executor remains a
     later phase's concern (Phase 17), correctly out of scope here.
 
-    `Ping` handling is the one exception, added here rather than deferred:
-    no task anywhere in the project's task graph ever wires a `Pong` reply
-    into this loop, on either the original placeholder or any later
-    extension — confirmed by an exhaustive search across every phase's task
-    docs, which mention `Pong` only on the Rust-receiving side (`P7-A3`'s
-    enum definition, `P8-A1`'s stress test using a simulated test-double
-    DEALER, and `keepalive.rs`'s own `handle_event()` arm). Meanwhile the
-    Rust-side `KeepaliveWatchdog` (`P8-C2`/`P8-E5`) has been unconditionally
-    active since Phase 8, sending a `Ping` immediately after `Ready` and on
-    every `watchdog_ping_interval` after that, and declaring the worker dead
-    if no matching `Pong` arrives within `watchdog_pong_timeout`. Without
-    this handler, every real (non-mock) worker that successfully reaches
-    `Ready` is unconditionally killed and endlessly respawned shortly after —
-    this was never exercised end-to-end before, since it requires a real
-    subprocess actually reaching `Ready`, which no prior phase's tests did.
+    `Ping` and `Shutdown` are the two exceptions, added here rather than
+    deferred, for the same underlying reason: the Rust side unconditionally
+    depends on both, and confirmed by an exhaustive search across every
+    phase's task doc, no task anywhere ever wires either into this loop.
+
+    `Ping`: the Rust-side `KeepaliveWatchdog` (`P8-C2`/`P8-E5`) has been
+    unconditionally active since Phase 8, sending a `Ping` immediately
+    after `Ready` and on every `watchdog_ping_interval` after that, and
+    declaring the worker dead if no matching `Pong` arrives within
+    `watchdog_pong_timeout`. Without a handler, every real worker that
+    reaches `Ready` is unconditionally killed and endlessly respawned.
+
+    `Shutdown`: `ManagedWorker::graceful_shutdown_child()` sends
+    `WorkerMessage::Shutdown` over IPC and waits (bounded by
+    `graceful_shutdown_timeout`) for this process to exit on its own,
+    before falling back to force-killing it. Without a handler here, that
+    wait always times out — this process would never know it was asked to
+    exit gracefully at all, only ever actually stopping via the timeout's
+    force-kill fallback, or, faster still and unhandled entirely, via
+    Windows propagating a console Ctrl+C directly to this process (it
+    isn't spawned into its own process group) — which raises
+    `KeyboardInterrupt` here, not caught by `except Exception` below since
+    `KeyboardInterrupt` inherits from `BaseException`, producing an
+    unhandled traceback on every single shutdown instead of a clean exit.
+    Both paths are handled below so shutdown is clean regardless of which
+    one actually wins the race in any given run.
 
     The loop runs indefinitely until the process is terminated by the
     supervisor or an external signal.
@@ -114,6 +126,16 @@ def _dispatch_loop() -> None:
     while True:
         try:
             msg = ipc.recv_message()
+        except KeyboardInterrupt:
+            # Windows propagates a console Ctrl+C directly to this
+            # process (it isn't spawned into its own process group), so
+            # this can arrive here even when the supervisor also sends
+            # (or is about to send) a proper Shutdown message over IPC —
+            # see this function's own doc comment for the full
+            # explanation. Treat it identically to a clean Shutdown: log
+            # at INFO, not ERROR, and exit the loop without a traceback.
+            logger.info("dispatch_loop: received KeyboardInterrupt, exiting cleanly")
+            break
         except Exception as exc:
             # Log recv failure and continue — a broken socket means the
             # supervisor is gone; the worker should exit gracefully.
@@ -133,6 +155,15 @@ def _dispatch_loop() -> None:
             seq = msg["seq"]
             ipc.send_event({"_type": "Pong", "seq": seq})
             logger.debug("dispatch_loop: replied Pong seq=%s", seq)
+        elif msg_type == "Shutdown":
+            # Exit the loop cleanly — see this function's own doc comment
+            # for why this is handled here rather than deferred.
+            # graceful_shutdown_child() (Rust side) is waiting on this
+            # process's own exit, bounded by graceful_shutdown_timeout;
+            # responding promptly here is what makes that wait actually
+            # succeed instead of always falling through to force-kill.
+            logger.info("dispatch_loop: received Shutdown, exiting cleanly")
+            break
 
 
 
