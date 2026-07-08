@@ -133,7 +133,13 @@ def probe_capabilities(device_type: str, device_index: int) -> dict:
     Returns:
         Dict with keys ``fp32``, ``fp16``, ``bf16``, ``fp8``, ``fp4``,
         ``flash_attention``, each mapping to a ``bool`` indicating whether
-        that precision is supported on the target device.
+        that precision is supported on the target device. ``fp8``/``fp4``
+        are always ``False`` when ``device_type == "cpu"`` — see the
+        inline comment where they're computed for why this is an
+        explicit categorical exclusion, not a per-SKU guess, and not
+        simply the probe's own try/except result (current torch builds
+        execute fp8 compute on CPU via internal emulation without
+        raising, which this exclusion accounts for).
     """
     # Select the target device — torch.device() only recognizes "cuda" as
     # a valid backend string (confirmed by the exact runtime error it
@@ -167,13 +173,45 @@ def probe_capabilities(device_type: str, device_index: int) -> dict:
     fp32 = _probe_dtype(torch.float32)
     fp16 = _probe_dtype(torch.float16)
     bf16 = _probe_dtype(torch.bfloat16)
-    fp8 = _probe_dtype(torch.float8_e4m3fn)
 
-    # Torch 2.x does not expose a native fp4 dtype (no torch.float4 or
-    # torch.float4_e2m1fn). We attempt torch.float8_e4m3fn as the closest
-    # available 8-bit format; if it fails (as expected on CPU), fp4 is False.
-    # This is mechanically correct: we probe, don't guess.
-    fp4 = _probe_dtype(torch.float8_e4m3fn)
+    # fp8/fp4: CPU is excluded from the probe here — unlike fp16/bf16
+    # above, which stay genuinely probed on CPU (real native support,
+    # correctly detected either way). This is NOT the per-SKU
+    # device-table guessing this module's docstring and
+    # ANVILML_DESIGN.md §6.6 warn against ("the database/PCI-table can
+    # correctly say 'this silicon supports FP8' while the
+    # actually-installed torch build cannot use it") — it's a
+    # categorical fact about CPUs as an architecture class: no
+    # general-purpose CPU has dedicated 8-bit float execution units,
+    # full stop, regardless of vendor or model.
+    #
+    # Confirmed directly, not assumed: _probe_dtype(torch.float8_e4m3fn)
+    # DOES succeed on CPU on current torch builds — verified identically
+    # across two fully independent environments (native Windows
+    # ROCm-torch's CPU fallback, and a separate pure-CPU torch build
+    # under WSL with zero ROCm involvement) — but only via internal
+    # upcast-compute-downcast emulation (promote to fp32, compute, cast
+    # the result back down), never genuine 8-bit arithmetic. Torch does
+    # not expose that distinction at the Python level for this op — a
+    # successful forward pass looks identical whether it ran on real
+    # fp8 silicon or was silently emulated — so the try/except probe
+    # below is structurally unable to tell them apart for this specific
+    # dtype on this specific backend category. GPU is NOT excluded:
+    # unlike CPU, some GPU SKUs genuinely do have dedicated fp8 compute
+    # (e.g. RDNA4 via hipBLASLt) and some don't, which is exactly the
+    # case the real probe below exists to correctly distinguish per-SKU,
+    # rather than trusting a hint table either way.
+    if device_type == "cpu":
+        fp8 = False
+        fp4 = False
+    else:
+        fp8 = _probe_dtype(torch.float8_e4m3fn)
+
+        # Torch 2.x does not expose a native fp4 dtype (no torch.float4 or
+        # torch.float4_e2m1fn). We attempt torch.float8_e4m3fn as the
+        # closest available 8-bit format on GPU backends where genuine
+        # fp8 hardware support is itself the thing being probed for.
+        fp4 = _probe_dtype(torch.float8_e4m3fn)
 
     # Flash attention probe — runs SDPA on tiny tensors. On CPU, torch
     # falls back to math attention silently, so this returns True (the

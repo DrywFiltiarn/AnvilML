@@ -64,78 +64,96 @@ class TestProbeDtypes:
     def test_fp8_cpu_returns_false(self) -> None:
         """fp8 probe on CPU returns False.
 
-        This is the critical correctness test: float8 matmul is not
-        implemented for the CPU backend, and the probe must catch the
-        resulting exception and return False. This is correct behavior —
-        not a bug to "fix" — because fp8 compute is a GPU-only feature on
-        current torch CPU builds.
+        This is the critical correctness test — but not for the reason it
+        might look like. As of current torch builds,
+        _probe_dtype(torch.float8_e4m3fn) itself actually SUCCEEDS on CPU
+        (see test_float8_tensor_construction_and_forward_succeed_on_cpu
+        below) — CPU torch now executes a float8 Linear forward pass via
+        internal upcast-compute-downcast emulation, not a raised exception.
+        So this False comes from probe_capabilities()'s explicit
+        `device_type == "cpu"` exclusion, not from _probe_dtype() catching
+        a failure.
 
-        Note: _probe_dtype() constructs its layer/input in float32 and
-        casts to the target dtype (not directly in dtype) specifically so
-        this False reflects the CPU backend's genuine lack of fp8 matmul
-        support — not an unrelated RNG-construction limitation that
-        previously affected every backend equally, GPU included, and
-        masked real fp8 hardware support on capable GPUs. See
-        _probe_dtype()'s own inline comment for the full explanation.
+        That exclusion is deliberately NOT the per-SKU device-table
+        guessing this module's docstring and ANVILML_DESIGN.md §6.6 warn
+        against — it's a categorical fact about CPUs as an architecture
+        class (no general-purpose CPU has dedicated fp8 execution units),
+        confirmed by the emulation this test's sibling proves is what
+        CPU's apparent "success" actually is. GPU is not excluded — some
+        GPU SKUs genuinely have dedicated fp8 hardware and some don't,
+        which real probing (not this CPU exclusion) correctly
+        distinguishes per-SKU.
         """
         result = capability.probe_capabilities("cpu", 0)
         assert result["fp8"] is False, (
-            "fp8 should not be supported on CPU (matmul not implemented "
-            "for this backend/dtype combination is correct, not a bug)"
+            "fp8 must be False on CPU — no general-purpose CPU has "
+            "dedicated fp8 execution units, even though the underlying "
+            "torch op itself no longer raises (see "
+            "test_float8_tensor_construction_and_forward_succeed_on_cpu)"
         )
 
     def test_fp4_cpu_returns_false(self) -> None:
         """fp4 probe on CPU returns False.
 
-        Torch 2.x does not expose a native fp4 dtype. The probe attempts
-        ``torch.float8_e4m3fn`` as the closest available format; on CPU
-        this correctly fails (no float8 matmul kernel for this backend),
-        so fp4 is correctly reported as False. This confirms the probe
-        probes rather than hardcodes. See test_fp8_cpu_returns_false's
-        docstring for why this is now the genuine backend limitation, not
-        an artifact of how the probe tensors are constructed.
+        Torch 2.x does not expose a native fp4 dtype; the probe attempts
+        torch.float8_e4m3fn as the closest available format on GPU. On
+        CPU, probe_capabilities() excludes fp4 the same way and for the
+        same reason as fp8 — see test_fp8_cpu_returns_false's docstring.
         """
         result = capability.probe_capabilities("cpu", 0)
         assert result["fp4"] is False, (
-            "fp4 should not be supported (no native torch.float4 dtype; "
-            "probe attempts float8_e4m3fn which has no CPU matmul kernel)"
+            "fp4 must be False on CPU — no native torch.float4 dtype, "
+            "and the float8_e4m3fn fallback is excluded on CPU for the "
+            "same categorical reason fp8 is"
         )
 
-    def test_float8_tensor_construction_via_cast_does_not_raise(self) -> None:
-        """Constructing a float8 tensor via cast-from-float32 succeeds.
+    def test_float8_tensor_construction_and_forward_succeed_on_cpu(self) -> None:
+        """A float8 Linear forward pass genuinely succeeds on CPU.
 
-        Regression test isolating the actual mechanism _probe_dtype() now
-        relies on, independent of the full probe_capabilities() call and
-        of any specific backend's matmul support. torch.randn() does not
-        implement its RNG kernel for float8_e4m3fn directly on any
-        backend (confirmed here on CPU) — but casting a float32 tensor to
-        float8 after generation is unaffected by that limitation on any
-        backend, since it's a cast, not an RNG kernel invocation. This is
-        the specific step that previously caused _probe_dtype() to return
-        False universally regardless of real hardware fp8 support,
-        including on capable GPUs — see _probe_dtype()'s inline comment.
+        This is the evidence behind probe_capabilities()'s explicit CPU
+        exclusion for fp8/fp4 (see test_fp8_cpu_returns_false's docstring)
+        — not a bug report. Constructing in float32 and casting to
+        float8_e4m3fn via .to(dtype) (rather than constructing directly
+        in dtype, which fails on kaiming_uniform_'s RNG kernel — a
+        separate, unrelated limitation) lets the actual forward pass run,
+        and on current torch builds that forward pass does not raise on
+        CPU. Confirmed identically across two independent real
+        environments (native ROCm-torch's CPU fallback on Windows, and a
+        separate pure-CPU torch build under WSL with zero ROCm
+        involvement) — this is a property of the torch version itself,
+        not an artifact of either environment.
 
-        This test does not (and cannot, without real GPU hardware) verify
-        that fp8 matmul succeeds on a capable GPU — only that the
-        construction step which used to fail everywhere now succeeds
-        everywhere, letting the actual backend-dependent matmul below it
-        be what determines the result.
+        Because torch does not expose "ran via internal upcast emulation"
+        vs. "ran on genuine dedicated hardware" as a distinguishable
+        result at the Python level for this op, _probe_dtype()'s
+        try/except structurally cannot tell them apart — which is exactly
+        why probe_capabilities() excludes CPU explicitly rather than
+        trusting this probe's result for fp8/fp4 specifically.
 
         Preconditions: torch is importable (enforced by module-level
         importorskip).
-        Expected output: No exception raised during construction or cast.
+        Expected output: No exception raised during construction, cast,
+        or the forward pass itself.
         """
         # Directly reproduces _probe_dtype()'s construction approach for
-        # torch.float8_e4m3fn, without depending on the full probe or on
-        # matmul actually succeeding afterward.
-        x = torch.randn(1, 4, dtype=torch.float32).to(torch.float8_e4m3fn)
-        assert x.dtype == torch.float8_e4m3fn, (
-            "cast must actually produce a float8_e4m3fn tensor"
-        )
-
+        # torch.float8_e4m3fn, independent of probe_capabilities()'s own
+        # CPU exclusion, to isolate and prove the underlying fact that
+        # exclusion depends on.
         layer = torch.nn.Linear(4, 4, dtype=torch.float32).to(torch.float8_e4m3fn)
+        x = torch.randn(1, 4, dtype=torch.float32).to(torch.float8_e4m3fn)
         assert layer.weight.dtype == torch.float8_e4m3fn, (
             "cast must actually produce float8_e4m3fn layer weights"
+        )
+        assert x.dtype == torch.float8_e4m3fn, (
+            "cast must actually produce a float8_e4m3fn input tensor"
+        )
+
+        out = layer(x)
+        assert out.dtype == torch.float8_e4m3fn, (
+            "forward pass must actually succeed and return float8_e4m3fn "
+            "output on CPU — confirming _probe_dtype() alone cannot "
+            "distinguish this from genuine hardware fp8 support, which "
+            "is why probe_capabilities() excludes CPU explicitly instead"
         )
 
 
@@ -257,4 +275,44 @@ class TestProbeStructure:
         )
         assert len(result) == 6, (
             "rocm probe must return exactly 6 capability keys"
+        )
+
+    def test_fp8_probe_still_called_for_non_cpu_device_type(self, monkeypatch) -> None:
+        """The CPU exclusion for fp8/fp4 does not leak into non-CPU paths.
+
+        Monkeypatches _probe_dtype() to a spy that always returns True and
+        records every dtype it was called with, then calls
+        probe_capabilities() with device_type="rocm". Asserts
+        torch.float8_e4m3fn was actually probed (called at least twice —
+        once for fp8, once for fp4's fallback) and that the resulting
+        dict reports fp8=True, fp4=True — proving GPU device types still
+        go through the real probe rather than being short-circuited the
+        way CPU now deliberately is.
+
+        Preconditions: torch is importable (enforced by module-level
+        importorskip). No real GPU required — _probe_dtype() itself is
+        replaced, so this tests probe_capabilities()'s control flow only.
+        Expected output: fp8/fp4 both True; float8_e4m3fn actually probed.
+        """
+        calls = []
+
+        def spy_probe_dtype(dtype):
+            calls.append(dtype)
+            return True
+
+        monkeypatch.setattr(capability, "_probe_dtype", spy_probe_dtype)
+
+        result = capability.probe_capabilities("rocm", 0)
+
+        assert result["fp8"] is True, (
+            "non-CPU device types must use the real probe result, not "
+            "the CPU-only exclusion"
+        )
+        assert result["fp4"] is True, (
+            "non-CPU device types must use the real probe result, not "
+            "the CPU-only exclusion"
+        )
+        assert calls.count(torch.float8_e4m3fn) >= 2, (
+            f"expected float8_e4m3fn to be probed for both fp8 and fp4 "
+            f"on a non-CPU device_type, got calls={calls}"
         )
