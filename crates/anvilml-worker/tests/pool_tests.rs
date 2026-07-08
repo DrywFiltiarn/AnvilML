@@ -203,11 +203,13 @@ async fn test_spawn_all_creates_one_handle_per_device() {
     let spawner = Arc::new(MockWorkerSpawner::new());
     let devices = vec![mock_device(0), mock_device(1), mock_device(2)];
     let cfg = ServerConfig::default();
+    let node_registry = Arc::new(anvilml_core::NodeTypeRegistry::new());
 
     pool.spawn_all_with_spawner(
         &devices,
         &cfg,
         Arc::clone(&spawner) as Arc<dyn WorkerSpawner>,
+        Arc::clone(&node_registry),
     )
     .await
     .expect("spawn_all_with_spawner() should succeed");
@@ -270,10 +272,16 @@ async fn test_spawn_all_shares_one_bridge() {
     let spawner = Arc::new(MockWorkerSpawner::new());
     let devices = vec![mock_device(0), mock_device(1)];
     let cfg = ServerConfig::default();
+    let node_registry = Arc::new(anvilml_core::NodeTypeRegistry::new());
 
-    pool.spawn_all_with_spawner(&devices, &cfg, spawner as Arc<dyn WorkerSpawner>)
-        .await
-        .expect("spawn_all_with_spawner() should succeed");
+    pool.spawn_all_with_spawner(
+        &devices,
+        &cfg,
+        spawner as Arc<dyn WorkerSpawner>,
+        Arc::clone(&node_registry),
+    )
+    .await
+    .expect("spawn_all_with_spawner() should succeed");
 
     let transport = Arc::clone(pool.transport());
     let mut dealer0 = connect_dealer(&transport, "0").await;
@@ -307,11 +315,13 @@ async fn test_shutdown_all_awaits_exit() {
     let spawner = Arc::new(MockWorkerSpawner::new());
     let devices = vec![mock_device(0), mock_device(1)];
     let cfg = ServerConfig::default();
+    let node_registry = Arc::new(anvilml_core::NodeTypeRegistry::new());
 
     pool.spawn_all_with_spawner(
         &devices,
         &cfg,
         Arc::clone(&spawner) as Arc<dyn WorkerSpawner>,
+        Arc::clone(&node_registry),
     )
     .await
     .expect("spawn_all_with_spawner() should succeed");
@@ -364,11 +374,13 @@ async fn test_shutdown_all_force_kills_straggler() {
     let spawner = Arc::new(MockWorkerSpawner::new());
     let devices = vec![mock_device(0)];
     let cfg = ServerConfig::default();
+    let node_registry = Arc::new(anvilml_core::NodeTypeRegistry::new());
 
     pool.spawn_all_with_spawner(
         &devices,
         &cfg,
         Arc::clone(&spawner) as Arc<dyn WorkerSpawner>,
+        Arc::clone(&node_registry),
     )
     .await
     .expect("spawn_all_with_spawner() should succeed");

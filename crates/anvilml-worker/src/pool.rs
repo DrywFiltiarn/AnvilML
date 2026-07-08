@@ -194,12 +194,17 @@ impl WorkerPool {
     /// `test-utils`-gated, so a plain, ungated build (e.g. `cargo clippy
     /// --workspace` without that feature) would fail to compile this
     /// method at all if it called through the gated wrapper.
+    ///
+    /// `node_registry` is the shared registry populated by worker Ready
+    /// events — each worker registers its own node types into this same
+    /// `Arc` so the scheduler and server handlers can query it.
     pub async fn spawn_all(
         &mut self,
         devices: &[GpuDevice],
         cfg: &ServerConfig,
+        node_registry: Arc<NodeTypeRegistry>,
     ) -> Result<(), AnvilError> {
-        self.spawn_all_impl(devices, cfg, Arc::new(ProcessWorkerSpawner))
+        self.spawn_all_impl(devices, cfg, Arc::new(ProcessWorkerSpawner), node_registry)
             .await
     }
 
@@ -253,8 +258,10 @@ impl WorkerPool {
         devices: &[GpuDevice],
         cfg: &ServerConfig,
         spawner: Arc<dyn WorkerSpawner>,
+        node_registry: Arc<NodeTypeRegistry>,
     ) -> Result<(), AnvilError> {
-        self.spawn_all_impl(devices, cfg, spawner).await
+        self.spawn_all_impl(devices, cfg, spawner, node_registry)
+            .await
     }
 
     /// Inject mock worker handles and devices into the pool for testing.
@@ -287,11 +294,17 @@ impl WorkerPool {
     /// full behavior. Private: not `test-utils`-gated, since it isn't
     /// itself part of any public contract, only reached through the two
     /// gated/ungated public wrappers above.
+    ///
+    /// `node_registry` is the shared registry that every worker registers
+    /// its node types into via the Ready event path — the scheduler and
+    /// server handlers query this same registry, so it must be shared
+    /// rather than a fresh per-worker instance.
     async fn spawn_all_impl(
         &mut self,
         devices: &[GpuDevice],
         cfg: &ServerConfig,
         spawner: Arc<dyn WorkerSpawner>,
+        node_registry: Arc<NodeTypeRegistry>,
     ) -> Result<(), AnvilError> {
         let log_level = std::env::var("ANVILML_LOG")
             .or_else(|_| std::env::var("RUST_LOG"))
@@ -334,7 +347,12 @@ impl WorkerPool {
                 transport: Arc::clone(&self.transport),
                 demux: Arc::clone(&self.demux),
                 status: Arc::clone(&status),
-                node_registry: Arc::new(NodeTypeRegistry::new()),
+                // Share the node registry with the scheduler and server —
+                // worker Ready events populate this same Arc so that
+                // `node_registry.is_empty()` in the scheduler is false
+                // once any worker has sent Ready.
+                // Clone the Arc for each worker (cheap ref-count bump).
+                node_registry: Arc::clone(&node_registry),
                 respawn_policy: RespawnPolicy::default(),
                 init_timeout: DEFAULT_INIT_TIMEOUT,
                 pong_tx,

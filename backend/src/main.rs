@@ -202,9 +202,19 @@ async fn main() {
     // channel into ManagedWorkers constructed after it's registered. See
     // crates/anvilml-scheduler/src/interim_job_completion.rs's module doc
     // comment for the full rationale and the Phase-16 replacement checklist.
-    let (job_completion_tx, job_completion_rx) =
-        tokio::sync::mpsc::unbounded_channel::<(uuid::Uuid, anvilml_core::JobStatus, Option<String>)>();
+    let (job_completion_tx, job_completion_rx) = tokio::sync::mpsc::unbounded_channel::<(
+        uuid::Uuid,
+        anvilml_core::JobStatus,
+        Option<String>,
+    )>();
     worker_pool.set_job_completion_tx(job_completion_tx);
+
+    // Create the shared node registry before spawning workers.
+    // Clone the Arc and pass it to spawn_all() so each ManagedWorker
+    // registers its node types into this same registry — the scheduler
+    // and server handlers query the same Arc, so `is_empty()` returns
+    // false once any worker has sent a Ready event.
+    let node_registry = Arc::new(NodeTypeRegistry::new());
 
     // Spawn a Python worker subprocess for each detected device.
     // Each worker connects to the RouterTransport's DEALER socket,
@@ -212,7 +222,7 @@ async fn main() {
     // With mock-hardware: spawns mock workers (no real Python interpreter).
     // Without mock-hardware: spawns real Python workers that import torch.
     worker_pool
-        .spawn_all(&hw_info.gpus, &config)
+        .spawn_all(&hw_info.gpus, &config, Arc::clone(&node_registry))
         .await
         .expect("WorkerPool::spawn_all() must succeed at startup");
 
@@ -223,10 +233,6 @@ async fn main() {
     );
 
     let workers = Arc::new(worker_pool);
-
-    // Create the node registry — it will be shared between the AppState
-    // and the scheduler, then populated when Python workers send Ready.
-    let node_registry = Arc::new(NodeTypeRegistry::new());
 
     // Construct the job scheduler with the database pool.
     // The scheduler owns the in-memory job queue and dispatch loop;
@@ -241,10 +247,8 @@ async fn main() {
     // expose it back out. See interim_job_completion.rs's module doc
     // comment for the full rationale and the Phase-16 replacement checklist.
     let job_store_for_completion_listener = Arc::new(JobStore::new(pool.clone()));
-    let _job_completion_listener_handle = spawn_interim_job_completion_listener(
-        job_store_for_completion_listener,
-        job_completion_rx,
-    );
+    let _job_completion_listener_handle =
+        spawn_interim_job_completion_listener(job_store_for_completion_listener, job_completion_rx);
     tracing::info!("interim job-completion listener started (INTERIM-P14-PATCH)");
 
     // Keep the dispatch loop's JoinHandle (not discarded via `_`) — the

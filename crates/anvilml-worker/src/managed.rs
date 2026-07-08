@@ -511,7 +511,8 @@ pub struct ManagedWorker {
     /// Phase 16's `P16-A1`/`P16-A2` must replace this field, its setter, and
     /// its two `handle_event()` call sites wholesale with the real
     /// `EventBroadcaster`-based design — not extend or build alongside it.
-    job_completion_tx: Option<tokio::sync::mpsc::UnboundedSender<(Uuid, JobStatus, Option<String>)>>,
+    job_completion_tx:
+        Option<tokio::sync::mpsc::UnboundedSender<(Uuid, JobStatus, Option<String>)>>,
 }
 
 /// Construction parameters for `ManagedWorker::new()`.
