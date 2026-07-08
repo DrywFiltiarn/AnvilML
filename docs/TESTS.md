@@ -5223,3 +5223,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** A constructed `AppState` with a `JobScheduler` containing an `Arc<NodeTypeRegistry>`.
 **Expected output:** `cloned.scheduler.node_registry.list()` returns the same registered nodes as `state.scheduler.node_registry.list()`.
 **Acceptance:** `cargo test -p anvilml-server --test state_tests test_app_state_scheduler_arc_sharing` exits 0.
+
+---
+
+## test_submit_job_valid_returns_202 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `serde_json` dev-dependency. `build_router()` accepts an `AppState` with a populated `NodeTypeRegistry` containing one registered `NodeTypeDescriptor`.
+**Tests:** `POST /v1/jobs` with a valid graph referencing a registered node type returns `202 Accepted` with a `job_id` (valid UUID v4 string) and `queue_position` of 1. The scheduler's `submit()` method validates the graph, persists the job, enqueues it, and returns `(job_id, queue_position)`.
+**Mode:** both
+**Inputs:** JSON body `{"graph": {"nodes": [{"id": "node1", "type": "TestNode", "inputs": {}, "outputs": {}}]}, "settings": {"device_preference": null}}` with an empty registry populated by one `NodeTypeDescriptor` (`TestNode`).
+**Expected output:** `StatusCode::ACCEPTED`; JSON body `{ "job_id": "<uuid>", "queue_position": 1 }`.
+**Acceptance:** `cargo test -p anvilml-server --test jobs_tests test_submit_job_valid_returns_202` exits 0.
+
+---
+
+## test_submit_job_malformed_body_returns_400 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `serde_json` dev-dependency. The `axum::Json` extractor returns a `Serde` error for malformed input.
+**Tests:** `POST /v1/jobs` with invalid JSON (`{not valid json}`) returns `400 Bad Request`. The `axum::Json` extractor fails to deserialize the body and returns an error, which `AnvilError::IntoResponse` maps to HTTP 400.
+**Mode:** both
+**Inputs:** Raw body `{not valid json}` with `content-type: application/json` header.
+**Expected output:** `StatusCode::BAD_REQUEST`.
+**Acceptance:** `cargo test -p anvilml-server --test jobs_tests test_submit_job_malformed_body_returns_400` exits 0.
+
+---
+
+## test_submit_job_empty_registry_returns_503 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `serde_json` dev-dependency. The `NodeTypeRegistry` is empty (no workers registered).
+**Tests:** `POST /v1/jobs` with a structurally valid graph but an empty `NodeTypeRegistry` returns `503 Service Unavailable`. The scheduler's workers-available guard rejects the submission before validation, returning `AnvilError::WorkersUnavailable` which maps to HTTP 503.
+**Mode:** both
+**Inputs:** JSON body `{"graph": {"nodes": [{"id": "node1", "type": "TestNode", "inputs": {}, "outputs": {}}]}, "settings": {"device_preference": null}}` with an empty `NodeTypeRegistry`.
+**Expected output:** `StatusCode::SERVICE_UNAVAILABLE`.
+**Acceptance:** `cargo test -p anvilml-server --test jobs_tests test_submit_job_empty_registry_returns_503` exits 0.
+
+---
+
+## test_submit_job_invalid_graph_returns_400 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `serde_json` dev-dependency. The `NodeTypeRegistry` is populated with one node type (`RegisteredNode`), but the graph references a different unregistered type (`UnknownNode`).
+**Tests:** `POST /v1/jobs` with a graph containing an unknown node type returns `400 Bad Request`. The scheduler's graph validator detects the unknown type and returns `AnvilError::InvalidGraph` which maps to HTTP 400.
+**Mode:** both
+**Inputs:** JSON body `{"graph": {"nodes": [{"id": "node1", "type": "UnknownNode", "inputs": {}, "outputs": {}}]}, "settings": {"device_preference": null}}` with a registry containing only `RegisteredNode`.
+**Expected output:** `StatusCode::BAD_REQUEST`.
+**Acceptance:** `cargo test -p anvilml-server --test jobs_tests test_submit_job_invalid_graph_returns_400` exits 0.

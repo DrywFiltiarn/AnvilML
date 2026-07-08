@@ -18,6 +18,7 @@ pub use state::AppState;
 pub fn build_router(app_state: AppState) -> axum::Router {
     axum::Router::new()
         .route("/health", axum::routing::get(handlers::health::health))
+        .route("/v1/jobs", axum::routing::post(handlers::jobs::submit_job))
         .route("/v1/nodes", axum::routing::get(handlers::nodes::list_nodes))
         .with_state(app_state)
 }

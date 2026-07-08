@@ -178,7 +178,7 @@ async fn test_submit_valid_persists_and_queues() {
 
     // The submission must succeed with a valid job ID.
     assert!(result.is_ok(), "submit() must return Ok for valid graph");
-    let job_id = result.unwrap();
+    let (job_id, _queue_position) = result.unwrap();
     assert!(!job_id.is_nil(), "returned job ID must not be nil");
 }
 
@@ -228,7 +228,7 @@ async fn test_cancel_queued_job_returns_true() {
     let scheduler = JobScheduler::new(store, registry);
 
     // Submit a job — it is persisted and enqueued.
-    let job_id = scheduler
+    let (job_id, _queue_position) = scheduler
         .submit(
             make_valid_graph(),
             JobSettings {
@@ -282,7 +282,7 @@ async fn test_get_job_returns_persisted_job() {
     let scheduler = JobScheduler::new(store, registry);
 
     // Submit a job — it is persisted to the database.
-    let job_id = scheduler
+    let (job_id, _queue_position) = scheduler
         .submit(
             make_valid_graph(),
             JobSettings {
@@ -385,7 +385,7 @@ async fn test_submit_wakes_dispatch_loop() {
     let handle = scheduler.clone().start_dispatch_loop(Arc::clone(&workers));
 
     // Submit a job — this calls dispatch_notify.notify_one().
-    let job_id = scheduler
+    let (job_id, _queue_position) = scheduler
         .submit(
             make_valid_graph(),
             JobSettings {
@@ -444,7 +444,7 @@ async fn test_dispatch_loop_survives_multiple_wakes() {
 
     // Submit three jobs sequentially, each waking the dispatch loop.
     for _i in 0..3 {
-        let job_id = scheduler
+        let (job_id, _queue_position) = scheduler
             .submit(
                 make_valid_graph(),
                 JobSettings {
@@ -538,7 +538,7 @@ async fn test_device_preference_wins_over_vram_ranking() {
 
     // Submit a job with device_preference — it stays queued since no
     // workers are idle (no workers spawned).
-    let job_id = scheduler
+    let (job_id, _queue_position) = scheduler
         .submit(
             make_valid_graph(),
             JobSettings {
@@ -586,7 +586,7 @@ async fn test_vram_ranking_picks_highest_free_idle() {
     let handle = scheduler.clone().start_dispatch_loop(Arc::clone(&workers));
 
     // Submit a job with no device_preference.
-    let job_id = scheduler
+    let (job_id, _queue_position) = scheduler
         .submit(
             make_valid_graph(),
             JobSettings {
@@ -633,7 +633,7 @@ async fn test_no_idle_workers_leaves_job_queued() {
     let handle = scheduler.clone().start_dispatch_loop(Arc::clone(&workers));
 
     // Submit a job — it goes to the queue.
-    let job_id = scheduler
+    let (job_id, _queue_position) = scheduler
         .submit(
             make_valid_graph(),
             JobSettings {
@@ -688,7 +688,7 @@ async fn test_multiple_queued_jobs_get_distinct_workers() {
     let handle = scheduler.clone().start_dispatch_loop(Arc::clone(&workers));
 
     // Submit two jobs sequentially.
-    let job_id_1 = scheduler
+    let (job_id_1, _queue_position_1) = scheduler
         .submit(
             make_valid_graph(),
             JobSettings {
@@ -698,7 +698,7 @@ async fn test_multiple_queued_jobs_get_distinct_workers() {
         .await
         .expect("first submit must succeed");
 
-    let job_id_2 = scheduler
+    let (job_id_2, _queue_position_2) = scheduler
         .submit(
             make_valid_graph(),
             JobSettings {
@@ -761,7 +761,7 @@ async fn test_device_preference_none_falls_back_to_vram_ranking() {
     let scheduler = Arc::new(scheduler);
     let handle = scheduler.clone().start_dispatch_loop(Arc::clone(&workers));
 
-    let job_id = scheduler
+    let (job_id, _queue_position) = scheduler
         .submit(
             make_valid_graph(),
             JobSettings {
@@ -804,7 +804,7 @@ async fn test_dispatch_one_returns_false_when_no_idle() {
         .expect("empty pool must construct");
 
     // Submit a job first to get a valid Job object.
-    let job_id = scheduler
+    let (job_id, _queue_position) = scheduler
         .submit(
             make_valid_graph(),
             JobSettings {
@@ -857,7 +857,7 @@ async fn test_dispatch_one_no_op_without_idle() {
         .await
         .expect("empty pool must construct");
 
-    let job_id = scheduler
+    let (job_id, _queue_position) = scheduler
         .submit(
             make_valid_graph(),
             JobSettings {
@@ -906,7 +906,7 @@ async fn test_dispatch_one_no_transition_without_idle() {
         .await
         .expect("empty pool must construct");
 
-    let job_id = scheduler
+    let (job_id, _queue_position) = scheduler
         .submit(
             make_valid_graph(),
             JobSettings {
@@ -1004,7 +1004,7 @@ async fn test_dispatch_one_test_wrapper_collapses_failed_to_false() {
     pool.set_up_test_workers(vec![(handle, device)]);
 
     // Submit a job to get a valid Job object.
-    let job_id = scheduler
+    let (job_id, _queue_position) = scheduler
         .submit(
             make_valid_graph(),
             JobSettings {
@@ -1116,7 +1116,7 @@ async fn test_ranking_selection_deterministic_and_workers_end_idle() {
     pool.set_up_test_workers(vec![(handle_0, device_0), (handle_1, device_1)]);
 
     // Submit and dispatch two jobs.
-    let job_1 = scheduler
+    let (job_1, _queue_position_1) = scheduler
         .submit(
             make_valid_graph(),
             JobSettings {
@@ -1131,7 +1131,7 @@ async fn test_ranking_selection_deterministic_and_workers_end_idle() {
         .expect("get_job must not error")
         .expect("job 1 must exist");
 
-    let job_2 = scheduler
+    let (job_2, _queue_position_2) = scheduler
         .submit(
             make_valid_graph(),
             JobSettings {
@@ -1285,7 +1285,7 @@ async fn test_busy_worker_excluded_from_ranking() {
     ]);
 
     // Submit and dispatch one job.
-    let job_id = scheduler
+    let (job_id, _queue_position) = scheduler
         .submit(
             make_valid_graph(),
             JobSettings {
@@ -1393,7 +1393,7 @@ async fn test_dispatch_one_reverts_worker_idle_after_send_failure() {
     pool.set_up_test_workers(vec![(handle, device)]);
 
     // Submit and dispatch a job.
-    let job_id = scheduler
+    let (job_id, _queue_position) = scheduler
         .submit(
             make_valid_graph(),
             JobSettings {
@@ -1545,7 +1545,7 @@ async fn test_dispatch_one_dispatched_via_real_dealer_peer() {
 
     pool.set_up_test_workers(vec![(handle, device)]);
 
-    let job_id = scheduler
+    let (job_id, _queue_position) = scheduler
         .submit(
             make_valid_graph(),
             JobSettings {
@@ -1611,6 +1611,8 @@ async fn test_dispatch_one_dispatched_via_real_dealer_peer() {
             device_index,
             ..
         } => {
+            // Compare the received job ID (from the Execute message) with the
+            // submitted job ID (the Uuid extracted from the submit() return tuple).
             assert_eq!(received_job_id, job_id);
             assert_eq!(device_index, 0);
         }

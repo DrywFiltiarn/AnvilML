@@ -135,7 +135,8 @@ impl JobScheduler {
     ///
     /// Enforces the "no workers = reject" guard, validates the computation graph,
     /// constructs a `Queued` job, persists it to the database, enqueues it in the
-    /// in-memory queue, notifies the dispatch loop, and returns the job ID.
+    /// in-memory queue, notifies the dispatch loop, and returns the job ID and
+    /// its position in the queue.
     ///
     /// # Steps
     ///
@@ -155,12 +156,18 @@ impl JobScheduler {
     ///    in-memory queue.
     /// 6. **Notify**: Calls `dispatch_notify.notify_one()` to wake the dispatch
     ///    loop task (introduced in a later phase).
-    /// 7. **Return**: Returns `Ok(job.id)`.
+    /// 7. **Return**: Returns `Ok((job.id, queue_position))`.
     ///
     /// The critical sequencing is: validate → construct → persist (async) → enqueue
     /// → notify. The queue mutex is held across the `upsert` await to prevent a race
     /// where the dispatch loop (in a future phase) pops the job before it has been
     /// enqueued.
+    ///
+    /// # Returns
+    ///
+    /// A `(Uuid, u32)` pair: the job ID and its 1-based position in the queue
+    /// (i.e. `queue.len()` after the push). The queue position is captured while
+    /// the mutex is held, so it is accurate at the time of submission.
     ///
     /// # Errors
     ///
@@ -168,7 +175,11 @@ impl JobScheduler {
     /// Returns `AnvilError::InvalidGraph` if the graph fails validation.
     /// Returns `AnvilError::Db` if the database persist operation fails.
     #[tracing::instrument(skip(self, graph), fields(job_id))]
-    pub async fn submit(&self, graph: Value, settings: JobSettings) -> Result<Uuid, AnvilError> {
+    pub async fn submit(
+        &self,
+        graph: Value,
+        settings: JobSettings,
+    ) -> Result<(Uuid, u32), AnvilError> {
         // Step a: Workers-available check. An empty registry means no worker has
         // reached Ready state, so we reject the submission before performing any
         // expensive validation or database I/O. Per ANVILML_DESIGN.md §12.2.
@@ -240,8 +251,17 @@ impl JobScheduler {
 
         tracing::info!(job_id = %job_id, "submitted job");
 
-        // Step g: Return the job ID.
-        Ok(job_id)
+        // Step g: Capture the queue position (1-based index) while still holding
+        // the mutex scope is closed above, so we read queue.len() here. This is
+        // the exact position this job occupies in the queue at submission time.
+        let queue_position = {
+            let queue = self.queue.lock().await;
+            queue.len() as u32
+        };
+
+        // Step h: Return the job ID and its queue position. The caller (HTTP
+        // handler) uses this to construct the 202 response body.
+        Ok((job_id, queue_position))
     }
 
     /// Cancel a queued job by its ID.
