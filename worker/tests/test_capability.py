@@ -64,16 +64,24 @@ class TestProbeDtypes:
     def test_fp8_cpu_returns_false(self) -> None:
         """fp8 probe on CPU returns False.
 
-        This is the critical correctness test: ``torch.float8_e4m3fn``
-        on CPU raises ``NotImplementedError``, and the probe must catch
-        it and return False. This is correct behavior — not a bug to
-        "fix" — because fp8 compute is a GPU-only feature on current
-        torch CPU builds.
+        This is the critical correctness test: float8 matmul is not
+        implemented for the CPU backend, and the probe must catch the
+        resulting exception and return False. This is correct behavior —
+        not a bug to "fix" — because fp8 compute is a GPU-only feature on
+        current torch CPU builds.
+
+        Note: _probe_dtype() constructs its layer/input in float32 and
+        casts to the target dtype (not directly in dtype) specifically so
+        this False reflects the CPU backend's genuine lack of fp8 matmul
+        support — not an unrelated RNG-construction limitation that
+        previously affected every backend equally, GPU included, and
+        masked real fp8 hardware support on capable GPUs. See
+        _probe_dtype()'s own inline comment for the full explanation.
         """
         result = capability.probe_capabilities("cpu", 0)
         assert result["fp8"] is False, (
-            "fp8 should not be supported on CPU (NotImplementedError "
-            "is correct, not a bug)"
+            "fp8 should not be supported on CPU (matmul not implemented "
+            "for this backend/dtype combination is correct, not a bug)"
         )
 
     def test_fp4_cpu_returns_false(self) -> None:
@@ -81,13 +89,53 @@ class TestProbeDtypes:
 
         Torch 2.x does not expose a native fp4 dtype. The probe attempts
         ``torch.float8_e4m3fn`` as the closest available format; on CPU
-        this raises NotImplementedError, so fp4 is correctly reported as
-        False. This confirms the probe probes rather than hardcodes.
+        this correctly fails (no float8 matmul kernel for this backend),
+        so fp4 is correctly reported as False. This confirms the probe
+        probes rather than hardcodes. See test_fp8_cpu_returns_false's
+        docstring for why this is now the genuine backend limitation, not
+        an artifact of how the probe tensors are constructed.
         """
         result = capability.probe_capabilities("cpu", 0)
         assert result["fp4"] is False, (
             "fp4 should not be supported (no native torch.float4 dtype; "
-            "probe attempts float8_e4m3fn which fails on CPU)"
+            "probe attempts float8_e4m3fn which has no CPU matmul kernel)"
+        )
+
+    def test_float8_tensor_construction_via_cast_does_not_raise(self) -> None:
+        """Constructing a float8 tensor via cast-from-float32 succeeds.
+
+        Regression test isolating the actual mechanism _probe_dtype() now
+        relies on, independent of the full probe_capabilities() call and
+        of any specific backend's matmul support. torch.randn() does not
+        implement its RNG kernel for float8_e4m3fn directly on any
+        backend (confirmed here on CPU) — but casting a float32 tensor to
+        float8 after generation is unaffected by that limitation on any
+        backend, since it's a cast, not an RNG kernel invocation. This is
+        the specific step that previously caused _probe_dtype() to return
+        False universally regardless of real hardware fp8 support,
+        including on capable GPUs — see _probe_dtype()'s inline comment.
+
+        This test does not (and cannot, without real GPU hardware) verify
+        that fp8 matmul succeeds on a capable GPU — only that the
+        construction step which used to fail everywhere now succeeds
+        everywhere, letting the actual backend-dependent matmul below it
+        be what determines the result.
+
+        Preconditions: torch is importable (enforced by module-level
+        importorskip).
+        Expected output: No exception raised during construction or cast.
+        """
+        # Directly reproduces _probe_dtype()'s construction approach for
+        # torch.float8_e4m3fn, without depending on the full probe or on
+        # matmul actually succeeding afterward.
+        x = torch.randn(1, 4, dtype=torch.float32).to(torch.float8_e4m3fn)
+        assert x.dtype == torch.float8_e4m3fn, (
+            "cast must actually produce a float8_e4m3fn tensor"
+        )
+
+        layer = torch.nn.Linear(4, 4, dtype=torch.float32).to(torch.float8_e4m3fn)
+        assert layer.weight.dtype == torch.float8_e4m3fn, (
+            "cast must actually produce float8_e4m3fn layer weights"
         )
 
 

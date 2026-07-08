@@ -21,14 +21,19 @@ logger = logging.getLogger(__name__)
 def _probe_dtype(dtype: torch.dtype) -> bool:
     """Probe whether *dtype* is supported by constructing a tiny linear layer.
 
-    Creates ``torch.nn.Linear(4, 4, dtype=dtype)`` on the current device,
-    runs one forward pass with a ``(1, 4)`` tensor of the same dtype, and
-    returns ``True`` if no exception is raised.
+    Constructs the layer and input tensor in float32, casts both to *dtype*
+    via ``.to(dtype)``, then runs one forward pass and returns ``True`` if
+    no exception is raised.
+
+    Deliberately NOT constructed directly in *dtype* (e.g.
+    ``torch.nn.Linear(4, 4, dtype=dtype)`` / ``torch.randn(..., dtype=dtype)``)
+    — see this function's own inline comment for why that previously masked
+    real GPU fp8 support entirely.
 
     Catches all exceptions broadly — the probe should never propagate
-    failures to the caller. A NotImplementedError (e.g. fp8 on CPU) or
-    a runtime error (e.g. unsupported dtype on a specific backend) are
-    both treated as "not supported."
+    failures to the caller. A NotImplementedError (e.g. fp8 matmul not
+    implemented for the CPU backend) or a runtime error (e.g. unsupported
+    dtype on a specific backend) are both treated as "not supported."
 
     Args:
         dtype: The torch dtype to probe (e.g. ``torch.float16``,
@@ -39,17 +44,32 @@ def _probe_dtype(dtype: torch.dtype) -> bool:
         ``False`` otherwise.
     """
     try:
-        # Tiny linear layer — 4x4 is enough to trigger dtype validation
-        # and a forward pass without consuming meaningful GPU memory.
-        layer = torch.nn.Linear(4, 4, dtype=dtype)
-        x = torch.randn(1, 4, dtype=dtype)
+        # Construct in float32, then cast down with .to(dtype) — do NOT
+        # construct directly in *dtype*. torch.randn(dtype=...) and
+        # nn.Linear's internal weight initialization (kaiming_uniform_)
+        # both call RNG kernels that are not implemented for 8-bit float
+        # types (float8_e4m3fn/e5m2) on *any* backend, CPU or GPU alike —
+        # this is a torch RNG limitation, unrelated to whether the target
+        # hardware actually supports float8 *compute*. Constructing
+        # directly in dtype meant this probe always hit that RNG
+        # limitation first and returned False universally, masking real
+        # fp8 hardware support even on GPUs with native float8 matmul
+        # (e.g. RDNA4/ROCm via hipBLASLt) — confirmed on real hardware,
+        # where this previously reported fp8=False despite the device
+        # genuinely supporting it. Casting from float32 sidesteps the RNG
+        # limitation entirely; the forward pass below (a real matmul at
+        # the target dtype) is what actually exercises hardware support,
+        # and that operation's success/failure genuinely does differ by
+        # backend — CPU still correctly returns False here (no float8
+        # matmul kernel implemented for CPU), but a capable GPU no longer
+        # gets a false negative from an unrelated RNG gap.
+        layer = torch.nn.Linear(4, 4, dtype=torch.float32).to(dtype)
+        x = torch.randn(1, 4, dtype=torch.float32).to(dtype)
         _ = layer(x)
         return True
     except Exception:
         # Any exception means this dtype is not usable on the current
-        # device. On CPU, torch.float8_e4m3fn raises NotImplementedError;
-        # on some older CUDA builds, exotic dtypes may raise runtime errors.
-        # We never propagate these — the caller expects a boolean.
+        # device. We never propagate these — the caller expects a boolean.
         return False
 
 
