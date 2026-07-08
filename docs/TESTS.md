@@ -5367,3 +5367,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `AppState` constructed with `ArtifactStore`, then cloned.
 **Expected output:** `std::ptr::eq()` returns `true` for the original and clone's `artifact_store` Arc pointers.
 **Acceptance:** `cargo test -p anvilml-server --test state_tests -- test_app_state_artifact_store_clone_shares` exits 0.
+
+---
+
+## test_list_artifacts_empty_store_returns_200_empty_array (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/artifacts_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `anvilml-artifacts` (path dependency), `anvilml-registry` (path dependency), `anvilml-scheduler` (path dependency), `tokio` (full), `sqlx` (sqlite), and `tower` (ServiceExt) dev-dependencies. `make_test_state()` constructs an `AppState` with in-memory SQLite pools and an `ArtifactStore` backed by `std::env::temp_dir()`.
+**Tests:** `GET /v1/artifacts` with an empty artifact store returns HTTP 200 with a JSON body that is an empty array `[]`.
+**Mode:** both
+**Inputs:** `make_test_state()` called with a fresh in-memory SQLite pool; no artifacts saved.
+**Expected output:** Response status is `StatusCode::OK` and body parses to `[]`.
+**Acceptance:** `cargo test -p anvilml-server --test artifacts_tests test_list_artifacts_empty_store_returns_200_empty_array` exits 0.
+
+---
+
+## test_list_artifacts_populated_returns_all (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/artifacts_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `anvilml-artifacts` (path dependency), `anvilml-registry` (path dependency), `anvilml-scheduler` (path dependency), `tokio` (full), `sqlx` (sqlite), and `tower` (ServiceExt) dev-dependencies. `make_test_state()` constructs an `AppState` with in-memory SQLite pools and an `ArtifactStore` backed by `std::env::temp_dir()`. `save_artifact()` helper saves an artifact by calling `ArtifactStore::save()` with synthetic PNG bytes.
+**Tests:** `GET /v1/artifacts` with no filter returns all artifacts saved in the store — two artifacts with distinct PNG bytes are saved, then the list endpoint is called and the returned array length is asserted to be 2.
+**Mode:** both
+**Inputs:** `make_test_state()` with a fresh pool; two artifacts saved via `save_artifact()` with different dimensions and seeds.
+**Expected output:** Response status is `StatusCode::OK` and body parses to a JSON array of length 2.
+**Acceptance:** `cargo test -p anvilml-server --test artifacts_tests test_list_artifacts_populated_returns_all` exits 0.
+
+---
+
+## test_list_artifacts_job_id_filter_returns_matching (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/artifacts_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `anvilml-artifacts` (path dependency), `anvilml-registry` (path dependency), `anvilml-scheduler` (path dependency), `tokio` (full), `sqlx` (sqlite), and `tower` (ServiceExt) dev-dependencies. Two artifacts are saved with different `job_id` values. The `?job_id=` query parameter is passed via the request URL.
+**Tests:** `GET /v1/artifacts?job_id=<uuid>` filters to only artifacts matching the given job ID — saves two artifacts with different `job_id` values, then lists with the first job's UUID and asserts the returned array has length 1 with the correct job_id.
+**Mode:** both
+**Inputs:** `make_test_state()` with a fresh pool; two artifacts saved with distinct `job_id` UUIDs; request URL includes `?job_id=<first_uuid>`.
+**Expected output:** Response status is `StatusCode::OK`, body array length is 1, and the returned artifact's `job_id` matches the filter.
+**Acceptance:** `cargo test -p anvilml-server --test artifacts_tests test_list_artifacts_job_id_filter_returns_matching` exits 0.
+
+---
+
+## test_list_artifacts_json_shape (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/artifacts_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `anvilml-artifacts` (path dependency), `anvilml-registry` (path dependency), `anvilml-scheduler` (path dependency), `tokio` (full), `sqlx` (sqlite), and `tower` (ServiceExt) dev-dependencies. One artifact is saved, then the response body is deserialized into `serde_json::Value` and each field of `ArtifactMeta` is individually type-checked.
+**Tests:** `GET /v1/artifacts` returns a JSON array where each element has all `ArtifactMeta` fields with correct types: `hash` (string), `job_id` (string, UUID format), `width` (integer), `height` (integer), `steps` (integer), `seed` (integer), `created_at` (string), `file_path` (string).
+**Mode:** both
+**Inputs:** `make_test_state()` with a fresh pool; one artifact saved with dimensions 512x512, seed 42, steps 20.
+**Expected output:** Response status is `StatusCode::OK`, body array length is 1, and all field names and types match `ArtifactMeta`'s serialization.
+**Acceptance:** `cargo test -p anvilml-server --test artifacts_tests test_list_artifacts_json_shape` exits 0.

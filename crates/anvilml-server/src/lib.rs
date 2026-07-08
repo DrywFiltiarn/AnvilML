@@ -31,5 +31,10 @@ pub fn build_router(app_state: AppState) -> axum::Router {
         // Axum 0.8+ uses `{capture}` syntax instead of `:capture` for path params.
         .route("/v1/jobs/{id}", axum::routing::get(handlers::jobs::get_job))
         .route("/v1/nodes", axum::routing::get(handlers::nodes::list_nodes))
+        // GET /v1/artifacts — list artifact metadata (with optional job_id filter)
+        .route(
+            "/v1/artifacts",
+            axum::routing::get(handlers::artifacts::list_artifacts),
+        )
         .with_state(app_state)
 }
