@@ -25,6 +25,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tokio::io::AsyncBufReadExt;
 use tokio::sync::RwLock;
 use tokio::sync::oneshot;
 
@@ -933,6 +934,81 @@ impl ManagedWorker {
         // dropped (and its OS process left running, unmanaged) the moment
         // this match arm ends.
         self.child = Some(child);
+
+        // Take stdout/stderr out of the Child and spawn one background
+        // reader task per stream, logging each line as it arrives.
+        //
+        // spawn.rs pipes both streams (Stdio::piped()) specifically so the
+        // supervisor can read them, but nothing previously did — meaning a
+        // worker's own crash traceback (import errors, torch/ROCm
+        // failures, anything printed before or after Ready) was captured
+        // into an OS pipe buffer and then silently discarded when the
+        // Child was dropped. This was invisible for every failure mode
+        // that doesn't also close the IPC channel or report via WorkerEvent
+        // — which, per this generation's own doc comment on `event_rx`'s
+        // binding, is not guaranteed for a worker that dies (or simply
+        // never progresses) without ever completing its IPC handshake.
+        //
+        // .take() leaves None in the Child's own stdout/stderr fields —
+        // harmless, since nothing else reads them afterward. Each task
+        // ends naturally at EOF (the pipe closes when the child process
+        // exits or closes the stream itself); no explicit cancellation is
+        // needed since these are fire-and-forget background tasks scoped
+        // to this generation's child lifetime.
+        if let Some(stdout) = self
+            .child
+            .as_mut()
+            .expect("self.child was just set to Some(child) immediately above")
+            .stdout
+            .take()
+        {
+            let worker_id = self.worker_id.clone();
+            tokio::spawn(async move {
+                let mut lines = tokio::io::BufReader::new(stdout).lines();
+                loop {
+                    match lines.next_line().await {
+                        Ok(Some(line)) => {
+                            tracing::debug!(worker_id = %worker_id, stream = "stdout", %line, "worker_output");
+                        }
+                        Ok(None) => break, // EOF — child closed stdout or exited.
+                        Err(e) => {
+                            tracing::warn!(worker_id = %worker_id, stream = "stdout", error = %e, "worker_output_read_failed");
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+        if let Some(stderr) = self
+            .child
+            .as_mut()
+            .expect("self.child was just set to Some(child) immediately above")
+            .stderr
+            .take()
+        {
+            let worker_id = self.worker_id.clone();
+            tokio::spawn(async move {
+                let mut lines = tokio::io::BufReader::new(stderr).lines();
+                loop {
+                    match lines.next_line().await {
+                        Ok(Some(line)) => {
+                            // warn, not debug: stderr is where an uncaught
+                            // Python traceback (the exact thing this task
+                            // exists to surface) lands. A healthy worker's
+                            // stderr should be silent, so this level makes
+                            // real output impossible to miss even without
+                            // debug logging enabled.
+                            tracing::warn!(worker_id = %worker_id, stream = "stderr", %line, "worker_output");
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            tracing::warn!(worker_id = %worker_id, stream = "stderr", error = %e, "worker_output_read_failed");
+                            break;
+                        }
+                    }
+                }
+            });
+        }
 
         // Reassign the Job Object's kill-on-close protection to this
         // generation's child (P8-E7). Every generation, gen 0 and every
