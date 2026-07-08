@@ -18,7 +18,18 @@ pub use state::AppState;
 pub fn build_router(app_state: AppState) -> axum::Router {
     axum::Router::new()
         .route("/health", axum::routing::get(handlers::health::health))
-        .route("/v1/jobs", axum::routing::post(handlers::jobs::submit_job))
+        // GET /v1/jobs — list jobs (with optional status/limit filters)
+        // POST /v1/jobs — submit a new job
+        // The GET route must be registered before the /v1/jobs/{id} route
+        // so axum matches the literal path `/v1/jobs` before the parameterised
+        // path `/v1/jobs/{id}`.
+        .route(
+            "/v1/jobs",
+            axum::routing::get(handlers::jobs::list_jobs).post(handlers::jobs::submit_job),
+        )
+        // GET /v1/jobs/{id} — look up a single job by UUID
+        // Axum 0.8+ uses `{capture}` syntax instead of `:capture` for path params.
+        .route("/v1/jobs/{id}", axum::routing::get(handlers::jobs::get_job))
         .route("/v1/nodes", axum::routing::get(handlers::nodes::list_nodes))
         .with_state(app_state)
 }

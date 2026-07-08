@@ -319,6 +319,33 @@ impl JobScheduler {
         Ok(job)
     }
 
+    /// List jobs, optionally filtered by status and limited in count.
+    ///
+    /// Delegates to `JobStore::list()` which queries the `jobs` table.
+    /// This is the authoritative source for all jobs, including those that
+    /// have already left the in-memory queue (Completed, Failed, Cancelled).
+    ///
+    /// # Arguments
+    ///
+    /// * `status` — Optional status filter. When `None`, all jobs are returned.
+    /// * `limit` — Optional maximum number of rows to return. When `None`,
+    ///   all matching rows are returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AnvilError::Db` if the database query fails.
+    /// Returns `AnvilError::Serde` if the status filter serializes unexpectedly.
+    #[tracing::instrument(skip(self), fields(status, limit))]
+    pub async fn list_jobs(
+        &self,
+        status: Option<JobStatus>,
+        limit: Option<u32>,
+    ) -> Result<Vec<Job>, AnvilError> {
+        let jobs = self.job_store.list(status, limit).await?;
+        tracing::debug!(count = jobs.len(), "listed jobs from database");
+        Ok(jobs)
+    }
+
     /// Attempt to dispatch a single job to an idle worker.
     ///
     /// Implements the two-step worker selection algorithm from

@@ -5271,3 +5271,75 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** JSON body `{"graph": {"nodes": [{"id": "node1", "type": "UnknownNode", "inputs": {}, "outputs": {}}]}, "settings": {"device_preference": null}}` with a registry containing only `RegisteredNode`.
 **Expected output:** `StatusCode::BAD_REQUEST`.
 **Acceptance:** `cargo test -p anvilml-server --test jobs_tests test_submit_job_invalid_graph_returns_400` exits 0.
+
+---
+
+## test_list_jobs_no_filter_returns_all (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `tokio` (full), `tower`, `serde_json`, `chrono` (serde), and `uuid` (v4) dev-dependencies. `build_router()` accepts an `AppState` with an in-memory SQLite pool and a populated `NodeTypeRegistry`.
+**Tests:** `GET /v1/jobs` with no query params returns all submitted jobs (200, non-empty array).
+**Mode:** both
+**Inputs:** Submit one job via `POST /v1/jobs`, then `GET /v1/jobs` with no query params.
+**Expected output:** `StatusCode::OK`; JSON array with at least 1 job object.
+**Acceptance:** `cargo test -p anvilml-server --test jobs_tests test_list_jobs_no_filter_returns_all` exits 0.
+
+---
+
+## test_list_jobs_status_filter (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `tokio` (full), `tower`, `serde_json`, `chrono` (serde), and `uuid` (v4) dev-dependencies.
+**Tests:** `GET /v1/jobs?status=queued` returns only jobs matching the status filter.
+**Mode:** both
+**Inputs:** Submit two jobs via `POST /v1/jobs`, then `GET /v1/jobs?status=queued`.
+**Expected output:** `StatusCode::OK`; JSON array with exactly 2 jobs (both are `queued`).
+**Acceptance:** `cargo test -p anvilml-server --test jobs_tests test_list_jobs_status_filter` exits 0.
+
+---
+
+## test_list_jobs_limit (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `tokio` (full), `tower`, `serde_json`, `chrono` (serde), and `uuid` (v4) dev-dependencies.
+**Tests:** `GET /v1/jobs?limit=2` returns at most 2 jobs.
+**Mode:** both
+**Inputs:** Submit three jobs via `POST /v1/jobs`, then `GET /v1/jobs?limit=2`.
+**Expected output:** `StatusCode::OK`; JSON array with at most 2 jobs.
+**Acceptance:** `cargo test -p anvilml-server --test jobs_tests test_list_jobs_limit` exits 0.
+
+---
+
+## test_get_job_existing_returns_200 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `tokio` (full), `tower`, `serde_json`, and `uuid` (v4) dev-dependencies.
+**Tests:** `GET /v1/jobs/:id` on an existing job returns 200 with correct job data.
+**Mode:** both
+**Inputs:** Submit a job via `POST /v1/jobs`, extract `job_id` from the response, then `GET /v1/jobs/{job_id}`.
+**Expected output:** `StatusCode::OK`; JSON body with matching `job_id`.
+**Acceptance:** `cargo test -p anvilml-server --test jobs_tests test_get_job_existing_returns_200` exits 0.
+
+---
+
+## test_get_job_unknown_returns_404 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `tokio` (full), `tower`, `serde_json`, and `uuid` (v4) dev-dependencies.
+**Tests:** `GET /v1/jobs/:id` on a non-existent UUID returns 404.
+**Mode:** both
+**Inputs:** `GET /v1/jobs/{random_uuid}` where the UUID was never submitted.
+**Expected output:** `StatusCode::NOT_FOUND`.
+**Acceptance:** `cargo test -p anvilml-server --test jobs_tests test_get_job_unknown_returns_404` exits 0.
+
+---
+
+## test_list_jobs_before_param_accepted (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `tokio` (full), `tower`, `serde_json`, and `uuid` (v4) dev-dependencies.
+**Tests:** `GET /v1/jobs?before=2026-07-08T00:00:00Z` returns 200 — the `before` query param is accepted at the HTTP layer but ignored by the persistence layer (forward-compatibility per `ANVILML_DESIGN.md §13.4`).
+**Mode:** both
+**Inputs:** Submit one job via `POST /v1/jobs`, then `GET /v1/jobs?before=2026-07-08T00:00:00Z`.
+**Expected output:** `StatusCode::OK`; JSON array with at least 1 job.
+**Acceptance:** `cargo test -p anvilml-server --test jobs_tests test_list_jobs_before_param_accepted` exits 0.

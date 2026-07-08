@@ -138,16 +138,17 @@
     "P14-A5",
     "P14-B1",
     "P14-C1",
-    "P14-C2"
+    "P14-C2",
+    "P14-D1"
   ],
-  "in_progress": "P14-D1",
+  "in_progress": "P14-D2",
   "plan_approved": true,
-  "current_plan": "1. **Modify `JobScheduler::submit()` to return `(Uuid, u32)`.**\n   Change the return type from `Result<Uuid, AnvilError>` to\n   `Result<(Uuid, u32), AnvilError>`. After `queue.push(job)` (step e in the current\n   implementation), capture `queue.len()` as the queue position and return\n   `(job_id, queue_position as u32)`. This is the only caller of `submit()` in the\n   codebase (the HTTP handler), so no other call sites need updating.\n\n2. **Create `crates/anvilml-server/src/handlers/jobs.rs`.**\n   Define two new HTTP-layer structs:\n   ```rust\n   #[derive(Debug, Deserialize)]\n   pub(crate) struct SubmitJobRequest {\n       pub graph: serde_json::Value,\n       pub settings: JobSettings,\n   }\n   ```\n   ```rust\n   #[derive(Debug, Serialize)]\n   pub(crate) struct SubmitJobResponse {\n       pub job_id: Uuid,\n       pub queue_position: u32,\n   }\n   ```\n   Define the handler:\n   ```rust\n   pub(crate) async fn submit_job(\n       State(state): State<AppState>,\n       Json(body): Json<SubmitJobRequest>,\n   ) -> Result<(StatusCode, Json<SubmitJobResponse>), AnvilError> {\n       let (job_id, queue_position) = state.scheduler.submit(body.graph, body.settings).await?;\n       Ok((StatusCode::ACCEPTED, Json(SubmitJobResponse { job_id, queue_position })))\n   }\n   ```\n   The handler is a single-line delegation to `submit()` plus the status code and JSON\n   wrapper \u2014 zero business logic, per `ANVILML_DESIGN.md \u00a73.3`. On error, `AnvilError`'s\n   `IntoResponse` returns the appropriate status (503 for workers unavailable, 400 for\n   invalid graph).\n\n3. **Update `handlers/mod.rs`** to add `pub mod jobs;`.\n\n4. **Update `lib.rs`** to register the route in `build_router()`:\n   ```rust\n   .route(\"/v1/jobs\", axum::routing::post(handlers::jobs::submit_job))\n   ```\n\n5. **Create `crates/anvilml-server/tests/jobs_tests.rs`.**\n   Reuse the `make_test_pool()` and `make_test_state()` patterns from existing test files.\n   Write four tests:\n   - `test_submit_job_valid_returns_202`: Submit a valid graph with a populated registry,\n     assert status 202 and that the response contains a valid `job_id` (UUID format) and\n     `queue_position: 1`.\n   - `test_submit_job_malformed_body_returns_400`: Submit invalid JSON, assert status 400.\n   - `test_submit_job_empty_registry_returns_503`: Create state with an empty\n     `NodeTypeRegistry`, submit a valid graph, assert status 503.\n   - `test_submit_job_invalid_graph_returns_400`: Create state with a populated registry\n     but submit a graph that fails validation (e.g., unknown node type), assert status 400.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-08T11:31:36+0200",
-  "plan_approval_message_id": "1524162078900879390",
+  "last_updated": "2026-07-08T13:11:48+0200",
+  "plan_approval_message_id": "1524363827821678592",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1524162077160378578",
+  "plan_report_message_id": "1524363826244489247",
   "impl_report_message_id": null
 }
