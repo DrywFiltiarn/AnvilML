@@ -140,16 +140,17 @@
     "P14-C1",
     "P14-C2",
     "P14-D1",
-    "P14-D2"
+    "P14-D2",
+    "P14-E1"
   ],
-  "in_progress": "P14-E1",
+  "in_progress": "P15-A1",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "1. **Add `artifact_store` field to `AppState` in `crates/anvilml-server/src/state.rs`.**\n   - Import `anvilml_artifacts::ArtifactStore` at the top of the file (alongside the existing imports from `anvilml_core`, `anvilml_scheduler`, `anvilml_worker`).\n   - Add a new field: `pub artifact_store: Arc<ArtifactStore>`, with a `///` doc comment describing its purpose: \"Content-addressed PNG artifact storage, shared by HTTP handlers and the event loop.\"\n   - This is a single-line addition to the struct body.\n\n2. **Construct `ArtifactStore` in `backend/src/main.rs` and pass it into `AppState`.**\n   - After the existing `let pool = create_pool(&config.db_path)` call (line 118), add a construction of `ArtifactStore`:\n     ```rust\n     let artifact_store = Arc::new(anvilml_artifacts::ArtifactStore::new(\n         config.artifact_dir.clone(),\n         pool.clone(),\n     ));\n     ```\n   - The `artifact_dir` comes from `config.artifact_dir` (a `PathBuf` in `ServerConfig`). The `pool` is the same `SqlitePool` already created for `JobStore` \u2014 we clone it (cheap Arc ref-count bump) so both stores share the same database connection pool.\n   - Add the `artifact_store` field to the `AppState` struct literal (lines 270\u2013277), placing it after `db` to maintain logical grouping (data stores together).\n\n3. **Add tests in `crates/anvilml-server/tests/state_tests.rs`.**\n   - **Test 1 \u2014 `test_app_state_artifact_store_constructs`:** Construct an `AppState` with an `ArtifactStore` backed by a temp directory and in-memory SQLite pool. Assert that the `artifact_store` field is accessible and its `Arc` pointer is valid (non-null). This verifies the construction path works end-to-end.\n   - **Test 2 \u2014 `test_app_state_artifact_store_clone_shares`:** Construct `AppState` with an `ArtifactStore`, clone it, then verify via pointer comparison (`std::ptr::eq(Arc::as_ptr(...))`) that both the original and cloned state share the same `Arc<ArtifactStore>` allocation. This verifies the cloning semantics match the established pattern used by other `Arc` fields.\n   - Update `make_full_state()` helper to accept an `Arc<ArtifactStore>` parameter and include it in the constructed `AppState`.\n\n4. **Bump `anvilml-server` crate version** from `0.1.7` to `0.1.8` in `crates/anvilml-server/Cargo.toml`.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-08T17:08:12+0200",
-  "plan_approval_message_id": "1524386444934643803",
+  "last_updated": "2026-07-08T19:54:05+0200",
+  "plan_approval_message_id": "1524446034334318775",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1524386442640363661",
+  "plan_report_message_id": "1524446032686219315",
   "impl_report_message_id": null
 }

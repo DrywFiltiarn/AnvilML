@@ -3,6 +3,7 @@
 //! Tests use the crate's public API (`build_router()`) to make
 //! in-process HTTP requests without opening a real socket.
 
+use anvilml_artifacts::ArtifactStore;
 use anvilml_core::{NodeTypeDescriptor, NodeTypeRegistry, ServerConfig};
 use anvilml_registry::JobStore;
 use anvilml_scheduler::JobScheduler;
@@ -50,6 +51,13 @@ async fn make_test_state(node_registry: Arc<NodeTypeRegistry>) -> AppState {
             .await
             .expect("WorkerPool::new() must succeed in test"),
     );
+    // Construct a minimal ArtifactStore for tests — the artifact
+    // directory is a temp path and the pool is in-memory, so no
+    // real files are created.
+    let artifact_store = Arc::new(ArtifactStore::new(
+        std::env::temp_dir().join("anvilml-test-artifacts"),
+        db.clone(),
+    ));
 
     AppState {
         config: Arc::new(ServerConfig::default()),
@@ -58,6 +66,7 @@ async fn make_test_state(node_registry: Arc<NodeTypeRegistry>) -> AppState {
         scheduler,
         workers,
         db,
+        artifact_store,
     }
 }
 

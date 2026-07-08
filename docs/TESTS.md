@@ -5343,3 +5343,27 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Submit one job via `POST /v1/jobs`, then `GET /v1/jobs?before=2026-07-08T00:00:00Z`.
 **Expected output:** `StatusCode::OK`; JSON array with at least 1 job.
 **Acceptance:** `cargo test -p anvilml-server --test jobs_tests test_list_jobs_before_param_accepted` exits 0.
+
+---
+
+## test_app_state_artifact_store_constructs (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/state_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `anvilml-artifacts` (path dependency), `tokio` (full), and `sqlx` (sqlite) dev-dependencies. `create_test_artifact_store()` constructs an `ArtifactStore` backed by `std::env::temp_dir()` and an in-memory SQLite pool.
+**Tests:** `AppState` constructs with an `ArtifactStore` field; the `Arc` pointer is valid (non-null).
+**Mode:** both
+**Inputs:** `make_full_state()` called with a fresh `NodeTypeRegistry` and `ArtifactStore` from `create_test_artifact_store()`.
+**Expected output:** No panic; `Arc::as_ptr(&state.artifact_store)` returns a non-null pointer.
+**Acceptance:** `cargo test -p anvilml-server --test state_tests -- test_app_state_artifact_store_constructs` exits 0.
+
+---
+
+## test_app_state_artifact_store_clone_shares (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/state_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `anvilml-artifacts` (path dependency), `tokio` (full), and `sqlx` (sqlite) dev-dependencies. `create_test_artifact_store()` constructs an `ArtifactStore` backed by `std::env::temp_dir()` and an in-memory SQLite pool.
+**Tests:** Cloned `AppState` shares the same `Arc<ArtifactStore>` allocation as the original — verified via `std::ptr::eq(Arc::as_ptr(...))` pointer comparison.
+**Mode:** both
+**Inputs:** `AppState` constructed with `ArtifactStore`, then cloned.
+**Expected output:** `std::ptr::eq()` returns `true` for the original and clone's `artifact_store` Arc pointers.
+**Acceptance:** `cargo test -p anvilml-server --test state_tests -- test_app_state_artifact_store_clone_shares` exits 0.

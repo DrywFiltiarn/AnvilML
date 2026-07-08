@@ -19,6 +19,7 @@ rust-version.workspace = true
 mock-hardware = ["anvilml-scheduler/mock-hardware", "anvilml-worker/mock-hardware"]
 
 [dependencies]
+anvilml-artifacts = { path = "../crates/anvilml-artifacts" }
 anvilml-core = { path = "../crates/anvilml-core" }
 anvilml-hardware = { path = "../crates/anvilml-hardware" }
 anvilml-registry = { path = "../crates/anvilml-registry" }

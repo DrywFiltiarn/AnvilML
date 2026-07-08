@@ -3,6 +3,7 @@ mod cli;
 use tracing_subscriber::EnvFilter;
 
 use anvilml::shutdown;
+use anvilml_artifacts::ArtifactStore;
 use anvilml_core::CliOverrides;
 use anvilml_core::NodeTypeRegistry;
 use anvilml_core::config_load;
@@ -264,9 +265,19 @@ async fn main() {
     // handler returns a real elapsed-time measurement.
     let start_time = Instant::now();
 
+    // Construct the artifact store with the configured artifact directory
+    // and a clone of the same SQLite pool used by JobStore — the clone
+    // is a cheap Arc ref-count bump, so both stores share the same
+    // database connection pool. The pool is cloned here (not moved)
+    // because it is moved into AppState below.
+    let artifact_store = Arc::new(ArtifactStore::new(
+        config.artifact_dir.clone(),
+        pool.clone(),
+    ));
+
     // Construct `AppState` with the loaded config, a fresh empty node
     // registry (populated later when the Python worker sends Ready),
-    // the captured start instant, and the three new subsystem fields.
+    // the captured start instant, and the subsystem fields.
     let app_state = AppState {
         config: Arc::new(config),
         node_registry,
@@ -274,6 +285,7 @@ async fn main() {
         scheduler,
         workers: Arc::clone(&workers),
         db: pool,
+        artifact_store,
     };
 
     // Extract the listen address from the Arc-wrapped config before moving

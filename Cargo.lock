@@ -80,6 +80,7 @@ dependencies = [
 name = "anvilml"
 version = "0.1.14"
 dependencies = [
+ "anvilml-artifacts",
  "anvilml-core",
  "anvilml-hardware",
  "anvilml-registry",
@@ -206,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-server"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anvilml-artifacts",
  "anvilml-core",

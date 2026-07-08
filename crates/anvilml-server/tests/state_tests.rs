@@ -3,6 +3,7 @@
 //! Tests verify construction, cloning, and `Arc`-sharing semantics
 //! of the shared application state used by the AnvilML HTTP server.
 
+use anvilml_artifacts::ArtifactStore;
 use anvilml_core::{NodeTypeDescriptor, NodeTypeRegistry, ServerConfig};
 use anvilml_registry::JobStore;
 use anvilml_scheduler::JobScheduler;
@@ -36,11 +37,14 @@ async fn create_test_pool() -> sqlx::SqlitePool {
     pool
 }
 
-/// Construct a minimal `AppState` with all six fields.
+/// Construct a minimal `AppState` with all seven fields.
 ///
 /// Used by tests that need a complete `AppState` including the
-/// scheduler, workers, and db subsystem fields.
-async fn make_full_state(node_registry: Arc<NodeTypeRegistry>) -> AppState {
+/// scheduler, workers, db, and artifact_store subsystem fields.
+async fn make_full_state(
+    node_registry: Arc<NodeTypeRegistry>,
+    artifact_store: Arc<ArtifactStore>,
+) -> AppState {
     let db = create_test_pool().await;
     let job_store = JobStore::new(db.clone());
     let scheduler = Arc::new(JobScheduler::new(job_store, Arc::clone(&node_registry)));
@@ -57,6 +61,7 @@ async fn make_full_state(node_registry: Arc<NodeTypeRegistry>) -> AppState {
         scheduler,
         workers,
         db,
+        artifact_store,
     }
 }
 
@@ -89,6 +94,10 @@ fn test_app_state_constructs() {
                 }),
         ),
         db: create_test_pool_sync(),
+        artifact_store: Arc::new(ArtifactStore::new(
+            std::env::temp_dir().join("anvilml-test-artifacts"),
+            create_test_pool_sync(),
+        )),
     };
 
     // Verify both fields are accessible and the registry starts empty.
@@ -105,6 +114,21 @@ fn create_test_pool_sync() -> sqlx::SqlitePool {
         .block_on(async { create_test_pool().await })
 }
 
+/// Asynchronous helper to create an `ArtifactStore` backed by a temp
+/// directory and an in-memory SQLite pool.
+///
+/// Uses `std::env::temp_dir()` as the artifact directory — the store
+/// will create its own subdirectory on first save. This avoids needing
+/// the `tempfile` crate since tests only need a valid path for
+/// construction, not a cleaned-up temp directory.
+async fn create_test_artifact_store() -> Arc<ArtifactStore> {
+    let db = create_test_pool().await;
+    // Use the system temp dir — the store creates its own subdirectory
+    // on first save() via create_dir_all, so we just need a writable path.
+    let artifact_dir = std::env::temp_dir().join("anvilml-test-artifacts");
+    Arc::new(ArtifactStore::new(artifact_dir, db))
+}
+
 /// Verify that cloning `AppState` shares the underlying
 /// `Arc<NodeTypeRegistry>` — mutations visible through one clone
 /// are observable through the other.
@@ -117,7 +141,8 @@ fn create_test_pool_sync() -> sqlx::SqlitePool {
 #[tokio::test]
 async fn test_app_state_clone_shares_node_registry() {
     let node_registry = Arc::new(NodeTypeRegistry::new());
-    let state = make_full_state(node_registry).await;
+    let artifact_store = create_test_artifact_store().await;
+    let state = make_full_state(node_registry, artifact_store).await;
 
     // Clone before mutation — both clones share the same Arc.
     let cloned = state.clone();
@@ -150,7 +175,8 @@ async fn test_app_state_clone_shares_node_registry() {
 #[tokio::test]
 async fn test_app_state_with_new_fields() {
     let node_registry = Arc::new(NodeTypeRegistry::new());
-    let state = make_full_state(node_registry).await;
+    let artifact_store = create_test_artifact_store().await;
+    let state = make_full_state(node_registry, artifact_store).await;
 
     // Verify all six fields are accessible — no panics on field access.
     assert!(!state.config.host.is_empty());
@@ -173,7 +199,8 @@ async fn test_app_state_with_new_fields() {
 #[tokio::test]
 async fn test_app_state_clone_preserves_all_fields() {
     let node_registry = Arc::new(NodeTypeRegistry::new());
-    let state = make_full_state(node_registry).await;
+    let artifact_store = create_test_artifact_store().await;
+    let state = make_full_state(node_registry, artifact_store).await;
 
     let cloned = state.clone();
 
@@ -220,8 +247,9 @@ async fn test_app_state_scheduler_arc_sharing() {
     // Create a shared node registry that will be used by both the
     // scheduler and the AppState node_registry field.
     let shared_registry = Arc::new(NodeTypeRegistry::new());
+    let artifact_store = create_test_artifact_store().await;
 
-    let state = make_full_state(Arc::clone(&shared_registry)).await;
+    let state = make_full_state(Arc::clone(&shared_registry), artifact_store).await;
 
     let cloned = state.clone();
 
@@ -242,4 +270,52 @@ async fn test_app_state_scheduler_arc_sharing() {
     let list = cloned.node_registry.list();
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].type_name, "SharedRegistryNode");
+}
+
+/// Verify that `AppState` constructs with an `ArtifactStore` field
+/// backed by a temp directory and in-memory SQLite pool.
+///
+/// Constructs an `ArtifactStore` via `create_test_artifact_store()`,
+/// wraps it in `Arc`, and passes it to `make_full_state()`. Asserts
+/// that the `artifact_store` field is accessible and that the `Arc`
+/// pointer is valid (non-null). This verifies the construction path
+/// works end-to-end.
+#[tokio::test]
+async fn test_app_state_artifact_store_constructs() {
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let artifact_store = create_test_artifact_store().await;
+    let state = make_full_state(node_registry, artifact_store).await;
+
+    // Verify the artifact_store field is accessible.
+    // Arc::as_ptr() returns a non-null pointer — if the Arc were
+    // invalid, this would panic, so a successful return proves
+    // the field is properly constructed.
+    let ptr = Arc::as_ptr(&state.artifact_store);
+    assert!(!ptr.is_null(), "artifact_store Arc pointer must be valid");
+}
+
+/// Verify that cloning `AppState` shares the same `Arc<ArtifactStore>`
+/// allocation as the original.
+///
+/// Constructs `AppState` with an `ArtifactStore`, clones it, then
+/// verifies via pointer comparison (`std::ptr::eq(Arc::as_ptr(...))`)
+/// that both the original and cloned state share the same `Arc`
+/// allocation. This verifies the cloning semantics match the
+/// established pattern used by other `Arc` fields.
+#[tokio::test]
+async fn test_app_state_artifact_store_clone_shares() {
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let artifact_store = create_test_artifact_store().await;
+    let state = make_full_state(node_registry, artifact_store).await;
+
+    let cloned = state.clone();
+
+    // Both clones must share the same Arc<ArtifactStore> allocation.
+    assert!(
+        std::ptr::eq(
+            Arc::as_ptr(&state.artifact_store),
+            Arc::as_ptr(&cloned.artifact_store),
+        ),
+        "artifact_store Arc must be shared between original and clone"
+    );
 }

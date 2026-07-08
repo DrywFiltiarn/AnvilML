@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use anvilml_artifacts::ArtifactStore;
 use anvilml_core::{NodeTypeRegistry, ServerConfig};
 use anvilml_scheduler::JobScheduler;
 use anvilml_worker::WorkerPool;
@@ -51,4 +52,12 @@ pub struct AppState {
     /// on the `jobs` table. Uses an in-memory database for tests and a
     /// file-backed database in production.
     pub db: SqlitePool,
+
+    /// Content-addressed PNG artifact storage, shared by HTTP handlers
+    /// and the event loop.
+    ///
+    /// Stores generated PNG artifacts by SHA-256 content hash in a
+    /// configurable directory, with metadata persisted in the same
+    /// SQLite database used by `JobStore`.
+    pub artifact_store: Arc<ArtifactStore>,
 }
