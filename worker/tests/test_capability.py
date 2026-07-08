@@ -176,3 +176,37 @@ class TestProbeStructure:
         assert len(result) == 6, (
             "CPU probe must return exactly 6 capability keys"
         )
+
+    def test_device_selection_rocm_does_not_raise(self) -> None:
+        """device_type="rocm" is translated to a valid torch.device string.
+
+        Regression test: torch.device() only recognizes "cuda" as a valid
+        backend string — "rocm" is not in its accepted set, confirmed by
+        the exact RuntimeError it previously raised: "Expected one of cpu,
+        cuda, ipu, xpu, ... at start of device string: rocm". ROCm-built
+        PyTorch exposes AMD GPUs through the same cuda API/device
+        namespace via HIP's compatibility layer, so probe_capabilities()
+        must translate "rocm" -> "cuda" locally when constructing the
+        torch.device object.
+
+        This runs correctly even on CPU-only CI torch: torch.device()
+        object construction never touches actual hardware (that only
+        happens on later tensor operations, and the constructed `device`
+        object here is used for logging only, never passed into the dtype
+        probes below it) — so this test verifies the string-construction
+        fix specifically, independent of whether real ROCm/CUDA hardware
+        is present.
+
+        Preconditions: torch is importable (enforced by module-level
+        importorskip).
+        Expected output: No exception; a valid 6-key capability dict.
+        """
+        result = capability.probe_capabilities("rocm", 0)
+        assert isinstance(result, dict), (
+            "rocm device selection must not raise "
+            "(previously: RuntimeError, 'rocm' is not a valid torch "
+            "device-type string)"
+        )
+        assert len(result) == 6, (
+            "rocm probe must return exactly 6 capability keys"
+        )

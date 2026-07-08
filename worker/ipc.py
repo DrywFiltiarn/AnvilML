@@ -1,8 +1,12 @@
 """ZeroMQ DEALER transport for AnvilML worker IPC.
 
 The Rust supervisor binds a ROUTER socket. This worker connects a DEALER socket
-with a stable identity equal to ANVILML_WORKER_ID. Identity frames are handled
-automatically by ZeroMQ; application code sends/receives plain msgpack dicts.
+with a stable identity equal to ANVILML_WORKER_ID. Identity frames on outgoing
+(worker -> supervisor) messages are handled automatically by ZeroMQ, so
+send_event() sends a plain single-frame payload. Incoming (supervisor -> worker)
+messages carry an extra empty delimiter frame ahead of the payload -- ROUTER's
+own outgoing framing convention, see RouterTransport::send() on the Rust side --
+so recv_message() uses recv_multipart() and takes the last frame.
 """
 
 import zmq
@@ -57,5 +61,16 @@ def recv_message() -> dict:
     """
     if _sock is None:
         raise RuntimeError("ipc: not connected — call connect() first")
-    data = _sock.recv()
-    return msgpack.unpackb(data, raw=False)
+    # recv_multipart(), not recv(): RouterTransport::send() (Rust side)
+    # always sends a 3-frame ROUTER message [worker_id, empty delimiter,
+    # payload] — ROUTER consumes frame 0 for its own routing decision
+    # before transmitting, so this DEALER always receives exactly 2 frames
+    # on the wire: [empty delimiter, payload]. A single-frame recv() only
+    # ever picked up the empty delimiter frame, and msgpack.unpackb(b"")
+    # on that empty frame is exactly "Unpack failed: incomplete input" —
+    # every message the supervisor ever sent to a worker failed to decode
+    # this way. The payload is always the *last* frame regardless of
+    # exactly how many leading frames precede it, so this is robust to
+    # either framing convention without needing to special-case frame count.
+    frames = _sock.recv_multipart()
+    return msgpack.unpackb(frames[-1], raw=False)

@@ -115,12 +115,25 @@ def probe_capabilities(device_type: str, device_index: int) -> dict:
         ``flash_attention``, each mapping to a ``bool`` indicating whether
         that precision is supported on the target device.
     """
-    # Select the target device — torch.device handles cuda/rocm device
-    # selection; cpu device_type maps to "cpu" (device_index is ignored).
+    # Select the target device — torch.device() only recognizes "cuda" as
+    # a valid backend string (confirmed by the exact runtime error it
+    # raises: "Expected one of cpu, cuda, ipu, xpu, ... at start of device
+    # string: rocm" — "rocm" is never in that list). ROCm-built PyTorch
+    # exposes AMD GPUs transparently through the *same* cuda API/device
+    # namespace — that's what HIP's CUDA-compatibility layer means in
+    # practice (torch.cuda.set_device(), torch.cuda.get_device_name(),
+    # etc. all already work correctly for ROCm in worker_main.py, since
+    # those take a plain integer index, never a device-type string).
+    # This translation is local to constructing the torch.device object
+    # only — device_type itself stays "rocm" everywhere else (the Ready
+    # event's device_type field, the debug log below, and every other
+    # caller in this module) so the semantic AMD/ROCm distinction isn't
+    # lost from what's actually reported.
     if device_type == "cpu":
         device = torch.device("cpu")
     else:
-        device = torch.device(f"{device_type}:{device_index}")
+        torch_device_type = "cuda" if device_type == "rocm" else device_type
+        device = torch.device(f"{torch_device_type}:{device_index}")
 
     logger.debug(
         "probe_capabilities: device_type=%s, device_index=%d, device=%s",

@@ -254,3 +254,93 @@ class TestContextReuse:
         finally:
             router.close()
             router_ctx.term()
+
+
+class TestRecvMessage:
+    """Tests for recv_message()'s handling of the real ROUTER framing.
+
+    Regression coverage for a gap where recv_message() used a single-frame
+    recv(), but the real Rust RouterTransport::send() always sends a
+    3-frame ROUTER message [worker_id, empty delimiter, payload] -- ROUTER
+    consumes frame 0 for routing before transmitting, so the DEALER peer
+    always receives exactly 2 frames on the wire: [empty delimiter,
+    payload]. A single-frame recv() only ever picked up the empty
+    delimiter, so every message the supervisor ever sent to a real worker
+    failed with "Unpack failed: incomplete input". The existing
+    TestRoundtrip.test_roundtrip_send_recv only exercises the opposite
+    direction (worker -> supervisor via send_event()), which is why this
+    was never caught.
+    """
+
+    def setup_method(self) -> None:
+        """Reset module globals before each test."""
+        _teardown_ipc()
+
+    def teardown_method(self) -> None:
+        """Ensure cleanup even on test failure."""
+        _teardown_ipc()
+
+    def test_recv_message_decodes_real_router_framing(self) -> None:
+        """recv_message() correctly decodes a real 2-frame ROUTER message.
+
+        Sets up a test ROUTER, connects a DEALER via ipc.connect(), then
+        sends a message the same way RouterTransport::send() actually does
+        on the Rust side: router.send_multipart([identity, b"", payload])
+        -- ROUTER consumes the identity frame for routing and transmits
+        [b"", payload] to the DEALER, matching production exactly (unlike
+        a hand-rolled single-frame send, which would not reproduce this
+        bug). Asserts recv_message() returns the correct decoded dict.
+
+        Preconditions: A test ROUTER can bind to the given port.
+        Expected output: The dict sent by the ROUTER, decoded correctly.
+        """
+        port = 15558
+        worker_id = "recv-test-worker"
+        expected = {"_type": "Ping", "seq": 42}
+
+        router, router_ctx = _make_test_router(port)
+        try:
+            ipc.connect(port, worker_id)
+
+            # The ROUTER only learns a DEALER's route once that DEALER has
+            # sent at least one message — the TCP handshake alone isn't
+            # enough for pyzmq's ROUTER to address a reply back to it. Send
+            # a throwaway message to register, then drain both frames the
+            # ROUTER sees for it (identity, payload) before the real test.
+            ipc.send_event({"_type": "Ping", "seq": 0})
+            router.recv()  # identity frame
+            router.recv()  # throwaway payload frame
+
+            # Send exactly as RouterTransport::send() does: identity frame
+            # (consumed by ROUTER for routing, never reaches the wire),
+            # empty delimiter frame, payload frame. The DEALER receives
+            # only the last two frames.
+            router.send_multipart(
+                [
+                    worker_id.encode(),
+                    b"",
+                    msgpack.packb(expected, use_bin_type=True),
+                ]
+            )
+
+            received = ipc.recv_message()
+            assert received == expected, (
+                f"Expected {expected}, got {received}"
+            )
+        finally:
+            router.close()
+            router_ctx.term()
+
+    def test_recv_message_raises_before_connect(self) -> None:
+        """recv_message() raises RuntimeError when not connected.
+
+        Duplicates the existing coverage in TestPreConnectErrors for this
+        function specifically, alongside the new multipart-framing test in
+        this class, so this class is a self-contained regression suite for
+        recv_message()'s behavior.
+
+        Preconditions: ipc._sock is None (fresh module state).
+        Expected output: RuntimeError containing "ipc: not connected".
+        """
+        with pytest.raises(RuntimeError, match="ipc: not connected"):
+            ipc.recv_message()
