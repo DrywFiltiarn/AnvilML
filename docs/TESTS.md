@@ -5511,3 +5511,86 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `WorkerEvent::ImageReady` with `image_b64 = ""`.
 **Expected output:** Returns `Ok(hash)`; artifact stored with 0 bytes, retrievable by hash.
 **Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_image_ready_empty_image_b64` exits 0.
+---
+
+## test_map_progress (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-ipc` (for `WorkerEvent`) and `anvilml-core` (for `WsEvent`) dependencies. The `event_loop` module provides `map_worker_event()` which maps `WorkerEvent` variants to `WsEvent` variants.
+**Tests:** `map_worker_event()` correctly maps `WorkerEvent::Progress` to `WsEvent::JobProgress` with all fields (job_id, step, total_steps, preview_b64) transferred.
+**Mode:** both
+**Inputs:** `WorkerEvent::Progress { job_id, step: 5, total_steps: 20, preview_b64: Some("dGVzdCBwcmV2aWV3") }`.
+**Expected output:** `WsEvent::JobProgress` with identical field values.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_map_progress` exits 0.
+
+---
+
+## test_map_completed (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-ipc` (for `WorkerEvent`) and `anvilml-core` (for `WsEvent`) dependencies. The `event_loop` module provides `map_worker_event()` which maps `WorkerEvent` variants to `WsEvent` variants.
+**Tests:** `map_worker_event()` correctly maps `WorkerEvent::Completed` to `WsEvent::JobCompleted` with all fields (job_id, elapsed_ms) transferred.
+**Mode:** both
+**Inputs:** `WorkerEvent::Completed { job_id, elapsed_ms: 12345 }`.
+**Expected output:** `WsEvent::JobCompleted` with identical field values.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_map_completed` exits 0.
+
+---
+
+## test_map_failed (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-ipc` (for `WorkerEvent`) and `anvilml-core` (for `WsEvent`) dependencies. The `event_loop` module provides `map_worker_event()` which maps `WorkerEvent` variants to `WsEvent` variants.
+**Tests:** `map_worker_event()` correctly maps `WorkerEvent::Failed` to `WsEvent::JobFailed` with `job_id` and `error` transferred, while the `traceback` field is dropped (not present in `WsEvent::JobFailed`).
+**Mode:** both
+**Inputs:** `WorkerEvent::Failed { job_id, error: "CUDA out of memory", traceback: Some("Traceback...") }`.
+**Expected output:** `WsEvent::JobFailed` with `job_id` and `error` matching; no `traceback` field in the result.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_map_failed` exits 0.
+
+---
+
+## test_map_cancelled (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-ipc` (for `WorkerEvent`) and `anvilml-core` (for `WsEvent`) dependencies. The `event_loop` module provides `map_worker_event()` which maps `WorkerEvent` variants to `WsEvent` variants.
+**Tests:** `map_worker_event()` correctly maps `WorkerEvent::Cancelled` to `WsEvent::JobCancelled` with `job_id` transferred.
+**Mode:** both
+**Inputs:** `WorkerEvent::Cancelled { job_id }`.
+**Expected output:** `WsEvent::JobCancelled` with identical `job_id`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_map_cancelled` exits 0.
+
+---
+
+## test_image_ready_publishes_after_save (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-ipc` (for `WorkerEvent`, `EventBroadcaster`, `RouterTransport`) and `anvilml-core` (for `WsEvent`) dependencies. The `event_loop` module provides `map_worker_event()` and `spawn_event_loop()`.
+**Tests:** `map_worker_event()` maps `WorkerEvent::ImageReady` to `WsEvent::JobImageReady` with correct `job_id`, `width`, `height`, `seed`, and `steps` fields. The `artifact_hash` is empty because `map_worker_event()` does not have access to the saved hash (that is populated by `spawn_event_loop()` after the artifact save).
+**Mode:** both
+**Inputs:** `WorkerEvent::ImageReady { job_id, image_b64: <valid PNG>, width: 512, height: 512, format: "png", seed: 42, steps: 20 }`.
+**Expected output:** `WsEvent::JobImageReady` with matching fields; `artifact_hash` is empty string.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_image_ready_publishes_after_save` exits 0.
+
+---
+
+## test_spawn_event_loop_receives_and_publishes (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-ipc` (for `WorkerEvent`, `EventBroadcaster`, `RouterTransport`), `anvilml-registry` (for `JobStore`), `anvilml-core` (for `WsEvent`, `NodeTypeRegistry`), `anvilml-artifacts` (for `ArtifactStore`), and `zeromq` dev-dependencies. The `event_loop` module provides `spawn_event_loop()` which subscribes the scheduler to worker events via a ZeroMQ ROUTER transport.
+**Tests:** End-to-end: a real ROUTER/DEALER transport pair is created. The event loop is spawned, a DEALER socket sends a `WorkerEvent::Completed` message, and the broadcaster receives the corresponding `WsEvent::JobCompleted` event. The test verifies the `elapsed_ms` field is correctly transferred and that the event loop processes messages from the transport.
+**Mode:** both
+**Inputs:** `WorkerEvent::Completed { job_id, elapsed_ms: 10000 }` sent via a 2-frame ZeroMQ DEALER message (empty delimiter + msgpack payload) to a ROUTER socket.
+**Expected output:** `WsEvent::JobCompleted` received on the broadcaster with `elapsed_ms == 10000`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_spawn_event_loop_receives_and_publishes` exits 0.
+
+---
+
+## test_spawn_event_loop_handles_recv_error (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-ipc` (for `RouterTransport`, `EventBroadcaster`), `anvilml-registry` (for `JobStore`), and `anvilml-core` (for `NodeTypeRegistry`) dependencies. The `event_loop` module provides `spawn_event_loop()` which handles transport errors gracefully.
+**Tests:** The event loop retries gracefully after a transport `recv()` error. After spawning the event loop and immediately closing the transport, the spawned task remains alive (not finished) — proving it logs the error and retries instead of panicking or exiting.
+**Mode:** both
+**Inputs:** `RouterTransport::bind()` followed immediately by `transport.close()`.
+**Expected output:** The event loop task remains alive after transport close (verified via `handle.is_finished()` returning false).
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_spawn_event_loop_handles_recv_error` exits 0.

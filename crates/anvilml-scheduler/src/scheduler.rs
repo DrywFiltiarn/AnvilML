@@ -114,8 +114,11 @@ pub struct JobScheduler {
     /// Used by the `event_loop` module to persist decoded PNG images from
     /// `WorkerEvent::ImageReady` events. The field is not accessed directly
     /// by the dispatch loop — it is passed through to `handle_image_ready()`.
+    ///
+    /// Made `pub(crate)` so the `event_loop` module can access it for spawning
+    /// the event loop task.
     #[allow(dead_code)]
-    artifact_store: Arc<ArtifactStore>,
+    pub(crate) artifact_store: Arc<ArtifactStore>,
 }
 
 impl JobScheduler {

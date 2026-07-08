@@ -145,16 +145,17 @@
     "P15-A1",
     "P15-B1",
     "P15-B2",
-    "P15-C1"
+    "P15-C1",
+    "P15-D1"
   ],
-  "in_progress": "P15-D1",
+  "in_progress": "P16-A1",
   "plan_approved": true,
-  "current_plan": "1. **Build the release binary.**\n   ```bash\n   cargo build --release -p anvilml --features mock-hardware\n   ```\n   This compiles the entire workspace with mock hardware enabled, producing `./target/release/anvilml`. The `mock-hardware` feature replaces GPU detection with `MockDetector` and causes `build_worker_env()` to inject `ANVILML_WORKER_MOCK=1` into spawned subprocesses.\n\n2. **Start the server in the background.**\n   ```bash\n   ./target/release/anvilml &\n   ```\n   The server binds to `127.0.0.1:8488` (default from `anvilml.toml`). It initializes the database, loads device capabilities seed, detects mock hardware, and starts the HTTP router.\n\n3. **Wait for the server to be ready.**\n   ```bash\n   sleep 1\n   ```\n   One second is sufficient for the server to complete startup (database init, seed loading, hardware detection, worker spawning, and HTTP listener binding). This is the same wait used in the acceptance criterion.\n\n4. **Verify the HTTP status code.**\n   ```bash\n   curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8488/v1/artifacts\n   ```\n   Expected output: `200`. This confirms the endpoint is live, the router correctly matches `/v1/artifacts`, the `list_artifacts()` handler receives the request, delegates to `artifact_store.list(None)`, and returns a successful response.\n\n5. **Verify the response body is an empty array.**\n   ```bash\n   curl -s http://127.0.0.1:8488/v1/artifacts\n   ```\n   Expected output: `[]`. This confirms the artifact store's `list()` method returns an empty vector when no artifacts exist in the database, and the handler correctly serialises it as a JSON array (not `null`).\n\n6. **Stop the background server.**\n   ```bash\n   kill %1\n   ```\n   The server's graceful shutdown sequence (per `backend/src/main.rs`) aborts the dispatch loop, reclaims `WorkerPool` ownership, and calls `shutdown_all()` on each worker.\n\n7. **Record the literal terminal output** from steps 4 and 5 in the implementation report's `## Runnable Proof Transcript` section.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-08T23:10:54+0200",
-  "plan_approval_message_id": "1524522616445075486",
+  "last_updated": "2026-07-09T00:48:17+0200",
+  "plan_approval_message_id": "1524541104865804399",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1524522614671020174",
+  "plan_report_message_id": "1524541102340964434",
   "impl_report_message_id": null
 }

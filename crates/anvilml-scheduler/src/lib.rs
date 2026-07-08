@@ -11,7 +11,7 @@ pub mod queue;
 pub mod scheduler;
 pub mod types;
 pub use dag::validate_graph;
-pub use event_loop::handle_image_ready;
+pub use event_loop::{handle_image_ready, map_worker_event, spawn_event_loop};
 pub use interim_job_completion::spawn_interim_job_completion_listener;
 pub use ledger::VramLedger;
 pub use queue::JobQueue;
