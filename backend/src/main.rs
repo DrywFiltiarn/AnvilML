@@ -14,7 +14,7 @@ use anvilml_server::{AppState, build_router};
 use anvilml_worker::WorkerPool;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 
 /// Entry point for the AnvilML server binary.
@@ -220,14 +220,12 @@ async fn main() {
     let job_store = JobStore::new(pool.clone());
     let scheduler = Arc::new(JobScheduler::new(job_store, Arc::clone(&node_registry)));
 
-    // Start the dispatch loop as a background tokio task.
-    // The loop wakes on submit() notification, pops queued jobs,
-    // selects idle workers, and dispatches Execute messages.
-    // Returns a JoinHandle — we discard it since the scheduler
-    // lives for the lifetime of the process (held in AppState).
-    // start_dispatch_loop consumes Arc<Self>, so we clone the Arc
-    // first — the clone is cheap (just an atomic ref-count bump).
-    let _dispatch_handle = Arc::clone(&scheduler).start_dispatch_loop(Arc::clone(&workers));
+    // Keep the dispatch loop's JoinHandle (not discarded via `_`) — the
+    // graceful shutdown sequence below needs to abort and await it, to
+    // release its own Arc<WorkerPool> clone before reclaiming exclusive
+    // ownership. start_dispatch_loop consumes Arc<Self>, so we clone the
+    // Arc first — the clone is cheap (just an atomic ref-count bump).
+    let dispatch_handle = Arc::clone(&scheduler).start_dispatch_loop(Arc::clone(&workers));
 
     tracing::info!("dispatch loop started");
 
@@ -243,7 +241,7 @@ async fn main() {
         node_registry,
         start_time,
         scheduler,
-        workers,
+        workers: Arc::clone(&workers),
         db: pool,
     };
 
@@ -259,6 +257,58 @@ async fn main() {
         _ = axum::serve(listener, router) => {},
         _ = shutdown::wait_for_shutdown_signal() => {
             tracing::info!("shutdown signal received");
+        }
+    }
+
+    // Graceful shutdown (ANVILML_DESIGN.md §19.3): stop every worker's IPC
+    // message loop and subprocess cleanly, rather than relying solely on
+    // Drop (JobObjectGuard's kill-on-drop only terminates the OS
+    // processes — it does not stop this process's own supervisor tasks).
+    // Previously nothing called this at all: wait_for_shutdown_signal()
+    // just returned, main() returned, and Tokio's runtime then blocked
+    // waiting for every still-running spawned task — including every
+    // ManagedWorker::run() supervisor loop and this dispatch loop, none
+    // of which anything ever signalled to stop — to finish, which they
+    // never would on their own. That's what previously required a
+    // second, harsher Ctrl+C (STATUS_CONTROL_C_EXIT) to actually exit.
+    //
+    // axum::serve(...)'s future — and everything it captured, including
+    // its own Arc<WorkerPool> clone via app_state/router — was already
+    // dropped by tokio::select!'s branch-cancellation semantics above,
+    // the instant the shutdown-signal branch won. Aborting and awaiting
+    // the dispatch loop's task releases its own separate clone the same
+    // way. After both, this function's own `workers` binding should be
+    // the last live Arc<WorkerPool> clone, making Arc::try_unwrap()
+    // below succeed.
+    //
+    // shutdown_all() needs owned (&mut) access specifically because each
+    // WorkerHandle's shutdown_tx/force_shutdown_tx are plain, non-Clone
+    // oneshot::Sender by design (see WorkerHandle's own Clone impl) —
+    // only the original handles stored inside WorkerPool.handles can
+    // trigger shutdown at all, so no clone-based workaround is possible.
+    dispatch_handle.abort();
+    let _ = dispatch_handle.await;
+
+    match Arc::try_unwrap(workers) {
+        Ok(mut workers) => {
+            workers.shutdown_all(Duration::from_secs(10)).await;
+            tracing::info!("all workers shut down gracefully");
+        }
+        Err(_) => {
+            // Should not happen given the ordering above — if it does,
+            // something unexpected is still holding a clone. Workers
+            // still get terminated via Drop (JobObjectGuard's
+            // kill-on-drop) when this function returns, just not
+            // gracefully — logged as an error since it means the
+            // ordering assumption above no longer holds and needs
+            // re-investigating, not because the process fails to exit.
+            tracing::error!(
+                "could not reclaim exclusive WorkerPool ownership for \
+                 graceful shutdown_all() — an unexpected additional \
+                 Arc<WorkerPool> clone is still alive; workers will \
+                 still be terminated via Drop (JobObjectGuard), just \
+                 not gracefully"
+            );
         }
     }
 }
