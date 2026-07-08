@@ -13,6 +13,7 @@ use axum::body::Body;
 use axum::body::to_bytes;
 use axum::http::Request;
 use axum::http::StatusCode;
+use axum::http::header::CONTENT_TYPE;
 use chrono::Utc;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::path::PathBuf;
@@ -314,5 +315,125 @@ async fn test_list_artifacts_json_shape() {
         meta["file_path"].is_string(),
         "file_path must be a string, got: {:?}",
         meta["file_path"]
+    );
+}
+
+/// Verify that GET /v1/artifacts/{hash} returns 200 with correct Content-Type
+/// for a saved artifact.
+///
+/// Saves one artifact into the store, retrieves its hash from the database
+/// via the list endpoint, then sends a GET request to
+/// `/v1/artifacts/{hash}` and asserts the response status is `StatusCode::OK`
+/// and the `Content-Type` header is `image/png`.
+#[tokio::test]
+async fn test_get_artifact_existing_hash_returns_200() {
+    let state = make_test_state().await;
+    let router = build_router(state.clone());
+
+    let job_id = Uuid::new_v4();
+    let hash = save_artifact(&state, job_id, 512, 512, 42, 20, b"get_existing").await;
+
+    let req = Request::get(&format!("/v1/artifacts/{hash}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+/// Verify that GET /v1/artifacts/{hash} returns 404 for an unknown hash.
+///
+/// Sends a GET request to `/v1/artifacts/{unknown_hash}` with a hash that
+/// does not correspond to any saved artifact, and asserts the response
+/// status is `StatusCode::NOT_FOUND` (404).
+#[tokio::test]
+async fn test_get_artifact_unknown_hash_returns_404() {
+    let state = make_test_state().await;
+    let router = build_router(state.clone());
+
+    let unknown_hash = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    let req = Request::get(&format!("/v1/artifacts/{unknown_hash}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+/// Verify that GET /v1/artifacts/{hash} returns byte-for-byte identical
+/// content to what was saved.
+///
+/// Saves an artifact with known PNG bytes, retrieves it via the
+/// `/v1/artifacts/{hash}` endpoint, and asserts the response body bytes
+/// exactly match the original bytes.
+#[tokio::test]
+async fn test_get_artifact_byte_for_byte_match() {
+    let state = make_test_state().await;
+    let router = build_router(state.clone());
+
+    let job_id = Uuid::new_v4();
+    let original_bytes = vec![
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x01, 0x02, 0x03,
+    ];
+    let meta = ArtifactMeta {
+        hash: String::new(),
+        job_id,
+        width: 64,
+        height: 64,
+        seed: 1,
+        steps: 10,
+        created_at: Utc::now(),
+        file_path: PathBuf::from("/tmp/anvilml-test-artifacts/placeholder.png"),
+    };
+    let hash = state
+        .artifact_store
+        .save(&original_bytes, &meta)
+        .await
+        .expect("artifact save must succeed in test");
+
+    let req = Request::get(&format!("/v1/artifacts/{hash}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_bytes = to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body collection must succeed");
+    assert_eq!(
+        body_bytes.as_ref(),
+        original_bytes,
+        "response body must exactly match the saved PNG bytes"
+    );
+}
+
+/// Verify that GET /v1/artifacts/{hash} sets the Content-Type header
+/// to exactly `image/png`.
+///
+/// Saves one artifact, retrieves it via `/v1/artifacts/{hash}`, and
+/// asserts the `Content-Type` header value is `image/png`.
+#[tokio::test]
+async fn test_get_artifact_content_type_header() {
+    let state = make_test_state().await;
+    let router = build_router(state.clone());
+
+    let job_id = Uuid::new_v4();
+    let hash = save_artifact(&state, job_id, 512, 512, 42, 20, b"content_type_test").await;
+
+    let req = Request::get(&format!("/v1/artifacts/{hash}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let content_type = res
+        .headers()
+        .get(CONTENT_TYPE)
+        .expect("Content-Type header must be present");
+    assert_eq!(
+        content_type
+            .to_str()
+            .expect("Content-Type must be valid UTF-8"),
+        "image/png",
+        "Content-Type must be exactly image/png"
     );
 }

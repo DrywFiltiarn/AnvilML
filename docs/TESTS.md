@@ -5415,3 +5415,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `make_test_state()` with a fresh pool; one artifact saved with dimensions 512x512, seed 42, steps 20.
 **Expected output:** Response status is `StatusCode::OK`, body array length is 1, and all field names and types match `ArtifactMeta`'s serialization.
 **Acceptance:** `cargo test -p anvilml-server --test artifacts_tests test_list_artifacts_json_shape` exits 0.
+
+---
+
+## test_get_artifact_existing_hash_returns_200 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/artifacts_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `anvilml-artifacts` (path dependency), `anvilml-registry` (path dependency), `anvilml-scheduler` (path dependency), `tokio` (full), `sqlx` (sqlite), and `tower` (ServiceExt) dev-dependencies. One artifact is saved via `save_artifact()`, then retrieved via the new `GET /v1/artifacts/{hash}` route.
+**Tests:** `GET /v1/artifacts/{hash}` returns `StatusCode::OK` (200) for a hash that corresponds to a saved artifact.
+**Mode:** both
+**Inputs:** `make_test_state()` with a fresh pool; one artifact saved with PNG bytes; request to `/v1/artifacts/<hash>`.
+**Expected output:** Response status is `StatusCode::OK` (200).
+**Acceptance:** `cargo test -p anvilml-server --test artifacts_tests test_get_artifact_existing_hash_returns_200` exits 0.
+
+---
+
+## test_get_artifact_unknown_hash_returns_404 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/artifacts_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `anvilml-artifacts` (path dependency), `anvilml-registry` (path dependency), `anvilml-scheduler` (path dependency), `tokio` (full), `sqlx` (sqlite), and `tower` (ServiceExt) dev-dependencies. No artifact is saved; a known-never-to-exist hash is used.
+**Tests:** `GET /v1/artifacts/{hash}` returns `StatusCode::NOT_FOUND` (404) for a hash that does not correspond to any saved artifact, via `AnvilError::ArtifactNotFound`.
+**Mode:** both
+**Inputs:** `make_test_state()` with a fresh pool; request to `/v1/artifacts/0000...0000` (all-zero SHA-256 hash).
+**Expected output:** Response status is `StatusCode::NOT_FOUND` (404).
+**Acceptance:** `cargo test -p anvilml-server --test artifacts_tests test_get_artifact_unknown_hash_returns_404` exits 0.
+
+---
+
+## test_get_artifact_byte_for_byte_match (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/artifacts_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `anvilml-artifacts` (path dependency), `anvilml-registry` (path dependency), `anvilml-scheduler` (path dependency), `tokio` (full), `sqlx` (sqlite), and `tower` (ServiceExt) dev-dependencies. An artifact with known raw PNG bytes is saved directly via `store.save()`, then retrieved and the body bytes are compared.
+**Tests:** `GET /v1/artifacts/{hash}` returns raw PNG bytes that are byte-for-byte identical to what was saved, verifying no transformation or corruption occurs.
+**Mode:** both
+**Inputs:** `make_test_state()` with a fresh pool; artifact saved with explicit `Vec<u8>` containing PNG magic bytes plus 3 extra bytes; request to `/v1/artifacts/<hash>`.
+**Expected output:** Response status is `StatusCode::OK` and body bytes exactly match the original saved bytes.
+**Acceptance:** `cargo test -p anvilml-server --test artifacts_tests test_get_artifact_byte_for_byte_match` exits 0.
+
+---
+
+## test_get_artifact_content_type_header (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/artifacts_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `anvilml-artifacts` (path dependency), `anvilml-registry` (path dependency), `anvilml-scheduler` (path dependency), `tokio` (full), `sqlx` (sqlite), and `tower` (ServiceExt) dev-dependencies. One artifact is saved, then retrieved and the response headers are inspected.
+**Tests:** `GET /v1/artifacts/{hash}` includes a `Content-Type: image/png` header, confirming the response is correctly typed as a PNG image.
+**Mode:** both
+**Inputs:** `make_test_state()` with a fresh pool; one artifact saved; request to `/v1/artifacts/<hash>`.
+**Expected output:** Response status is `StatusCode::OK` and `Content-Type` header is exactly `image/png`.
+**Acceptance:** `cargo test -p anvilml-server --test artifacts_tests test_get_artifact_content_type_header` exits 0.

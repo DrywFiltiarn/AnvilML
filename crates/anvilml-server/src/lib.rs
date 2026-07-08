@@ -36,5 +36,10 @@ pub fn build_router(app_state: AppState) -> axum::Router {
             "/v1/artifacts",
             axum::routing::get(handlers::artifacts::list_artifacts),
         )
+        // GET /v1/artifacts/{hash} — serve raw PNG bytes for a content-addressed artifact
+        .route(
+            "/v1/artifacts/{hash}",
+            axum::routing::get(handlers::artifacts::get_artifact),
+        )
         .with_state(app_state)
 }
