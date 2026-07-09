@@ -1523,6 +1523,55 @@ permanently broken transport — cross the threshold and end the task.
 | `ANVILML_LOG_LEVEL` | The supervisor's own log level: `ANVILML_LOG`, falling back to `RUST_LOG`, falling back to `"info"` — not a `ServerConfig` field, since neither env var is one |
 | `ANVILML_MAX_IPC_PAYLOAD_MIB` | Maximum IPC message size in MiB |
 
+### 9.8 Demux Fan-Out Subscription (added ahead of P16-B1; see `docs/ADDENDUM_DEMUX_FANOUT.md`)
+
+`bridge.rs`'s `reader_task` is the sole permitted caller of
+`RouterTransport::recv()` on the pool-wide socket — this was already established
+by `§9.6`/`bridge.rs`'s own doc comments, and remains true without exception. A
+second, independent `.recv()` caller on the same ROUTER socket races the bridge's
+reader_task for every incoming frame, nondeterministically stealing messages
+regardless of intended recipient. Any subsystem that needs to observe `WorkerEvent`s
+— including `anvilml-scheduler`'s event loop — **must** consume them through
+`Demux`, never through a second `RouterTransport::recv()` loop of its own.
+
+Prior to this addendum, `Demux` supported exactly one registered consumer per
+`worker_id` (`register()`/`deregister()`, §9.4) — sufficient for `ManagedWorker`'s
+own per-worker ownership, but with no mechanism for a second, pool-wide consumer
+(such as the scheduler's event loop) to observe the same event stream without
+replacing `ManagedWorker`'s own registration. `Demux` now additionally supports
+**fan-out subscription**, independent of the per-worker registration table:
+
+```rust
+pub type SubscriptionId = u64;
+
+impl Demux {
+    /// Registers a new pool-wide subscriber. Returns an id (for
+    /// `unsubscribe()`) and the receiving half of a bounded channel that
+    /// receives a `(worker_id, event)` clone of every event passed to
+    /// `route()`, from every worker, for as long as the subscription is
+    /// active.
+    pub fn subscribe(&self) -> (SubscriptionId, mpsc::Receiver<(String, WorkerEvent)>);
+
+    /// Removes a subscription. Safe to call on an id that no longer exists.
+    pub fn unsubscribe(&self, id: SubscriptionId);
+}
+```
+
+`route()`'s existing behavior — delivery to the single `register()`ed primary
+consumer, `WorkerNotFound`/`Ipc` error semantics, return value — is completely
+unchanged; primary delivery and subscriber fan-out are independent concerns, and a
+failure in one never affects the other. Fan-out to subscribers is **best-effort**:
+each subscriber's channel is bounded, and a full or closed subscriber channel is
+skipped with a logged `WARN` rather than blocking `route()` or propagating an error
+— a slow or dead subscriber must never be able to stall event delivery to the
+worker's own primary consumer.
+
+`anvilml-scheduler`'s `spawn_event_loop()` (§12.1) consumes exclusively via
+`Demux::subscribe()` — it does not, and must not, hold or call methods on
+`RouterTransport` directly. `WorkerPool::demux()` exposes the pool's shared
+`Arc<Demux>` for this purpose, the same instance `spawn_bridge()` already routes
+into.
+
 ---
 
 ## 10. Generic Node System
@@ -1844,7 +1893,9 @@ anvilml-scheduler/src/
 ├── ledger.rs       # VramLedger: per-device VRAM accounting
 ├── dag.rs          # GraphValidator: validate_graph() — collect-all-errors mode
 ├── types.rs        # ValidatedGraph newtype; GraphError enum
-└── event_loop.rs   # Subscribes to WorkerEvent broadcast; updates job status in DB
+└── event_loop.rs   # Subscribes to WorkerEvent via Demux::subscribe() (§9.8);
+                    #   updates job status in DB. MUST NOT call
+                    #   RouterTransport::recv() directly — see §9.8 for why.
 ```
 
 ```

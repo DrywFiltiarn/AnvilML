@@ -5564,7 +5564,7 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 ## test_image_ready_publishes_after_save (anvilml-scheduler)
 
 **File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
-**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-ipc` (for `WorkerEvent`, `EventBroadcaster`, `RouterTransport`) and `anvilml-core` (for `WsEvent`) dependencies. The `event_loop` module provides `map_worker_event()` and `spawn_event_loop()`.
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-ipc` (for `WorkerEvent`, `EventBroadcaster`) and `anvilml-core` (for `WsEvent`) dependencies. The `event_loop` module provides `map_worker_event()` and `spawn_event_loop()`.
 **Tests:** `map_worker_event()` maps `WorkerEvent::ImageReady` to `WsEvent::JobImageReady` with correct `job_id`, `width`, `height`, `seed`, and `steps` fields. The `artifact_hash` is empty because `map_worker_event()` does not have access to the saved hash (that is populated by `spawn_event_loop()` after the artifact save).
 **Mode:** both
 **Inputs:** `WorkerEvent::ImageReady { job_id, image_b64: <valid PNG>, width: 512, height: 512, format: "png", seed: 42, steps: 20 }`.
@@ -5576,10 +5576,10 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 ## test_spawn_event_loop_receives_and_publishes (anvilml-scheduler)
 
 **File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
-**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-ipc` (for `WorkerEvent`, `EventBroadcaster`, `RouterTransport`), `anvilml-registry` (for `JobStore`), `anvilml-core` (for `WsEvent`, `NodeTypeRegistry`), `anvilml-artifacts` (for `ArtifactStore`), and `zeromq` dev-dependencies. The `event_loop` module provides `spawn_event_loop()` which subscribes the scheduler to worker events via a ZeroMQ ROUTER transport.
-**Tests:** End-to-end: a real ROUTER/DEALER transport pair is created. The event loop is spawned, a DEALER socket sends a `WorkerEvent::Completed` message, and the broadcaster receives the corresponding `WsEvent::JobCompleted` event. The test verifies the `elapsed_ms` field is correctly transferred and that the event loop processes messages from the transport.
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-ipc` (for `WorkerEvent`, `EventBroadcaster`), `anvilml-registry` (for `JobStore`), `anvilml-core` (for `WsEvent`, `NodeTypeRegistry`), `anvilml-artifacts` (for `ArtifactStore`), and `zeromq` dev-dependencies. The `event_loop` module provides `spawn_event_loop()` which subscribes the scheduler to worker events via a `Demux` subscription.
+**Tests:** End-to-end: a `Demux` is created. The event loop is spawned subscribed to it, a `WorkerEvent::Completed` is routed via `demux.route()` (simulating what `bridge.rs`'s `reader_task` does), and the broadcaster receives the corresponding `WorkerEvent::Completed` message, and the broadcaster receives the corresponding `WsEvent::JobCompleted` event. The test verifies the `elapsed_ms` field is correctly transferred and that the event loop processes messages from its `Demux` subscription.
 **Mode:** both
-**Inputs:** `WorkerEvent::Completed { job_id, elapsed_ms: 10000 }` sent via a 2-frame ZeroMQ DEALER message (empty delimiter + msgpack payload) to a ROUTER socket.
+**Inputs:** `WorkerEvent::Completed { job_id, elapsed_ms: 10000 }` routed via `Demux::route("test-worker-1", ...)`.
 **Expected output:** `WsEvent::JobCompleted` received on the broadcaster with `elapsed_ms == 10000`.
 **Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_spawn_event_loop_receives_and_publishes` exits 0.
 
@@ -5588,10 +5588,10 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 ## test_spawn_event_loop_handles_recv_error (anvilml-scheduler)
 
 **File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
-**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-ipc` (for `RouterTransport`, `EventBroadcaster`), `anvilml-registry` (for `JobStore`), and `anvilml-core` (for `NodeTypeRegistry`) dependencies. The `event_loop` module provides `spawn_event_loop()` which handles transport errors gracefully.
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-ipc` (for `EventBroadcaster`), `anvilml-registry` (for `JobStore`), and `anvilml-core` (for `NodeTypeRegistry`) dependencies. The `event_loop` module provides `spawn_event_loop()`. Verifies the spawned task can be aborted directly.
 **Tests:** The event loop retries gracefully after a transport `recv()` error. After spawning the event loop and immediately closing the transport, the spawned task remains alive (not finished) — proving it logs the error and retries instead of panicking or exiting.
 **Mode:** both
-**Inputs:** `RouterTransport::bind()` followed immediately by `transport.close()`.
+**Inputs:** A `Demux`; the spawned task's `JoinHandle` is aborted directly.
 **Expected output:** The event loop task remains alive after transport close (verified via `handle.is_finished()` returning false).
 **Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_spawn_event_loop_handles_recv_error` exits 0.
 
@@ -5600,10 +5600,10 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 ## test_completed_persists_status_and_releases_ledger (anvilml-scheduler)
 
 **File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
-**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-ipc` (for `WorkerEvent`, `EventBroadcaster`, `RouterTransport`), `anvilml-registry` (for `JobStore`), `anvilml-core` (for `Job`, `JobStatus`, `NodeTypeRegistry`, `WsEvent`), `anvilml-artifacts` (for `ArtifactStore`), `zeromq` and `sqlx` dev-dependencies, and the `test-util` feature enabled (for `ledger_reservations_test()`). The event loop's terminal event arms (Completed/Failed/Cancelled) persist status transitions and release VRAM reservations.
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-ipc` (for `WorkerEvent`, `EventBroadcaster`), `anvilml-registry` (for `JobStore`), `anvilml-core` (for `Job`, `JobStatus`, `NodeTypeRegistry`, `WsEvent`), `anvilml-artifacts` (for `ArtifactStore`), `zeromq` and `sqlx` dev-dependencies, and the `test-util` feature enabled (for `ledger_reservations_test()`). The event loop's terminal event arms (Completed/Failed/Cancelled) persist status transitions and release VRAM reservations.
 **Tests:** End-to-end: a full event loop setup with a JobStore containing a `Running` job with `worker_id="0"`. VRAM is reserved on device 0 in the ledger. A `WorkerEvent::Completed` is sent via the transport. The test verifies: (1) the job's `status` is `Completed` and `completed_at` is set in the DB, (2) the ledger reservation for device 0 is zeroed, (3) the broadcaster receives `WsEvent::JobCompleted` with correct fields.
 **Mode:** both
-**Inputs:** `WorkerEvent::Completed { job_id, elapsed_ms: 5000 }` sent via ZeroMQ DEALER to a ROUTER socket; a `Running` job with `worker_id="0"` pre-populated in JobStore; 8192 MiB reserved on device 0 in the ledger.
+**Inputs:** `WorkerEvent::Completed { job_id, elapsed_ms: 5000 }` routed via `Demux::route()`; a `Running` job with `worker_id="0"` pre-populated in JobStore; 8192 MiB reserved on device 0 in the ledger.
 **Expected output:** `status=Completed`, `completed_at` set, ledger reservation zeroed, `WsEvent::JobCompleted` published.
 **Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_completed_persists_status_and_releases_ledger` exits 0.
 
@@ -5615,7 +5615,7 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Context:** Same setup as `test_completed_persists_status_and_releases_ledger`. Verifies the `Failed` event arm persists the error string.
 **Tests:** A `WorkerEvent::Failed` with `error="CUDA out of memory"` is sent. The test verifies: (1) the job's `status` is `Failed` and `completed_at` is set, (2) the job's `error` field equals `"CUDA out of memory"`, (3) the ledger reservation for device 0 is zeroed, (4) the broadcaster receives `WsEvent::JobFailed` with correct fields.
 **Mode:** both
-**Inputs:** `WorkerEvent::Failed { job_id, error: "CUDA out of memory", traceback: Some(...) }` sent via ZeroMQ DEALER; a `Running` job with `worker_id="0"` pre-populated in JobStore; 4096 MiB reserved on device 0.
+**Inputs:** `WorkerEvent::Failed { job_id, error: "CUDA out of memory", traceback: Some(...) }` routed via `Demux::route()`; a `Running` job with `worker_id="0"` pre-populated in JobStore; 4096 MiB reserved on device 0.
 **Expected output:** `status=Failed`, `completed_at` set, `error="CUDA out of memory"`, ledger reservation zeroed, `WsEvent::JobFailed` published.
 **Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_failed_persists_status_error_and_releases_ledger` exits 0.
 
@@ -5627,7 +5627,7 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Context:** Same setup as `test_completed_persists_status_and_releases_ledger`, but exercises device index 1.
 **Tests:** A `WorkerEvent::Cancelled` is sent for a job with `worker_id="1"`. The test verifies: (1) the job's `status` is `Cancelled` and `completed_at` is set, (2) the ledger reservation for device 1 is zeroed, (3) the broadcaster receives `WsEvent::JobCancelled` with correct fields.
 **Mode:** both
-**Inputs:** `WorkerEvent::Cancelled { job_id }` sent via ZeroMQ DEALER; a `Running` job with `worker_id="1"` pre-populated in JobStore; 6144 MiB reserved on device 1.
+**Inputs:** `WorkerEvent::Cancelled { job_id }` routed via `Demux::route()`; a `Running` job with `worker_id="1"` pre-populated in JobStore; 6144 MiB reserved on device 1.
 **Expected output:** `status=Cancelled`, `completed_at` set, ledger reservation zeroed, `WsEvent::JobCancelled` published.
 **Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_cancelled_persists_status_and_releases_ledger` exits 0.
 
@@ -5639,7 +5639,7 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Context:** Same infrastructure as other terminal event tests. Verifies all three terminal events publish the correct `WsEvent` variant.
 **Tests:** Sends `Completed`, `Failed`, and `Cancelled` events sequentially. Each is verified against its matching `WsEvent` variant (`JobCompleted`, `JobFailed`, `JobCancelled`) with correct field values.
 **Mode:** both
-**Inputs:** Three terminal events sent via ZeroMQ DEALER to a single ROUTER socket.
+**Inputs:** Three terminal events routed sequentially via `Demux::route()`.
 **Expected output:** Three `WsEvent` variants received in order: `JobCompleted`, `JobFailed`, `JobCancelled`, each with correct fields.
 **Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_terminal_events_publish_ws_event` exits 0.
 
@@ -5651,7 +5651,7 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Context:** Same infrastructure, but the JobStore is empty (no jobs). Verifies the event loop handles a `Completed` event for a non-existent job gracefully.
 **Tests:** A `WorkerEvent::Completed` is sent with a UUID that doesn't exist in the database. The test verifies: (1) the event loop does not panic, (2) the broadcaster still receives `WsEvent::JobCompleted` (the WebSocket stream is not interrupted), (3) no job row is created in the database.
 **Mode:** both
-**Inputs:** `WorkerEvent::Completed { job_id: <nonexistent UUID>, elapsed_ms: 1000 }` sent via ZeroMQ DEALER; empty JobStore.
+**Inputs:** `WorkerEvent::Completed { job_id: <nonexistent UUID>, elapsed_ms: 1000 }` routed via `Demux::route()`; empty JobStore.
 **Expected output:** `WsEvent::JobCompleted` published; no job row created; event loop continues running.
 **Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_terminal_event_unknown_job_logs_warning` exits 0.
 
@@ -5663,7 +5663,7 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Context:** Same infrastructure. Verifies that `Progress` events (non-terminal) still flow through the `map_worker_event()` path unchanged.
 **Tests:** A `WorkerEvent::Progress` is sent. The test verifies the broadcaster receives `WsEvent::JobProgress` with all fields (`step`, `total_steps`, `preview_b64`) correctly transferred. This confirms the new terminal event arms did not break the existing non-terminal event path.
 **Mode:** both
-**Inputs:** `WorkerEvent::Progress { job_id, step: 10, total_steps: 20, preview_b64: Some("dGVzdA==") }` sent via ZeroMQ DEALER.
+**Inputs:** `WorkerEvent::Progress { job_id, step: 10, total_steps: 20, preview_b64: Some("dGVzdA==") }` routed via `Demux::route()`.
 **Expected output:** `WsEvent::JobProgress` with `step==10`, `total_steps==20`, `preview_b64==Some("dGVzdA==")`.
 **Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_progress_still_published_via_map_worker_event` exits 0.
 
@@ -5675,7 +5675,7 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Context:** P16-A3 adds a `WorkerPool` parameter to `spawn_event_loop()` and worker Idle restoration + dispatch wake to each terminal event arm. The test creates a `WorkerPool` with one mock handle at `Busy` status, a `Running` job with `worker_id="0"`, and sends a `Completed` event.
 **Tests:** After the event loop processes the `Completed` event, verifies: (1) the mock handle's status is `Idle` (was `Busy` before), (2) the scheduler's dispatch wake count is >= 1.
 **Mode:** both
-**Inputs:** `WorkerEvent::Completed { job_id, elapsed_ms: 5000 }` sent via ZeroMQ DEALER; mock handle at `Busy`; job with `worker_id="0"`.
+**Inputs:** `WorkerEvent::Completed { job_id, elapsed_ms: 5000 }` routed via `Demux::route()`; mock handle at `Busy`; job with `worker_id="0"`.
 **Expected output:** Handle status == `Idle`; wake count >= 1.
 **Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_completed_restores_worker_idle_wakes_dispatch` exits 0.
 
@@ -5687,7 +5687,7 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Context:** Same infrastructure as `test_completed_restores_worker_idle_wakes_dispatch`, but sends a `Failed` event.
 **Tests:** After processing the `Failed` event, verifies the mock handle's status is `Idle` and the dispatch wake count is >= 1.
 **Mode:** both
-**Inputs:** `WorkerEvent::Failed { job_id, error: "CUDA out of memory", traceback: None }` sent via ZeroMQ DEALER; mock handle at `Busy`.
+**Inputs:** `WorkerEvent::Failed { job_id, error: "CUDA out of memory", traceback: None }` routed via `Demux::route()`; mock handle at `Busy`.
 **Expected output:** Handle status == `Idle`; wake count >= 1.
 **Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_failed_restores_worker_idle_wakes_dispatch` exits 0.
 
@@ -5699,7 +5699,7 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Context:** Same infrastructure, but sends a `Cancelled` event.
 **Tests:** After processing the `Cancelled` event, verifies the mock handle's status is `Idle` and the dispatch wake count is >= 1.
 **Mode:** both
-**Inputs:** `WorkerEvent::Cancelled { job_id }` sent via ZeroMQ DEALER; mock handle at `Busy`.
+**Inputs:** `WorkerEvent::Cancelled { job_id }` routed via `Demux::route()`; mock handle at `Busy`.
 **Expected output:** Handle status == `Idle`; wake count >= 1.
 **Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_cancelled_restores_worker_idle_wakes_dispatch` exits 0.
 
@@ -5711,7 +5711,7 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Context:** Same infrastructure. Verifies that a non-terminal `Progress` event does NOT increment the dispatch wake count.
 **Tests:** Sends a `Progress` event and verifies the wake count remains at 0 — Progress is not a terminal event and should not trigger dispatch loop wake.
 **Mode:** both
-**Inputs:** `WorkerEvent::Progress { job_id, step: 10, total_steps: 20, preview_b64: Some("dGVzdA==") }` sent via ZeroMQ DEALER.
+**Inputs:** `WorkerEvent::Progress { job_id, step: 10, total_steps: 20, preview_b64: Some("dGVzdA==") }` routed via `Demux::route()`.
 **Expected output:** Wake count == 0 after Progress event.
 **Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_progress_does_not_wake_dispatch` exits 0.
 
@@ -5726,3 +5726,63 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Two jobs submitted to the scheduler; `WorkerEvent::Completed` for the first job; mock handle at `Busy`.
 **Expected output:** Second job's DB status is `Running`; worker status is `Idle`; dispatch loop was woken.
 **Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_queued_job_dispatched_after_first_completes` exits 0.
+
+---
+
+## test_subscribe_receives_fanned_out_event (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/demux_tests.rs`
+**Context:** `Demux` gained `subscribe()`/`unsubscribe()` fan-out per `ANVILML_DESIGN.md §9.8` (`docs/ADDENDUM_DEMUX_FANOUT.md`), ahead of `P16-B1`.
+**Tests:** A subscriber receives a `(worker_id, WorkerEvent)` clone of an event routed via `route()`, even when no primary worker is registered for that `worker_id` (fan-out and primary delivery are independent).
+**Mode:** both
+**Inputs:** `demux.subscribe()`, then `route("worker-0", WorkerEvent::Pong { seq: 7 })` with no prior `register()`.
+**Expected output:** `route()` returns `Err(AnvilError::WorkerNotFound)`; the subscriber still receives `("worker-0", Pong { seq: 7 })`.
+**Acceptance:** `cargo test -p anvilml-worker --test demux_tests test_subscribe_receives_fanned_out_event` exits 0.
+
+---
+
+## test_multiple_subscribers_each_receive_independently (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/demux_tests.rs`
+**Context:** Same `§9.8` fan-out addition. Verifies fan-out scales to more than one subscriber without cross-interference or affecting primary delivery.
+**Tests:** Two independent subscribers and one primary (`register()`ed) consumer all receive their own copy of the same routed event.
+**Mode:** both
+**Inputs:** Two `demux.subscribe()` calls, one `demux.register("worker-0", ...)`, then `route("worker-0", WorkerEvent::Cancelled { job_id })`.
+**Expected output:** The primary consumer, subscriber A, and subscriber B each independently receive the event.
+**Acceptance:** `cargo test -p anvilml-worker --test demux_tests test_multiple_subscribers_each_receive_independently` exits 0.
+
+---
+
+## test_unsubscribe_stops_fanout_delivery (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/demux_tests.rs`
+**Context:** Same `§9.8` fan-out addition. Mirrors the mandatory deregistration test convention (`§9.4`) for the new subscription mechanism.
+**Tests:** After `unsubscribe()`, that subscription's channel is closed (`recv()` returns `None`) rather than continuing to receive events or hanging.
+**Mode:** both
+**Inputs:** `subscribe()`, route one event (received), `unsubscribe(id)`, route a second event.
+**Expected output:** First event received; after `unsubscribe()`, `recv()` returns `None` rather than the second event.
+**Acceptance:** `cargo test -p anvilml-worker --test demux_tests test_unsubscribe_stops_fanout_delivery` exits 0.
+
+---
+
+## test_unsubscribe_unknown_id_is_safe (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/demux_tests.rs`
+**Context:** Same `§9.8` fan-out addition. Mirrors `test_double_deregister_is_safe`'s idempotency guarantee for the new subscription mechanism.
+**Tests:** `unsubscribe()` with an id that was never issued (or already removed) does not panic and does not affect other, unrelated active subscriptions.
+**Mode:** both
+**Inputs:** `unsubscribe(9999)` with no matching subscription, followed by a real, separate `subscribe()` + `route()`.
+**Expected output:** No panic; the unrelated real subscription still receives its event normally.
+**Acceptance:** `cargo test -p anvilml-worker --test demux_tests test_unsubscribe_unknown_id_is_safe` exits 0.
+
+---
+
+## test_full_subscriber_channel_does_not_block_route (anvilml-worker)
+
+**File:** `crates/anvilml-worker/tests/demux_tests.rs`
+**Context:** Same `§9.8` fan-out addition. Verifies the "best-effort, never blocks" guarantee — a stalled subscriber must never be able to stall `route()` or the primary consumer.
+**Tests:** With a subscriber that never drains its channel, 300 events (exceeding the 256-capacity subscriber channel) are routed to a registered primary worker. Every `route()` call still returns `Ok(())`, and the primary consumer receives all 300 events regardless of the subscriber's full channel.
+**Mode:** both
+**Inputs:** One never-drained `subscribe()`, one `register()`ed primary consumer, 300 sequential `route()` calls with distinct `WorkerEvent::Pong { seq }` events.
+**Expected output:** All 300 `route()` calls return `Ok(())`; the primary consumer's channel contains exactly 300 events.
+**Acceptance:** `cargo test -p anvilml-worker --test demux_tests test_full_subscriber_channel_does_not_block_route` exits 0.

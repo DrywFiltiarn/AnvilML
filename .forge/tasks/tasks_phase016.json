@@ -4,8 +4,10 @@
     "description": "anvilml-scheduler: event_loop subscribes WorkerEvent, publishes WsEvent",
     "phase": "16",
     "project": "anvilml",
-    "prereqs": ["P15-C1"],
-    "context": "Extend crates/anvilml-scheduler/src/event_loop.rs (Phase 15's P15-C1) with a subscription loop: pub fn spawn_event_loop(self: Arc<JobScheduler>, transport: Arc<RouterTransport>, broadcaster: Arc<EventBroadcaster>) -> JoinHandle<()> looping transport.recv(), mapping each WorkerEvent to its WsEvent (anvilml-core, Phase 3 P3-A8/P3-A9): Progress->JobProgress, Completed->JobCompleted, Failed->JobFailed, Cancelled->JobCancelled. ImageReady's existing save logic (P15-C1) additionally publishes WsEvent::JobImageReady after the save succeeds, not before. Each mapped event is published via broadcaster.publish(). Log a DEBUG event per transition (job_id, from, to) per §16.3. Acceptance: >=6 tests in tests/event_loop_tests.rs: each of the 4 new variants produces the correctly-shaped WsEvent, ImageReady publishes JobImageReady only after a successful save; `cargo test -p anvilml-scheduler --test event_loop_tests` exits 0 (>=10 total). [interim-patch: see PHASES_GRAPH.md]",
+    "prereqs": [
+      "P15-C1"
+    ],
+    "context": "Extend crates/anvilml-scheduler/src/event_loop.rs (Phase 15's P15-C1) with a subscription loop: pub fn spawn_event_loop(self: Arc<JobScheduler>, transport: Arc<RouterTransport>, broadcaster: Arc<EventBroadcaster>) -> JoinHandle<()> looping transport.recv(), mapping each WorkerEvent to its WsEvent (anvilml-core, Phase 3 P3-A8/P3-A9): Progress->JobProgress, Completed->JobCompleted, Failed->JobFailed, Cancelled->JobCancelled. ImageReady's existing save logic (P15-C1) additionally publishes WsEvent::JobImageReady after the save succeeds, not before. Each mapped event is published via broadcaster.publish(). Log a DEBUG event per transition (job_id, from, to) per \u00a716.3. Acceptance: >=6 tests in tests/event_loop_tests.rs: each of the 4 new variants produces the correctly-shaped WsEvent, ImageReady publishes JobImageReady only after a successful save; `cargo test -p anvilml-scheduler --test event_loop_tests` exits 0 (>=10 total). [interim-patch: see PHASES_GRAPH.md]",
     "tags": [],
     "defers_to": []
   },
@@ -14,18 +16,36 @@
     "description": "anvilml-scheduler: event_loop updates Job status in JobStore on events",
     "phase": "16",
     "project": "anvilml",
-    "prereqs": ["P16-A1"],
-    "context": "Extend the event loop (crates/anvilml-scheduler/src/event_loop.rs) to persist status transitions alongside publishing: Completed -> status=Completed, completed_at=now, persist; Failed -> status=Failed, completed_at=now, error=event.error, persist; Cancelled -> status=Cancelled, completed_at=now, persist. This is what makes GET /v1/jobs/:id (Phase 14) observe terminal states correctly - before this task, dispatch only ever set Running, never a terminal state. Also release the VRAM ledger reservation (Phase 13's VramLedger::release()) on all three terminal events per §12.4. Restoring the WORKER's own status to Idle, and waking the dispatch loop, are the next task's scope - do not add either here. Acceptance: >=5 new tests: Completed sets completed_at, Failed persists the error string, Cancelled persists correctly, all three release the ledger; `cargo test -p anvilml-scheduler --test event_loop_tests` exits 0 (>=15 total). [interim-patch: see PHASES_GRAPH.md]",
+    "prereqs": [
+      "P16-A1"
+    ],
+    "context": "Extend the event loop (crates/anvilml-scheduler/src/event_loop.rs) to persist status transitions alongside publishing: Completed -> status=Completed, completed_at=now, persist; Failed -> status=Failed, completed_at=now, error=event.error, persist; Cancelled -> status=Cancelled, completed_at=now, persist. This is what makes GET /v1/jobs/:id (Phase 14) observe terminal states correctly - before this task, dispatch only ever set Running, never a terminal state. Also release the VRAM ledger reservation (Phase 13's VramLedger::release()) on all three terminal events per \u00a712.4. Restoring the WORKER's own status to Idle, and waking the dispatch loop, are the next task's scope - do not add either here. Acceptance: >=5 new tests: Completed sets completed_at, Failed persists the error string, Cancelled persists correctly, all three release the ledger; `cargo test -p anvilml-scheduler --test event_loop_tests` exits 0 (>=15 total). [interim-patch: see PHASES_GRAPH.md]",
     "tags": [],
-    "defers_to": ["P16-A3"]
+    "defers_to": [
+      "P16-A3"
+    ]
   },
   {
     "id": "P16-A3",
     "description": "anvilml-scheduler: event_loop restores Idle + wakes dispatch loop",
     "phase": "16",
     "project": "anvilml",
-    "prereqs": ["P16-A2"],
+    "prereqs": [
+      "P16-A2"
+    ],
     "context": "Extend the event loop (crates/anvilml-scheduler/src/event_loop.rs), the scope P16-A2 deferred: on all three terminal events (Completed/Failed/Cancelled), call the responsible worker's worker_handle.set_status(WorkerStatus::Idle) (Phase 8's P8-E2) then dispatch_notify.notify_one() (Phase 14's P14-A1). Without this, a worker that finishes a job stays marked Busy forever (P14-A5 marks it Busy on dispatch but nothing reverses that), and even if status were restored, a queued job waiting for a free worker would never be re-evaluated, since dispatch_notify is otherwise woken only by submit() - a real starvation bug under any load beyond one job at a time. Acceptance: >=5 tests: each terminal event restores Idle and wakes the dispatch loop (observable via a test hook), a queued second job is actually dispatched after the first job's worker frees up with no new submission; `cargo test -p anvilml-scheduler --test event_loop_tests` exits 0 (>=20 total). [interim-patch: see PHASES_GRAPH.md]",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P16-A4",
+    "description": "anvilml-scheduler + anvilml-worker: retrofit spawn_event_loop() onto Demux::subscribe() (audit finding, inserted ahead of P16-B1)",
+    "phase": "16",
+    "project": "anvilml",
+    "prereqs": [
+      "P16-A3"
+    ],
+    "context": "Closes an audit-found gap in P16-A1's own committed implementation: spawn_event_loop() calls RouterTransport::recv() directly, but bridge.rs (Phase 8's P8-F1) already establishes its own reader_task as the sole permitted caller of recv() on the pool's shared ROUTER socket - a second concurrent caller races it for every incoming frame, silently stealing messages from ManagedWorker's own demux-based consumption. Never exercised by event_loop_tests.rs, since every test there binds its own isolated RouterTransport with no ManagedWorker/bridge on the other end; the race only manifests once P16-B1 wires spawn_event_loop() against the pool's real, shared transport. Fix: extend Demux (crates/anvilml-worker/src/demux.rs) with subscribe() -> (SubscriptionId, mpsc::Receiver<(String, WorkerEvent)>) and unsubscribe(SubscriptionId), additive to the existing register()/deregister()/route() contract (\u00a79.4) which is unchanged - route() now also best-effort fans each event out to every active subscriber (full/closed subscriber channel -> WARN log + skip, never blocks or errors route()). Add WorkerPool::demux() accessor (crates/anvilml-worker/src/pool.rs) mirroring transport()/bridge_sender(). Re-export SubscriptionId from anvilml-worker's lib.rs. Change spawn_event_loop()'s (crates/anvilml-scheduler/src/event_loop.rs) second parameter from transport: Arc<RouterTransport> to demux: Arc<Demux>; its loop body now consumes the mpsc::Receiver from demux.subscribe() instead of calling transport.recv() - a closed subscription channel is unrecoverable (unlike a transient transport error) so the task logs ERROR and exits rather than retrying. Retarget every event_loop_tests.rs test from binding a RouterTransport + real DEALER socket send to constructing a Demux directly and calling demux.route(worker_id, event), matching what bridge.rs's reader_task does in production. See docs/ADDENDUM_DEMUX_FANOUT.md for full background. Acceptance: >=10 tests in anvilml-worker's demux_tests.rs covering subscribe/unsubscribe/fan-out/backpressure; `cargo test -p anvilml-worker --test demux_tests` exits 0; all 22 existing event_loop_tests.rs tests retargeted onto Demux and still pass; `cargo test -p anvilml-scheduler --test event_loop_tests` exits 0 (>=20 total, unchanged count).",
     "tags": [],
     "defers_to": []
   },
@@ -34,8 +54,10 @@
     "description": "anvilml-server: AppState gains broadcaster field, wired from main.rs",
     "phase": "16",
     "project": "anvilml",
-    "prereqs": ["P16-A3"],
-    "context": "Extend AppState (crates/anvilml-server/src/state.rs, Phase 15's P15-A1) with broadcaster: Arc<EventBroadcaster> (anvilml-ipc, Phase 7's P7-C1). Update backend/main.rs's normal startup path to construct the EventBroadcaster once, pass the same Arc instance into both JobScheduler's spawn_event_loop() call (P16-A1) and AppState, so the scheduler's published events and the HTTP layer's subscribers share the identical broadcast channel. Remaining §13.2 fields (hardware, env_report) stay absent until a task needs them. Acceptance: >=2 new tests in crates/anvilml-server/tests/state_tests.rs covering broadcaster's construction and cloning; `cargo test -p anvilml-server --test state_tests` exits 0; `cargo build -p anvilml` exits 0. [interim-patch: see PHASES_GRAPH.md]",
+    "prereqs": [
+      "P16-A4"
+    ],
+    "context": "Extend AppState (crates/anvilml-server/src/state.rs, Phase 15's P15-A1) with broadcaster: Arc<EventBroadcaster> (anvilml-ipc, Phase 7's P7-C1). Update backend/main.rs's normal startup path to construct the EventBroadcaster once, pass the same Arc instance into both JobScheduler's spawn_event_loop() call (P16-A1) and AppState, so the scheduler's published events and the HTTP layer's subscribers share the identical broadcast channel. Remaining \u00a713.2 fields (hardware, env_report) stay absent until a task needs them. Acceptance: >=2 new tests in crates/anvilml-server/tests/state_tests.rs covering broadcaster's construction and cloning; `cargo test -p anvilml-server --test state_tests` exits 0; `cargo build -p anvilml` exits 0. [interim-patch: see PHASES_GRAPH.md] NOTE (P16-A4 retrofit): spawn_event_loop()'s transport-shaped parameter is now demux: Arc<Demux> - pass workers.demux(), not workers.transport(). Passing workers.transport() here would reintroduce the RouterTransport::recv() race P16-A4 closed.",
     "tags": [],
     "defers_to": []
   },
@@ -44,18 +66,24 @@
     "description": "anvilml-server: ws_handler skeleton + initial SystemStats frame",
     "phase": "16",
     "project": "anvilml",
-    "prereqs": ["P16-B1"],
-    "context": "Create crates/anvilml-server/src/ws/mod.rs and ws/handler.rs per ANVILML_DESIGN.md §13.6: async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response, calling ws.on_upgrade(move |socket| handle_socket(socket, state)). handle_socket for THIS task: (1) subscribe to state.broadcaster (P16-B1); (2) immediately send the current SystemStats as the first frame (a placeholder/zero-valued SystemStats is acceptable here since stats_tick is a separate later task - do not block waiting for one); then return (the forward loop is the next task's scope). anvilml-ipc's broadcaster is re-exported here, not redefined, per §13.1. Update build_router() to register GET /v1/events. Acceptance: >=3 tests in crates/anvilml-server/tests/handler_tests.rs: connecting receives exactly one initial SystemStats frame, the frame is valid JSON matching WsEvent's tag shape, the connection subscribes successfully; `cargo test -p anvilml-server --test handler_tests` exits 0.",
+    "prereqs": [
+      "P16-B1"
+    ],
+    "context": "Create crates/anvilml-server/src/ws/mod.rs and ws/handler.rs per ANVILML_DESIGN.md \u00a713.6: async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response, calling ws.on_upgrade(move |socket| handle_socket(socket, state)). handle_socket for THIS task: (1) subscribe to state.broadcaster (P16-B1); (2) immediately send the current SystemStats as the first frame (a placeholder/zero-valued SystemStats is acceptable here since stats_tick is a separate later task - do not block waiting for one); then return (the forward loop is the next task's scope). anvilml-ipc's broadcaster is re-exported here, not redefined, per \u00a713.1. Update build_router() to register GET /v1/events. Acceptance: >=3 tests in crates/anvilml-server/tests/handler_tests.rs: connecting receives exactly one initial SystemStats frame, the frame is valid JSON matching WsEvent's tag shape, the connection subscribes successfully; `cargo test -p anvilml-server --test handler_tests` exits 0.",
     "tags": [],
-    "defers_to": ["P16-C2"]
+    "defers_to": [
+      "P16-C2"
+    ]
   },
   {
     "id": "P16-C2",
     "description": "anvilml-server: ws_handler forward loop + Lagged disconnect",
     "phase": "16",
     "project": "anvilml",
-    "prereqs": ["P16-C1"],
-    "context": "Extend handle_socket (crates/anvilml-server/src/ws/handler.rs) with the forward loop P16-C1 deferred, per §13.6: after the initial SystemStats frame, loop forwarding every subsequent WsEvent as a JSON text frame via socket.send(). On broadcaster lag (tokio::sync::broadcast::error::RecvError::Lagged), per the 1024-buffer-overflow rule, close the connection rather than attempting to catch up - the client must reconnect. Acceptance: >=4 new tests in handler_tests.rs: a published WsEvent after connect is forwarded as JSON, a Lagged error closes the connection rather than panicking, multiple concurrent clients each receive their own independent copy; `cargo test -p anvilml-server --test handler_tests` exits 0 (>=7 total).",
+    "prereqs": [
+      "P16-C1"
+    ],
+    "context": "Extend handle_socket (crates/anvilml-server/src/ws/handler.rs) with the forward loop P16-C1 deferred, per \u00a713.6: after the initial SystemStats frame, loop forwarding every subsequent WsEvent as a JSON text frame via socket.send(). On broadcaster lag (tokio::sync::broadcast::error::RecvError::Lagged), per the 1024-buffer-overflow rule, close the connection rather than attempting to catch up - the client must reconnect. Acceptance: >=4 new tests in handler_tests.rs: a published WsEvent after connect is forwarded as JSON, a Lagged error closes the connection rather than panicking, multiple concurrent clients each receive their own independent copy; `cargo test -p anvilml-server --test handler_tests` exits 0 (>=7 total).",
     "tags": [],
     "defers_to": []
   },
@@ -64,8 +92,10 @@
     "description": "anvilml-server: stats_tick.rs background SystemStats every 5s",
     "phase": "16",
     "project": "anvilml",
-    "prereqs": ["P16-C2"],
-    "context": "Create crates/anvilml-server/src/ws/stats_tick.rs per §13.1: pub fn spawn_stats_tick(broadcaster: Arc<EventBroadcaster>, workers: Arc<WorkerPool>, interval: Duration) -> JoinHandle<()> (interval injected, not a hardcoded Duration::from_secs(5) literal, matching Phase 8's keepalive.rs testability pattern), publishing WsEvent::SystemStats{cpu_pct, ram_used_mib, workers: Vec<WorkerInfo>} every tick (cpu_pct/ram_used_mib via a sysinfo crate call, version resolved live via registry; workers from a WorkerPool::list()-equivalent method, added here if absent). Wire backend/main.rs to call spawn_stats_tick(..., Duration::from_secs(5)) alongside the dispatch/event loops. Acceptance: >=4 tests in crates/anvilml-server/tests/stats_tick_tests.rs using a short injected interval: a tick publishes SystemStats observable via a test subscriber, workers reflects pool state, two consecutive ticks both publish; `cargo test -p anvilml-server --features mock-hardware --test stats_tick_tests` exits 0.",
+    "prereqs": [
+      "P16-C2"
+    ],
+    "context": "Create crates/anvilml-server/src/ws/stats_tick.rs per \u00a713.1: pub fn spawn_stats_tick(broadcaster: Arc<EventBroadcaster>, workers: Arc<WorkerPool>, interval: Duration) -> JoinHandle<()> (interval injected, not a hardcoded Duration::from_secs(5) literal, matching Phase 8's keepalive.rs testability pattern), publishing WsEvent::SystemStats{cpu_pct, ram_used_mib, workers: Vec<WorkerInfo>} every tick (cpu_pct/ram_used_mib via a sysinfo crate call, version resolved live via registry; workers from a WorkerPool::list()-equivalent method, added here if absent). Wire backend/main.rs to call spawn_stats_tick(..., Duration::from_secs(5)) alongside the dispatch/event loops. Acceptance: >=4 tests in crates/anvilml-server/tests/stats_tick_tests.rs using a short injected interval: a tick publishes SystemStats observable via a test subscriber, workers reflects pool state, two consecutive ticks both publish; `cargo test -p anvilml-server --features mock-hardware --test stats_tick_tests` exits 0.",
     "tags": [],
     "defers_to": []
   },
@@ -74,9 +104,13 @@
     "description": "Runnable Proof: WebSocket client observes JobCompleted for PassThrough job",
     "phase": "16",
     "project": "anvilml",
-    "prereqs": ["P16-D1"],
+    "prereqs": [
+      "P16-D1"
+    ],
     "context": "No new source files. Run the built binary under mock-hardware, open a WebSocket connection to /v1/events, submit a PassThrough job via POST /v1/jobs (Phase 14), and assert the stream delivers a JobCompleted event for that job_id - the first phase where the live event stream is genuinely exercised end-to-end against real dispatch, not just the REST polling Phase 14's proof used. Record the literal terminal output (or a short Python websockets-client script's output) in the implementation report. Acceptance: a short Python script using the websockets library connects to ws://127.0.0.1:8488/v1/events, submits the job via a parallel HTTP POST, and asserts a job_completed JSON frame with the matching job_id arrives within 10 seconds; script exits 0.",
-    "tags": ["manual"],
+    "tags": [
+      "manual"
+    ],
     "defers_to": []
   }
 ]

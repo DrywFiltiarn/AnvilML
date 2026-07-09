@@ -140,6 +140,17 @@ impl WorkerPool {
         &self.transport
     }
 
+    /// The pool-wide `Demux` every worker in this pool routes its events
+    /// through, and the *only* sanctioned way for a subsystem outside
+    /// `anvilml-worker` to observe this pool's `WorkerEvent`s — via
+    /// `Demux::subscribe()` (`ANVILML_DESIGN.md §9.8`,
+    /// `docs/ADDENDUM_DEMUX_FANOUT.md`). Calling `transport().recv()`
+    /// directly instead races `bridge.rs`'s own `reader_task` for every
+    /// incoming frame; see that module's doc comment for why.
+    pub fn demux(&self) -> &Arc<Demux> {
+        &self.demux
+    }
+
     /// The pool-wide IPC bridge's writer channel — queuing a `(worker_id,
     /// message)` pair here sends it via `RouterTransport::send()`, the
     /// same way `bridge.rs`'s own writer task always has (see

@@ -4,9 +4,14 @@
 /// - `handle_image_ready()` — decodes the base64 image payload, constructs an
 ///   `ArtifactMeta`, and calls `artifact_store.save()` to persist the decoded PNG
 ///   bytes under their content hash.
-/// - `spawn_event_loop()` — subscribes the scheduler to `WorkerEvent`s from workers
-///   via the `RouterTransport`, maps each event to its `WsEvent` counterpart, and
-///   publishes it via the shared `EventBroadcaster`.
+/// - `spawn_event_loop()` — subscribes to `WorkerEvent`s from workers via
+///   `Demux::subscribe()` (`ANVILML_DESIGN.md §9.8`), maps each event to its
+///   `WsEvent` counterpart, and publishes it via the shared `EventBroadcaster`.
+///   Deliberately does **not** hold or call methods on `RouterTransport`
+///   directly — `bridge.rs`'s `reader_task` is the sole permitted caller of
+///   `RouterTransport::recv()` on the pool's shared ROUTER socket; a second
+///   concurrent caller would race it for every incoming frame. See
+///   `docs/ADDENDUM_DEMUX_FANOUT.md` for the full background.
 /// - `map_worker_event()` — performs the one-to-one mapping between `WorkerEvent`
 ///   and `WsEvent` variants.
 ///
@@ -18,12 +23,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anvilml_core::types::worker::WorkerStatus;
-use anvilml_worker::WorkerPool;
+use anvilml_worker::{Demux, WorkerPool};
 
 use crate::JobScheduler;
 use anvilml_artifacts::ArtifactStore;
 use anvilml_core::{AnvilError, ArtifactMeta, JobStatus, WsEvent};
-use anvilml_ipc::{EventBroadcaster, RouterTransport, WorkerEvent};
+use anvilml_ipc::{EventBroadcaster, WorkerEvent};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use chrono::Utc;
@@ -223,18 +228,26 @@ pub fn map_worker_event(event: WorkerEvent) -> WsEvent {
     }
 }
 
-/// Spawn the event loop task that consumes `WorkerEvent`s from the transport and
-/// broadcasts them as `WsEvent`s to WebSocket subscribers.
+/// Spawn the event loop task that consumes `WorkerEvent`s via a `Demux`
+/// subscription and broadcasts them as `WsEvent`s to WebSocket subscribers.
 ///
 /// The event loop runs an infinite loop that:
-/// 1. Receives events from the `RouterTransport` (blocking until a message arrives).
+/// 1. Receives `(worker_id, WorkerEvent)` pairs from its own `Demux::subscribe()`
+///    subscription (blocking until one arrives). It never calls
+///    `RouterTransport::recv()` itself — see this module's own doc comment and
+///    `ANVILML_DESIGN.md §9.8` / `docs/ADDENDUM_DEMUX_FANOUT.md` for why a second
+///    direct caller on the pool's shared ROUTER socket would race `bridge.rs`'s
+///    `reader_task` for incoming frames.
 /// 2. Routes `ImageReady` events through the artifact save path, then publishes
 ///    `JobImageReady` **after** the save succeeds (never before).
 /// 3. Routes all other mapped events through `map_worker_event()` and publishes.
 /// 4. Logs a `DEBUG` transition record after each publish per `ANVILML_DESIGN.md §16.3`.
 ///
-/// On transport `recv()` errors (e.g. closed socket), the loop logs the error and
-/// retries on the next iteration — it does not abort.
+/// If the subscription channel closes (every `Sender` for it dropped — i.e. the
+/// `Demux`, and with it the whole `WorkerPool`, is gone), the loop logs an `ERROR`
+/// and exits. Unlike a single transient IPC hiccup, this is an unrecoverable,
+/// terminal condition for this task: there is no transport-level error to retry,
+/// since fan-out delivery itself has already permanently ended.
 ///
 /// On each terminal event (`Completed`/`Failed`/`Cancelled`), the event loop also
 /// restores the responsible worker's status to `Idle` and wakes the dispatch loop
@@ -245,7 +258,9 @@ pub fn map_worker_event(event: WorkerEvent) -> WsEvent {
 ///
 /// * `scheduler` — The `JobScheduler` (owned via `Arc`, consumed by the spawned task).
 ///   The scheduler's `artifact_store` field is used for `ImageReady` artifact saves.
-/// * `transport` — The ZeroMQ ROUTER transport for receiving worker events.
+/// * `demux` — The pool-wide `Demux` to subscribe to for `WorkerEvent`s. Callers
+///   should pass `workers.demux()` — the same instance `bridge.rs`'s
+///   `reader_task` already routes every real worker event into.
 /// * `broadcaster` — The WebSocket event broadcaster for publishing `WsEvent`s.
 /// * `workers` — The worker pool, used to restore the responsible worker to `Idle`
 ///   on terminal events and wake the dispatch loop.
@@ -253,27 +268,34 @@ pub fn map_worker_event(event: WorkerEvent) -> WsEvent {
 /// # Returns
 ///
 /// A `JoinHandle<()>` for the spawned event loop task.
-#[tracing::instrument(skip(scheduler, transport, broadcaster, workers))]
+#[tracing::instrument(skip(scheduler, demux, broadcaster, workers))]
 pub fn spawn_event_loop(
     scheduler: Arc<JobScheduler>,
-    transport: Arc<RouterTransport>,
+    demux: Arc<Demux>,
     broadcaster: Arc<EventBroadcaster>,
     workers: Arc<WorkerPool>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        // Subscribe once, for the lifetime of this task — not per-iteration.
+        // This is the sole sanctioned way for this task to observe
+        // WorkerEvents; see this function's own doc comment for why it must
+        // never call RouterTransport::recv() directly instead.
+        let (subscription_id, mut events) = demux.subscribe();
+
         loop {
-            // Receive the next event from the worker. This blocks until a
-            // message arrives on the ROUTER socket. The recv() method returns
-            // (worker_identity, WorkerEvent).
-            let (_worker_id, event) = match transport.recv().await {
-                Ok(pair) => pair,
-                Err(e) => {
-                    // Transport error (e.g. closed socket). Log and retry on
-                    // the next iteration — the loop continues indefinitely
-                    // rather than aborting the event processing pipeline.
-                    tracing::error!(error = %e, "event_loop recv error, retrying");
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                    continue;
+            // Receive the next fanned-out (worker_id, WorkerEvent) pair.
+            // Blocks until one arrives, or resolves to None once every
+            // Sender for this subscription has been dropped — an
+            // unrecoverable condition (see this function's own doc comment),
+            // not a transient error to retry past.
+            let (_worker_id, event) = match events.recv().await {
+                Some(pair) => pair,
+                None => {
+                    tracing::error!(
+                        subscription_id,
+                        "event_loop: Demux subscription closed, exiting"
+                    );
+                    return;
                 }
             };
 

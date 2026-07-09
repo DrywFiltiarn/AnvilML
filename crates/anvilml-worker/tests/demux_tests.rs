@@ -201,3 +201,164 @@ async fn test_register_overwrites() {
     let received = rx_b.recv().await.expect("receiver B should get the event");
     assert_eq!(received, event);
 }
+
+/// `subscribe()` delivers a `(worker_id, event)` clone of every routed event
+/// to the subscriber, tagged with the worker it came from.
+///
+/// This is the mandatory fan-out test per `ANVILML_DESIGN.md §9.8`
+/// (`docs/ADDENDUM_DEMUX_FANOUT.md`) — a subscriber must observe events for
+/// *any* worker_id, not just one it separately registered for.
+#[tokio::test]
+async fn test_subscribe_receives_fanned_out_event() {
+    let demux = Demux::new();
+    let (_id, mut sub_rx) = demux.subscribe();
+
+    let event = WorkerEvent::Pong { seq: 7 };
+
+    // Routing to an unregistered primary worker still fans out to the
+    // subscriber — the two delivery paths are independent (§9.8).
+    let route_result = demux.route("worker-0", event.clone()).await;
+    assert!(
+        matches!(route_result, Err(AnvilError::WorkerNotFound(_))),
+        "primary delivery still fails with WorkerNotFound as before fan-out existed"
+    );
+
+    let (got_worker_id, got_event) = sub_rx
+        .recv()
+        .await
+        .expect("subscriber should receive the fanned-out event");
+    assert_eq!(got_worker_id, "worker-0");
+    assert_eq!(got_event, event);
+}
+
+/// Multiple subscribers each independently receive their own clone of the
+/// same routed event — one subscriber's receive does not consume it for
+/// another, and does not interfere with primary delivery.
+#[tokio::test]
+async fn test_multiple_subscribers_each_receive_independently() {
+    let demux = Demux::new();
+    let (_id_a, mut sub_rx_a) = demux.subscribe();
+    let (_id_b, mut sub_rx_b) = demux.subscribe();
+
+    let (primary_tx, mut primary_rx) = tokio::sync::mpsc::channel::<WorkerEvent>(16);
+    demux.register("worker-0".to_string(), primary_tx);
+
+    let event = WorkerEvent::Cancelled {
+        job_id: uuid::Uuid::new_v4(),
+    };
+
+    demux
+        .route("worker-0", event.clone())
+        .await
+        .expect("route should succeed — worker-0 is registered");
+
+    // The primary consumer still receives it, unaffected by fan-out.
+    let primary_received = primary_rx
+        .recv()
+        .await
+        .expect("primary consumer should still receive the event");
+    assert_eq!(primary_received, event);
+
+    // Both subscribers independently receive their own copy.
+    let (a_worker_id, a_event) = sub_rx_a
+        .recv()
+        .await
+        .expect("subscriber A should receive the event");
+    let (b_worker_id, b_event) = sub_rx_b
+        .recv()
+        .await
+        .expect("subscriber B should receive the event");
+    assert_eq!(a_worker_id, "worker-0");
+    assert_eq!(b_worker_id, "worker-0");
+    assert_eq!(a_event, event);
+    assert_eq!(b_event, event);
+}
+
+/// `unsubscribe()` stops further fan-out delivery to that subscription.
+///
+/// Subscribes, routes one event (received), unsubscribes, routes a second
+/// event, and verifies the second event never arrives — the channel is
+/// closed from the subscriber's perspective (`recv()` returns `None`) rather
+/// than silently hanging.
+#[tokio::test]
+async fn test_unsubscribe_stops_fanout_delivery() {
+    let demux = Demux::new();
+    let (id, mut sub_rx) = demux.subscribe();
+
+    let first = WorkerEvent::Pong { seq: 1 };
+    let _ = demux.route("worker-0", first.clone()).await;
+    let (_wid, got) = sub_rx.recv().await.expect("first event should arrive");
+    assert_eq!(got, first);
+
+    demux.unsubscribe(id);
+
+    let second = WorkerEvent::Pong { seq: 2 };
+    let _ = demux.route("worker-0", second).await;
+
+    // The channel's sender was dropped by unsubscribe(), so recv() resolves
+    // to None rather than yielding the second event or hanging forever.
+    let result = sub_rx.recv().await;
+    assert!(
+        result.is_none(),
+        "recv() should return None after unsubscribe(), got {:?}",
+        result
+    );
+}
+
+/// `unsubscribe()` with an id that was never issued (or already removed) is
+/// a safe no-op — mirrors `deregister()`'s existing idempotency convention.
+#[tokio::test]
+async fn test_unsubscribe_unknown_id_is_safe() {
+    let demux = Demux::new();
+    // No panic, no error return value to check — unsubscribe() is `()`.
+    demux.unsubscribe(9999);
+
+    // A real subscription is unaffected by an unrelated unsubscribe() call.
+    let (_id, mut sub_rx) = demux.subscribe();
+    let event = WorkerEvent::Pong { seq: 42 };
+    let _ = demux.route("worker-0", event.clone()).await;
+    let (_wid, got) = sub_rx.recv().await.expect("subscription should still work");
+    assert_eq!(got, event);
+}
+
+/// Fan-out to a full subscriber channel drops that one event for that one
+/// subscriber (logged at WARN) without returning an error from `route()`
+/// and without blocking delivery to any other consumer.
+///
+/// Fills the subscriber's channel to capacity by never draining it, then
+/// routes one more event than the channel can hold. `route()` must still
+/// return `Ok(())` (primary worker is registered) and the primary consumer
+/// must still receive every event — a stalled subscriber must never be able
+/// to stall the worker's own primary delivery.
+#[tokio::test]
+async fn test_full_subscriber_channel_does_not_block_route() {
+    let demux = Demux::new();
+    let (_id, _sub_rx_never_drained) = demux.subscribe();
+
+    let (primary_tx, mut primary_rx) = tokio::sync::mpsc::channel::<WorkerEvent>(4096);
+    demux.register("worker-0".to_string(), primary_tx);
+
+    // DEMUX_SUBSCRIBER_CAPACITY (256) + a few extra sends to guarantee the
+    // subscriber's channel fills and try_send() starts failing, while every
+    // one of these route() calls must still succeed and reach the primary
+    // consumer.
+    for i in 0..300u64 {
+        let event = WorkerEvent::Pong { seq: i };
+        demux
+            .route("worker-0", event)
+            .await
+            .expect("route() must succeed regardless of subscriber channel state");
+    }
+
+    // Drain the primary consumer's channel and confirm it received all 300 —
+    // fan-out backpressure on the (undrained) subscriber never affected it.
+    let mut count = 0;
+    while let Ok(_event) = primary_rx.try_recv() {
+        count += 1;
+    }
+    assert_eq!(
+        count, 300,
+        "primary consumer must receive every routed event even though the \
+         subscriber's channel filled up and started dropping events"
+    );
+}

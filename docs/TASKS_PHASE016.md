@@ -44,7 +44,7 @@ real `PassThrough` job's `JobCompleted` event arrive live.
 
 | Group | Subsystem | Tasks | Summary |
 |-------|-----------|-------|---------|
-| A | Event loop completion | P16-A1 … P16-A3 | Map every `WorkerEvent` to `WsEvent` and publish; persist terminal job status + release VRAM; restore the worker to `Idle` and wake the dispatch loop |
+| A | Event loop completion | P16-A1 … P16-A4 | Map every `WorkerEvent` to `WsEvent` and publish; persist terminal job status + release VRAM; restore the worker to `Idle` and wake the dispatch loop; retrofit consumption onto `Demux::subscribe()` (audit finding, `docs/ADDENDUM_DEMUX_FANOUT.md`) |
 | B | Server state | P16-B1 | `AppState` gains `broadcaster`, shared with the scheduler's event loop |
 | C | WebSocket handler | P16-C1 … P16-C2 | Connection skeleton + initial frame, then the forward loop with lag handling |
 | D | Stats tick | P16-D1 | Periodic `SystemStats` background task |
@@ -89,6 +89,7 @@ not first-time `Idle` restoration.
 | `ANVILML_DESIGN.md §16.3` | P16-A1 | Mandatory DEBUG log point for job state transitions |
 | `ANVILML_DESIGN.md §13.6` | P16-C1, P16-C2 | The exact WebSocket connect sequence and the 1024-event lag/disconnect rule |
 | `ANVILML_DESIGN.md §13.1` | P16-C1, P16-D1 | `ws/` module layout — `mod.rs`, `handler.rs`, `stats_tick.rs` |
+| `ANVILML_DESIGN.md §9.8` | P16-A4 | `Demux::subscribe()`/`unsubscribe()` fan-out; `spawn_event_loop()` must not call `RouterTransport::recv()` directly |
 
 ---
 
@@ -175,6 +176,67 @@ cargo test -p anvilml-scheduler --test event_loop_tests
 
 ---
 
+#### P16-A4: anvilml-scheduler + anvilml-worker: retrofit spawn_event_loop() onto Demux::subscribe() (inserted ahead of P16-B1; see docs/ADDENDUM_DEMUX_FANOUT.md)
+
+**Goal:** Close an audit-found gap in `P16-A1`'s own committed implementation:
+`spawn_event_loop()` calls `RouterTransport::recv()` directly, but `bridge.rs`
+(Phase 8, `P8-F1`) already establishes its own `reader_task` as the sole
+permitted caller of `recv()` on the pool's shared ROUTER socket — a second
+concurrent caller races it for every incoming frame, silently stealing
+messages from `ManagedWorker`'s own demux-based consumption regardless of
+which task "should" get them. This was never exercised by `event_loop_tests.rs`,
+since every test in that file binds its own isolated `RouterTransport` with no
+`ManagedWorker`/bridge on the other end — the race only manifests once
+`P16-B1` wires `spawn_event_loop()` against the pool's real, shared transport,
+the only one that exists in `main.rs`.
+
+**Files to create or modify:**
+- `crates/anvilml-worker/src/demux.rs` — adds `subscribe()`/`unsubscribe()`
+  pool-wide fan-out, additive to the existing `register()`/`deregister()`/
+  `route()` contract (`§9.4`), which is unchanged.
+- `crates/anvilml-worker/src/pool.rs` — adds `WorkerPool::demux()` accessor,
+  mirroring the existing `transport()`/`bridge_sender()` accessors.
+- `crates/anvilml-worker/src/lib.rs` — re-exports `SubscriptionId` alongside
+  `Demux`.
+- `crates/anvilml-scheduler/src/event_loop.rs` — `spawn_event_loop()`'s second
+  parameter changes from `transport: Arc<RouterTransport>` to
+  `demux: Arc<Demux>`; its loop body changes from `transport.recv()` to
+  consuming the `mpsc::Receiver` returned by `demux.subscribe()`.
+- `crates/anvilml-worker/tests/demux_tests.rs` — adds the mandatory fan-out
+  test set (subscribe delivers, multiple subscribers, unsubscribe stops
+  delivery, unsubscribe on unknown id is safe, a full/stalled subscriber
+  channel never blocks primary delivery).
+- `crates/anvilml-scheduler/tests/event_loop_tests.rs` — every test that
+  previously bound a `RouterTransport` and sent events via a real DEALER
+  socket now constructs a `Demux` directly and calls `demux.route(worker_id,
+  event)`, matching what `bridge.rs`'s `reader_task` does in production.
+
+**Key implementation notes:**
+- `route()`'s existing primary-delivery contract (error semantics, return
+  value, one consumer per `worker_id`) is completely unchanged — fan-out is
+  strictly additive. A failure fanning out to a subscriber must never affect
+  `route()`'s return value or delay delivery to the primary consumer or any
+  other subscriber.
+- Fan-out delivery is best-effort: a full or closed subscriber channel is
+  skipped with a `WARN` log, never blocked on or propagated as an error.
+- `spawn_event_loop()` no longer retries on a transient recv error (there is
+  none to retry on a channel receiver) — a closed subscription channel is
+  treated as unrecoverable and the task exits, logging `ERROR`.
+- No change to `P16-A1`/`P16-A2`/`P16-A3`'s own behavior: the
+  `WorkerEvent`→`WsEvent` mapping, terminal-status persistence and VRAM
+  release, and worker-idle-restore/dispatch-wake logic are identical; only the
+  event source changes.
+
+**Acceptance criterion:**
+```bash
+cargo test -p anvilml-worker --test demux_tests
+# -> >=10 tests total in the file, exits 0
+cargo test -p anvilml-scheduler --test event_loop_tests
+# -> >=20 tests total in the file, exits 0 (unchanged count, retargeted onto Demux)
+```
+
+---
+
 ### Group B — Server state
 
 #### P16-B1: anvilml-server: AppState gains broadcaster field, wired from main.rs
@@ -192,6 +254,10 @@ see the events the scheduler produces.
 - Sharing the **same** `Arc<EventBroadcaster>` instance is the entire point of this
   task — two separately-constructed broadcasters would silently never see each
   other's events, a subtle bug with no compile-time signal.
+- Per `P16-A4`, `spawn_event_loop()`'s transport-shaped parameter is now
+  `demux: Arc<Demux>` — pass `workers.demux()` (not `workers.transport()`).
+  Passing `workers.transport()` here would reintroduce exactly the
+  `RouterTransport::recv()` race `P16-A4` closed.
 
 **Acceptance criterion:**
 ```bash
@@ -316,16 +382,17 @@ cargo test --workspace --features mock-hardware
 
 ## Known Constraints and Gotchas
 
-- **Interim-patch removal checklist (do this as part of `P16-A2`/`P16-B1`):**
-  delete `job_completion_tx` and `set_job_completion_tx()` from
-  `crates/anvilml-worker/src/managed.rs` and `pool.rs`; delete
-  `crates/anvilml-scheduler/src/interim_job_completion.rs` and its `lib.rs`
-  re-export; delete the channel construction and listener spawn in
-  `backend/src/main.rs` (search for `INTERIM-P14-PATCH`). Revert the `uuid`
-  promotion in `anvilml-worker/Cargo.toml` and `backend/Cargo.toml` if
-  nothing else needs it as a direct dependency afterward. After this phase,
-  `grep -r INTERIM-P14-PATCH` should return zero hits in the Rust tree
-  (Python-side hits are Phase 17's cleanup, not this phase's).
+- **Interim-patch removal checklist — confirmed complete.** `job_completion_tx`/
+  `set_job_completion_tx()`, `crates/anvilml-scheduler/src/interim_job_completion.rs`,
+  and all `INTERIM-P14-PATCH` markers are already absent from the tree as of
+  `P16-A3`'s commit (`grep -r INTERIM-P14-PATCH` returns zero hits in the Rust
+  tree). No further action needed here.
+- **`spawn_event_loop()` must consume via `Demux::subscribe()`, never
+  `RouterTransport::recv()` directly (`P16-A4`, `docs/ADDENDUM_DEMUX_FANOUT.md`).**
+  `bridge.rs`'s `reader_task` is the sole permitted caller of `recv()` on the
+  pool's shared ROUTER socket; a second concurrent caller races it for every
+  frame. When wiring `spawn_event_loop()` from `main.rs` in `P16-B1`, pass
+  `workers.demux()`, not `workers.transport()`.
 - Before this phase, no job could ever be observed reaching a terminal status —
   this was a real, latent gap since Phase 14, not a regression introduced here.
   P16-A2 is what actually fixes it.

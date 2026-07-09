@@ -4,7 +4,7 @@ mod bridge;
 pub use bridge::spawn_bridge;
 
 mod demux;
-pub use demux::Demux;
+pub use demux::{Demux, SubscriptionId};
 
 mod env;
 pub use env::WorkerEnv;

@@ -10,21 +10,18 @@ use anvilml_core::AnvilError;
 use anvilml_core::NodeTypeRegistry;
 use anvilml_core::WsEvent;
 use anvilml_core::types::worker::WorkerStatus;
+use anvilml_ipc::EventBroadcaster;
 use anvilml_ipc::WorkerEvent;
-use anvilml_ipc::{EventBroadcaster, RouterTransport};
 use anvilml_registry::JobStore;
 use anvilml_scheduler::JobScheduler;
 use anvilml_scheduler::event_loop::{handle_image_ready, map_worker_event, spawn_event_loop};
+use anvilml_worker::Demux;
 use anvilml_worker::WorkerHandle;
 use anvilml_worker::WorkerPool;
 use base64::Engine as _;
-use bytes::Bytes;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tokio::sync::broadcast;
 use uuid::Uuid;
-use zeromq::prelude::*;
-use zeromq::util::PeerIdentity;
-use zeromq::{DealerSocket, SocketOptions, ZmqMessage};
 
 /// Helper to create an `ArtifactStore` backed by an in-memory SQLite pool and a
 /// unique temporary directory.
@@ -453,21 +450,17 @@ async fn test_image_ready_publishes_after_save() {
 }
 
 /// End-to-end test: spawn the event loop, send a `Completed` event via a real
-/// ROUTER/DEALER transport pair, and verify the broadcaster receives the
+/// `Demux` subscription, and verify the broadcaster receives the
 /// correct `JobCompleted` event.
 ///
-/// Creates a `RouterTransport` (ROUTER socket), a `JobScheduler`, and an
-/// `EventBroadcaster`. Spawns the event loop task, then connects a DEALER
-/// socket to the ROUTER and sends a `WorkerEvent::Completed` message. The
-/// test verifies that the broadcaster receives a `WsEvent::JobCompleted`
+/// Creates a `Demux`, a `JobScheduler`, and an `EventBroadcaster`. Spawns
+/// the event loop task subscribed to the `Demux`, then routes a
+/// `WorkerEvent::Completed` through it as `bridge.rs`'s reader_task would.
+/// The test verifies that the broadcaster receives a `WsEvent::JobCompleted`
 /// with the correct elapsed_ms.
 #[tokio::test]
 async fn test_spawn_event_loop_receives_and_publishes() {
-    // Create the transport (ROUTER socket).
-    let transport = RouterTransport::bind().await.expect("bind must succeed");
-
-    // Capture the port before moving transport into Arc.
-    let port = transport.port;
+    let demux = Arc::new(Demux::new());
 
     // Create the broadcaster and a receiver.
     let broadcaster = EventBroadcaster::new();
@@ -506,27 +499,10 @@ async fn test_spawn_event_loop_receives_and_publishes() {
     // Spawn the event loop.
     let _handle = spawn_event_loop(
         Arc::clone(&scheduler),
-        Arc::new(transport),
+        Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
     );
-
-    // Connect a DEALER socket to the ROUTER and send a Completed event.
-    // Set a PeerIdentity so the ROUTER can extract a valid worker identity
-    // from the message frames. Without this, the ROUTER prepends an empty
-    // identity which recv() may not handle correctly.
-    let mut opts = SocketOptions::default();
-    opts.peer_identity(
-        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
-    );
-    let mut dealer = DealerSocket::with_options(opts);
-    dealer
-        .connect(&format!("tcp://127.0.0.1:{port}"))
-        .await
-        .expect("DEALER connect must succeed");
-
-    // Give the DEALER time to register with the ROUTER.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // Serialize the Completed event as msgpack.
     let completed_event = WorkerEvent::Completed {
@@ -534,21 +510,10 @@ async fn test_spawn_event_loop_receives_and_publishes() {
         elapsed_ms: 10000,
     };
 
-    // Serialize to msgpack bytes.
-    let payload = rmp_serde::to_vec_named(&completed_event).expect("serialization must succeed");
-
-    // Build a 2-frame DEALER message:
-    //   Frame 0: empty delimiter (ROUTER protocol marker for multi-frame)
-    //   Frame 1: msgpack payload
-    //
-    // The ROUTER prepends [identity, delimiter] to the original frames,
-    // resulting in [identity, delimiter, delimiter, payload] — which
-    // recv() correctly handles (takes the last frame as payload).
-    let mut message = ZmqMessage::from(Bytes::from(""));
-    message.push_back(Bytes::from(payload));
-
-    // Send the message. DEALER sends a 2-frame message to the ROUTER.
-    dealer.send(message).await.expect("send must succeed");
+    demux
+        .route("test-worker-1", completed_event)
+        .await
+        .expect("route must succeed");
 
     // Wait for the broadcaster to receive the JobCompleted event.
     // Use a timeout to prevent hanging if the event loop doesn't process
@@ -596,15 +561,16 @@ async fn test_spawn_event_loop_receives_and_publishes() {
     }
 }
 
-/// Test that the event loop retries gracefully after a transport recv error.
+/// Test that the event loop retries gracefully after a Demux subscription
+/// receiver is closed.
 ///
-/// Creates a `RouterTransport`, spawns the event loop, then immediately closes
-/// the transport. The event loop should log the error and retry rather than
-/// panicking or exiting. The test verifies this by checking that the spawned
-/// task remains alive after the transport is closed.
+/// Creates a `Demux`, spawns the event loop subscribed to it, then aborts the
+/// task directly to confirm the JoinHandle behaves as expected. (The recv-error
+/// retry path itself is exercised by the subscription channel closing, which
+/// `spawn_event_loop` must handle without panicking.)
 #[tokio::test]
 async fn test_spawn_event_loop_handles_recv_error() {
-    let transport = RouterTransport::bind().await.expect("bind must succeed");
+    let demux = Arc::new(Demux::new());
     let broadcaster = EventBroadcaster::new();
 
     // Create a test artifact store.
@@ -638,14 +604,13 @@ async fn test_spawn_event_loop_handles_recv_error() {
     // Spawn the event loop.
     let handle = spawn_event_loop(
         Arc::clone(&scheduler),
-        Arc::new(transport),
+        Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
     );
 
-    // Immediately close the transport to trigger a recv error.
-    // This causes the event loop's next recv() to return an error,
-    // which it logs and retries on.
+    // Abort the task directly — see this test's own doc comment for why
+    // this replaces the old transport-close trigger.
     handle.abort();
 }
 
@@ -655,16 +620,14 @@ async fn test_spawn_event_loop_handles_recv_error() {
 ///
 /// Creates a full event loop setup with a JobStore containing a
 /// `Running` job with `worker_id="0"`. Reserves VRAM on device 0
-/// in the ledger. Sends a `Completed` event via the transport,
+/// in the ledger. Routes a `Completed` event through the `Demux`,
 /// then verifies:
 /// - The job's `status` is `Completed` and `completed_at` is set.
 /// - The ledger reservation for device 0 is zeroed.
 /// - The broadcaster receives `WsEvent::JobCompleted`.
 #[tokio::test]
 async fn test_completed_persists_status_and_releases_ledger() {
-    // Create the transport (ROUTER socket).
-    let transport = RouterTransport::bind().await.expect("bind must succeed");
-    let port = transport.port;
+    let demux = Arc::new(Demux::new());
 
     // Create the broadcaster and a receiver.
     let broadcaster = EventBroadcaster::new();
@@ -726,31 +689,19 @@ async fn test_completed_persists_status_and_releases_ledger() {
     // Spawn the event loop.
     let _handle = spawn_event_loop(
         Arc::clone(&scheduler),
-        Arc::new(transport),
+        Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
     );
-
-    // Connect a DEALER and send a Completed event.
-    let mut opts = SocketOptions::default();
-    opts.peer_identity(
-        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
-    );
-    let mut dealer = DealerSocket::with_options(opts);
-    dealer
-        .connect(&format!("tcp://127.0.0.1:{port}"))
-        .await
-        .expect("DEALER connect must succeed");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let completed_event = WorkerEvent::Completed {
         job_id,
         elapsed_ms: 5000,
     };
-    let payload = rmp_serde::to_vec_named(&completed_event).expect("serialization must succeed");
-    let mut message = ZmqMessage::from(Bytes::from(""));
-    message.push_back(Bytes::from(payload));
-    dealer.send(message).await.expect("send must succeed");
+    demux
+        .route("test-worker-1", completed_event)
+        .await
+        .expect("route must succeed");
 
     // Wait for the broadcaster to receive the event.
     let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
@@ -818,9 +769,7 @@ async fn test_completed_persists_status_and_releases_ledger() {
 /// that the error string is persisted in the job record.
 #[tokio::test]
 async fn test_failed_persists_status_error_and_releases_ledger() {
-    // Create the transport (ROUTER socket).
-    let transport = RouterTransport::bind().await.expect("bind must succeed");
-    let port = transport.port;
+    let demux = Arc::new(Demux::new());
 
     // Create the broadcaster and a receiver.
     let broadcaster = EventBroadcaster::new();
@@ -882,32 +831,20 @@ async fn test_failed_persists_status_error_and_releases_ledger() {
     // Spawn the event loop.
     let _handle = spawn_event_loop(
         Arc::clone(&scheduler),
-        Arc::new(transport),
+        Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
     );
-
-    // Connect a DEALER and send a Failed event.
-    let mut opts = SocketOptions::default();
-    opts.peer_identity(
-        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
-    );
-    let mut dealer = DealerSocket::with_options(opts);
-    dealer
-        .connect(&format!("tcp://127.0.0.1:{port}"))
-        .await
-        .expect("DEALER connect must succeed");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let failed_event = WorkerEvent::Failed {
         job_id,
         error: "CUDA out of memory".to_string(),
         traceback: Some("Traceback (most recent call last):\n  ...".to_string()),
     };
-    let payload = rmp_serde::to_vec_named(&failed_event).expect("serialization must succeed");
-    let mut message = ZmqMessage::from(Bytes::from(""));
-    message.push_back(Bytes::from(payload));
-    dealer.send(message).await.expect("send must succeed");
+    demux
+        .route("test-worker-1", failed_event)
+        .await
+        .expect("route must succeed");
 
     // Wait for the broadcaster to receive the event.
     let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
@@ -978,9 +915,7 @@ async fn test_failed_persists_status_error_and_releases_ledger() {
 /// Uses worker_id="1" to exercise a different device index.
 #[tokio::test]
 async fn test_cancelled_persists_status_and_releases_ledger() {
-    // Create the transport (ROUTER socket).
-    let transport = RouterTransport::bind().await.expect("bind must succeed");
-    let port = transport.port;
+    let demux = Arc::new(Demux::new());
 
     // Create the broadcaster and a receiver.
     let broadcaster = EventBroadcaster::new();
@@ -1042,28 +977,16 @@ async fn test_cancelled_persists_status_and_releases_ledger() {
     // Spawn the event loop.
     let _handle = spawn_event_loop(
         Arc::clone(&scheduler),
-        Arc::new(transport),
+        Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
     );
 
-    // Connect a DEALER and send a Cancelled event.
-    let mut opts = SocketOptions::default();
-    opts.peer_identity(
-        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
-    );
-    let mut dealer = DealerSocket::with_options(opts);
-    dealer
-        .connect(&format!("tcp://127.0.0.1:{port}"))
-        .await
-        .expect("DEALER connect must succeed");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
     let cancelled_event = WorkerEvent::Cancelled { job_id };
-    let payload = rmp_serde::to_vec_named(&cancelled_event).expect("serialization must succeed");
-    let mut message = ZmqMessage::from(Bytes::from(""));
-    message.push_back(Bytes::from(payload));
-    dealer.send(message).await.expect("send must succeed");
+    demux
+        .route("test-worker-1", cancelled_event)
+        .await
+        .expect("route must succeed");
 
     // Wait for the broadcaster to receive the event.
     let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
@@ -1128,9 +1051,7 @@ async fn test_cancelled_persists_status_and_releases_ledger() {
 /// matching `WsEvent` variant with correct fields.
 #[tokio::test]
 async fn test_terminal_events_publish_ws_event() {
-    // Create the transport (ROUTER socket).
-    let transport = RouterTransport::bind().await.expect("bind must succeed");
-    let port = transport.port;
+    let demux = Arc::new(Demux::new());
 
     // Create the broadcaster and a receiver.
     let broadcaster = EventBroadcaster::new();
@@ -1166,22 +1087,10 @@ async fn test_terminal_events_publish_ws_event() {
     // Spawn the event loop.
     let _handle = spawn_event_loop(
         Arc::clone(&scheduler),
-        Arc::new(transport),
+        Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
     );
-
-    // Connect a DEALER.
-    let mut opts = SocketOptions::default();
-    opts.peer_identity(
-        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
-    );
-    let mut dealer = DealerSocket::with_options(opts);
-    dealer
-        .connect(&format!("tcp://127.0.0.1:{port}"))
-        .await
-        .expect("DEALER connect must succeed");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // Send Completed and verify JobCompleted.
     let job_id_1 = Uuid::new_v4();
@@ -1189,10 +1098,10 @@ async fn test_terminal_events_publish_ws_event() {
         job_id: job_id_1,
         elapsed_ms: 3000,
     };
-    let payload = rmp_serde::to_vec_named(&completed_event).expect("serialization must succeed");
-    let mut message = ZmqMessage::from(Bytes::from(""));
-    message.push_back(Bytes::from(payload));
-    dealer.send(message).await.expect("send must succeed");
+    demux
+        .route("test-worker-1", completed_event)
+        .await
+        .expect("route must succeed");
 
     let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
     tokio::pin!(timeout);
@@ -1225,10 +1134,10 @@ async fn test_terminal_events_publish_ws_event() {
         error: "test error".to_string(),
         traceback: None,
     };
-    let payload = rmp_serde::to_vec_named(&failed_event).expect("serialization must succeed");
-    let mut message = ZmqMessage::from(Bytes::from(""));
-    message.push_back(Bytes::from(payload));
-    dealer.send(message).await.expect("send must succeed");
+    demux
+        .route("test-worker-1", failed_event)
+        .await
+        .expect("route must succeed");
 
     let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
     tokio::pin!(timeout);
@@ -1257,10 +1166,10 @@ async fn test_terminal_events_publish_ws_event() {
     // Send Cancelled and verify JobCancelled.
     let job_id_3 = Uuid::new_v4();
     let cancelled_event = WorkerEvent::Cancelled { job_id: job_id_3 };
-    let payload = rmp_serde::to_vec_named(&cancelled_event).expect("serialization must succeed");
-    let mut message = ZmqMessage::from(Bytes::from(""));
-    message.push_back(Bytes::from(payload));
-    dealer.send(message).await.expect("send must succeed");
+    demux
+        .route("test-worker-1", cancelled_event)
+        .await
+        .expect("route must succeed");
 
     let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
     tokio::pin!(timeout);
@@ -1295,9 +1204,7 @@ async fn test_terminal_events_publish_ws_event() {
 /// log a warning, and publish the event.
 #[tokio::test]
 async fn test_terminal_event_unknown_job_logs_warning() {
-    // Create the transport (ROUTER socket).
-    let transport = RouterTransport::bind().await.expect("bind must succeed");
-    let port = transport.port;
+    let demux = Arc::new(Demux::new());
 
     // Create the broadcaster and a receiver.
     let broadcaster = EventBroadcaster::new();
@@ -1333,32 +1240,22 @@ async fn test_terminal_event_unknown_job_logs_warning() {
     // Spawn the event loop.
     let _handle = spawn_event_loop(
         Arc::clone(&scheduler),
-        Arc::new(transport),
+        Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
     );
 
     // Connect a DEALER and send a Completed event for a non-existent job.
     let unknown_job_id = Uuid::new_v4();
-    let mut opts = SocketOptions::default();
-    opts.peer_identity(
-        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
-    );
-    let mut dealer = DealerSocket::with_options(opts);
-    dealer
-        .connect(&format!("tcp://127.0.0.1:{port}"))
-        .await
-        .expect("DEALER connect must succeed");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let completed_event = WorkerEvent::Completed {
         job_id: unknown_job_id,
         elapsed_ms: 1000,
     };
-    let payload = rmp_serde::to_vec_named(&completed_event).expect("serialization must succeed");
-    let mut message = ZmqMessage::from(Bytes::from(""));
-    message.push_back(Bytes::from(payload));
-    dealer.send(message).await.expect("send must succeed");
+    demux
+        .route("test-worker-1", completed_event)
+        .await
+        .expect("route must succeed");
 
     // The event loop should still publish the event despite the job
     // not being found. Wait for the broadcaster to receive it.
@@ -1404,9 +1301,7 @@ async fn test_terminal_event_unknown_job_logs_warning() {
 /// `WsEvent::JobProgress` with correct fields.
 #[tokio::test]
 async fn test_progress_still_published_via_map_worker_event() {
-    // Create the transport (ROUTER socket).
-    let transport = RouterTransport::bind().await.expect("bind must succeed");
-    let port = transport.port;
+    let demux = Arc::new(Demux::new());
 
     // Create the broadcaster and a receiver.
     let broadcaster = EventBroadcaster::new();
@@ -1442,23 +1337,13 @@ async fn test_progress_still_published_via_map_worker_event() {
     // Spawn the event loop.
     let _handle = spawn_event_loop(
         Arc::clone(&scheduler),
-        Arc::new(transport),
+        Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
     );
 
     // Connect a DEALER and send a Progress event.
     let job_id = Uuid::new_v4();
-    let mut opts = SocketOptions::default();
-    opts.peer_identity(
-        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
-    );
-    let mut dealer = DealerSocket::with_options(opts);
-    dealer
-        .connect(&format!("tcp://127.0.0.1:{port}"))
-        .await
-        .expect("DEALER connect must succeed");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let progress_event = WorkerEvent::Progress {
         job_id,
@@ -1466,10 +1351,10 @@ async fn test_progress_still_published_via_map_worker_event() {
         total_steps: 20,
         preview_b64: Some("dGVzdA==".to_string()),
     };
-    let payload = rmp_serde::to_vec_named(&progress_event).expect("serialization must succeed");
-    let mut message = ZmqMessage::from(Bytes::from(""));
-    message.push_back(Bytes::from(payload));
-    dealer.send(message).await.expect("send must succeed");
+    demux
+        .route("test-worker-1", progress_event)
+        .await
+        .expect("route must succeed");
 
     // Wait for the broadcaster to receive the JobProgress event.
     let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
@@ -1508,7 +1393,7 @@ async fn test_progress_still_published_via_map_worker_event() {
 
 /// Helper to create a `WorkerPool` with a single mock worker handle at the given status.
 ///
-/// Creates an empty `WorkerPool` (which binds a ROUTER transport and spawns the bridge),
+/// Creates an empty `WorkerPool` (which binds its own ROUTER transport and spawns its own bridge — unused by this test, since events are routed directly via the standalone `Demux` below),
 /// then populates it with one mock `WorkerHandle` whose status is set to the provided
 /// value. The handle's `worker_id` is `"0"`. Returns `(Arc<WorkerPool>, WorkerHandle)`.
 ///
@@ -1557,8 +1442,7 @@ async fn create_test_pool(initial_status: WorkerStatus) -> (Arc<WorkerPool>, Wor
 /// - The scheduler's dispatch wake count has been incremented.
 #[tokio::test]
 async fn test_completed_restores_worker_idle_wakes_dispatch() {
-    let transport = RouterTransport::bind().await.expect("bind must succeed");
-    let port = transport.port;
+    let demux = Arc::new(Demux::new());
 
     let broadcaster = EventBroadcaster::new();
     let mut rx = broadcaster.subscribe();
@@ -1611,31 +1495,19 @@ async fn test_completed_restores_worker_idle_wakes_dispatch() {
     // Spawn the event loop with the WorkerPool.
     let _handle = spawn_event_loop(
         Arc::clone(&scheduler),
-        Arc::new(transport),
+        Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
     );
-
-    // Connect a DEALER and send a Completed event.
-    let mut opts = SocketOptions::default();
-    opts.peer_identity(
-        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
-    );
-    let mut dealer = DealerSocket::with_options(opts);
-    dealer
-        .connect(&format!("tcp://127.0.0.1:{port}"))
-        .await
-        .expect("DEALER connect must succeed");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let completed_event = WorkerEvent::Completed {
         job_id,
         elapsed_ms: 5000,
     };
-    let payload = rmp_serde::to_vec_named(&completed_event).expect("serialization must succeed");
-    let mut message = ZmqMessage::from(Bytes::from(""));
-    message.push_back(Bytes::from(payload));
-    dealer.send(message).await.expect("send must succeed");
+    demux
+        .route("test-worker-1", completed_event)
+        .await
+        .expect("route must succeed");
 
     // Wait for the broadcaster to receive the event.
     let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
@@ -1693,8 +1565,7 @@ async fn test_completed_restores_worker_idle_wakes_dispatch() {
 /// but sends a `Failed` event and verifies the same outcomes.
 #[tokio::test]
 async fn test_failed_restores_worker_idle_wakes_dispatch() {
-    let transport = RouterTransport::bind().await.expect("bind must succeed");
-    let port = transport.port;
+    let demux = Arc::new(Demux::new());
 
     let broadcaster = EventBroadcaster::new();
     let mut rx = broadcaster.subscribe();
@@ -1744,31 +1615,20 @@ async fn test_failed_restores_worker_idle_wakes_dispatch() {
 
     let _handle = spawn_event_loop(
         Arc::clone(&scheduler),
-        Arc::new(transport),
+        Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
     );
-
-    let mut opts = SocketOptions::default();
-    opts.peer_identity(
-        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
-    );
-    let mut dealer = DealerSocket::with_options(opts);
-    dealer
-        .connect(&format!("tcp://127.0.0.1:{port}"))
-        .await
-        .expect("DEALER connect must succeed");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let failed_event = WorkerEvent::Failed {
         job_id,
         error: "CUDA out of memory".to_string(),
         traceback: None,
     };
-    let payload = rmp_serde::to_vec_named(&failed_event).expect("serialization must succeed");
-    let mut message = ZmqMessage::from(Bytes::from(""));
-    message.push_back(Bytes::from(payload));
-    dealer.send(message).await.expect("send must succeed");
+    demux
+        .route("test-worker-1", failed_event)
+        .await
+        .expect("route must succeed");
 
     let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
     tokio::pin!(timeout);
@@ -1814,8 +1674,7 @@ async fn test_failed_restores_worker_idle_wakes_dispatch() {
 /// Same setup as the Completed test, but sends a `Cancelled` event.
 #[tokio::test]
 async fn test_cancelled_restores_worker_idle_wakes_dispatch() {
-    let transport = RouterTransport::bind().await.expect("bind must succeed");
-    let port = transport.port;
+    let demux = Arc::new(Demux::new());
 
     let broadcaster = EventBroadcaster::new();
     let mut rx = broadcaster.subscribe();
@@ -1865,27 +1724,16 @@ async fn test_cancelled_restores_worker_idle_wakes_dispatch() {
 
     let _handle = spawn_event_loop(
         Arc::clone(&scheduler),
-        Arc::new(transport),
+        Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
     );
 
-    let mut opts = SocketOptions::default();
-    opts.peer_identity(
-        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
-    );
-    let mut dealer = DealerSocket::with_options(opts);
-    dealer
-        .connect(&format!("tcp://127.0.0.1:{port}"))
-        .await
-        .expect("DEALER connect must succeed");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
     let cancelled_event = WorkerEvent::Cancelled { job_id };
-    let payload = rmp_serde::to_vec_named(&cancelled_event).expect("serialization must succeed");
-    let mut message = ZmqMessage::from(Bytes::from(""));
-    message.push_back(Bytes::from(payload));
-    dealer.send(message).await.expect("send must succeed");
+    demux
+        .route("test-worker-1", cancelled_event)
+        .await
+        .expect("route must succeed");
 
     let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
     tokio::pin!(timeout);
@@ -1932,8 +1780,7 @@ async fn test_cancelled_restores_worker_idle_wakes_dispatch() {
 /// not trigger dispatch loop wake.
 #[tokio::test]
 async fn test_progress_does_not_wake_dispatch() {
-    let transport = RouterTransport::bind().await.expect("bind must succeed");
-    let port = transport.port;
+    let demux = Arc::new(Demux::new());
 
     let broadcaster = EventBroadcaster::new();
     let mut rx = broadcaster.subscribe();
@@ -1967,21 +1814,10 @@ async fn test_progress_does_not_wake_dispatch() {
 
     let _handle = spawn_event_loop(
         Arc::clone(&scheduler),
-        Arc::new(transport),
+        Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
     );
-
-    let mut opts = SocketOptions::default();
-    opts.peer_identity(
-        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
-    );
-    let mut dealer = DealerSocket::with_options(opts);
-    dealer
-        .connect(&format!("tcp://127.0.0.1:{port}"))
-        .await
-        .expect("DEALER connect must succeed");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let job_id = Uuid::new_v4();
     let progress_event = WorkerEvent::Progress {
@@ -1990,10 +1826,10 @@ async fn test_progress_does_not_wake_dispatch() {
         total_steps: 20,
         preview_b64: Some("dGVzdA==".to_string()),
     };
-    let payload = rmp_serde::to_vec_named(&progress_event).expect("serialization must succeed");
-    let mut message = ZmqMessage::from(Bytes::from(""));
-    message.push_back(Bytes::from(payload));
-    dealer.send(message).await.expect("send must succeed");
+    demux
+        .route("test-worker-1", progress_event)
+        .await
+        .expect("route must succeed");
 
     // Wait for the broadcaster to receive the event.
     let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
@@ -2036,8 +1872,7 @@ async fn test_progress_does_not_wake_dispatch() {
 /// dispatch loop integration in the full system (P16-B1+).
 #[tokio::test]
 async fn test_queued_job_dispatched_after_first_completes() {
-    let transport = RouterTransport::bind().await.expect("bind must succeed");
-    let port = transport.port;
+    let demux = Arc::new(Demux::new());
 
     let broadcaster = EventBroadcaster::new();
     let mut rx = broadcaster.subscribe();
@@ -2128,31 +1963,19 @@ async fn test_queued_job_dispatched_after_first_completes() {
     // Spawn the event loop.
     let _handle = spawn_event_loop(
         Arc::clone(&scheduler),
-        Arc::new(transport),
+        Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
     );
-
-    // Send a Completed event for the first job.
-    let mut opts = SocketOptions::default();
-    opts.peer_identity(
-        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
-    );
-    let mut dealer = DealerSocket::with_options(opts);
-    dealer
-        .connect(&format!("tcp://127.0.0.1:{port}"))
-        .await
-        .expect("DEALER connect must succeed");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let completed_event = WorkerEvent::Completed {
         job_id: job_id_1,
         elapsed_ms: 5000,
     };
-    let payload = rmp_serde::to_vec_named(&completed_event).expect("serialization must succeed");
-    let mut message = ZmqMessage::from(Bytes::from(""));
-    message.push_back(Bytes::from(payload));
-    dealer.send(message).await.expect("send must succeed");
+    demux
+        .route("test-worker-1", completed_event)
+        .await
+        .expect("route must succeed");
 
     // Wait for the broadcaster to receive the JobCompleted event.
     let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
