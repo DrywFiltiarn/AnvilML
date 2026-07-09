@@ -254,6 +254,13 @@ pub fn map_worker_event(event: WorkerEvent) -> WsEvent {
 /// (per `ANVILML_DESIGN.md §12.5`) so that queued jobs waiting for a free worker
 /// are re-evaluated.
 ///
+/// The `Demux` subscription is established synchronously, before this function
+/// spawns the task and returns — not inside the spawned task itself. Any
+/// `WorkerEvent` routed after this function returns is guaranteed to reach this
+/// subscription; there is no window where an event routed immediately after
+/// `spawn_event_loop()` returns could be missed because the task hadn't been
+/// scheduled yet.
+///
 /// # Arguments
 ///
 /// * `scheduler` — The `JobScheduler` (owned via `Arc`, consumed by the spawned task).
@@ -275,13 +282,19 @@ pub fn spawn_event_loop(
     broadcaster: Arc<EventBroadcaster>,
     workers: Arc<WorkerPool>,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        // Subscribe once, for the lifetime of this task — not per-iteration.
-        // This is the sole sanctioned way for this task to observe
-        // WorkerEvents; see this function's own doc comment for why it must
-        // never call RouterTransport::recv() directly instead.
-        let (subscription_id, mut events) = demux.subscribe();
+    // Subscribe synchronously, before spawning the task — not inside the
+    // spawned `async move` block. `tokio::spawn()` only schedules the task;
+    // it does not run any of its body before returning the JoinHandle. If
+    // `demux.subscribe()` happened inside the spawned block instead, any
+    // `WorkerEvent` routed between this function returning and the spawned
+    // task actually getting scheduled would be silently missed — the
+    // subscription simply wouldn't exist yet when `route()`'s fan-out ran.
+    // Subscribing here means the subscription is guaranteed to exist by the
+    // time this function returns to its caller, closing that window
+    // entirely rather than narrowing it with a sleep.
+    let (subscription_id, mut events) = demux.subscribe();
 
+    tokio::spawn(async move {
         loop {
             // Receive the next fanned-out (worker_id, WorkerEvent) pair.
             // Blocks until one arrives, or resolves to None once every

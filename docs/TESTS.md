@@ -5786,3 +5786,15 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** One never-drained `subscribe()`, one `register()`ed primary consumer, 300 sequential `route()` calls with distinct `WorkerEvent::Pong { seq }` events.
 **Expected output:** All 300 `route()` calls return `Ok(())`; the primary consumer's channel contains exactly 300 events.
 **Acceptance:** `cargo test -p anvilml-worker --test demux_tests test_full_subscriber_channel_does_not_block_route` exits 0.
+
+---
+
+## test_spawn_event_loop_subscription_exists_before_return (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** Regression test for a race found while validating `P16-A4`'s Demux retrofit: `spawn_event_loop()`'s `Demux::subscribe()` call must happen synchronously, before the function spawns its task and returns — not inside the spawned `async move` block, where it would only run once the task is first polled by the executor.
+**Tests:** An event routed via `demux.route()` immediately after `spawn_event_loop()` returns, with no sleep or other synchronization, is still received and published — proving the subscription exists by the time the caller regains control, not merely "eventually."
+**Mode:** both
+**Inputs:** `spawn_event_loop(...)` followed immediately by `demux.route("test-worker-1", WorkerEvent::Progress { .. })`.
+**Expected output:** The broadcaster receives the corresponding `WsEvent::JobProgress` within the 5s timeout.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_spawn_event_loop_subscription_exists_before_return` exits 0.

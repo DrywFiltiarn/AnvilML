@@ -2031,3 +2031,95 @@ async fn test_queued_job_dispatched_after_first_completes() {
         "second job must still be Queued (dispatch loop not running in this test)"
     );
 }
+
+/// Regression test: `spawn_event_loop()`'s `Demux` subscription must exist
+/// by the time the function *returns* to its caller, not merely by the time
+/// the spawned task eventually gets scheduled.
+///
+/// Routes an event via `demux.route()` immediately after `spawn_event_loop()`
+/// returns, with no sleep or other synchronization in between. If the
+/// subscription were instead established inside the spawned `async move`
+/// block (a regression this test guards against), this event could be routed
+/// before the task is ever polled, and the subscriber would silently miss it
+/// — exactly the failure mode this test would catch.
+#[tokio::test]
+async fn test_spawn_event_loop_subscription_exists_before_return() {
+    let demux = Arc::new(Demux::new());
+    let (_dummy_primary_tx, _dummy_primary_rx) = tokio::sync::mpsc::channel::<WorkerEvent>(16);
+    demux.register("test-worker-1".to_string(), _dummy_primary_tx);
+
+    let broadcaster = EventBroadcaster::new();
+    let mut rx = broadcaster.subscribe();
+
+    let artifact_store = create_test_artifact_store().await;
+    let db_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .expect("in-memory SQLite pool must connect");
+    let migrator = sqlx::migrate!("../../database/migrations");
+    migrator
+        .run(&db_pool)
+        .await
+        .expect("migrations must apply to in-memory pool");
+
+    let job_store = JobStore::new(db_pool);
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
+    let pool = create_test_pool(WorkerStatus::Idle).await.0;
+
+    let _handle = spawn_event_loop(
+        Arc::clone(&scheduler),
+        Arc::clone(&demux),
+        Arc::new(broadcaster),
+        pool,
+    );
+
+    // No sleep here — this is the whole point of the test. If the
+    // subscription isn't guaranteed to exist synchronously by the time
+    // spawn_event_loop() returns, this route() call races the spawned
+    // task's first poll and could lose the event.
+    let event = WorkerEvent::Progress {
+        job_id: Uuid::new_v4(),
+        step: 1,
+        total_steps: 10,
+        preview_b64: None,
+    };
+    demux
+        .route("test-worker-1", event)
+        .await
+        .expect("route must succeed");
+
+    let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    let ws_event = loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(event) => break event,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        panic!("broadcast channel closed before receiving event");
+                    }
+                }
+            }
+            _ = &mut timeout => {
+                panic!(
+                    "event loop did not publish JobProgress within 5s — the Demux \
+                     subscription was not established before spawn_event_loop() \
+                     returned"
+                );
+            }
+        }
+    };
+
+    assert!(
+        matches!(ws_event, WsEvent::JobProgress { .. }),
+        "expected WsEvent::JobProgress, got: {:?}",
+        ws_event
+    );
+}
