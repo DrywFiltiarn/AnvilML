@@ -2,6 +2,7 @@
 
 pub mod handlers;
 pub mod state;
+pub mod ws;
 
 pub use state::AppState;
 
@@ -53,6 +54,11 @@ pub fn build_router(app_state: AppState) -> axum::Router {
             "/v1/artifacts/{hash}",
             axum::routing::get(handlers::artifacts::get_artifact),
         )
+        // GET /v1/events — WebSocket upgrade for the live event stream.
+        // Per ANVILML_DESIGN.md §13.6: subscribe, send the initial
+        // SystemStats frame, then (from P16-C2 on) forward subsequent
+        // WsEvents until a Lagged consumer is disconnected.
+        .route("/v1/events", axum::routing::get(ws::ws_handler))
         .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(app_state)
 }

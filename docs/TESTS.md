@@ -5798,3 +5798,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `spawn_event_loop(...)` followed immediately by `demux.route("test-worker-1", WorkerEvent::Progress { .. })`.
 **Expected output:** The broadcaster receives the corresponding `WsEvent::JobProgress` within the 5s timeout.
 **Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_spawn_event_loop_subscription_exists_before_return` exits 0.
+
+---
+
+## test_connect_receives_initial_system_stats_frame (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/handler_tests.rs`
+**Context:** `P16-C1` — the `GET /v1/events` WebSocket upgrade handler skeleton, per `ANVILML_DESIGN.md §13.6`'s connect sequence (subscribe, then send the current `SystemStats`).
+**Tests:** Connecting to `/v1/events` via a real WebSocket client yields exactly one initial frame, and that frame's JSON body carries `"type": "system_stats"`.
+**Mode:** both
+**Inputs:** A real `TcpListener`-backed server built from `build_router()`; a `tokio_tungstenite::connect_async()` client connection to `/v1/events`.
+**Expected output:** The first message received is a Text frame whose parsed JSON has `type == "system_stats"`.
+**Acceptance:** `cargo test -p anvilml-server --test handler_tests test_connect_receives_initial_system_stats_frame` exits 0.
+
+---
+
+## test_initial_frame_matches_ws_event_shape (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/handler_tests.rs`
+**Context:** Same `P16-C1` handler skeleton. Confirms the initial frame is not just tagged correctly but round-trips through `WsEvent`'s own `Deserialize` impl as the `SystemStats` variant.
+**Tests:** The initial frame deserializes as `WsEvent::SystemStats` with the placeholder's zero-valued fields (`cpu_pct: 0.0`, `ram_used_mib: 0`, `workers: []`) — acceptable per `P16-C1`'s scope since the real periodic tick is `P16-D1`.
+**Mode:** both
+**Inputs:** Same real-socket setup as `test_connect_receives_initial_system_stats_frame`.
+**Expected output:** `serde_json::from_str::<WsEvent>(...)` succeeds and matches the `SystemStats` variant with zero-valued fields.
+**Acceptance:** `cargo test -p anvilml-server --test handler_tests test_initial_frame_matches_ws_event_shape` exits 0.
+
+---
+
+## test_handler_sends_exactly_one_frame_then_returns (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/handler_tests.rs`
+**Context:** Same `P16-C1` handler skeleton. `P16-C1` explicitly defers the ongoing forward loop to `P16-C2` — this test locks in that boundary so a future task cannot silently regress it.
+**Tests:** After the initial `SystemStats` frame, the next read from the socket is a Close frame, a transport-level error from the abrupt close, or end-of-stream — never a second data frame, since no forward loop exists yet.
+**Mode:** both
+**Inputs:** Same real-socket setup; reads two items from the stream instead of one.
+**Expected output:** The second read is `None`, `Ok(Message::Close(_))`, or `Err(_)` — any `Ok(Message::Text(_))`/`Ok(Message::Binary(_))` fails the test.
+**Acceptance:** `cargo test -p anvilml-server --test handler_tests test_handler_sends_exactly_one_frame_then_returns` exits 0.
+
+---
+
+## test_multiple_clients_each_receive_independent_initial_frame (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/handler_tests.rs`
+**Context:** Same `P16-C1` handler skeleton. Confirms `state.broadcaster.subscribe()` is called per-connection (one receiver per socket), not once and shared.
+**Tests:** Two concurrent WebSocket clients connecting to `/v1/events` each independently receive their own initial `SystemStats` frame.
+**Mode:** both
+**Inputs:** Two concurrent `tokio_tungstenite::connect_async()` connections to the same test server.
+**Expected output:** Both clients' first frames are Text frames with `type == "system_stats"`.
+**Acceptance:** `cargo test -p anvilml-server --test handler_tests test_multiple_clients_each_receive_independent_initial_frame` exits 0.
