@@ -461,6 +461,15 @@ async fn test_image_ready_publishes_after_save() {
 #[tokio::test]
 async fn test_spawn_event_loop_receives_and_publishes() {
     let demux = Arc::new(Demux::new());
+    // Register a dummy primary consumer for "test-worker-1" so that
+    // demux.route() below succeeds — mirrors production, where
+    // bridge.rs's reader_task only routes successfully to a worker_id
+    // that has an actual ManagedWorker registered. This test cares about
+    // the event loop's own subscription (fan-out), not primary delivery;
+    // the receiver is kept alive (not `_`-dropped) for the test's
+    // duration so route()'s primary send doesn't fail either.
+    let (_dummy_primary_tx, _dummy_primary_rx) = tokio::sync::mpsc::channel::<WorkerEvent>(16);
+    demux.register("test-worker-1".to_string(), _dummy_primary_tx);
 
     // Create the broadcaster and a receiver.
     let broadcaster = EventBroadcaster::new();
@@ -571,6 +580,15 @@ async fn test_spawn_event_loop_receives_and_publishes() {
 #[tokio::test]
 async fn test_spawn_event_loop_handles_recv_error() {
     let demux = Arc::new(Demux::new());
+    // Register a dummy primary consumer for "test-worker-1" so that
+    // demux.route() below succeeds — mirrors production, where
+    // bridge.rs's reader_task only routes successfully to a worker_id
+    // that has an actual ManagedWorker registered. This test cares about
+    // the event loop's own subscription (fan-out), not primary delivery;
+    // the receiver is kept alive (not `_`-dropped) for the test's
+    // duration so route()'s primary send doesn't fail either.
+    let (_dummy_primary_tx, _dummy_primary_rx) = tokio::sync::mpsc::channel::<WorkerEvent>(16);
+    demux.register("test-worker-1".to_string(), _dummy_primary_tx);
     let broadcaster = EventBroadcaster::new();
 
     // Create a test artifact store.
@@ -628,6 +646,15 @@ async fn test_spawn_event_loop_handles_recv_error() {
 #[tokio::test]
 async fn test_completed_persists_status_and_releases_ledger() {
     let demux = Arc::new(Demux::new());
+    // Register a dummy primary consumer for "test-worker-1" so that
+    // demux.route() below succeeds — mirrors production, where
+    // bridge.rs's reader_task only routes successfully to a worker_id
+    // that has an actual ManagedWorker registered. This test cares about
+    // the event loop's own subscription (fan-out), not primary delivery;
+    // the receiver is kept alive (not `_`-dropped) for the test's
+    // duration so route()'s primary send doesn't fail either.
+    let (_dummy_primary_tx, _dummy_primary_rx) = tokio::sync::mpsc::channel::<WorkerEvent>(16);
+    demux.register("test-worker-1".to_string(), _dummy_primary_tx);
 
     // Create the broadcaster and a receiver.
     let broadcaster = EventBroadcaster::new();
@@ -770,6 +797,15 @@ async fn test_completed_persists_status_and_releases_ledger() {
 #[tokio::test]
 async fn test_failed_persists_status_error_and_releases_ledger() {
     let demux = Arc::new(Demux::new());
+    // Register a dummy primary consumer for "test-worker-1" so that
+    // demux.route() below succeeds — mirrors production, where
+    // bridge.rs's reader_task only routes successfully to a worker_id
+    // that has an actual ManagedWorker registered. This test cares about
+    // the event loop's own subscription (fan-out), not primary delivery;
+    // the receiver is kept alive (not `_`-dropped) for the test's
+    // duration so route()'s primary send doesn't fail either.
+    let (_dummy_primary_tx, _dummy_primary_rx) = tokio::sync::mpsc::channel::<WorkerEvent>(16);
+    demux.register("test-worker-1".to_string(), _dummy_primary_tx);
 
     // Create the broadcaster and a receiver.
     let broadcaster = EventBroadcaster::new();
@@ -916,6 +952,15 @@ async fn test_failed_persists_status_error_and_releases_ledger() {
 #[tokio::test]
 async fn test_cancelled_persists_status_and_releases_ledger() {
     let demux = Arc::new(Demux::new());
+    // Register a dummy primary consumer for "test-worker-1" so that
+    // demux.route() below succeeds — mirrors production, where
+    // bridge.rs's reader_task only routes successfully to a worker_id
+    // that has an actual ManagedWorker registered. This test cares about
+    // the event loop's own subscription (fan-out), not primary delivery;
+    // the receiver is kept alive (not `_`-dropped) for the test's
+    // duration so route()'s primary send doesn't fail either.
+    let (_dummy_primary_tx, _dummy_primary_rx) = tokio::sync::mpsc::channel::<WorkerEvent>(16);
+    demux.register("test-worker-1".to_string(), _dummy_primary_tx);
 
     // Create the broadcaster and a receiver.
     let broadcaster = EventBroadcaster::new();
@@ -1052,6 +1097,15 @@ async fn test_cancelled_persists_status_and_releases_ledger() {
 #[tokio::test]
 async fn test_terminal_events_publish_ws_event() {
     let demux = Arc::new(Demux::new());
+    // Register a dummy primary consumer for "test-worker-1" so that
+    // demux.route() below succeeds — mirrors production, where
+    // bridge.rs's reader_task only routes successfully to a worker_id
+    // that has an actual ManagedWorker registered. This test cares about
+    // the event loop's own subscription (fan-out), not primary delivery;
+    // the receiver is kept alive (not `_`-dropped) for the test's
+    // duration so route()'s primary send doesn't fail either.
+    let (_dummy_primary_tx, _dummy_primary_rx) = tokio::sync::mpsc::channel::<WorkerEvent>(16);
+    demux.register("test-worker-1".to_string(), _dummy_primary_tx);
 
     // Create the broadcaster and a receiver.
     let broadcaster = EventBroadcaster::new();
@@ -1205,6 +1259,15 @@ async fn test_terminal_events_publish_ws_event() {
 #[tokio::test]
 async fn test_terminal_event_unknown_job_logs_warning() {
     let demux = Arc::new(Demux::new());
+    // Register a dummy primary consumer for "test-worker-1" so that
+    // demux.route() below succeeds — mirrors production, where
+    // bridge.rs's reader_task only routes successfully to a worker_id
+    // that has an actual ManagedWorker registered. This test cares about
+    // the event loop's own subscription (fan-out), not primary delivery;
+    // the receiver is kept alive (not `_`-dropped) for the test's
+    // duration so route()'s primary send doesn't fail either.
+    let (_dummy_primary_tx, _dummy_primary_rx) = tokio::sync::mpsc::channel::<WorkerEvent>(16);
+    demux.register("test-worker-1".to_string(), _dummy_primary_tx);
 
     // Create the broadcaster and a receiver.
     let broadcaster = EventBroadcaster::new();
@@ -1302,6 +1365,15 @@ async fn test_terminal_event_unknown_job_logs_warning() {
 #[tokio::test]
 async fn test_progress_still_published_via_map_worker_event() {
     let demux = Arc::new(Demux::new());
+    // Register a dummy primary consumer for "test-worker-1" so that
+    // demux.route() below succeeds — mirrors production, where
+    // bridge.rs's reader_task only routes successfully to a worker_id
+    // that has an actual ManagedWorker registered. This test cares about
+    // the event loop's own subscription (fan-out), not primary delivery;
+    // the receiver is kept alive (not `_`-dropped) for the test's
+    // duration so route()'s primary send doesn't fail either.
+    let (_dummy_primary_tx, _dummy_primary_rx) = tokio::sync::mpsc::channel::<WorkerEvent>(16);
+    demux.register("test-worker-1".to_string(), _dummy_primary_tx);
 
     // Create the broadcaster and a receiver.
     let broadcaster = EventBroadcaster::new();
@@ -1443,6 +1515,15 @@ async fn create_test_pool(initial_status: WorkerStatus) -> (Arc<WorkerPool>, Wor
 #[tokio::test]
 async fn test_completed_restores_worker_idle_wakes_dispatch() {
     let demux = Arc::new(Demux::new());
+    // Register a dummy primary consumer for "test-worker-1" so that
+    // demux.route() below succeeds — mirrors production, where
+    // bridge.rs's reader_task only routes successfully to a worker_id
+    // that has an actual ManagedWorker registered. This test cares about
+    // the event loop's own subscription (fan-out), not primary delivery;
+    // the receiver is kept alive (not `_`-dropped) for the test's
+    // duration so route()'s primary send doesn't fail either.
+    let (_dummy_primary_tx, _dummy_primary_rx) = tokio::sync::mpsc::channel::<WorkerEvent>(16);
+    demux.register("test-worker-1".to_string(), _dummy_primary_tx);
 
     let broadcaster = EventBroadcaster::new();
     let mut rx = broadcaster.subscribe();
@@ -1566,6 +1647,15 @@ async fn test_completed_restores_worker_idle_wakes_dispatch() {
 #[tokio::test]
 async fn test_failed_restores_worker_idle_wakes_dispatch() {
     let demux = Arc::new(Demux::new());
+    // Register a dummy primary consumer for "test-worker-1" so that
+    // demux.route() below succeeds — mirrors production, where
+    // bridge.rs's reader_task only routes successfully to a worker_id
+    // that has an actual ManagedWorker registered. This test cares about
+    // the event loop's own subscription (fan-out), not primary delivery;
+    // the receiver is kept alive (not `_`-dropped) for the test's
+    // duration so route()'s primary send doesn't fail either.
+    let (_dummy_primary_tx, _dummy_primary_rx) = tokio::sync::mpsc::channel::<WorkerEvent>(16);
+    demux.register("test-worker-1".to_string(), _dummy_primary_tx);
 
     let broadcaster = EventBroadcaster::new();
     let mut rx = broadcaster.subscribe();
@@ -1675,6 +1765,15 @@ async fn test_failed_restores_worker_idle_wakes_dispatch() {
 #[tokio::test]
 async fn test_cancelled_restores_worker_idle_wakes_dispatch() {
     let demux = Arc::new(Demux::new());
+    // Register a dummy primary consumer for "test-worker-1" so that
+    // demux.route() below succeeds — mirrors production, where
+    // bridge.rs's reader_task only routes successfully to a worker_id
+    // that has an actual ManagedWorker registered. This test cares about
+    // the event loop's own subscription (fan-out), not primary delivery;
+    // the receiver is kept alive (not `_`-dropped) for the test's
+    // duration so route()'s primary send doesn't fail either.
+    let (_dummy_primary_tx, _dummy_primary_rx) = tokio::sync::mpsc::channel::<WorkerEvent>(16);
+    demux.register("test-worker-1".to_string(), _dummy_primary_tx);
 
     let broadcaster = EventBroadcaster::new();
     let mut rx = broadcaster.subscribe();
@@ -1781,6 +1880,15 @@ async fn test_cancelled_restores_worker_idle_wakes_dispatch() {
 #[tokio::test]
 async fn test_progress_does_not_wake_dispatch() {
     let demux = Arc::new(Demux::new());
+    // Register a dummy primary consumer for "test-worker-1" so that
+    // demux.route() below succeeds — mirrors production, where
+    // bridge.rs's reader_task only routes successfully to a worker_id
+    // that has an actual ManagedWorker registered. This test cares about
+    // the event loop's own subscription (fan-out), not primary delivery;
+    // the receiver is kept alive (not `_`-dropped) for the test's
+    // duration so route()'s primary send doesn't fail either.
+    let (_dummy_primary_tx, _dummy_primary_rx) = tokio::sync::mpsc::channel::<WorkerEvent>(16);
+    demux.register("test-worker-1".to_string(), _dummy_primary_tx);
 
     let broadcaster = EventBroadcaster::new();
     let mut rx = broadcaster.subscribe();
@@ -1873,6 +1981,15 @@ async fn test_progress_does_not_wake_dispatch() {
 #[tokio::test]
 async fn test_queued_job_dispatched_after_first_completes() {
     let demux = Arc::new(Demux::new());
+    // Register a dummy primary consumer for "test-worker-1" so that
+    // demux.route() below succeeds — mirrors production, where
+    // bridge.rs's reader_task only routes successfully to a worker_id
+    // that has an actual ManagedWorker registered. This test cares about
+    // the event loop's own subscription (fan-out), not primary delivery;
+    // the receiver is kept alive (not `_`-dropped) for the test's
+    // duration so route()'s primary send doesn't fail either.
+    let (_dummy_primary_tx, _dummy_primary_rx) = tokio::sync::mpsc::channel::<WorkerEvent>(16);
+    demux.register("test-worker-1".to_string(), _dummy_primary_tx);
 
     let broadcaster = EventBroadcaster::new();
     let mut rx = broadcaster.subscribe();
@@ -2045,6 +2162,13 @@ async fn test_queued_job_dispatched_after_first_completes() {
 #[tokio::test]
 async fn test_spawn_event_loop_subscription_exists_before_return() {
     let demux = Arc::new(Demux::new());
+    // Register a dummy primary consumer for "test-worker-1" so that
+    // demux.route() below succeeds — mirrors production, where
+    // bridge.rs's reader_task only routes successfully to a worker_id
+    // that has an actual ManagedWorker registered. This test cares about
+    // the event loop's own subscription (fan-out), not primary delivery;
+    // the receiver is kept alive (not `_`-dropped) for the test's
+    // duration so route()'s primary send doesn't fail either.
     let (_dummy_primary_tx, _dummy_primary_rx) = tokio::sync::mpsc::channel::<WorkerEvent>(16);
     demux.register("test-worker-1".to_string(), _dummy_primary_tx);
 
