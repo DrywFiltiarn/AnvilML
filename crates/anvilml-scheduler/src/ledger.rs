@@ -85,4 +85,25 @@ impl VramLedger {
         // against incorrect caller behaviour.
         total_mib.saturating_sub(reserved)
     }
+
+    /// Get the current VRAM reservation amount for a device index.
+    ///
+    /// Returns the amount currently reserved (MiB) for the given device.
+    /// Returns `0` if the device has no reservation entry.
+    ///
+    /// Used by the event loop to determine how much VRAM to release when
+    /// a terminal `WorkerEvent` arrives, without needing direct access to
+    /// the worker pool's device metadata.
+    pub fn get_reservation(&self, device_index: u32) -> u32 {
+        *self.reservations.get(&device_index).unwrap_or(&0)
+    }
+
+    /// Test-only accessor: returns a reference to the reservations map.
+    ///
+    /// Allows integration tests to verify that VRAM reservations have been
+    /// correctly released after terminal events.
+    #[cfg(feature = "test-util")]
+    pub fn reservations(&self) -> &std::collections::HashMap<u32, u32> {
+        &self.reservations
+    }
 }

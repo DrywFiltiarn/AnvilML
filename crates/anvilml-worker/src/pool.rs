@@ -26,14 +26,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anvilml_core::JobStatus;
 use anvilml_core::NodeTypeRegistry;
 use anvilml_core::types::worker::WorkerStatus;
 use anvilml_core::{AnvilError, GpuDevice, ServerConfig};
 use anvilml_ipc::{RouterTransport, WorkerMessage};
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio::task::JoinHandle;
-use uuid::Uuid;
 
 use crate::bridge::spawn_bridge;
 use crate::demux::Demux;
@@ -66,15 +64,6 @@ pub struct WorkerPool {
     /// (writer task, reader task) — see `bridge::spawn_bridge()`'s own
     /// doc comment for what each does.
     bridge_handles: (JoinHandle<()>, JoinHandle<()>),
-
-    /// INTERIM-P14-PATCH (manual retrofit, pre-Phase-16 — see
-    /// `docs/PHASES_GRAPH.md`'s "Interim Job-Completion Patch" note).
-    /// `None` by default. Set via `set_job_completion_tx()` by the caller
-    /// (`backend/main.rs`, P14-C2) before `spawn_all()` runs; propagated to
-    /// each `ManagedWorker` constructed in `spawn_all_impl()` below. Phase
-    /// 16 must replace this field, its setter, and its use in
-    /// `spawn_all_impl()` wholesale — not extend it.
-    job_completion_tx: Option<mpsc::UnboundedSender<(Uuid, JobStatus, Option<String>)>>,
 }
 
 /// Whether an `ANVILML_FORCE_WORKER_MOCK` env var value should force mock
@@ -122,23 +111,7 @@ impl WorkerPool {
             demux,
             bridge_tx,
             bridge_handles: (writer_handle, reader_handle),
-            job_completion_tx: None,
         })
-    }
-
-    /// INTERIM-P14-PATCH (manual retrofit, pre-Phase-16). Registers the
-    /// channel that every `ManagedWorker` subsequently constructed by
-    /// `spawn_all()`/`spawn_all_with_spawner()` will report job completion/
-    /// failure through. Must be called before `spawn_all()` — workers
-    /// spawned before this is set will not have the channel wired (their
-    /// `job_completion_tx` stays `None`, matching `ManagedWorker`'s own
-    /// default). See `job_completion_tx`'s field doc comment for the full
-    /// rationale and the note that Phase 16 must replace this wholesale.
-    pub fn set_job_completion_tx(
-        &mut self,
-        tx: mpsc::UnboundedSender<(Uuid, JobStatus, Option<String>)>,
-    ) {
-        self.job_completion_tx = Some(tx);
     }
 
     /// The pool's currently-tracked worker handles.
@@ -363,15 +336,6 @@ impl WorkerPool {
                 env,
                 spawner: Arc::clone(&spawner),
             });
-
-            // INTERIM-P14-PATCH: propagate the interim job-completion
-            // channel into this worker, if the pool has one. See
-            // `job_completion_tx`'s field doc comment above. Phase 16 must
-            // replace this block wholesale, not extend it.
-            let mut worker = worker;
-            if let Some(tx) = &self.job_completion_tx {
-                worker.set_job_completion_tx(tx.clone());
-            }
 
             let join_handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
             let join_handle = Arc::new(tokio::sync::Mutex::new(Some(join_handle)));

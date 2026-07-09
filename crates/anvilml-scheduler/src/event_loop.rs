@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use crate::JobScheduler;
 use anvilml_artifacts::ArtifactStore;
-use anvilml_core::{AnvilError, ArtifactMeta, WsEvent};
+use anvilml_core::{AnvilError, ArtifactMeta, JobStatus, WsEvent};
 use anvilml_ipc::{EventBroadcaster, RouterTransport, WorkerEvent};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -315,7 +315,179 @@ pub fn spawn_event_loop(
                         }
                     }
                 }
-                // All other events go through the generic mapping path.
+                // Terminal events: persist status transition and release VRAM
+                // reservation before publishing. Each arm follows the same
+                // pattern: look up the job (to get worker_id for VRAM lookup),
+                // release the ledger reservation, update the database, then
+                // publish the mapped WsEvent.
+                //
+                // Non-terminal events (Progress) and the events that should
+                // never reach this point (Ready, Pong, Dying, MemoryReport)
+                // fall through to the catch-all below.
+                WorkerEvent::Completed { job_id, elapsed_ms } => {
+                    // Look up the job to get its worker_id. The worker_id
+                    // was set during dispatch_one() when the job was assigned
+                    // to a worker and transitioned to Running.
+                    let job = match scheduler.get_job(job_id).await {
+                        Ok(Some(job)) => job,
+                        Ok(None) => {
+                            // Job not found in the database — log a warning
+                            // but still publish the event so the WebSocket
+                            // client sees the transition.
+                            tracing::warn!(
+                                job_id = %job_id,
+                                "event_loop: Completed event for unknown job"
+                            );
+                            broadcaster.publish(WsEvent::JobCompleted { job_id, elapsed_ms });
+                            tracing::debug!(
+                                job_id = %job_id,
+                                from = "Completed",
+                                to = "JobCompleted",
+                                "event transition"
+                            );
+                            continue;
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                job_id = %job_id,
+                                error = %e,
+                                "event_loop: failed to fetch job for Completed"
+                            );
+                            broadcaster.publish(WsEvent::JobCompleted { job_id, elapsed_ms });
+                            continue;
+                        }
+                    };
+
+                    // Release the VRAM reservation. The worker_id encodes the
+                    // device index (bare device index as string, e.g. "0").
+                    // We parse it to look up the reservation amount from the ledger.
+                    let worker_id = job.worker_id.clone().unwrap_or_default();
+                    let device_index = worker_id.parse::<u32>().unwrap_or(0);
+                    let vram_mib = scheduler.get_reservation(device_index).await;
+                    if vram_mib > 0 {
+                        scheduler.release_reservation(device_index, vram_mib).await;
+                    }
+
+                    // Persist the terminal status.
+                    scheduler
+                        .update_job_terminal_status(job_id, JobStatus::Completed, None)
+                        .await;
+
+                    // Publish the mapped WsEvent.
+                    broadcaster.publish(WsEvent::JobCompleted { job_id, elapsed_ms });
+                    tracing::debug!(
+                        job_id = %job_id,
+                        from = "Completed",
+                        to = "JobCompleted",
+                        "event transition"
+                    );
+                }
+                WorkerEvent::Failed {
+                    job_id,
+                    error,
+                    traceback: _,
+                } => {
+                    // Look up the job to get its worker_id for VRAM release.
+                    let job = match scheduler.get_job(job_id).await {
+                        Ok(Some(job)) => job,
+                        Ok(None) => {
+                            tracing::warn!(
+                                job_id = %job_id,
+                                "event_loop: Failed event for unknown job"
+                            );
+                            broadcaster.publish(WsEvent::JobFailed { job_id, error });
+                            tracing::debug!(
+                                job_id = %job_id,
+                                from = "Failed",
+                                to = "JobFailed",
+                                "event transition"
+                            );
+                            continue;
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                job_id = %job_id,
+                                error = %e,
+                                "event_loop: failed to fetch job for Failed"
+                            );
+                            broadcaster.publish(WsEvent::JobFailed { job_id, error });
+                            continue;
+                        }
+                    };
+
+                    let worker_id = job.worker_id.clone().unwrap_or_default();
+                    let device_index = worker_id.parse::<u32>().unwrap_or(0);
+                    let vram_mib = scheduler.get_reservation(device_index).await;
+                    if vram_mib > 0 {
+                        scheduler.release_reservation(device_index, vram_mib).await;
+                    }
+
+                    // Persist the terminal status with the error string.
+                    // Clone the error for the WsEvent publish since update_job_terminal_status
+                    // consumes it — the error string is the same in both the DB and the broadcast.
+                    scheduler
+                        .update_job_terminal_status(job_id, JobStatus::Failed, Some(error.clone()))
+                        .await;
+
+                    broadcaster.publish(WsEvent::JobFailed { job_id, error });
+                    tracing::debug!(
+                        job_id = %job_id,
+                        from = "Failed",
+                        to = "JobFailed",
+                        "event transition"
+                    );
+                }
+                WorkerEvent::Cancelled { job_id } => {
+                    // Look up the job to get its worker_id for VRAM release.
+                    let job = match scheduler.get_job(job_id).await {
+                        Ok(Some(job)) => job,
+                        Ok(None) => {
+                            tracing::warn!(
+                                job_id = %job_id,
+                                "event_loop: Cancelled event for unknown job"
+                            );
+                            broadcaster.publish(WsEvent::JobCancelled { job_id });
+                            tracing::debug!(
+                                job_id = %job_id,
+                                from = "Cancelled",
+                                to = "JobCancelled",
+                                "event transition"
+                            );
+                            continue;
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                job_id = %job_id,
+                                error = %e,
+                                "event_loop: failed to fetch job for Cancelled"
+                            );
+                            broadcaster.publish(WsEvent::JobCancelled { job_id });
+                            continue;
+                        }
+                    };
+
+                    let worker_id = job.worker_id.clone().unwrap_or_default();
+                    let device_index = worker_id.parse::<u32>().unwrap_or(0);
+                    let vram_mib = scheduler.get_reservation(device_index).await;
+                    if vram_mib > 0 {
+                        scheduler.release_reservation(device_index, vram_mib).await;
+                    }
+
+                    // Persist the terminal status.
+                    scheduler
+                        .update_job_terminal_status(job_id, JobStatus::Cancelled, None)
+                        .await;
+
+                    broadcaster.publish(WsEvent::JobCancelled { job_id });
+                    tracing::debug!(
+                        job_id = %job_id,
+                        from = "Cancelled",
+                        to = "JobCancelled",
+                        "event transition"
+                    );
+                }
+                // All other events (Progress, and the panic-gated Ready/Pong/
+                // Dying/MemoryReport) go through the generic mapping path.
                 _ => {
                     let ws_event = map_worker_event(event);
 

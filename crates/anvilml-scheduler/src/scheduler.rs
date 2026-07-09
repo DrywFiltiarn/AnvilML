@@ -366,6 +366,97 @@ impl JobScheduler {
         Ok(jobs)
     }
 
+    /// Look up the current VRAM reservation for a device index.
+    ///
+    /// Returns the amount currently reserved (MiB). Returns `0` if the device
+    /// has no reservation. Used by the event loop to determine how much
+    /// VRAM to release when a terminal event arrives.
+    ///
+    /// # Arguments
+    ///
+    /// * `device_index` — The device index to look up.
+    #[tracing::instrument(fields(device_index), skip(self))]
+    pub(crate) async fn get_reservation(&self, device_index: u32) -> u32 {
+        let ledger = self.ledger.lock().await;
+        ledger.get_reservation(device_index)
+    }
+
+    /// Release the VRAM reservation for a job on the given device.
+    ///
+    /// Called from the event loop when a terminal `WorkerEvent`
+    /// (`Completed`/`Failed`/`Cancelled`) arrives. Acquires the ledger
+    /// mutex internally and calls `VramLedger::release()`.
+    ///
+    /// The reservation amount is the same `vram_free_mib` value that was
+    /// reserved at dispatch time — the dispatch path uses `vram_free_mib`
+    /// as a placeholder reservation per `ANVILML_DESIGN.md §12.4`.
+    ///
+    /// # Arguments
+    ///
+    /// * `device_index` — The device index parsed from the worker's `worker_id`.
+    /// * `vram_mib` — The VRAM amount to release (the same value that was
+    ///   reserved at dispatch).
+    #[tracing::instrument(fields(device_index, vram_mib), skip(self))]
+    pub(crate) async fn release_reservation(&self, device_index: u32, vram_mib: u32) {
+        let mut ledger = self.ledger.lock().await;
+        ledger.release(device_index, vram_mib);
+        tracing::debug!(device_index, vram_mib, "released VRAM reservation");
+    }
+
+    /// Update a job's terminal status in the database.
+    ///
+    /// Fetches the current job row, mutates its `status`, `completed_at`,
+    /// and `error` fields, and persists via `upsert()`. Used by the event
+    /// loop when a terminal `WorkerEvent` arrives.
+    ///
+    /// # Arguments
+    ///
+    /// * `job_id` — The job to update.
+    /// * `status` — The terminal `JobStatus` to set.
+    /// * `error` — Optional error string (used for `Failed` events).
+    #[tracing::instrument(fields(job_id, ?status), skip(self))]
+    pub async fn update_job_terminal_status(
+        &self,
+        job_id: Uuid,
+        status: JobStatus,
+        error: Option<String>,
+    ) {
+        match self.job_store.get(job_id).await {
+            Ok(Some(mut job)) => {
+                job.status = status;
+                job.completed_at = Some(Utc::now());
+                job.error = error;
+                if let Err(e) = self.job_store.upsert(&job).await {
+                    tracing::error!(
+                        job_id = %job_id,
+                        error = %e,
+                        status = ?status,
+                        "event_loop: failed to persist terminal status"
+                    );
+                } else {
+                    tracing::info!(
+                        job_id = %job_id,
+                        status = ?status,
+                        "event_loop: persisted terminal status"
+                    );
+                }
+            }
+            Ok(None) => {
+                tracing::warn!(
+                    job_id = %job_id,
+                    "event_loop: received terminal event for unknown job"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    job_id = %job_id,
+                    error = %e,
+                    "event_loop: failed to fetch job for terminal status update"
+                );
+            }
+        }
+    }
+
     /// Attempt to dispatch a single job to an idle worker.
     ///
     /// Implements the two-step worker selection algorithm from
@@ -829,5 +920,39 @@ impl JobScheduler {
         workers: &anvilml_worker::WorkerPool,
     ) -> (DispatchOutcome, Option<String>) {
         self.dispatch_one(job, workers).await
+    }
+
+    /// Test helper: expose the ledger's reservations map for verifying
+    /// that VRAM release happened correctly after terminal events.
+    ///
+    /// Acquires the ledger mutex and returns a clone of the inner
+    /// `HashMap<u32, u32>`. Only available when the `test-util` feature
+    /// is enabled.
+    #[cfg(feature = "test-util")]
+    pub async fn ledger_reservations_test(&self) -> std::collections::HashMap<u32, u32> {
+        let ledger = self.ledger.lock().await;
+        ledger.reservations().clone()
+    }
+
+    /// Test helper: reserve VRAM on the ledger for a specific device.
+    ///
+    /// Acquires the ledger mutex and calls `reserve()`. Only available
+    /// when the `test-util` feature is enabled.
+    #[cfg(feature = "test-util")]
+    pub async fn reserve_vram_test(&self, device_index: u32, vram_mib: u32) {
+        let mut ledger = self.ledger.lock().await;
+        ledger.reserve(device_index, vram_mib);
+    }
+
+    /// Test helper: persist a job to the database.
+    ///
+    /// Wraps `job_store.upsert()` for test use. Only available when
+    /// the `test-util` feature is enabled.
+    #[cfg(feature = "test-util")]
+    pub async fn persist_job_test(
+        &self,
+        job: &anvilml_core::Job,
+    ) -> Result<(), anvilml_core::AnvilError> {
+        self.job_store.upsert(job).await
     }
 }

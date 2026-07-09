@@ -495,11 +495,11 @@ async fn test_spawn_event_loop_receives_and_publishes() {
     let node_registry = Arc::new(NodeTypeRegistry::new());
 
     // Create the scheduler with our test artifact_store.
-    let scheduler = JobScheduler::new(job_store, node_registry, artifact_store);
+    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
 
     // Spawn the event loop.
     let _handle = spawn_event_loop(
-        Arc::new(scheduler),
+        Arc::clone(&scheduler),
         Arc::new(transport),
         Arc::new(broadcaster),
     );
@@ -623,11 +623,11 @@ async fn test_spawn_event_loop_handles_recv_error() {
     let job_store = JobStore::new(db_pool);
     let node_registry = Arc::new(NodeTypeRegistry::new());
 
-    let scheduler = JobScheduler::new(job_store, node_registry, artifact_store);
+    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
 
     // Spawn the event loop.
     let handle = spawn_event_loop(
-        Arc::new(scheduler),
+        Arc::clone(&scheduler),
         Arc::new(transport),
         Arc::new(broadcaster),
     );
@@ -636,4 +636,837 @@ async fn test_spawn_event_loop_handles_recv_error() {
     // This causes the event loop's next recv() to return an error,
     // which it logs and retries on.
     handle.abort();
+}
+
+/// Test that `WorkerEvent::Completed` persists the terminal status
+/// (`status=Completed`, `completed_at=now`) and releases the VRAM
+/// reservation in the ledger.
+///
+/// Creates a full event loop setup with a JobStore containing a
+/// `Running` job with `worker_id="0"`. Reserves VRAM on device 0
+/// in the ledger. Sends a `Completed` event via the transport,
+/// then verifies:
+/// - The job's `status` is `Completed` and `completed_at` is set.
+/// - The ledger reservation for device 0 is zeroed.
+/// - The broadcaster receives `WsEvent::JobCompleted`.
+#[tokio::test]
+async fn test_completed_persists_status_and_releases_ledger() {
+    // Create the transport (ROUTER socket).
+    let transport = RouterTransport::bind().await.expect("bind must succeed");
+    let port = transport.port;
+
+    // Create the broadcaster and a receiver.
+    let broadcaster = EventBroadcaster::new();
+    let mut rx = broadcaster.subscribe();
+
+    // Create a test artifact store.
+    let artifact_store = create_test_artifact_store().await;
+
+    // Create a JobStore with migrations applied.
+    let db_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .expect("in-memory SQLite pool must connect");
+
+    let migrator = sqlx::migrate!("../../database/migrations");
+    migrator
+        .run(&db_pool)
+        .await
+        .expect("migrations must apply to in-memory pool");
+
+    let job_store = JobStore::new(db_pool);
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
+
+    // Reserve VRAM on device 0 (simulating a dispatch that reserved VRAM).
+    {
+        scheduler.reserve_vram_test(0, 8192).await;
+    }
+
+    // Create and persist a Running job with worker_id="0".
+    let job_id = Uuid::new_v4();
+    let running_job = anvilml_core::Job {
+        id: job_id,
+        status: anvilml_core::JobStatus::Running,
+        graph: serde_json::json!({"nodes": []}),
+        settings: anvilml_core::JobSettings {
+            device_preference: None,
+        },
+        created_at: chrono::Utc::now(),
+        started_at: Some(chrono::Utc::now()),
+        completed_at: None,
+        worker_id: Some("0".to_string()),
+        error: None,
+        queue_position: None,
+    };
+    scheduler
+        .persist_job_test(&running_job)
+        .await
+        .expect("upsert must succeed");
+
+    // Spawn the event loop.
+    let _handle = spawn_event_loop(
+        Arc::clone(&scheduler),
+        Arc::new(transport),
+        Arc::new(broadcaster),
+    );
+
+    // Connect a DEALER and send a Completed event.
+    let mut opts = SocketOptions::default();
+    opts.peer_identity(
+        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
+    );
+    let mut dealer = DealerSocket::with_options(opts);
+    dealer
+        .connect(&format!("tcp://127.0.0.1:{port}"))
+        .await
+        .expect("DEALER connect must succeed");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let completed_event = WorkerEvent::Completed {
+        job_id,
+        elapsed_ms: 5000,
+    };
+    let payload = rmp_serde::to_vec_named(&completed_event).expect("serialization must succeed");
+    let mut message = ZmqMessage::from(Bytes::from(""));
+    message.push_back(Bytes::from(payload));
+    dealer.send(message).await.expect("send must succeed");
+
+    // Wait for the broadcaster to receive the event.
+    let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        match event {
+                            WsEvent::JobCompleted { job_id: ejob_id, elapsed_ms: eelapsed } => {
+                                assert_eq!(ejob_id, job_id, "job_id must match");
+                                assert_eq!(eelapsed, 5000, "elapsed_ms must match");
+                                break;
+                            }
+                            other => panic!("Expected JobCompleted, got: {:?}", other),
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("skipped {} events", n);
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        panic!("broadcast channel closed before receiving event");
+                    }
+                }
+            }
+            _ = &mut timeout => {
+                panic!("event loop did not publish within 5s timeout");
+            }
+        }
+    }
+
+    // Verify the job's terminal status was persisted.
+    let persisted_job = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must succeed")
+        .expect("job must exist");
+    assert_eq!(
+        persisted_job.status,
+        anvilml_core::JobStatus::Completed,
+        "job status must be Completed"
+    );
+    assert!(
+        persisted_job.completed_at.is_some(),
+        "completed_at must be set"
+    );
+
+    // Verify the ledger reservation was released.
+    let reservations = scheduler.ledger_reservations_test().await;
+    let reserved = reservations.get(&0).copied().unwrap_or(0);
+    assert_eq!(
+        reserved, 0,
+        "ledger reservation for device 0 must be zeroed after release"
+    );
+}
+
+/// Test that `WorkerEvent::Failed` persists the terminal status
+/// (`status=Failed`, `completed_at=now`, `error=event.error`) and
+/// releases the VRAM reservation.
+///
+/// Same setup as `test_completed_persists_status_and_releases_ledger`,
+/// but sends a `Failed` event with an error message and verifies
+/// that the error string is persisted in the job record.
+#[tokio::test]
+async fn test_failed_persists_status_error_and_releases_ledger() {
+    // Create the transport (ROUTER socket).
+    let transport = RouterTransport::bind().await.expect("bind must succeed");
+    let port = transport.port;
+
+    // Create the broadcaster and a receiver.
+    let broadcaster = EventBroadcaster::new();
+    let mut rx = broadcaster.subscribe();
+
+    // Create a test artifact store.
+    let artifact_store = create_test_artifact_store().await;
+
+    // Create a JobStore with migrations applied.
+    let db_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .expect("in-memory SQLite pool must connect");
+
+    let migrator = sqlx::migrate!("../../database/migrations");
+    migrator
+        .run(&db_pool)
+        .await
+        .expect("migrations must apply to in-memory pool");
+
+    let job_store = JobStore::new(db_pool);
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
+
+    // Reserve VRAM on device 0.
+    {
+        scheduler.reserve_vram_test(0, 4096).await;
+    }
+
+    // Create and persist a Running job with worker_id="0".
+    let job_id = Uuid::new_v4();
+    let running_job = anvilml_core::Job {
+        id: job_id,
+        status: anvilml_core::JobStatus::Running,
+        graph: serde_json::json!({"nodes": []}),
+        settings: anvilml_core::JobSettings {
+            device_preference: None,
+        },
+        created_at: chrono::Utc::now(),
+        started_at: Some(chrono::Utc::now()),
+        completed_at: None,
+        worker_id: Some("0".to_string()),
+        error: None,
+        queue_position: None,
+    };
+    scheduler
+        .persist_job_test(&running_job)
+        .await
+        .expect("upsert must succeed");
+
+    // Spawn the event loop.
+    let _handle = spawn_event_loop(
+        Arc::clone(&scheduler),
+        Arc::new(transport),
+        Arc::new(broadcaster),
+    );
+
+    // Connect a DEALER and send a Failed event.
+    let mut opts = SocketOptions::default();
+    opts.peer_identity(
+        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
+    );
+    let mut dealer = DealerSocket::with_options(opts);
+    dealer
+        .connect(&format!("tcp://127.0.0.1:{port}"))
+        .await
+        .expect("DEALER connect must succeed");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let failed_event = WorkerEvent::Failed {
+        job_id,
+        error: "CUDA out of memory".to_string(),
+        traceback: Some("Traceback (most recent call last):\n  ...".to_string()),
+    };
+    let payload = rmp_serde::to_vec_named(&failed_event).expect("serialization must succeed");
+    let mut message = ZmqMessage::from(Bytes::from(""));
+    message.push_back(Bytes::from(payload));
+    dealer.send(message).await.expect("send must succeed");
+
+    // Wait for the broadcaster to receive the event.
+    let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        match event {
+                            WsEvent::JobFailed { job_id: ejob_id, error: eerror } => {
+                                assert_eq!(ejob_id, job_id, "job_id must match");
+                                assert_eq!(eerror, "CUDA out of memory", "error must match");
+                                break;
+                            }
+                            other => panic!("Expected JobFailed, got: {:?}", other),
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("skipped {} events", n);
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        panic!("broadcast channel closed before receiving event");
+                    }
+                }
+            }
+            _ = &mut timeout => {
+                panic!("event loop did not publish within 5s timeout");
+            }
+        }
+    }
+
+    // Verify the job's terminal status and error were persisted.
+    let persisted_job = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must succeed")
+        .expect("job must exist");
+    assert_eq!(
+        persisted_job.status,
+        anvilml_core::JobStatus::Failed,
+        "job status must be Failed"
+    );
+    assert!(
+        persisted_job.completed_at.is_some(),
+        "completed_at must be set"
+    );
+    assert_eq!(
+        persisted_job.error,
+        Some("CUDA out of memory".to_string()),
+        "error must be persisted from event"
+    );
+
+    // Verify the ledger reservation was released.
+    let reservations = scheduler.ledger_reservations_test().await;
+    let reserved = reservations.get(&0).copied().unwrap_or(0);
+    assert_eq!(
+        reserved, 0,
+        "ledger reservation for device 0 must be zeroed after release"
+    );
+}
+
+/// Test that `WorkerEvent::Cancelled` persists the terminal status
+/// (`status=Cancelled`, `completed_at=now`) and releases the VRAM
+/// reservation.
+///
+/// Uses worker_id="1" to exercise a different device index.
+#[tokio::test]
+async fn test_cancelled_persists_status_and_releases_ledger() {
+    // Create the transport (ROUTER socket).
+    let transport = RouterTransport::bind().await.expect("bind must succeed");
+    let port = transport.port;
+
+    // Create the broadcaster and a receiver.
+    let broadcaster = EventBroadcaster::new();
+    let mut rx = broadcaster.subscribe();
+
+    // Create a test artifact store.
+    let artifact_store = create_test_artifact_store().await;
+
+    // Create a JobStore with migrations applied.
+    let db_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .expect("in-memory SQLite pool must connect");
+
+    let migrator = sqlx::migrate!("../../database/migrations");
+    migrator
+        .run(&db_pool)
+        .await
+        .expect("migrations must apply to in-memory pool");
+
+    let job_store = JobStore::new(db_pool);
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
+
+    // Reserve VRAM on device 1.
+    {
+        scheduler.reserve_vram_test(1, 6144).await;
+    }
+
+    // Create and persist a Running job with worker_id="1".
+    let job_id = Uuid::new_v4();
+    let running_job = anvilml_core::Job {
+        id: job_id,
+        status: anvilml_core::JobStatus::Running,
+        graph: serde_json::json!({"nodes": []}),
+        settings: anvilml_core::JobSettings {
+            device_preference: None,
+        },
+        created_at: chrono::Utc::now(),
+        started_at: Some(chrono::Utc::now()),
+        completed_at: None,
+        worker_id: Some("1".to_string()),
+        error: None,
+        queue_position: None,
+    };
+    scheduler
+        .persist_job_test(&running_job)
+        .await
+        .expect("upsert must succeed");
+
+    // Spawn the event loop.
+    let _handle = spawn_event_loop(
+        Arc::clone(&scheduler),
+        Arc::new(transport),
+        Arc::new(broadcaster),
+    );
+
+    // Connect a DEALER and send a Cancelled event.
+    let mut opts = SocketOptions::default();
+    opts.peer_identity(
+        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
+    );
+    let mut dealer = DealerSocket::with_options(opts);
+    dealer
+        .connect(&format!("tcp://127.0.0.1:{port}"))
+        .await
+        .expect("DEALER connect must succeed");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let cancelled_event = WorkerEvent::Cancelled { job_id };
+    let payload = rmp_serde::to_vec_named(&cancelled_event).expect("serialization must succeed");
+    let mut message = ZmqMessage::from(Bytes::from(""));
+    message.push_back(Bytes::from(payload));
+    dealer.send(message).await.expect("send must succeed");
+
+    // Wait for the broadcaster to receive the event.
+    let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        match event {
+                            WsEvent::JobCancelled { job_id: ejob_id } => {
+                                assert_eq!(ejob_id, job_id, "job_id must match");
+                                break;
+                            }
+                            other => panic!("Expected JobCancelled, got: {:?}", other),
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("skipped {} events", n);
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        panic!("broadcast channel closed before receiving event");
+                    }
+                }
+            }
+            _ = &mut timeout => {
+                panic!("event loop did not publish within 5s timeout");
+            }
+        }
+    }
+
+    // Verify the job's terminal status was persisted.
+    let persisted_job = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must succeed")
+        .expect("job must exist");
+    assert_eq!(
+        persisted_job.status,
+        anvilml_core::JobStatus::Cancelled,
+        "job status must be Cancelled"
+    );
+    assert!(
+        persisted_job.completed_at.is_some(),
+        "completed_at must be set"
+    );
+
+    // Verify the ledger reservation was released.
+    let reservations = scheduler.ledger_reservations_test().await;
+    let reserved = reservations.get(&1).copied().unwrap_or(0);
+    assert_eq!(
+        reserved, 0,
+        "ledger reservation for device 1 must be zeroed after release"
+    );
+}
+
+/// Test that all three terminal events (`Completed`, `Failed`, `Cancelled`)
+/// publish the correct `WsEvent` variant through the broadcaster.
+///
+/// Sends each event type and verifies the broadcaster receives the
+/// matching `WsEvent` variant with correct fields.
+#[tokio::test]
+async fn test_terminal_events_publish_ws_event() {
+    // Create the transport (ROUTER socket).
+    let transport = RouterTransport::bind().await.expect("bind must succeed");
+    let port = transport.port;
+
+    // Create the broadcaster and a receiver.
+    let broadcaster = EventBroadcaster::new();
+    let mut rx = broadcaster.subscribe();
+
+    // Create a test artifact store.
+    let artifact_store = create_test_artifact_store().await;
+
+    // Create a JobStore with migrations applied.
+    let db_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .expect("in-memory SQLite pool must connect");
+
+    let migrator = sqlx::migrate!("../../database/migrations");
+    migrator
+        .run(&db_pool)
+        .await
+        .expect("migrations must apply to in-memory pool");
+
+    let job_store = JobStore::new(db_pool);
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
+
+    // Spawn the event loop.
+    let _handle = spawn_event_loop(
+        Arc::clone(&scheduler),
+        Arc::new(transport),
+        Arc::new(broadcaster),
+    );
+
+    // Connect a DEALER.
+    let mut opts = SocketOptions::default();
+    opts.peer_identity(
+        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
+    );
+    let mut dealer = DealerSocket::with_options(opts);
+    dealer
+        .connect(&format!("tcp://127.0.0.1:{port}"))
+        .await
+        .expect("DEALER connect must succeed");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Send Completed and verify JobCompleted.
+    let job_id_1 = Uuid::new_v4();
+    let completed_event = WorkerEvent::Completed {
+        job_id: job_id_1,
+        elapsed_ms: 3000,
+    };
+    let payload = rmp_serde::to_vec_named(&completed_event).expect("serialization must succeed");
+    let mut message = ZmqMessage::from(Bytes::from(""));
+    message.push_back(Bytes::from(payload));
+    dealer.send(message).await.expect("send must succeed");
+
+    let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        match event {
+                            WsEvent::JobCompleted { job_id: ejob_id, elapsed_ms: eelapsed } => {
+                                assert_eq!(ejob_id, job_id_1);
+                                assert_eq!(eelapsed, 3000);
+                                break;
+                            }
+                            other => panic!("Expected JobCompleted, got: {:?}", other),
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => panic!("channel closed"),
+                }
+            }
+            _ = &mut timeout => panic!("timeout waiting for JobCompleted"),
+        }
+    }
+
+    // Send Failed and verify JobFailed.
+    let job_id_2 = Uuid::new_v4();
+    let failed_event = WorkerEvent::Failed {
+        job_id: job_id_2,
+        error: "test error".to_string(),
+        traceback: None,
+    };
+    let payload = rmp_serde::to_vec_named(&failed_event).expect("serialization must succeed");
+    let mut message = ZmqMessage::from(Bytes::from(""));
+    message.push_back(Bytes::from(payload));
+    dealer.send(message).await.expect("send must succeed");
+
+    let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        match event {
+                            WsEvent::JobFailed { job_id: ejob_id, error: eerror } => {
+                                assert_eq!(ejob_id, job_id_2);
+                                assert_eq!(eerror, "test error");
+                                break;
+                            }
+                            other => panic!("Expected JobFailed, got: {:?}", other),
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => panic!("channel closed"),
+                }
+            }
+            _ = &mut timeout => panic!("timeout waiting for JobFailed"),
+        }
+    }
+
+    // Send Cancelled and verify JobCancelled.
+    let job_id_3 = Uuid::new_v4();
+    let cancelled_event = WorkerEvent::Cancelled { job_id: job_id_3 };
+    let payload = rmp_serde::to_vec_named(&cancelled_event).expect("serialization must succeed");
+    let mut message = ZmqMessage::from(Bytes::from(""));
+    message.push_back(Bytes::from(payload));
+    dealer.send(message).await.expect("send must succeed");
+
+    let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        match event {
+                            WsEvent::JobCancelled { job_id: ejob_id } => {
+                                assert_eq!(ejob_id, job_id_3);
+                                break;
+                            }
+                            other => panic!("Expected JobCancelled, got: {:?}", other),
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => panic!("channel closed"),
+                }
+            }
+            _ = &mut timeout => panic!("timeout waiting for JobCancelled"),
+        }
+    }
+}
+
+/// Test that when a terminal event arrives for a `job_id` not in the
+/// database, the event loop logs a warning and continues without
+/// panicking — it still publishes the `WsEvent`.
+///
+/// Uses a `Completed` event with a UUID that doesn't exist in the
+/// JobStore. The event loop should handle the `Ok(None)` path,
+/// log a warning, and publish the event.
+#[tokio::test]
+async fn test_terminal_event_unknown_job_logs_warning() {
+    // Create the transport (ROUTER socket).
+    let transport = RouterTransport::bind().await.expect("bind must succeed");
+    let port = transport.port;
+
+    // Create the broadcaster and a receiver.
+    let broadcaster = EventBroadcaster::new();
+    let mut rx = broadcaster.subscribe();
+
+    // Create a test artifact store.
+    let artifact_store = create_test_artifact_store().await;
+
+    // Create a JobStore with migrations applied (but no jobs).
+    let db_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .expect("in-memory SQLite pool must connect");
+
+    let migrator = sqlx::migrate!("../../database/migrations");
+    migrator
+        .run(&db_pool)
+        .await
+        .expect("migrations must apply to in-memory pool");
+
+    let job_store = JobStore::new(db_pool);
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
+
+    // Spawn the event loop.
+    let _handle = spawn_event_loop(
+        Arc::clone(&scheduler),
+        Arc::new(transport),
+        Arc::new(broadcaster),
+    );
+
+    // Connect a DEALER and send a Completed event for a non-existent job.
+    let unknown_job_id = Uuid::new_v4();
+    let mut opts = SocketOptions::default();
+    opts.peer_identity(
+        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
+    );
+    let mut dealer = DealerSocket::with_options(opts);
+    dealer
+        .connect(&format!("tcp://127.0.0.1:{port}"))
+        .await
+        .expect("DEALER connect must succeed");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let completed_event = WorkerEvent::Completed {
+        job_id: unknown_job_id,
+        elapsed_ms: 1000,
+    };
+    let payload = rmp_serde::to_vec_named(&completed_event).expect("serialization must succeed");
+    let mut message = ZmqMessage::from(Bytes::from(""));
+    message.push_back(Bytes::from(payload));
+    dealer.send(message).await.expect("send must succeed");
+
+    // The event loop should still publish the event despite the job
+    // not being found. Wait for the broadcaster to receive it.
+    let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        match event {
+                            WsEvent::JobCompleted { job_id: ejob_id, elapsed_ms: eelapsed } => {
+                                assert_eq!(ejob_id, unknown_job_id, "job_id must match");
+                                assert_eq!(eelapsed, 1000, "elapsed_ms must match");
+                                break;
+                            }
+                            other => panic!("Expected JobCompleted, got: {:?}", other),
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => panic!("channel closed"),
+                }
+            }
+            _ = &mut timeout => {
+                panic!("event loop did not publish within 5s timeout");
+            }
+        }
+    }
+
+    // Verify the job was NOT created in the database (it should remain absent).
+    let persisted = scheduler
+        .get_job(unknown_job_id)
+        .await
+        .expect("get_job must succeed");
+    assert!(persisted.is_none(), "unknown job must not be created in DB");
+}
+
+/// Test that `WorkerEvent::Progress` still flows through the existing
+/// `map_worker_event()` path unchanged (not through the terminal event
+/// arms added in this task).
+///
+/// Sends a `Progress` event and verifies the broadcaster receives
+/// `WsEvent::JobProgress` with correct fields.
+#[tokio::test]
+async fn test_progress_still_published_via_map_worker_event() {
+    // Create the transport (ROUTER socket).
+    let transport = RouterTransport::bind().await.expect("bind must succeed");
+    let port = transport.port;
+
+    // Create the broadcaster and a receiver.
+    let broadcaster = EventBroadcaster::new();
+    let mut rx = broadcaster.subscribe();
+
+    // Create a test artifact store.
+    let artifact_store = create_test_artifact_store().await;
+
+    // Create a JobStore with migrations applied.
+    let db_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .expect("in-memory SQLite pool must connect");
+
+    let migrator = sqlx::migrate!("../../database/migrations");
+    migrator
+        .run(&db_pool)
+        .await
+        .expect("migrations must apply to in-memory pool");
+
+    let job_store = JobStore::new(db_pool);
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
+
+    // Spawn the event loop.
+    let _handle = spawn_event_loop(
+        Arc::clone(&scheduler),
+        Arc::new(transport),
+        Arc::new(broadcaster),
+    );
+
+    // Connect a DEALER and send a Progress event.
+    let job_id = Uuid::new_v4();
+    let mut opts = SocketOptions::default();
+    opts.peer_identity(
+        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
+    );
+    let mut dealer = DealerSocket::with_options(opts);
+    dealer
+        .connect(&format!("tcp://127.0.0.1:{port}"))
+        .await
+        .expect("DEALER connect must succeed");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let progress_event = WorkerEvent::Progress {
+        job_id,
+        step: 10,
+        total_steps: 20,
+        preview_b64: Some("dGVzdA==".to_string()),
+    };
+    let payload = rmp_serde::to_vec_named(&progress_event).expect("serialization must succeed");
+    let mut message = ZmqMessage::from(Bytes::from(""));
+    message.push_back(Bytes::from(payload));
+    dealer.send(message).await.expect("send must succeed");
+
+    // Wait for the broadcaster to receive the JobProgress event.
+    let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        match event {
+                            WsEvent::JobProgress {
+                                job_id: ejob_id,
+                                step: estep,
+                                total_steps: etotal,
+                                preview_b64: epreview,
+                            } => {
+                                assert_eq!(ejob_id, job_id, "job_id must match");
+                                assert_eq!(estep, 10, "step must match");
+                                assert_eq!(etotal, 20, "total_steps must match");
+                                assert_eq!(epreview, Some("dGVzdA==".to_string()), "preview_b64 must match");
+                                break;
+                            }
+                            other => panic!("Expected JobProgress, got: {:?}", other),
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => panic!("channel closed"),
+                }
+            }
+            _ = &mut timeout => {
+                panic!("event loop did not publish within 5s timeout");
+            }
+        }
+    }
 }

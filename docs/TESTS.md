@@ -5594,3 +5594,75 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `RouterTransport::bind()` followed immediately by `transport.close()`.
 **Expected output:** The event loop task remains alive after transport close (verified via `handle.is_finished()` returning false).
 **Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_spawn_event_loop_handles_recv_error` exits 0.
+
+---
+
+## test_completed_persists_status_and_releases_ledger (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-ipc` (for `WorkerEvent`, `EventBroadcaster`, `RouterTransport`), `anvilml-registry` (for `JobStore`), `anvilml-core` (for `Job`, `JobStatus`, `NodeTypeRegistry`, `WsEvent`), `anvilml-artifacts` (for `ArtifactStore`), `zeromq` and `sqlx` dev-dependencies, and the `test-util` feature enabled (for `ledger_reservations_test()`). The event loop's terminal event arms (Completed/Failed/Cancelled) persist status transitions and release VRAM reservations.
+**Tests:** End-to-end: a full event loop setup with a JobStore containing a `Running` job with `worker_id="0"`. VRAM is reserved on device 0 in the ledger. A `WorkerEvent::Completed` is sent via the transport. The test verifies: (1) the job's `status` is `Completed` and `completed_at` is set in the DB, (2) the ledger reservation for device 0 is zeroed, (3) the broadcaster receives `WsEvent::JobCompleted` with correct fields.
+**Mode:** both
+**Inputs:** `WorkerEvent::Completed { job_id, elapsed_ms: 5000 }` sent via ZeroMQ DEALER to a ROUTER socket; a `Running` job with `worker_id="0"` pre-populated in JobStore; 8192 MiB reserved on device 0 in the ledger.
+**Expected output:** `status=Completed`, `completed_at` set, ledger reservation zeroed, `WsEvent::JobCompleted` published.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_completed_persists_status_and_releases_ledger` exits 0.
+
+---
+
+## test_failed_persists_status_error_and_releases_ledger (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** Same setup as `test_completed_persists_status_and_releases_ledger`. Verifies the `Failed` event arm persists the error string.
+**Tests:** A `WorkerEvent::Failed` with `error="CUDA out of memory"` is sent. The test verifies: (1) the job's `status` is `Failed` and `completed_at` is set, (2) the job's `error` field equals `"CUDA out of memory"`, (3) the ledger reservation for device 0 is zeroed, (4) the broadcaster receives `WsEvent::JobFailed` with correct fields.
+**Mode:** both
+**Inputs:** `WorkerEvent::Failed { job_id, error: "CUDA out of memory", traceback: Some(...) }` sent via ZeroMQ DEALER; a `Running` job with `worker_id="0"` pre-populated in JobStore; 4096 MiB reserved on device 0.
+**Expected output:** `status=Failed`, `completed_at` set, `error="CUDA out of memory"`, ledger reservation zeroed, `WsEvent::JobFailed` published.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_failed_persists_status_error_and_releases_ledger` exits 0.
+
+---
+
+## test_cancelled_persists_status_and_releases_ledger (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** Same setup as `test_completed_persists_status_and_releases_ledger`, but exercises device index 1.
+**Tests:** A `WorkerEvent::Cancelled` is sent for a job with `worker_id="1"`. The test verifies: (1) the job's `status` is `Cancelled` and `completed_at` is set, (2) the ledger reservation for device 1 is zeroed, (3) the broadcaster receives `WsEvent::JobCancelled` with correct fields.
+**Mode:** both
+**Inputs:** `WorkerEvent::Cancelled { job_id }` sent via ZeroMQ DEALER; a `Running` job with `worker_id="1"` pre-populated in JobStore; 6144 MiB reserved on device 1.
+**Expected output:** `status=Cancelled`, `completed_at` set, ledger reservation zeroed, `WsEvent::JobCancelled` published.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_cancelled_persists_status_and_releases_ledger` exits 0.
+
+---
+
+## test_terminal_events_publish_ws_event (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** Same infrastructure as other terminal event tests. Verifies all three terminal events publish the correct `WsEvent` variant.
+**Tests:** Sends `Completed`, `Failed`, and `Cancelled` events sequentially. Each is verified against its matching `WsEvent` variant (`JobCompleted`, `JobFailed`, `JobCancelled`) with correct field values.
+**Mode:** both
+**Inputs:** Three terminal events sent via ZeroMQ DEALER to a single ROUTER socket.
+**Expected output:** Three `WsEvent` variants received in order: `JobCompleted`, `JobFailed`, `JobCancelled`, each with correct fields.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_terminal_events_publish_ws_event` exits 0.
+
+---
+
+## test_terminal_event_unknown_job_logs_warning (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** Same infrastructure, but the JobStore is empty (no jobs). Verifies the event loop handles a `Completed` event for a non-existent job gracefully.
+**Tests:** A `WorkerEvent::Completed` is sent with a UUID that doesn't exist in the database. The test verifies: (1) the event loop does not panic, (2) the broadcaster still receives `WsEvent::JobCompleted` (the WebSocket stream is not interrupted), (3) no job row is created in the database.
+**Mode:** both
+**Inputs:** `WorkerEvent::Completed { job_id: <nonexistent UUID>, elapsed_ms: 1000 }` sent via ZeroMQ DEALER; empty JobStore.
+**Expected output:** `WsEvent::JobCompleted` published; no job row created; event loop continues running.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_terminal_event_unknown_job_logs_warning` exits 0.
+
+---
+
+## test_progress_still_published_via_map_worker_event (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** Same infrastructure. Verifies that `Progress` events (non-terminal) still flow through the `map_worker_event()` path unchanged.
+**Tests:** A `WorkerEvent::Progress` is sent. The test verifies the broadcaster receives `WsEvent::JobProgress` with all fields (`step`, `total_steps`, `preview_b64`) correctly transferred. This confirms the new terminal event arms did not break the existing non-terminal event path.
+**Mode:** both
+**Inputs:** `WorkerEvent::Progress { job_id, step: 10, total_steps: 20, preview_b64: Some("dGVzdA==") }` sent via ZeroMQ DEALER.
+**Expected output:** `WsEvent::JobProgress` with `step==10`, `total_steps==20`, `preview_b64==Some("dGVzdA==")`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_progress_still_published_via_map_worker_event` exits 0.
