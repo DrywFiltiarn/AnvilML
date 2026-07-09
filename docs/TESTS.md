@@ -5825,15 +5825,15 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 ---
 
-## test_handler_sends_exactly_one_frame_then_returns (anvilml-server)
+## test_handler_stays_alive_after_initial_frame (anvilml-server)
 
 **File:** `crates/anvilml-server/tests/handler_tests.rs`
-**Context:** Same `P16-C1` handler skeleton. `P16-C1` explicitly defers the ongoing forward loop to `P16-C2` — this test locks in that boundary so a future task cannot silently regress it.
-**Tests:** After the initial `SystemStats` frame, the next read from the socket is a Close frame, a transport-level error from the abrupt close, or end-of-stream — never a second data frame, since no forward loop exists yet.
+**Context:** `P16-C2` forward loop is now active. After the initial `SystemStats` frame, the handler enters the forward loop and waits for broadcast events — it no longer returns after one frame. This test verifies the handler stays connected.
+**Tests:** After the initial frame, the handler stays connected. A 500ms timeout on the next read confirms no Close frame arrives, proving the handler is in the forward loop rather than returning prematurely.
 **Mode:** both
-**Inputs:** Same real-socket setup; reads two items from the stream instead of one.
-**Expected output:** The second read is `None`, `Ok(Message::Close(_))`, or `Err(_)` — any `Ok(Message::Text(_))`/`Ok(Message::Binary(_))` fails the test.
-**Acceptance:** `cargo test -p anvilml-server --test handler_tests test_handler_sends_exactly_one_frame_then_returns` exits 0.
+**Inputs:** Same real-socket setup; reads one item, then uses `tokio::time::timeout(500ms, ws.next())`.
+**Expected output:** No message arrives within 500ms (timeout), confirming the handler is alive and waiting for events.
+**Acceptance:** `cargo test -p anvilml-server --test handler_tests test_handler_stays_alive_after_initial_frame` exits 0.
 
 ---
 
@@ -5846,3 +5846,63 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Two concurrent `tokio_tungstenite::connect_async()` connections to the same test server.
 **Expected output:** Both clients' first frames are Text frames with `type == "system_stats"`.
 **Acceptance:** `cargo test -p anvilml-server --test handler_tests test_multiple_clients_each_receive_independent_initial_frame` exits 0.
+
+---
+
+## test_handler_stays_alive_after_initial_frame (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/handler_tests.rs`
+**Context:** `P16-C2` forward loop is now active. After the initial `SystemStats` frame, the handler enters the forward loop and waits for broadcast events — it no longer returns after one frame.
+**Tests:** After the initial frame, the handler stays connected. A 500ms timeout on the next read confirms no Close frame arrives, proving the handler is in the forward loop rather than returning prematurely.
+**Mode:** both
+**Inputs:** Same real-socket setup; reads one item, then uses `tokio::time::timeout(500ms, ws.next())`.
+**Expected output:** No message arrives within 500ms (timeout), confirming the handler is alive and waiting for events.
+**Acceptance:** `cargo test -p anvilml-server --test handler_tests test_handler_stays_alive_after_initial_frame` exits 0.
+
+---
+
+## test_forwarded_event_is_json_text (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/handler_tests.rs`
+**Context:** `P16-C2` forward loop is active. Events published to the broadcast channel after the initial frame are serialized as JSON text and forwarded to the connected client.
+**Tests:** After connecting and consuming the initial `SystemStats` frame, publish a `JobQueued` event via `broadcaster.publish()`. The client should receive a Text frame with `"type":"job_queued"`.
+**Mode:** both
+**Inputs:** Real-socket setup; publish `WsEvent::JobQueued { job_id, queue_position: 1 }`.
+**Expected output:** Client receives `ClientMessage::Text` with JSON containing `"type":"job_queued"` and matching `job_id`/`queue_position`.
+**Acceptance:** `cargo test -p anvilml-server --test handler_tests test_forwarded_event_is_json_text` exits 0.
+
+---
+
+## test_lagged_error_closes_connection (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/handler_tests.rs`
+**Context:** `P16-C2` `RecvError::Lagged` disconnect path. Publishing >1024 events while the client is idle overflows the 1024-event broadcast buffer, causing `recv()` to return `Lagged(n)`.
+**Tests:** After the initial frame, publish 1100 `ProvisioningProgress` events rapidly without reading from the client. The client's next `recv()` should yield `Lagged`, and the handler should send Close and exit.
+**Mode:** both
+**Inputs:** Real-socket setup; publish 1100 events, then read from stream.
+**Expected output:** Client stream yields `None`, `Ok(Close(_))`, or `Err(_)` — never a data frame.
+**Acceptance:** `cargo test -p anvilml-server --test handler_tests test_lagged_error_closes_connection` exits 0.
+
+---
+
+## test_concurrent_clients_independent_copies (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/handler_tests.rs`
+**Context:** `P16-C2` forward loop with multiple subscribers. Each client gets an independent broadcast subscription, so both receive their own copy of forwarded events.
+**Tests:** Connect two clients, consume initial frames from both. Publish one event. Both clients should independently receive the event as a Text frame.
+**Mode:** both
+**Inputs:** Two concurrent connections; publish one `JobQueued` event.
+**Expected output:** Both clients receive `ClientMessage::Text` with matching `job_id` and `"type":"job_queued"`.
+**Acceptance:** `cargo test -p anvilml-server --test handler_tests test_concurrent_clients_independent_copies` exits 0.
+
+---
+
+## test_lagged_disconnect_no_panic (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/handler_tests.rs`
+**Context:** `P16-C2` graceful disconnect. After a Lagged disconnect, the server should remain operational — new clients can connect and receive their initial frame.
+**Tests:** Trigger a Lagged disconnect with one client, then connect a second client. The second client should successfully receive the initial `SystemStats` frame.
+**Mode:** both
+**Inputs:** Two connections; first client triggers lag with 1100 events, second client connects after lag.
+**Expected output:** Second client receives initial `SystemStats` frame with `type == "system_stats"`.
+**Acceptance:** `cargo test -p anvilml-server --test handler_tests test_lagged_disconnect_no_panic` exits 0.
