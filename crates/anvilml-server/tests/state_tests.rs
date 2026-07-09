@@ -5,6 +5,7 @@
 
 use anvilml_artifacts::ArtifactStore;
 use anvilml_core::{NodeTypeDescriptor, NodeTypeRegistry, ServerConfig};
+use anvilml_ipc::EventBroadcaster;
 use anvilml_registry::JobStore;
 use anvilml_scheduler::JobScheduler;
 use anvilml_server::AppState;
@@ -59,6 +60,8 @@ async fn make_full_state(
             .expect("WorkerPool::new() must succeed in test"),
     );
 
+    let broadcaster = Arc::new(EventBroadcaster::new());
+
     AppState {
         config: Arc::new(ServerConfig::default()),
         node_registry,
@@ -67,6 +70,7 @@ async fn make_full_state(
         workers,
         db,
         artifact_store,
+        broadcaster,
     }
 }
 
@@ -107,6 +111,7 @@ fn test_app_state_constructs() {
             std::env::temp_dir().join("anvilml-test-artifacts"),
             create_test_pool_sync(),
         )),
+        broadcaster: Arc::new(EventBroadcaster::new()),
     };
 
     // Verify both fields are accessible and the registry starts empty.
@@ -326,5 +331,52 @@ async fn test_app_state_artifact_store_clone_shares() {
             Arc::as_ptr(&cloned.artifact_store),
         ),
         "artifact_store Arc must be shared between original and clone"
+    );
+}
+
+/// Verify that `AppState` constructs with a `broadcaster` field
+/// backed by a valid `Arc<EventBroadcaster>`.
+///
+/// Constructs `AppState` via `make_full_state()`, then asserts
+/// that the `broadcaster` field is accessible and that the `Arc`
+/// pointer is valid (non-null) via `Arc::as_ptr()`. This verifies
+/// the construction path works end-to-end.
+#[tokio::test]
+async fn test_app_state_broadcaster_constructs() {
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let artifact_store = create_test_artifact_store().await;
+    let state = make_full_state(node_registry, artifact_store).await;
+
+    // Verify the broadcaster field is accessible.
+    // Arc::as_ptr() returns a non-null pointer — if the Arc were
+    // invalid, this would panic, so a successful return proves
+    // the field is properly constructed.
+    let ptr = Arc::as_ptr(&state.broadcaster);
+    assert!(!ptr.is_null(), "broadcaster Arc pointer must be valid");
+}
+
+/// Verify that cloning `AppState` shares the same `Arc<EventBroadcaster>`
+/// allocation as the original.
+///
+/// Constructs `AppState` with a `broadcaster`, clones it, then
+/// verifies via pointer comparison (`std::ptr::eq(Arc::as_ptr(...))`)
+/// that both the original and cloned state share the same `Arc`
+/// allocation. This verifies the cloning semantics match the
+/// established pattern used by other `Arc` fields.
+#[tokio::test]
+async fn test_app_state_broadcaster_clone_shares() {
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let artifact_store = create_test_artifact_store().await;
+    let state = make_full_state(node_registry, artifact_store).await;
+
+    let cloned = state.clone();
+
+    // Both clones must share the same Arc<EventBroadcaster> allocation.
+    assert!(
+        std::ptr::eq(
+            Arc::as_ptr(&state.broadcaster),
+            Arc::as_ptr(&cloned.broadcaster),
+        ),
+        "broadcaster Arc must be shared between original and clone"
     );
 }

@@ -8,9 +8,11 @@ use anvilml_core::CliOverrides;
 use anvilml_core::NodeTypeRegistry;
 use anvilml_core::config_load;
 use anvilml_hardware::detect_all_devices;
+use anvilml_ipc::EventBroadcaster;
 use anvilml_registry::JobStore;
 use anvilml_registry::create_pool;
 use anvilml_scheduler::JobScheduler;
+use anvilml_scheduler::spawn_event_loop;
 use anvilml_server::{AppState, build_router};
 use anvilml_worker::WorkerPool;
 use std::path::Path;
@@ -218,6 +220,12 @@ async fn main() {
 
     let workers = Arc::new(worker_pool);
 
+    // Construct the event broadcaster once and share it with both
+    // the scheduler's event loop and AppState — two independently
+    // constructed broadcasters would silently never see each other's
+    // events.
+    let broadcaster = Arc::new(EventBroadcaster::new());
+
     // Construct the job scheduler with the database pool.
     // The scheduler owns the in-memory job queue and dispatch loop;
     // it uses the shared `pool` (SqlitePool) for job persistence via `JobStore`.
@@ -245,6 +253,20 @@ async fn main() {
 
     tracing::info!("dispatch loop started");
 
+    // Construct the event loop task that consumes WorkerEvent fan-out from
+    // the worker pool's Demux and publishes WsEvent to WebSocket subscribers.
+    // The Demux subscription is established synchronously before the task
+    // is spawned, so no events can be missed between this call and the
+    // return of spawn_event_loop(). The event_loop_handle is kept so it
+    // can be aborted and awaited during graceful shutdown, parallel to
+    // the dispatch_handle pattern.
+    let event_loop_handle = spawn_event_loop(
+        Arc::clone(&scheduler),
+        Arc::clone(workers.demux()),
+        Arc::clone(&broadcaster),
+        Arc::clone(&workers),
+    );
+
     // Capture process-start instant once, before binding, so the health
     // handler returns a real elapsed-time measurement.
     let start_time = Instant::now();
@@ -260,6 +282,7 @@ async fn main() {
         workers: Arc::clone(&workers),
         db: pool,
         artifact_store,
+        broadcaster: Arc::clone(&broadcaster),
     };
 
     // Extract the listen address from the Arc-wrapped config before moving
@@ -305,6 +328,13 @@ async fn main() {
     // trigger shutdown at all, so no clone-based workaround is possible.
     dispatch_handle.abort();
     let _ = dispatch_handle.await;
+
+    // Abort and await the event loop task — same pattern as dispatch_handle.
+    // The event loop holds its own Arc<WorkerPool> clone via the demux
+    // subscription and the workers Arc passed to spawn_event_loop();
+    // aborting it releases that clone before the workers shutdown_all().
+    event_loop_handle.abort();
+    let _ = event_loop_handle.await;
 
     match Arc::try_unwrap(workers) {
         Ok(mut workers) => {

@@ -22,6 +22,7 @@ mock-hardware = ["anvilml-scheduler/mock-hardware", "anvilml-worker/mock-hardwar
 anvilml-artifacts = { path = "../crates/anvilml-artifacts" }
 anvilml-core = { path = "../crates/anvilml-core" }
 anvilml-hardware = { path = "../crates/anvilml-hardware" }
+anvilml-ipc = { path = "../crates/anvilml-ipc" }
 anvilml-registry = { path = "../crates/anvilml-registry" }
 anvilml-scheduler = { path = "../crates/anvilml-scheduler" }
 anvilml-server = { path = "../crates/anvilml-server" }

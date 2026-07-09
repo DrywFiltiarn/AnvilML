@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anvilml_artifacts::ArtifactStore;
 use anvilml_core::{NodeTypeRegistry, ServerConfig};
+use anvilml_ipc::EventBroadcaster;
 use anvilml_scheduler::JobScheduler;
 use anvilml_worker::WorkerPool;
 use sqlx::SqlitePool;
@@ -60,4 +61,11 @@ pub struct AppState {
     /// configurable directory, with metadata persisted in the same
     /// SQLite database used by `JobStore`.
     pub artifact_store: Arc<ArtifactStore>,
+
+    /// Central event broadcaster for WebSocket subscribers.
+    ///
+    /// The same `Arc<EventBroadcaster>` instance is shared with the
+    /// scheduler's event loop (`spawn_event_loop`), so HTTP-layer
+    /// subscribers receive all events the scheduler publishes.
+    pub broadcaster: Arc<EventBroadcaster>,
 }

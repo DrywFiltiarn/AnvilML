@@ -5,6 +5,7 @@
 
 use anvilml_artifacts::ArtifactStore;
 use anvilml_core::{ArtifactMeta, NodeTypeRegistry, ServerConfig};
+use anvilml_ipc::EventBroadcaster;
 use anvilml_registry::JobStore;
 use anvilml_scheduler::JobScheduler;
 use anvilml_server::{AppState, build_router};
@@ -76,6 +77,7 @@ async fn make_test_state() -> AppState {
         workers,
         db: db.clone(),
         artifact_store,
+        broadcaster: Arc::new(EventBroadcaster::new()),
     }
 }
 
