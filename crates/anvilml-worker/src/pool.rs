@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anvilml_core::NodeTypeRegistry;
-use anvilml_core::types::worker::WorkerStatus;
+use anvilml_core::types::worker::{WorkerInfo, WorkerStatus};
 use anvilml_core::{AnvilError, GpuDevice, ServerConfig};
 use anvilml_ipc::{RouterTransport, WorkerMessage};
 use tokio::sync::{RwLock, mpsc, oneshot};
@@ -133,6 +133,38 @@ impl WorkerPool {
     /// Empty immediately after `new()`; populated by `spawn_all()`.
     pub fn devices(&self) -> &[GpuDevice] {
         &self.devices
+    }
+
+    /// Build a `Vec<WorkerInfo>` snapshot of every worker currently in the
+    /// pool — used by `ws::stats_tick::spawn_stats_tick()` (`P16-D1`) for
+    /// the periodic `SystemStats` heartbeat, and available to any future
+    /// `/v1/workers` listing endpoint.
+    ///
+    /// `handles()[i]` and `devices()[i]` correspond by construction (see
+    /// this struct's own `devices` field doc comment) — zipping them is
+    /// therefore safe without any separate index-matching lookup.
+    ///
+    /// `pid` and `current_job_id` are always `None` here: neither is
+    /// tracked at the `WorkerHandle`/`WorkerPool` layer today. `pid`
+    /// lives inside the OS process handle owned by `ManagedWorker`'s own
+    /// supervisor task; per-worker job assignment lives in
+    /// `JobScheduler`'s dispatch state. Populating either field
+    /// accurately would mean threading data across a layer boundary this
+    /// method doesn't otherwise cross — left as a known, explicit gap
+    /// rather than fabricated data.
+    pub async fn list(&self) -> Vec<WorkerInfo> {
+        let mut out = Vec::with_capacity(self.handles.len());
+        for (handle, device) in self.handles.iter().zip(self.devices.iter()) {
+            out.push(WorkerInfo {
+                worker_id: handle.worker_id.clone(),
+                status: handle.status().await,
+                device_index: device.index,
+                device_type: device.device_type,
+                pid: None,
+                current_job_id: None,
+            });
+        }
+        out
     }
 
     /// The pool-wide `RouterTransport` every worker in this pool shares.

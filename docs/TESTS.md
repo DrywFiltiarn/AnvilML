@@ -5906,3 +5906,63 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Two connections; first client triggers lag with 1100 events, second client connects after lag.
 **Expected output:** Second client receives initial `SystemStats` frame with `type == "system_stats"`.
 **Acceptance:** `cargo test -p anvilml-server --test handler_tests test_lagged_disconnect_no_panic` exits 0.
+
+---
+
+## test_tick_publishes_system_stats (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/stats_tick_tests.rs`
+**Context:** `P16-D1` — `spawn_stats_tick()`'s periodic background `SystemStats` publisher, per `ANVILML_DESIGN.md §13.1`/§13.6.
+**Tests:** A tick publishes a `WsEvent::SystemStats` observable by a subscriber that subscribed before the tick task was spawned.
+**Mode:** both
+**Inputs:** `spawn_stats_tick(broadcaster, empty_pool, Duration::from_millis(20))`; a receiver subscribed beforehand.
+**Expected output:** The receiver yields `WsEvent::SystemStats { .. }` within a 2s timeout.
+**Acceptance:** `cargo test -p anvilml-server --features mock-hardware --test stats_tick_tests test_tick_publishes_system_stats` exits 0.
+
+---
+
+## test_workers_reflect_pool_state (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/stats_tick_tests.rs`
+**Context:** Same `P16-D1` task. Confirms `WorkerPool::list()` (added by this task) is actually used to populate the tick's `workers` field, rather than an empty placeholder.
+**Tests:** With two workers injected via `set_up_test_workers()` (`worker_id="0"` Idle/Cuda, `worker_id="1"` Busy/Cpu), the published `SystemStats.workers` contains both, with matching `status`, `device_index`, and `device_type`.
+**Mode:** both
+**Inputs:** A `WorkerPool` pre-populated via `set_up_test_workers()` with two `(WorkerHandle, GpuDevice)` pairs.
+**Expected output:** `worker_infos.len() == 2`; each entry's fields match its corresponding injected handle/device.
+**Acceptance:** `cargo test -p anvilml-server --features mock-hardware --test stats_tick_tests test_workers_reflect_pool_state` exits 0.
+
+---
+
+## test_two_consecutive_ticks_both_publish (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/stats_tick_tests.rs`
+**Context:** Same `P16-D1` task. Confirms the task runs an ongoing periodic loop, distinguishing it from `P16-C1`'s deliberately one-shot initial-frame send.
+**Tests:** Two consecutive ticks each independently publish a `WsEvent::SystemStats`.
+**Mode:** both
+**Inputs:** `spawn_stats_tick(..., Duration::from_millis(15))`; two sequential `rx.recv()` calls, each under a 2s timeout.
+**Expected output:** Both received events are `WsEvent::SystemStats { .. }`.
+**Acceptance:** `cargo test -p anvilml-server --features mock-hardware --test stats_tick_tests test_two_consecutive_ticks_both_publish` exits 0.
+
+---
+
+## test_interval_parameter_controls_cadence (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/stats_tick_tests.rs`
+**Context:** Same `P16-D1` task. Locks in the task's own key implementation note — the interval is an injected constructor parameter, not a hardcoded `Duration::from_secs(5)` literal.
+**Tests:** With a 10ms injected interval, three ticks are received well within 800ms — impossible if the loop silently used a hardcoded 5s period instead of the parameter.
+**Mode:** both
+**Inputs:** `spawn_stats_tick(..., Duration::from_millis(10))`; three sequential `rx.recv()` calls, each under a 2s timeout; wall-clock elapsed time measured from spawn.
+**Expected output:** Total elapsed time for 3 ticks is under 800ms.
+**Acceptance:** `cargo test -p anvilml-server --features mock-hardware --test stats_tick_tests test_interval_parameter_controls_cadence` exits 0.
+
+---
+
+## test_stats_are_real_data_not_the_c1_placeholder (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/stats_tick_tests.rs`
+**Context:** Same `P16-D1` task. Confirms the published `cpu_pct`/`ram_used_mib` come from a real `sysinfo::System` call, not `P16-C1`'s always-zero placeholder values.
+**Tests:** A published tick's `ram_used_mib` is nonzero.
+**Mode:** both
+**Inputs:** Same real-`sysinfo`-backed setup as `test_tick_publishes_system_stats`.
+**Expected output:** `ram_used_mib > 0`.
+**Acceptance:** `cargo test -p anvilml-server --features mock-hardware --test stats_tick_tests test_stats_are_real_data_not_the_c1_placeholder` exits 0.

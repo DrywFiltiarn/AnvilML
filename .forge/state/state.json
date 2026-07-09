@@ -152,16 +152,18 @@
     "P16-A3",
     "P16-A4",
     "P16-B1",
-    "P16-C1"
+    "P16-C1",
+    "P16-C2",
+    "P16-D1"
   ],
-  "in_progress": "P16-C2",
-  "plan_approved": true,
-  "current_plan": "",
+  "in_progress": null,
+  "plan_approved": false,
+  "current_plan": null,
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-09T18:44:03+0200",
-  "plan_approval_message_id": "1524818335529697361",
-  "push_approval_message_id": null,
-  "plan_report_message_id": "1524818333684207666",
-  "impl_report_message_id": null
+  "last_updated": "2026-07-09T20:54:08+0200",
+  "plan_approval_message_id": "1524835533849759744",
+  "push_approval_message_id": "1524851033929683065",
+  "plan_report_message_id": "1524835531756802060",
+  "impl_report_message_id": "1524851031840653457"
 }

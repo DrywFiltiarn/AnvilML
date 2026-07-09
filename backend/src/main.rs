@@ -13,6 +13,7 @@ use anvilml_registry::JobStore;
 use anvilml_registry::create_pool;
 use anvilml_scheduler::JobScheduler;
 use anvilml_scheduler::spawn_event_loop;
+use anvilml_server::ws::spawn_stats_tick;
 use anvilml_server::{AppState, build_router};
 use anvilml_worker::WorkerPool;
 use std::path::Path;
@@ -267,6 +268,21 @@ async fn main() {
         Arc::clone(&workers),
     );
 
+    // Construct the periodic SystemStats heartbeat task (P16-D1). Interval
+    // is the production default of 5 seconds per ANVILML_DESIGN.md §13.1;
+    // spawn_stats_tick() itself takes the interval as a parameter
+    // specifically so tests can use a millisecond-scale value instead.
+    // Holds its own Arc<WorkerPool> clone (via `workers`), so its
+    // JoinHandle must be aborted and awaited during graceful shutdown
+    // below, the same way dispatch_handle and event_loop_handle already
+    // are — otherwise Arc::try_unwrap(workers) would fail with this
+    // task's clone still outstanding.
+    let stats_tick_handle = spawn_stats_tick(
+        Arc::clone(&broadcaster),
+        Arc::clone(&workers),
+        Duration::from_secs(5),
+    );
+
     // Capture process-start instant once, before binding, so the health
     // handler returns a real elapsed-time measurement.
     let start_time = Instant::now();
@@ -335,6 +351,13 @@ async fn main() {
     // aborting it releases that clone before the workers shutdown_all().
     event_loop_handle.abort();
     let _ = event_loop_handle.await;
+
+    // Abort and await the stats tick task (P16-D1) — same pattern and same
+    // reason as event_loop_handle immediately above: it holds its own
+    // Arc<WorkerPool> clone that must be released before
+    // Arc::try_unwrap(workers) below can succeed.
+    stats_tick_handle.abort();
+    let _ = stats_tick_handle.await;
 
     match Arc::try_unwrap(workers) {
         Ok(mut workers) => {
