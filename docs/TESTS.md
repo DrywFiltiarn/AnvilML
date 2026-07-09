@@ -5666,3 +5666,63 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `WorkerEvent::Progress { job_id, step: 10, total_steps: 20, preview_b64: Some("dGVzdA==") }` sent via ZeroMQ DEALER.
 **Expected output:** `WsEvent::JobProgress` with `step==10`, `total_steps==20`, `preview_b64==Some("dGVzdA==")`.
 **Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_progress_still_published_via_map_worker_event` exits 0.
+
+---
+
+## test_completed_restores_worker_idle_wakes_dispatch (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** P16-A3 adds a `WorkerPool` parameter to `spawn_event_loop()` and worker Idle restoration + dispatch wake to each terminal event arm. The test creates a `WorkerPool` with one mock handle at `Busy` status, a `Running` job with `worker_id="0"`, and sends a `Completed` event.
+**Tests:** After the event loop processes the `Completed` event, verifies: (1) the mock handle's status is `Idle` (was `Busy` before), (2) the scheduler's dispatch wake count is >= 1.
+**Mode:** both
+**Inputs:** `WorkerEvent::Completed { job_id, elapsed_ms: 5000 }` sent via ZeroMQ DEALER; mock handle at `Busy`; job with `worker_id="0"`.
+**Expected output:** Handle status == `Idle`; wake count >= 1.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_completed_restores_worker_idle_wakes_dispatch` exits 0.
+
+---
+
+## test_failed_restores_worker_idle_wakes_dispatch (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** Same infrastructure as `test_completed_restores_worker_idle_wakes_dispatch`, but sends a `Failed` event.
+**Tests:** After processing the `Failed` event, verifies the mock handle's status is `Idle` and the dispatch wake count is >= 1.
+**Mode:** both
+**Inputs:** `WorkerEvent::Failed { job_id, error: "CUDA out of memory", traceback: None }` sent via ZeroMQ DEALER; mock handle at `Busy`.
+**Expected output:** Handle status == `Idle`; wake count >= 1.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_failed_restores_worker_idle_wakes_dispatch` exits 0.
+
+---
+
+## test_cancelled_restores_worker_idle_wakes_dispatch (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** Same infrastructure, but sends a `Cancelled` event.
+**Tests:** After processing the `Cancelled` event, verifies the mock handle's status is `Idle` and the dispatch wake count is >= 1.
+**Mode:** both
+**Inputs:** `WorkerEvent::Cancelled { job_id }` sent via ZeroMQ DEALER; mock handle at `Busy`.
+**Expected output:** Handle status == `Idle`; wake count >= 1.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_cancelled_restores_worker_idle_wakes_dispatch` exits 0.
+
+---
+
+## test_progress_does_not_wake_dispatch (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** Same infrastructure. Verifies that a non-terminal `Progress` event does NOT increment the dispatch wake count.
+**Tests:** Sends a `Progress` event and verifies the wake count remains at 0 — Progress is not a terminal event and should not trigger dispatch loop wake.
+**Mode:** both
+**Inputs:** `WorkerEvent::Progress { job_id, step: 10, total_steps: 20, preview_b64: Some("dGVzdA==") }` sent via ZeroMQ DEALER.
+**Expected output:** Wake count == 0 after Progress event.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_progress_does_not_wake_dispatch` exits 0.
+
+---
+
+## test_queued_job_dispatched_after_first_completes (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** P16-A3's integration test. Creates two jobs in the queue, sends a `Completed` event for the first job, then verifies the dispatch loop processes the second job.
+**Tests:** After the first job's `Completed` event frees the worker, the dispatch loop (woken by `wake_dispatch()`) picks up the second job from the queue. The test verifies the second job's status transitions to `Running` in the database — proving the dispatch loop was woken by the terminal event without a new `submit()` call.
+**Mode:** both
+**Inputs:** Two jobs submitted to the scheduler; `WorkerEvent::Completed` for the first job; mock handle at `Busy`.
+**Expected output:** Second job's DB status is `Running`; worker status is `Idle`; dispatch loop was woken.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_queued_job_dispatched_after_first_completes` exits 0.

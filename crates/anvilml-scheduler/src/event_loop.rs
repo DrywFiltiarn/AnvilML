@@ -17,6 +17,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use anvilml_core::types::worker::WorkerStatus;
+use anvilml_worker::WorkerPool;
+
 use crate::JobScheduler;
 use anvilml_artifacts::ArtifactStore;
 use anvilml_core::{AnvilError, ArtifactMeta, JobStatus, WsEvent};
@@ -233,21 +236,29 @@ pub fn map_worker_event(event: WorkerEvent) -> WsEvent {
 /// On transport `recv()` errors (e.g. closed socket), the loop logs the error and
 /// retries on the next iteration — it does not abort.
 ///
+/// On each terminal event (`Completed`/`Failed`/`Cancelled`), the event loop also
+/// restores the responsible worker's status to `Idle` and wakes the dispatch loop
+/// (per `ANVILML_DESIGN.md §12.5`) so that queued jobs waiting for a free worker
+/// are re-evaluated.
+///
 /// # Arguments
 ///
-/// * `self` — The `JobScheduler` (owned via `Arc`, consumed by the spawned task).
+/// * `scheduler` — The `JobScheduler` (owned via `Arc`, consumed by the spawned task).
 ///   The scheduler's `artifact_store` field is used for `ImageReady` artifact saves.
 /// * `transport` — The ZeroMQ ROUTER transport for receiving worker events.
 /// * `broadcaster` — The WebSocket event broadcaster for publishing `WsEvent`s.
+/// * `workers` — The worker pool, used to restore the responsible worker to `Idle`
+///   on terminal events and wake the dispatch loop.
 ///
 /// # Returns
 ///
 /// A `JoinHandle<()>` for the spawned event loop task.
-#[tracing::instrument(skip(scheduler, transport, broadcaster))]
+#[tracing::instrument(skip(scheduler, transport, broadcaster, workers))]
 pub fn spawn_event_loop(
     scheduler: Arc<JobScheduler>,
     transport: Arc<RouterTransport>,
     broadcaster: Arc<EventBroadcaster>,
+    workers: Arc<WorkerPool>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
@@ -373,6 +384,31 @@ pub fn spawn_event_loop(
                         .update_job_terminal_status(job_id, JobStatus::Completed, None)
                         .await;
 
+                    // Restore the worker to Idle and wake the dispatch loop.
+                    // P14-A5 marks the worker Busy on dispatch but nothing reversed
+                    // that until this task. Without this, a worker that finishes a
+                    // job stays Busy forever, and queued jobs would never be
+                    // re-evaluated since dispatch_notify is only woken by submit()
+                    // — a starvation bug under multi-job load.
+                    //
+                    // Find the worker handle by matching job.worker_id against the
+                    // pool's handles — the worker_id is the bare device index as a
+                    // string (e.g. "0"), matching the convention in
+                    // ANVILML_DESIGN.md §12.5.
+                    let worker_id = job.worker_id.clone().unwrap_or_default();
+                    if let Some(handle) =
+                        workers.handles().iter().find(|h| h.worker_id == worker_id)
+                    {
+                        handle.set_status(WorkerStatus::Idle).await;
+                        tracing::debug!(worker_id = %worker_id, "event_loop_worker_restored_idle");
+                    } else {
+                        tracing::warn!(
+                            worker_id = %worker_id,
+                            "event_loop: no worker handle found for Completed — status not restored"
+                        );
+                    }
+                    scheduler.wake_dispatch();
+
                     // Publish the mapped WsEvent.
                     broadcaster.publish(WsEvent::JobCompleted { job_id, elapsed_ms });
                     tracing::debug!(
@@ -429,6 +465,24 @@ pub fn spawn_event_loop(
                         .update_job_terminal_status(job_id, JobStatus::Failed, Some(error.clone()))
                         .await;
 
+                    // Restore the worker to Idle and wake the dispatch loop.
+                    // Same rationale as the Completed arm above — P14-A5 marks the
+                    // worker Busy on dispatch; this task reverses that so queued jobs
+                    // can be re-evaluated.
+                    let worker_id = job.worker_id.clone().unwrap_or_default();
+                    if let Some(handle) =
+                        workers.handles().iter().find(|h| h.worker_id == worker_id)
+                    {
+                        handle.set_status(WorkerStatus::Idle).await;
+                        tracing::debug!(worker_id = %worker_id, "event_loop_worker_restored_idle");
+                    } else {
+                        tracing::warn!(
+                            worker_id = %worker_id,
+                            "event_loop: no worker handle found for Failed — status not restored"
+                        );
+                    }
+                    scheduler.wake_dispatch();
+
                     broadcaster.publish(WsEvent::JobFailed { job_id, error });
                     tracing::debug!(
                         job_id = %job_id,
@@ -477,6 +531,24 @@ pub fn spawn_event_loop(
                     scheduler
                         .update_job_terminal_status(job_id, JobStatus::Cancelled, None)
                         .await;
+
+                    // Restore the worker to Idle and wake the dispatch loop.
+                    // Same rationale as the Completed arm above — P14-A5 marks the
+                    // worker Busy on dispatch; this task reverses that so queued jobs
+                    // can be re-evaluated.
+                    let worker_id = job.worker_id.clone().unwrap_or_default();
+                    if let Some(handle) =
+                        workers.handles().iter().find(|h| h.worker_id == worker_id)
+                    {
+                        handle.set_status(WorkerStatus::Idle).await;
+                        tracing::debug!(worker_id = %worker_id, "event_loop_worker_restored_idle");
+                    } else {
+                        tracing::warn!(
+                            worker_id = %worker_id,
+                            "event_loop: no worker handle found for Cancelled — status not restored"
+                        );
+                    }
+                    scheduler.wake_dispatch();
 
                     broadcaster.publish(WsEvent::JobCancelled { job_id });
                     tracing::debug!(

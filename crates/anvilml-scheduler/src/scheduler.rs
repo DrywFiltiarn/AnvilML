@@ -1,3 +1,4 @@
+use std::sync::Arc;
 /// JobScheduler — the central async dispatcher for generation jobs.
 ///
 /// `JobScheduler` owns the in-memory job queue, VRAM ledger, and a `Notify` for
@@ -19,7 +20,7 @@
 /// 5. Enqueue into the in-memory queue
 /// 6. Notify the dispatch loop
 /// 7. Return the job ID
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anvilml_artifacts::ArtifactStore;
 use anvilml_core::types::worker::WorkerStatus;
@@ -109,6 +110,14 @@ pub struct JobScheduler {
     /// waiter (the dispatch loop task, introduced in a later phase).
     dispatch_notify: Arc<Notify>,
 
+    /// Atomic counter tracking how many times `wake_dispatch()` has been called.
+    ///
+    /// Incremented by `wake_dispatch()` (called from the event loop on every
+    /// terminal event) so tests can verify the dispatch loop was woken without
+    /// needing to intercept the `Notify` itself. Production callers ignore this
+    /// counter — it is test observability only.
+    dispatch_wake_count: Arc<AtomicUsize>,
+
     /// Content-addressed artifact storage for generated image outputs.
     ///
     /// Used by the `event_loop` module to persist decoded PNG images from
@@ -147,6 +156,7 @@ impl JobScheduler {
             job_store: Arc::new(job_store),
             node_registry,
             dispatch_notify: Arc::new(Notify::new()),
+            dispatch_wake_count: Arc::new(AtomicUsize::new(0)),
             artifact_store,
         }
     }
@@ -401,6 +411,30 @@ impl JobScheduler {
         let mut ledger = self.ledger.lock().await;
         ledger.release(device_index, vram_mib);
         tracing::debug!(device_index, vram_mib, "released VRAM reservation");
+    }
+
+    /// Wake the dispatch loop and record the wake for test observability.
+    ///
+    /// Calls `dispatch_notify.notify_one()` to wake a single waiter (the
+    /// dispatch loop task spawned by `start_dispatch_loop()`). The wake
+    /// count is incremented atomically so tests can verify the dispatch
+    /// loop was woken without needing to intercept the `Notify` itself.
+    ///
+    /// Called from the event loop on every terminal event to ensure the
+    /// dispatch loop re-evaluates the queue after a worker frees up.
+    pub(crate) fn wake_dispatch(&self) {
+        self.dispatch_wake_count.fetch_add(1, Ordering::Relaxed);
+        self.dispatch_notify.notify_one();
+    }
+
+    /// Test accessor: return the current dispatch wake count.
+    ///
+    /// Only available when the `test-util` feature is enabled. Returns the
+    /// total number of times `wake_dispatch()` has been called since the
+    /// scheduler was constructed.
+    #[cfg(feature = "test-util")]
+    pub async fn dispatch_wake_count_test(&self) -> usize {
+        self.dispatch_wake_count.load(Ordering::Relaxed)
     }
 
     /// Update a job's terminal status in the database.

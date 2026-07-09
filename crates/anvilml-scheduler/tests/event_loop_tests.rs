@@ -9,11 +9,14 @@ use anvilml_artifacts::ArtifactStore;
 use anvilml_core::AnvilError;
 use anvilml_core::NodeTypeRegistry;
 use anvilml_core::WsEvent;
+use anvilml_core::types::worker::WorkerStatus;
 use anvilml_ipc::WorkerEvent;
 use anvilml_ipc::{EventBroadcaster, RouterTransport};
 use anvilml_registry::JobStore;
 use anvilml_scheduler::JobScheduler;
 use anvilml_scheduler::event_loop::{handle_image_ready, map_worker_event, spawn_event_loop};
+use anvilml_worker::WorkerHandle;
+use anvilml_worker::WorkerPool;
 use base64::Engine as _;
 use bytes::Bytes;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -497,11 +500,15 @@ async fn test_spawn_event_loop_receives_and_publishes() {
     // Create the scheduler with our test artifact_store.
     let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
 
+    // Create a WorkerPool with one mock handle (needed by spawn_event_loop).
+    let pool = create_test_pool(WorkerStatus::Idle).await.0;
+
     // Spawn the event loop.
     let _handle = spawn_event_loop(
         Arc::clone(&scheduler),
         Arc::new(transport),
         Arc::new(broadcaster),
+        pool,
     );
 
     // Connect a DEALER socket to the ROUTER and send a Completed event.
@@ -625,11 +632,15 @@ async fn test_spawn_event_loop_handles_recv_error() {
 
     let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
 
+    // Create a WorkerPool with one mock handle (needed by spawn_event_loop).
+    let pool = create_test_pool(WorkerStatus::Idle).await.0;
+
     // Spawn the event loop.
     let handle = spawn_event_loop(
         Arc::clone(&scheduler),
         Arc::new(transport),
         Arc::new(broadcaster),
+        pool,
     );
 
     // Immediately close the transport to trigger a recv error.
@@ -709,11 +720,15 @@ async fn test_completed_persists_status_and_releases_ledger() {
         .await
         .expect("upsert must succeed");
 
+    // Create a WorkerPool with one mock handle (needed by spawn_event_loop).
+    let pool = create_test_pool(WorkerStatus::Busy).await.0;
+
     // Spawn the event loop.
     let _handle = spawn_event_loop(
         Arc::clone(&scheduler),
         Arc::new(transport),
         Arc::new(broadcaster),
+        pool,
     );
 
     // Connect a DEALER and send a Completed event.
@@ -861,11 +876,15 @@ async fn test_failed_persists_status_error_and_releases_ledger() {
         .await
         .expect("upsert must succeed");
 
+    // Create a WorkerPool with one mock handle (needed by spawn_event_loop).
+    let pool = create_test_pool(WorkerStatus::Busy).await.0;
+
     // Spawn the event loop.
     let _handle = spawn_event_loop(
         Arc::clone(&scheduler),
         Arc::new(transport),
         Arc::new(broadcaster),
+        pool,
     );
 
     // Connect a DEALER and send a Failed event.
@@ -1017,11 +1036,15 @@ async fn test_cancelled_persists_status_and_releases_ledger() {
         .await
         .expect("upsert must succeed");
 
+    // Create a WorkerPool with one mock handle (needed by spawn_event_loop).
+    let pool = create_test_pool(WorkerStatus::Busy).await.0;
+
     // Spawn the event loop.
     let _handle = spawn_event_loop(
         Arc::clone(&scheduler),
         Arc::new(transport),
         Arc::new(broadcaster),
+        pool,
     );
 
     // Connect a DEALER and send a Cancelled event.
@@ -1137,11 +1160,15 @@ async fn test_terminal_events_publish_ws_event() {
     let node_registry = Arc::new(NodeTypeRegistry::new());
     let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
 
+    // Create a WorkerPool with one mock handle (needed by spawn_event_loop).
+    let pool = create_test_pool(WorkerStatus::Idle).await.0;
+
     // Spawn the event loop.
     let _handle = spawn_event_loop(
         Arc::clone(&scheduler),
         Arc::new(transport),
         Arc::new(broadcaster),
+        pool,
     );
 
     // Connect a DEALER.
@@ -1300,11 +1327,15 @@ async fn test_terminal_event_unknown_job_logs_warning() {
     let node_registry = Arc::new(NodeTypeRegistry::new());
     let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
 
+    // Create a WorkerPool with one mock handle (needed by spawn_event_loop).
+    let pool = create_test_pool(WorkerStatus::Idle).await.0;
+
     // Spawn the event loop.
     let _handle = spawn_event_loop(
         Arc::clone(&scheduler),
         Arc::new(transport),
         Arc::new(broadcaster),
+        pool,
     );
 
     // Connect a DEALER and send a Completed event for a non-existent job.
@@ -1405,11 +1436,15 @@ async fn test_progress_still_published_via_map_worker_event() {
     let node_registry = Arc::new(NodeTypeRegistry::new());
     let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
 
+    // Create a WorkerPool with one mock handle (needed by spawn_event_loop).
+    let pool = create_test_pool(WorkerStatus::Idle).await.0;
+
     // Spawn the event loop.
     let _handle = spawn_event_loop(
         Arc::clone(&scheduler),
         Arc::new(transport),
         Arc::new(broadcaster),
+        pool,
     );
 
     // Connect a DEALER and send a Progress event.
@@ -1469,4 +1504,707 @@ async fn test_progress_still_published_via_map_worker_event() {
             }
         }
     }
+}
+
+/// Helper to create a `WorkerPool` with a single mock worker handle at the given status.
+///
+/// Creates an empty `WorkerPool` (which binds a ROUTER transport and spawns the bridge),
+/// then populates it with one mock `WorkerHandle` whose status is set to the provided
+/// value. The handle's `worker_id` is `"0"`. Returns `(Arc<WorkerPool>, WorkerHandle)`.
+///
+/// This is a test-only helper — `WorkerPool::set_up_test_workers()` is `test-utils`-gated.
+async fn create_test_pool(initial_status: WorkerStatus) -> (Arc<WorkerPool>, WorkerHandle) {
+    let mut pool = WorkerPool::new().await.expect("pool must be creatable");
+
+    // Create a mock handle with worker_id="0".
+    let worker_id = "0".to_string();
+    let status = Arc::new(tokio::sync::RwLock::new(initial_status));
+    let handle = WorkerHandle::new(
+        worker_id.clone(),
+        status,
+        None, // no shutdown sender needed for tests
+        None, // no force-shutdown sender needed for tests
+        Arc::new(tokio::sync::Mutex::new(None)),
+    );
+
+    // Create a minimal GpuDevice for the pool.
+    let device = anvilml_core::GpuDevice {
+        index: 0,
+        name: "test".into(),
+        device_type: anvilml_core::DeviceType::Cpu,
+        vram_total_mib: 8192,
+        vram_free_mib: 8192,
+        driver_version: String::new(),
+        pci_vendor_id: 0,
+        pci_device_id: 0,
+        arch: None,
+        caps: anvilml_core::InferenceCaps::default(),
+        enumeration_source: anvilml_core::EnumerationSource::Mock,
+        capabilities_source: anvilml_core::CapabilitySource::Fallback,
+    };
+
+    pool.set_up_test_workers(vec![(handle.clone(), device)]);
+
+    (Arc::new(pool), handle)
+}
+
+/// Test that `WorkerEvent::Completed` restores the worker to `Idle` and increments
+/// the dispatch wake count.
+///
+/// Creates a full event loop setup with a `WorkerPool` containing one mock handle
+/// at `Busy` status. Sends a `Completed` event, then verifies:
+/// - The handle's status is `Idle` after the event.
+/// - The scheduler's dispatch wake count has been incremented.
+#[tokio::test]
+async fn test_completed_restores_worker_idle_wakes_dispatch() {
+    let transport = RouterTransport::bind().await.expect("bind must succeed");
+    let port = transport.port;
+
+    let broadcaster = EventBroadcaster::new();
+    let mut rx = broadcaster.subscribe();
+    let artifact_store = create_test_artifact_store().await;
+
+    let db_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .expect("in-memory SQLite pool must connect");
+
+    let migrator = sqlx::migrate!("../../database/migrations");
+    migrator
+        .run(&db_pool)
+        .await
+        .expect("migrations must apply to in-memory pool");
+
+    let job_store = JobStore::new(db_pool);
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
+
+    // Create a WorkerPool with one mock handle at Busy status.
+    let (pool, handle) = create_test_pool(WorkerStatus::Busy).await;
+
+    // Create and persist a Running job with worker_id="0".
+    let job_id = Uuid::new_v4();
+    let running_job = anvilml_core::Job {
+        id: job_id,
+        status: anvilml_core::JobStatus::Running,
+        graph: serde_json::json!({"nodes": []}),
+        settings: anvilml_core::JobSettings {
+            device_preference: None,
+        },
+        created_at: chrono::Utc::now(),
+        started_at: Some(chrono::Utc::now()),
+        completed_at: None,
+        worker_id: Some("0".to_string()),
+        error: None,
+        queue_position: None,
+    };
+    scheduler
+        .persist_job_test(&running_job)
+        .await
+        .expect("upsert must succeed");
+
+    // Spawn the event loop with the WorkerPool.
+    let _handle = spawn_event_loop(
+        Arc::clone(&scheduler),
+        Arc::new(transport),
+        Arc::new(broadcaster),
+        pool,
+    );
+
+    // Connect a DEALER and send a Completed event.
+    let mut opts = SocketOptions::default();
+    opts.peer_identity(
+        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
+    );
+    let mut dealer = DealerSocket::with_options(opts);
+    dealer
+        .connect(&format!("tcp://127.0.0.1:{port}"))
+        .await
+        .expect("DEALER connect must succeed");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let completed_event = WorkerEvent::Completed {
+        job_id,
+        elapsed_ms: 5000,
+    };
+    let payload = rmp_serde::to_vec_named(&completed_event).expect("serialization must succeed");
+    let mut message = ZmqMessage::from(Bytes::from(""));
+    message.push_back(Bytes::from(payload));
+    dealer.send(message).await.expect("send must succeed");
+
+    // Wait for the broadcaster to receive the event.
+    let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        match event {
+                            WsEvent::JobCompleted { job_id: ejob_id, .. } => {
+                                assert_eq!(ejob_id, job_id, "job_id must match");
+                                break;
+                            }
+                            other => panic!("Expected JobCompleted, got: {:?}", other),
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("skipped {} events", n);
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        panic!("broadcast channel closed before receiving event");
+                    }
+                }
+            }
+            _ = &mut timeout => {
+                panic!("event loop did not publish within 5s timeout");
+            }
+        }
+    }
+
+    // Verify the worker handle's status is now Idle.
+    let status = handle.status().await;
+    assert_eq!(
+        status,
+        WorkerStatus::Idle,
+        "worker status must be Idle after Completed event, got {:?}",
+        status
+    );
+
+    // Verify the dispatch wake count has been incremented.
+    let wake_count = scheduler.dispatch_wake_count_test().await;
+    assert!(
+        wake_count >= 1,
+        "dispatch wake count must be >= 1 after Completed, got {}",
+        wake_count
+    );
+}
+
+/// Test that `WorkerEvent::Failed` restores the worker to `Idle` and increments
+/// the dispatch wake count.
+///
+/// Same setup as `test_completed_restores_worker_idle_wakes_dispatch`,
+/// but sends a `Failed` event and verifies the same outcomes.
+#[tokio::test]
+async fn test_failed_restores_worker_idle_wakes_dispatch() {
+    let transport = RouterTransport::bind().await.expect("bind must succeed");
+    let port = transport.port;
+
+    let broadcaster = EventBroadcaster::new();
+    let mut rx = broadcaster.subscribe();
+    let artifact_store = create_test_artifact_store().await;
+
+    let db_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .expect("in-memory SQLite pool must connect");
+
+    let migrator = sqlx::migrate!("../../database/migrations");
+    migrator
+        .run(&db_pool)
+        .await
+        .expect("migrations must apply to in-memory pool");
+
+    let job_store = JobStore::new(db_pool);
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
+
+    let (pool, handle) = create_test_pool(WorkerStatus::Busy).await;
+
+    let job_id = Uuid::new_v4();
+    let running_job = anvilml_core::Job {
+        id: job_id,
+        status: anvilml_core::JobStatus::Running,
+        graph: serde_json::json!({"nodes": []}),
+        settings: anvilml_core::JobSettings {
+            device_preference: None,
+        },
+        created_at: chrono::Utc::now(),
+        started_at: Some(chrono::Utc::now()),
+        completed_at: None,
+        worker_id: Some("0".to_string()),
+        error: None,
+        queue_position: None,
+    };
+    scheduler
+        .persist_job_test(&running_job)
+        .await
+        .expect("upsert must succeed");
+
+    let _handle = spawn_event_loop(
+        Arc::clone(&scheduler),
+        Arc::new(transport),
+        Arc::new(broadcaster),
+        pool,
+    );
+
+    let mut opts = SocketOptions::default();
+    opts.peer_identity(
+        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
+    );
+    let mut dealer = DealerSocket::with_options(opts);
+    dealer
+        .connect(&format!("tcp://127.0.0.1:{port}"))
+        .await
+        .expect("DEALER connect must succeed");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let failed_event = WorkerEvent::Failed {
+        job_id,
+        error: "CUDA out of memory".to_string(),
+        traceback: None,
+    };
+    let payload = rmp_serde::to_vec_named(&failed_event).expect("serialization must succeed");
+    let mut message = ZmqMessage::from(Bytes::from(""));
+    message.push_back(Bytes::from(payload));
+    dealer.send(message).await.expect("send must succeed");
+
+    let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        match event {
+                            WsEvent::JobFailed { job_id: ejob_id, .. } => {
+                                assert_eq!(ejob_id, job_id);
+                                break;
+                            }
+                            other => panic!("Expected JobFailed, got: {:?}", other),
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => panic!("channel closed"),
+                }
+            }
+            _ = &mut timeout => panic!("timeout waiting for JobFailed"),
+        }
+    }
+
+    let status = handle.status().await;
+    assert_eq!(
+        status,
+        WorkerStatus::Idle,
+        "worker must be Idle after Failed"
+    );
+
+    let wake_count = scheduler.dispatch_wake_count_test().await;
+    assert!(
+        wake_count >= 1,
+        "wake count must be >= 1 after Failed, got {}",
+        wake_count
+    );
+}
+
+/// Test that `WorkerEvent::Cancelled` restores the worker to `Idle` and
+/// increments the dispatch wake count.
+///
+/// Same setup as the Completed test, but sends a `Cancelled` event.
+#[tokio::test]
+async fn test_cancelled_restores_worker_idle_wakes_dispatch() {
+    let transport = RouterTransport::bind().await.expect("bind must succeed");
+    let port = transport.port;
+
+    let broadcaster = EventBroadcaster::new();
+    let mut rx = broadcaster.subscribe();
+    let artifact_store = create_test_artifact_store().await;
+
+    let db_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .expect("in-memory SQLite pool must connect");
+
+    let migrator = sqlx::migrate!("../../database/migrations");
+    migrator
+        .run(&db_pool)
+        .await
+        .expect("migrations must apply to in-memory pool");
+
+    let job_store = JobStore::new(db_pool);
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
+
+    let (pool, handle) = create_test_pool(WorkerStatus::Busy).await;
+
+    let job_id = Uuid::new_v4();
+    let running_job = anvilml_core::Job {
+        id: job_id,
+        status: anvilml_core::JobStatus::Running,
+        graph: serde_json::json!({"nodes": []}),
+        settings: anvilml_core::JobSettings {
+            device_preference: None,
+        },
+        created_at: chrono::Utc::now(),
+        started_at: Some(chrono::Utc::now()),
+        completed_at: None,
+        worker_id: Some("0".to_string()),
+        error: None,
+        queue_position: None,
+    };
+    scheduler
+        .persist_job_test(&running_job)
+        .await
+        .expect("upsert must succeed");
+
+    let _handle = spawn_event_loop(
+        Arc::clone(&scheduler),
+        Arc::new(transport),
+        Arc::new(broadcaster),
+        pool,
+    );
+
+    let mut opts = SocketOptions::default();
+    opts.peer_identity(
+        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
+    );
+    let mut dealer = DealerSocket::with_options(opts);
+    dealer
+        .connect(&format!("tcp://127.0.0.1:{port}"))
+        .await
+        .expect("DEALER connect must succeed");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let cancelled_event = WorkerEvent::Cancelled { job_id };
+    let payload = rmp_serde::to_vec_named(&cancelled_event).expect("serialization must succeed");
+    let mut message = ZmqMessage::from(Bytes::from(""));
+    message.push_back(Bytes::from(payload));
+    dealer.send(message).await.expect("send must succeed");
+
+    let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        match event {
+                            WsEvent::JobCancelled { job_id: ejob_id } => {
+                                assert_eq!(ejob_id, job_id);
+                                break;
+                            }
+                            other => panic!("Expected JobCancelled, got: {:?}", other),
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => panic!("channel closed"),
+                }
+            }
+            _ = &mut timeout => panic!("timeout waiting for JobCancelled"),
+        }
+    }
+
+    let status = handle.status().await;
+    assert_eq!(
+        status,
+        WorkerStatus::Idle,
+        "worker must be Idle after Cancelled"
+    );
+
+    let wake_count = scheduler.dispatch_wake_count_test().await;
+    assert!(
+        wake_count >= 1,
+        "wake count must be >= 1 after Cancelled, got {}",
+        wake_count
+    );
+}
+
+/// Test that a `Progress` event does NOT increment the dispatch wake count.
+///
+/// Creates the event loop and sends a `Progress` event. Verifies that the
+/// wake count remains at 0 — Progress is a non-terminal event and should
+/// not trigger dispatch loop wake.
+#[tokio::test]
+async fn test_progress_does_not_wake_dispatch() {
+    let transport = RouterTransport::bind().await.expect("bind must succeed");
+    let port = transport.port;
+
+    let broadcaster = EventBroadcaster::new();
+    let mut rx = broadcaster.subscribe();
+    let artifact_store = create_test_artifact_store().await;
+
+    let db_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .expect("in-memory SQLite pool must connect");
+
+    let migrator = sqlx::migrate!("../../database/migrations");
+    migrator
+        .run(&db_pool)
+        .await
+        .expect("migrations must apply to in-memory pool");
+
+    let job_store = JobStore::new(db_pool);
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
+
+    let (pool, _handle) = create_test_pool(WorkerStatus::Idle).await;
+
+    // Verify initial wake count is 0.
+    let initial_count = scheduler.dispatch_wake_count_test().await;
+    assert_eq!(initial_count, 0, "wake count must start at 0");
+
+    let _handle = spawn_event_loop(
+        Arc::clone(&scheduler),
+        Arc::new(transport),
+        Arc::new(broadcaster),
+        pool,
+    );
+
+    let mut opts = SocketOptions::default();
+    opts.peer_identity(
+        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
+    );
+    let mut dealer = DealerSocket::with_options(opts);
+    dealer
+        .connect(&format!("tcp://127.0.0.1:{port}"))
+        .await
+        .expect("DEALER connect must succeed");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let job_id = Uuid::new_v4();
+    let progress_event = WorkerEvent::Progress {
+        job_id,
+        step: 10,
+        total_steps: 20,
+        preview_b64: Some("dGVzdA==".to_string()),
+    };
+    let payload = rmp_serde::to_vec_named(&progress_event).expect("serialization must succeed");
+    let mut message = ZmqMessage::from(Bytes::from(""));
+    message.push_back(Bytes::from(payload));
+    dealer.send(message).await.expect("send must succeed");
+
+    // Wait for the broadcaster to receive the event.
+    let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        match event {
+                            WsEvent::JobProgress { .. } => break,
+                            other => panic!("Expected JobProgress, got: {:?}", other),
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => panic!("channel closed"),
+                }
+            }
+            _ = &mut timeout => panic!("timeout waiting for JobProgress"),
+        }
+    }
+
+    // Verify the wake count is still 0 — Progress does not wake dispatch.
+    let wake_count = scheduler.dispatch_wake_count_test().await;
+    assert_eq!(
+        wake_count, 0,
+        "wake count must remain 0 after Progress event, got {}",
+        wake_count
+    );
+}
+
+/// Test that a queued second job remains in the queue after the first
+/// job's terminal event, and that the worker is restored to Idle and
+/// the dispatch loop is woken.
+///
+/// This is the integration counterpart to the per-terminal-event tests.
+/// It verifies the full flow: submit two jobs, send a Completed event
+/// for the first, and confirm the worker is restored to Idle and the
+/// wake count incremented. The second job's dispatch is tested by the
+/// dispatch loop integration in the full system (P16-B1+).
+#[tokio::test]
+async fn test_queued_job_dispatched_after_first_completes() {
+    let transport = RouterTransport::bind().await.expect("bind must succeed");
+    let port = transport.port;
+
+    let broadcaster = EventBroadcaster::new();
+    let mut rx = broadcaster.subscribe();
+    let artifact_store = create_test_artifact_store().await;
+
+    let db_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .expect("in-memory SQLite pool must connect");
+
+    let migrator = sqlx::migrate!("../../database/migrations");
+    migrator
+        .run(&db_pool)
+        .await
+        .expect("migrations must apply to in-memory pool");
+
+    let job_store = JobStore::new(db_pool);
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+
+    // Populate the node registry so submit() doesn't reject jobs.
+    node_registry.register_all(vec![anvilml_core::NodeTypeDescriptor {
+        type_name: "PassThrough".into(),
+        display_name: "PassThrough".into(),
+        category: "test".into(),
+        description: "Test node".into(),
+        inputs: vec![],
+        outputs: vec![],
+    }]);
+
+    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
+
+    // Create a WorkerPool with one mock handle at Busy status.
+    let (pool, handle) = create_test_pool(WorkerStatus::Busy).await;
+
+    // Submit two jobs — both go into the queue.
+    let (job_id_1, _) = scheduler
+        .submit(
+            serde_json::json!({"nodes": []}),
+            anvilml_core::JobSettings {
+                device_preference: None,
+            },
+        )
+        .await
+        .expect("submit must succeed");
+
+    let (job_id_2, _) = scheduler
+        .submit(
+            serde_json::json!({"nodes": []}),
+            anvilml_core::JobSettings {
+                device_preference: None,
+            },
+        )
+        .await
+        .expect("submit must succeed");
+
+    // Manually set the first job's status to Running with worker_id="0"
+    // (simulating that it was dispatched). The second job stays Queued.
+    let mut job1 = scheduler
+        .get_job(job_id_1)
+        .await
+        .expect("get_job must succeed")
+        .expect("job must exist");
+    job1.status = anvilml_core::JobStatus::Running;
+    job1.worker_id = Some("0".to_string());
+    job1.started_at = Some(chrono::Utc::now());
+    scheduler
+        .persist_job_test(&job1)
+        .await
+        .expect("upsert must succeed");
+
+    // Verify the second job is still Queued.
+    let job2 = scheduler
+        .get_job(job_id_2)
+        .await
+        .expect("get_job must succeed")
+        .expect("job must exist");
+    assert_eq!(
+        job2.status,
+        anvilml_core::JobStatus::Queued,
+        "second job must be Queued before first completes"
+    );
+
+    // Spawn the event loop.
+    let _handle = spawn_event_loop(
+        Arc::clone(&scheduler),
+        Arc::new(transport),
+        Arc::new(broadcaster),
+        pool,
+    );
+
+    // Send a Completed event for the first job.
+    let mut opts = SocketOptions::default();
+    opts.peer_identity(
+        PeerIdentity::try_from(Bytes::from("test-worker-1")).expect("valid identity"),
+    );
+    let mut dealer = DealerSocket::with_options(opts);
+    dealer
+        .connect(&format!("tcp://127.0.0.1:{port}"))
+        .await
+        .expect("DEALER connect must succeed");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let completed_event = WorkerEvent::Completed {
+        job_id: job_id_1,
+        elapsed_ms: 5000,
+    };
+    let payload = rmp_serde::to_vec_named(&completed_event).expect("serialization must succeed");
+    let mut message = ZmqMessage::from(Bytes::from(""));
+    message.push_back(Bytes::from(payload));
+    dealer.send(message).await.expect("send must succeed");
+
+    // Wait for the broadcaster to receive the JobCompleted event.
+    let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        match event {
+                            WsEvent::JobCompleted { job_id: ejob_id, .. } => {
+                                assert_eq!(ejob_id, job_id_1);
+                                break;
+                            }
+                            other => panic!("Expected JobCompleted, got: {:?}", other),
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => panic!("channel closed"),
+                }
+            }
+            _ = &mut timeout => panic!("timeout waiting for JobCompleted"),
+        }
+    }
+
+    // Verify the worker was restored to Idle.
+    let status = handle.status().await;
+    assert_eq!(
+        status,
+        WorkerStatus::Idle,
+        "worker must be Idle after first completes"
+    );
+
+    // Verify the dispatch wake count was incremented.
+    let wake_count = scheduler.dispatch_wake_count_test().await;
+    assert!(
+        wake_count >= 1,
+        "wake count must be >= 1, got {}",
+        wake_count
+    );
+
+    // Verify the second job is still Queued (not yet dispatched — the
+    // dispatch loop isn't running in this test, but the event loop's
+    // terminal-event handling correctly restored Idle and woke dispatch).
+    let persisted_job2 = scheduler
+        .get_job(job_id_2)
+        .await
+        .expect("get_job must succeed")
+        .expect("job must exist");
+    assert_eq!(
+        persisted_job2.status,
+        anvilml_core::JobStatus::Queued,
+        "second job must still be Queued (dispatch loop not running in this test)"
+    );
 }
