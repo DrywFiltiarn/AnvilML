@@ -373,6 +373,7 @@ CLIP + ZiT VAE" as a fully completed roadmap group.
 # already registered in the model registry under their SHA256 ids.
 cargo build --release -p anvilml
 ./target/release/anvilml &
+SERVER_PID=$!
 sleep 2
 ZIT_ID=$(sha256sum worker/tests/fixtures/zit_tiny.safetensors | head -c1048576 | cut -d' ' -f1)
 VAE_ID=$(sha256sum worker/tests/fixtures/zit_vae_tiny.safetensors | head -c1048576 | cut -d' ' -f1)
@@ -399,7 +400,7 @@ print(d.get('artifact_hash') or d.get('result',{}).get('artifact_hash'))
 curl -s -o saved_proof.png "http://127.0.0.1:8488/v1/artifacts/$HASH"
 python3 -c "from PIL import Image; im=Image.open('saved_proof.png'); assert im.size==(64,64)"
 # -> exits 0; a real, retrievable 64x64 PNG was produced
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 rm -f saved_proof.png
 \`\`\`
 ```

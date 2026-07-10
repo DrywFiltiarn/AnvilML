@@ -193,8 +193,9 @@ distribution story end to end on a real (if minimal) environment.
 rm -rf worker/.venv
 cargo build --release -p anvilml
 timeout 120 ./target/release/anvilml &
+SERVER_PID=$!
 sleep 90
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 # -> process does not crash during auto-provisioning (generous timeout for the install)
 ./target/release/anvilml --version
 # -> shows a real (non-None) python_version and torch_version
@@ -249,8 +250,9 @@ story, end to end, on a deliberately degraded starting environment.
 rm -rf worker/.venv
 cargo build --release -p anvilml
 timeout 120 ./target/release/anvilml &
+SERVER_PID=$!
 sleep 90
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 ./target/release/anvilml --version
 # -> shows a real (non-None) python_version and torch_version
 \`\`\`

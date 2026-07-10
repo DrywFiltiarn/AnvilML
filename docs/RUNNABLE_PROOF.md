@@ -23,10 +23,11 @@ answers a real `GET /health` request with `200`.
 # Runnable Proof (manual):
 cargo build --release -p anvilml
 ./target/release/anvilml &
+SERVER_PID=$!
 sleep 1
 curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8488/health
 # -> 200
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 ```
 
 ```powershell
@@ -51,10 +52,11 @@ variable override changes observable runtime behaviour (which port the server bi
 # Runnable Proof (manual):
 cargo build --release -p anvilml
 ANVILML_PORT=9999 ./target/release/anvilml &
+SERVER_PID=$!
 sleep 1
 curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9999/health
 # -> 200
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 ```
 
 ```powershell
@@ -263,12 +265,13 @@ in the project, since no worker is spawned by the normal server-start path yet.
 # Runnable Proof (manual):
 cargo build --release -p anvilml --features mock-hardware
 ./target/release/anvilml &
+SERVER_PID=$!
 sleep 1
 curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8488/v1/nodes
 # -> 200
 curl -s http://127.0.0.1:8488/v1/nodes
 # -> []
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 ```
 
 ```powershell
@@ -310,12 +313,13 @@ sqlite3 anvilml_proof.db < database/migrations/001_initial.sql
 sqlite3 anvilml_proof.db < database/migrations/003_jobs.sql
 sqlite3 anvilml_proof.db "INSERT INTO jobs (id, status, graph, settings, created_at) VALUES ('11111111-1111-1111-1111-111111111111', 'running', '{}', '{}', '2026-01-01T00:00:00Z');"
 ANVILML_DB_PATH=./anvilml_proof.db RUST_LOG=info ./target/release/anvilml > /tmp/anvilml_proof.log 2>&1 &
+SERVER_PID=$!
 sleep 1
 grep -i "ghost" /tmp/anvilml_proof.log
 # -> an INFO log line reporting 1 ghost job reset
 sqlite3 anvilml_proof.db "SELECT status FROM jobs WHERE id='11111111-1111-1111-1111-111111111111';"
 # -> failed
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 rm -f anvilml_proof.db /tmp/anvilml_proof.log
 ```
 
@@ -353,6 +357,7 @@ mocked stand-in for any link in the chain.
 # Runnable Proof (manual):
 cargo build --release -p anvilml --features mock-hardware
 ./target/release/anvilml &
+SERVER_PID=$!
 sleep 2
 JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' \
   -d '{"graph":{"nodes":[{"id":"n0","type":"PassThrough","inputs":{"value":1}}]},"settings":{}}' \
@@ -361,7 +366,7 @@ sleep 3
 curl -s "http://127.0.0.1:8488/v1/jobs/$JOB_ID" \
   | python3 -c "import sys,json; assert json.load(sys.stdin)['status']=='completed'"
 # -> exits 0
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 ```
 
 ```powershell
@@ -393,12 +398,13 @@ real image-producing node chain, added in a later phase.
 # Runnable Proof (manual):
 cargo build --release -p anvilml --features mock-hardware
 ./target/release/anvilml &
+SERVER_PID=$!
 sleep 1
 curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8488/v1/artifacts
 # -> 200
 curl -s http://127.0.0.1:8488/v1/artifacts
 # -> []
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 ```
 
 ```powershell
@@ -426,6 +432,7 @@ endpoint afterward.
 # Runnable Proof (manual):
 cargo build --release -p anvilml --features mock-hardware
 ./target/release/anvilml &
+SERVER_PID=$!
 sleep 1
 python3 - <<'EOF'
 import asyncio, json, urllib.request
@@ -452,7 +459,7 @@ async def main():
 asyncio.run(main())
 EOF
 # -> script exits 0; a job_completed frame with the matching job_id arrived within 10s
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 ```
 
 ```powershell
@@ -504,6 +511,7 @@ server.
 # Runnable Proof (manual):
 cargo build --release -p anvilml --features mock-hardware
 ./target/release/anvilml &
+SERVER_PID=$!
 sleep 1
 JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' \
   -d '{"graph":{"nodes":[{"id":"n0","type":"PassThrough","inputs":{"value":1}}]},"settings":{}}' \
@@ -512,7 +520,7 @@ curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:8488/v1/jobs/$J
 # -> 202
 curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:8488/v1/jobs/$JOB_ID/cancel"
 # -> 409
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 ```
 
 ```powershell
@@ -547,11 +555,12 @@ real, non-stub logic.
 # Runnable Proof (manual):
 cargo build --release -p anvilml --features mock-hardware
 ANVILML_MOCK_DEVICE_TYPE=cuda ./target/release/anvilml &
+SERVER_PID=$!
 sleep 2
 curl -s http://127.0.0.1:8488/v1/system | python3 -c "import sys,json; d=json.load(sys.stdin); assert len(d['gpus'])>=1"
 curl -s http://127.0.0.1:8488/v1/workers | python3 -c "import sys,json; assert isinstance(json.load(sys.stdin), list)"
 # -> both exit 0
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 ```
 
 ```powershell
@@ -680,6 +689,7 @@ CLIP + ZiT VAE" as a fully completed roadmap group.
 # already registered in the model registry under their SHA256 ids.
 cargo build --release -p anvilml
 ./target/release/anvilml &
+SERVER_PID=$!
 sleep 2
 ZIT_ID=$(sha256sum worker/tests/fixtures/zit_tiny.safetensors | head -c1048576 | cut -d' ' -f1)
 VAE_ID=$(sha256sum worker/tests/fixtures/zit_vae_tiny.safetensors | head -c1048576 | cut -d' ' -f1)
@@ -706,7 +716,7 @@ print(d.get('artifact_hash') or d.get('result',{}).get('artifact_hash'))
 curl -s -o saved_proof.png "http://127.0.0.1:8488/v1/artifacts/$HASH"
 python3 -c "from PIL import Image; im=Image.open('saved_proof.png'); assert im.size==(64,64)"
 # -> exits 0; a real, retrievable 64x64 PNG was produced
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 rm -f saved_proof.png
 ```
 
@@ -764,6 +774,7 @@ diffusion architecture.
 # for the text encoder unchanged.
 cargo build --release -p anvilml
 ./target/release/anvilml &
+SERVER_PID=$!
 sleep 2
 DIFF_ID=$(sha256sum worker/tests/fixtures/flux2klein4b_tiny.safetensors | head -c1048576 | cut -d' ' -f1)
 VAE_ID=$(sha256sum worker/tests/fixtures/flux2_vae_tiny.safetensors | head -c1048576 | cut -d' ' -f1)
@@ -791,7 +802,7 @@ curl -s -o saved_proof.png "http://127.0.0.1:8488/v1/artifacts/$HASH"
 python3 -c "from PIL import Image; im=Image.open('saved_proof.png'); assert im.size==(64,64)"
 # -> exits 0; a real, retrievable 64x64 PNG was produced via the unmodified generic
 #    node pipeline, now serving a second diffusion architecture
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 rm -f saved_proof.png
 ```
 
@@ -852,6 +863,7 @@ file and no size-specific branching. This closes the full MVP model matrix from
 # VAE fixture is reused unchanged — VAE has no size variant per the model matrix).
 cargo build --release -p anvilml
 ./target/release/anvilml &
+SERVER_PID=$!
 sleep 2
 DIFF_ID=$(sha256sum worker/tests/fixtures/flux2klein9b_tiny.safetensors | head -c1048576 | cut -d' ' -f1)
 VAE_ID=$(sha256sum worker/tests/fixtures/flux2_vae_tiny.safetensors | head -c1048576 | cut -d' ' -f1)
@@ -879,7 +891,7 @@ curl -s -o saved_proof.png "http://127.0.0.1:8488/v1/artifacts/$HASH"
 python3 -c "from PIL import Image; im=Image.open('saved_proof.png'); assert im.size==(64,64)"
 # -> exits 0; a real, retrievable 64x64 PNG was produced, closing all three rows
 #    of the MVP model matrix
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 rm -f saved_proof.png
 ```
 
@@ -949,8 +961,9 @@ story, end to end, on a deliberately degraded starting environment.
 rm -rf worker/.venv
 cargo build --release -p anvilml
 timeout 120 ./target/release/anvilml &
+SERVER_PID=$!
 sleep 90
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 ./target/release/anvilml --version
 # -> shows a real (non-None) python_version and torch_version
 ```
@@ -1022,11 +1035,12 @@ unit tests since Phase 6).
 rm -f /tmp/anvilml-proof.db
 cargo build --release -p anvilml --features mock-hardware
 ANVILML_LOG=debug ANVILML_DB_PATH=/tmp/anvilml-proof.db ./target/release/anvilml --log-format json &
+SERVER_PID=$!
 sleep 1
 curl -s http://127.0.0.1:8488/health | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['status']=='ok' and isinstance(d['version'],str) and isinstance(d['uptime_s'],int)"
 # -> exits 0; status/version/uptime_s all present and correctly typed; stderr
 #    shows real DEBUG-level output as JSON from the same run
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 sleep 1
 test -f /tmp/anvilml-proof.db
 sqlite3 /tmp/anvilml-proof.db "SELECT COUNT(*) FROM device_capabilities;" | grep -qv '^0$'

@@ -342,6 +342,7 @@ and the idempotent-cancel rejection live against a real server.
 ```bash
 cargo build --release -p anvilml --features mock-hardware
 ./target/release/anvilml &
+SERVER_PID=$!
 sleep 1
 JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' \
   -d '{"graph":{"nodes":[{"id":"n0","type":"PassThrough","inputs":{"value":1}}]},"settings":{}}' \
@@ -350,7 +351,7 @@ curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:8488/v1/jobs/$J
 # -> 202
 curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:8488/v1/jobs/$JOB_ID/cancel"
 # -> 409
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 ```
 
 ---
@@ -428,6 +429,7 @@ server.
 # Runnable Proof (manual):
 cargo build --release -p anvilml --features mock-hardware
 ./target/release/anvilml &
+SERVER_PID=$!
 sleep 1
 JOB_ID=$(curl -s -X POST http://127.0.0.1:8488/v1/jobs -H 'Content-Type: application/json' \
   -d '{"graph":{"nodes":[{"id":"n0","type":"PassThrough","inputs":{"value":1}}]},"settings":{}}' \
@@ -436,6 +438,6 @@ curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:8488/v1/jobs/$J
 # -> 202
 curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:8488/v1/jobs/$JOB_ID/cancel"
 # -> 409
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 \`\`\`
 ```

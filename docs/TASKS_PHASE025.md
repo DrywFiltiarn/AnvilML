@@ -330,6 +330,7 @@ diffusion architecture.
 # (Phase 22) for the text encoder unchanged.
 cargo build --release -p anvilml
 ./target/release/anvilml &
+SERVER_PID=$!
 sleep 2
 DIFF_ID=$(sha256sum worker/tests/fixtures/flux2klein4b_tiny.safetensors | head -c1048576 | cut -d' ' -f1)
 VAE_ID=$(sha256sum worker/tests/fixtures/flux2_vae_tiny.safetensors | head -c1048576 | cut -d' ' -f1)
@@ -357,7 +358,7 @@ curl -s -o saved_proof.png "http://127.0.0.1:8488/v1/artifacts/$HASH"
 python3 -c "from PIL import Image; im=Image.open('saved_proof.png'); assert im.size==(64,64)"
 # -> exits 0; a real, retrievable 64x64 PNG was produced via the unmodified
 #    generic node pipeline, now serving a second diffusion architecture
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 rm -f saved_proof.png
 \`\`\`
 ```

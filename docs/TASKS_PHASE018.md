@@ -384,11 +384,12 @@ newly-completed routes work against a live server.
 ```bash
 cargo build --release -p anvilml --features mock-hardware
 ANVILML_MOCK_DEVICE_TYPE=cuda ./target/release/anvilml &
+SERVER_PID=$!
 sleep 2
 curl -s http://127.0.0.1:8488/v1/system | python3 -c "import sys,json; d=json.load(sys.stdin); assert len(d['gpus'])>=1"
 curl -s http://127.0.0.1:8488/v1/workers | python3 -c "import sys,json; assert isinstance(json.load(sys.stdin), list)"
 # -> both exit 0
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 ```
 
 ---
@@ -404,11 +405,12 @@ cargo run -p anvilml-openapi && git diff --exit-code api/openapi.json
 # Runnable Proof (manual):
 cargo build --release -p anvilml --features mock-hardware
 ANVILML_MOCK_DEVICE_TYPE=cuda ./target/release/anvilml &
+SERVER_PID=$!
 sleep 2
 curl -s http://127.0.0.1:8488/v1/system | python3 -c "import sys,json; d=json.load(sys.stdin); assert len(d['gpus'])>=1"
 curl -s http://127.0.0.1:8488/v1/workers | python3 -c "import sys,json; assert isinstance(json.load(sys.stdin), list)"
 # -> both exit 0
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 ```
 
 ---
@@ -444,10 +446,11 @@ real, non-stub logic.
 # Runnable Proof (manual):
 cargo build --release -p anvilml --features mock-hardware
 ANVILML_MOCK_DEVICE_TYPE=cuda ./target/release/anvilml &
+SERVER_PID=$!
 sleep 2
 curl -s http://127.0.0.1:8488/v1/system | python3 -c "import sys,json; d=json.load(sys.stdin); assert len(d['gpus'])>=1"
 curl -s http://127.0.0.1:8488/v1/workers | python3 -c "import sys,json; assert isinstance(json.load(sys.stdin), list)"
 # -> both exit 0
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 \`\`\`
 ```

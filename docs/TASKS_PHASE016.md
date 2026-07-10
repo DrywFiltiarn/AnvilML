@@ -427,6 +427,7 @@ endpoint afterward.
 \`\`\`bash
 cargo build --release -p anvilml --features mock-hardware
 ./target/release/anvilml &
+SERVER_PID=$!
 sleep 1
 python3 - <<'EOF'
 import asyncio, json, urllib.request
@@ -453,6 +454,6 @@ async def main():
 asyncio.run(main())
 EOF
 # -> script exits 0; a job_completed frame with the matching job_id arrived within 10s
-kill %1
+kill "$SERVER_PID" 2>/dev/null
 \`\`\`
 ```
