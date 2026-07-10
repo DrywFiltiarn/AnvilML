@@ -156,14 +156,14 @@
     "P16-C2",
     "P16-D1"
   ],
-  "in_progress": null,
-  "plan_approved": false,
-  "current_plan": null,
+  "in_progress": "P16-E1",
+  "plan_approved": true,
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-09T20:54:08+0200",
-  "plan_approval_message_id": "1524835533849759744",
-  "push_approval_message_id": "1524851033929683065",
-  "plan_report_message_id": "1524835531756802060",
-  "impl_report_message_id": "1524851031840653457"
+  "last_updated": "2026-07-10T23:16:32+0200",
+  "plan_approval_message_id": "1525249116500656138",
+  "push_approval_message_id": null,
+  "plan_report_message_id": "1525249115091374131",
+  "impl_report_message_id": null
 }

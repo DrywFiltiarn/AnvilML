@@ -5966,3 +5966,15 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Same real-`sysinfo`-backed setup as `test_tick_publishes_system_stats`.
 **Expected output:** `ram_used_mib > 0`.
 **Acceptance:** `cargo test -p anvilml-server --features mock-hardware --test stats_tick_tests test_stats_are_real_data_not_the_c1_placeholder` exits 0.
+
+---
+
+## proof_ws_job_completed_pass_through (scripts/run_proof_p16_e1.py)
+
+**File:** `scripts/run_proof_p16_e1.py`
+**Context:** Phase 16's Runnable Proof. The AnvilML binary is built with `mock-hardware`, started as a background process, and a Python script connects to `ws://127.0.0.1:8488/v1/events`, submits a single-node PassThrough job via `POST /v1/jobs`, and asserts that a `job_completed` JSON frame with the matching `job_id` arrives on the WebSocket within 10 seconds. This is the first phase where the live event stream is exercised end-to-end against real dispatch — not just REST polling of job status as Phase 14's proof did.
+**Tests:** The script connects to the WebSocket, consumes the initial `SystemStats` frame, submits a PassThrough job, and reads the stream until `job_completed` with the matching `job_id` arrives. Prints every received frame to stdout. Times out after 10 seconds if no matching frame arrives.
+**Mode:** both
+**Inputs:** Server running with mock-hardware; PassThrough node registered; job submitted with graph `[{"id": "n0", "type": "PassThrough", "inputs": {"value": 1}}]`.
+**Expected output:** A `job_completed` JSON frame with `type == "job_completed"` and the matching `job_id` is printed to stdout; the script exits 0.
+**Acceptance:** `python3 scripts/run_proof_p16_e1.py` exits 0.

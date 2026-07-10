@@ -593,10 +593,24 @@ pub fn spawn_event_loop(
                         "event transition"
                     );
                 }
-                // All other events (Progress, and the panic-gated Ready/Pong/
-                // Dying/MemoryReport) go through the generic mapping path.
-                _ => {
-                    let ws_event = map_worker_event(event);
+                // Progress events go through the generic mapping path.
+                // Ready, Pong, Dying, and MemoryReport are handled by
+                // separate subsystems (node registry, keepalive watchdog,
+                // worker pool) and are skipped here — the Demux fans out
+                // ALL events to all subscribers, but only Progress needs
+                // to be broadcast to WebSocket clients.
+                WorkerEvent::Progress {
+                    job_id,
+                    step,
+                    total_steps,
+                    preview_b64,
+                } => {
+                    let ws_event = WsEvent::JobProgress {
+                        job_id,
+                        step,
+                        total_steps,
+                        preview_b64,
+                    };
 
                     // Log the state transition per ANVILML_DESIGN.md §16.3.
                     // The "from" is the WorkerEvent variant name, "to" is the
@@ -638,6 +652,17 @@ pub fn spawn_event_loop(
                             "event transition"
                         );
                     }
+                }
+                // Ready, Pong, Dying, and MemoryReport are handled by
+                // other subsystems (node registry, keepalive watchdog,
+                // worker pool) and must not be broadcast to WebSocket
+                // clients. The Demux fans out ALL events to all
+                // subscribers, so we must explicitly skip these here.
+                WorkerEvent::Ready { .. }
+                | WorkerEvent::Pong { .. }
+                | WorkerEvent::Dying { .. }
+                | WorkerEvent::MemoryReport { .. } => {
+                    tracing::debug!("skipping non-broadcast event (handled by other subsystem)");
                 }
             }
         }
