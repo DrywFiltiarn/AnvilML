@@ -1648,3 +1648,235 @@ async fn test_dispatch_one_dispatched_via_real_dealer_peer() {
         other => panic!("expected WorkerMessage::Execute, got {other:?}"),
     }
 }
+
+/// Test that cancel() on a Queued job calls `queue.cancel()`, persists
+/// `status=Cancelled` to the database, and returns `Ok(true)`.
+///
+/// Submits a valid job (which creates a Queued job persisted and enqueued),
+/// then calls `cancel()` with the returned job ID. Verifies the return is
+/// `Ok(true)` and the database record shows `status == Cancelled` via `get_job()`.
+#[tokio::test]
+async fn test_cancel_queued_job_sets_cancelled_status() {
+    let store = create_job_store().await;
+    let registry = make_registry();
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
+
+    // Submit a job — it is persisted and enqueued in Queued status.
+    let (job_id, _queue_position) = scheduler
+        .submit(
+            make_valid_graph(),
+            JobSettings {
+                device_preference: None,
+            },
+        )
+        .await
+        .expect("submit must succeed");
+
+    // Verify the job is Queued before cancellation.
+    let before = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must exist");
+    assert_eq!(
+        before.status,
+        anvilml_core::JobStatus::Queued,
+        "submitted job must start in Queued status"
+    );
+
+    // Cancel the job while it is still in the queue.
+    let result = scheduler
+        .cancel(job_id)
+        .await
+        .expect("cancel must not error");
+
+    assert!(result, "cancel() must return true for a Queued job");
+
+    // The database record must now show Cancelled status.
+    let after = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must still exist after cancellation");
+    assert_eq!(
+        after.status,
+        anvilml_core::JobStatus::Cancelled,
+        "database must reflect Cancelled status after cancel()"
+    );
+}
+
+/// Test that cancel() on a Running job returns `Ok(true)` without
+/// changing the job's status or sending IPC.
+///
+/// Creates a Job struct manually with `status = JobStatus::Running`,
+/// persists it to the database via `job_store.upsert()` (bypassing
+/// `scheduler.submit()` which only creates Queued jobs), then calls
+/// `cancel()`. Verifies `Ok(true)` is returned and the job's status
+/// remains `Running` (the IPC send is deferred to P17-A2).
+#[tokio::test]
+async fn test_cancel_running_job_returns_true_no_ipc() {
+    use anvilml_core::Job;
+    use chrono::Utc;
+
+    let store = create_job_store().await;
+    let registry = make_registry();
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
+
+    // Construct a Running job manually and persist it directly.
+    let running_id = Uuid::new_v4();
+    let running_job = Job {
+        id: running_id,
+        status: anvilml_core::JobStatus::Running,
+        graph: make_valid_graph(),
+        settings: JobSettings {
+            device_preference: None,
+        },
+        created_at: Utc::now(),
+        started_at: Some(Utc::now()),
+        completed_at: None,
+        worker_id: Some("0".into()),
+        error: None,
+        queue_position: None,
+    };
+
+    // Persist the Running job directly to the database.
+    scheduler
+        .persist_job_test(&running_job)
+        .await
+        .expect("persist must succeed");
+
+    // Cancel the Running job.
+    let result = scheduler
+        .cancel(running_id)
+        .await
+        .expect("cancel must not error");
+
+    assert!(
+        result,
+        "cancel() must return true for a Running job (cancellation accepted)"
+    );
+
+    // The job's status must still be Running — cancel() does not change
+    // the status of Running jobs; the event loop handles that transition.
+    let after = scheduler
+        .get_job(running_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must still exist");
+    assert_eq!(
+        after.status,
+        anvilml_core::JobStatus::Running,
+        "Running job status must not change — IPC send is deferred to P17-A2"
+    );
+}
+
+/// Test that cancel() on a terminal job (Completed, Failed, or Cancelled)
+/// returns `Ok(false)` — a no-op, not an error.
+///
+/// Creates jobs with each of the three terminal statuses, persists them
+/// to the database, and calls `cancel()` on each. Verifies that all
+/// return `Ok(false)`.
+#[tokio::test]
+async fn test_cancel_terminal_job_returns_false() {
+    use anvilml_core::Job;
+    use chrono::Utc;
+
+    let store = create_job_store().await;
+    let registry = make_registry();
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
+
+    // Test all three terminal statuses.
+    for status in [
+        anvilml_core::JobStatus::Completed,
+        anvilml_core::JobStatus::Failed,
+        anvilml_core::JobStatus::Cancelled,
+    ] {
+        let terminal_id = Uuid::new_v4();
+        let terminal_job = Job {
+            id: terminal_id,
+            status,
+            graph: make_valid_graph(),
+            settings: JobSettings {
+                device_preference: None,
+            },
+            created_at: Utc::now(),
+            started_at: Some(Utc::now()),
+            completed_at: Some(Utc::now()),
+            worker_id: Some("0".into()),
+            error: if status == anvilml_core::JobStatus::Failed {
+                Some("test failure".into())
+            } else {
+                None
+            },
+            queue_position: None,
+        };
+
+        // Persist the terminal job.
+        scheduler
+            .persist_job_test(&terminal_job)
+            .await
+            .expect("persist must succeed");
+
+        // Cancel the terminal job — must return Ok(false).
+        let result = scheduler
+            .cancel(terminal_id)
+            .await
+            .expect("cancel must not error");
+
+        assert!(
+            !result,
+            "cancel() must return false for a terminal job (status={:?})",
+            status
+        );
+
+        // The status must remain unchanged.
+        let after = scheduler
+            .get_job(terminal_id)
+            .await
+            .expect("get_job must not error")
+            .expect("job must still exist");
+        assert_eq!(
+            after.status, status,
+            "terminal job status must not change on cancel()"
+        );
+    }
+}
+
+/// Test that cancelling an already-cancelled queued job returns `Ok(false)`.
+///
+/// Submits a job, cancels it (returns `Ok(true)`), then cancels it again
+/// with the same ID. The second call must return `Ok(false)` — the job
+/// was already cancelled, making this a no-op.
+#[tokio::test]
+async fn test_cancel_already_cancelled_queued_job_returns_false() {
+    let store = create_job_store().await;
+    let registry = make_registry();
+    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
+
+    // Submit and cancel a job — first cancel returns Ok(true).
+    let (job_id, _queue_position) = scheduler
+        .submit(
+            make_valid_graph(),
+            JobSettings {
+                device_preference: None,
+            },
+        )
+        .await
+        .expect("submit must succeed");
+
+    let first_cancel = scheduler
+        .cancel(job_id)
+        .await
+        .expect("first cancel must not error");
+    assert!(first_cancel, "first cancel must return true");
+
+    // Cancel the same job again — must return Ok(false).
+    let second_cancel = scheduler
+        .cancel(job_id)
+        .await
+        .expect("second cancel must not error");
+    assert!(
+        !second_cancel,
+        "cancel() must return false for an already-cancelled job"
+    );
+}

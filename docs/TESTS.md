@@ -4914,6 +4914,54 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 ---
 
+## test_cancel_queued_job_sets_cancelled_status (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** The `JobScheduler::cancel()` method has been extended with status-aware branching. A Queued job cancelled via `cancel()` now triggers a database status update to `Cancelled`.
+**Tests:** Submits a valid job (persisted and enqueued in Queued status), calls `cancel()`, verifies `Ok(true)` is returned, and confirms the database record shows `status == Cancelled`.
+**Mode:** both
+**Inputs:** A valid graph JSON submitted to get a job ID, then that ID passed to `cancel()`.
+**Expected output:** `Ok(true)` and the database record shows `status == Cancelled`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test scheduler_tests test_cancel_queued_job_sets_cancelled_status` exits 0.
+
+---
+
+## test_cancel_running_job_returns_true_no_ipc (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** The `JobScheduler::cancel()` method returns `Ok(true)` for Running jobs without changing the status or sending IPC (the IPC send is deferred to P17-A2).
+**Tests:** Creates a `Job` struct manually with `status = JobStatus::Running`, persists it via `persist_job_test()`, calls `cancel()`, verifies `Ok(true)` and that the status remains `Running`.
+**Mode:** both
+**Inputs:** A manually-constructed `Job` with `status = Running`, persisted directly to the database, then its ID passed to `cancel()`.
+**Expected output:** `Ok(true)` and the job's status remains `Running`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test scheduler_tests test_cancel_running_job_returns_true_no_ipc` exits 0.
+
+---
+
+## test_cancel_terminal_job_returns_false (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** The `JobScheduler::cancel()` method returns `Ok(false)` for terminal jobs (Completed, Failed, Cancelled) — cancelling a finished job is a no-op.
+**Tests:** Creates jobs with each of the three terminal statuses, persists them, and calls `cancel()` on each. Verifies all return `Ok(false)` and the status remains unchanged.
+**Mode:** both
+**Inputs:** Three manually-constructed `Job` values with `status = Completed`, `Failed`, and `Cancelled`, each persisted to the database.
+**Expected output:** `Ok(false)` for all three terminal statuses, with no status change.
+**Acceptance:** `cargo test -p anvilml-scheduler --test scheduler_tests test_cancel_terminal_job_returns_false` exits 0.
+
+---
+
+## test_cancel_already_cancelled_queued_job_returns_false (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`
+**Context:** The `JobScheduler::cancel()` method is idempotent — cancelling an already-cancelled job returns `Ok(false)` as a no-op.
+**Tests:** Submits a job, cancels it (returns `Ok(true)`), then cancels it again with the same ID. Verifies the second call returns `Ok(false)`.
+**Mode:** both
+**Inputs:** A job ID from a submitted job, cancelled twice in succession.
+**Expected output:** First `cancel()` returns `Ok(true)`, second returns `Ok(false)`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test scheduler_tests test_cancel_already_cancelled_queued_job_returns_false` exits 0.
+
+---
+
 ## test_get_job_returns_persisted_job (anvilml-scheduler)
 
 **File:** `crates/anvilml-scheduler/tests/scheduler_tests.rs`

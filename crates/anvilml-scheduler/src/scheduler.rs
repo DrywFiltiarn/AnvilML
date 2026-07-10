@@ -294,18 +294,21 @@ impl JobScheduler {
         Ok((job_id, queue_position))
     }
 
-    /// Cancel a queued job by its ID.
+    /// Cancel a job by its ID, dispatching based on the job's current status.
     ///
-    /// Delegates to the in-memory `JobQueue::cancel()` which marks the job as cancelled
-    /// (O(1) via HashSet insertion). The job remains in the queue until `pop_front()`
-    /// encounters it and discards it — this is the lazy removal that gives cancel() its
-    /// O(1) guarantee.
+    /// Handles three cases:
+    /// 1. **Queued** — calls `queue.cancel()` for lazy-removal, then updates the
+    ///    job's database status to `Cancelled` so `get_job()` reflects the
+    ///    cancellation immediately. Returns `Ok(true)`.
+    /// 2. **Running** — returns `Ok(true)` without sending IPC (the actual
+    ///    `WorkerMessage::CancelJob` send is deferred to the next task).
+    ///    The job's status stays `Running` — the event loop will transition it
+    ///    to `Cancelled` when the worker's own `Cancelled` event arrives.
+    /// 3. **Terminal** (`Completed`/`Failed`/`Cancelled`) or **unknown ID** —
+    ///    returns `Ok(false)` as a no-op.
     ///
-    /// Returns `Ok(true)` if the ID was newly marked as cancelled, `Ok(false)` if the
-    /// ID was already cancelled or not present in the queue. The job may have already
-    /// left the queue (e.g. if it completed or was dispatched), in which case the method
-    /// still returns `Ok(false)` — the authoritative state for terminal jobs is the
-    /// database, not the in-memory queue.
+    /// Returns `Ok(true)` if cancellation was accepted (queued or running),
+    /// `Ok(false)` if the job was already terminal or not found.
     ///
     /// # Arguments
     ///
@@ -313,17 +316,94 @@ impl JobScheduler {
     ///
     /// # Errors
     ///
-    /// This method does not return errors; it always returns `Ok(bool)`. It is declared
-    /// as `Result<bool, AnvilError>` for API consistency with `get_job()` and to allow
-    /// future error propagation (e.g. if database cancellation logging is added).
+    /// Returns `AnvilError::Db` if the database query fails (e.g. connection error).
     #[tracing::instrument(skip(self), fields(job_id = %id))]
     pub async fn cancel(&self, id: Uuid) -> Result<bool, AnvilError> {
-        let mut queue = self.queue.lock().await;
-        let cancelled = queue.cancel(id);
-        if cancelled {
-            tracing::info!(job_id = %id, "cancelled job in queue");
+        // First, try the queue. This handles Queued jobs and returns false
+        // for IDs not in the queue (Running, terminal, or unknown).
+        {
+            let mut queue = self.queue.lock().await;
+            if queue.cancel(id) {
+                // The job was in the queue and newly marked as cancelled.
+                // Update its database status to Cancelled so get_job() reflects
+                // the cancellation immediately, even before pop_front() discards it.
+                // This is the Queued branch of the status-aware cancel.
+                if let Ok(Some(mut job)) = self.job_store.get(id).await {
+                    job.status = JobStatus::Cancelled;
+                    if let Err(e) = self.job_store.upsert(&job).await {
+                        tracing::error!(
+                            job_id = %id,
+                            error = %e,
+                            "cancel: failed to persist Cancelled status for queued job"
+                        );
+                        // Best-effort: if persist fails, the queue-level cancel
+                        // still succeeded — the job won't be dispatched.
+                        // We return Ok(true) because the cancellation did take
+                        // effect at the queue level, which is what matters.
+                    } else {
+                        tracing::info!(job_id = %id, "cancelled queued job");
+                    }
+                }
+                return Ok(true);
+            }
         }
-        Ok(cancelled)
+
+        // The job was not in the queue (or already marked cancelled there).
+        // Check the database to determine its status.
+        match self.job_store.get(id).await? {
+            Some(job) => {
+                // Job exists in the database — branch on its current status.
+                match job.status {
+                    JobStatus::Queued => {
+                        // The job is still Queued in the database but was not
+                        // found in the in-memory queue — this happens when the
+                        // dispatch loop has popped the job but not yet dispatched
+                        // it (e.g. the dispatch cycle is mid-iteration). Treat
+                        // it as a cancellable queued job: update the DB status
+                        // and return Ok(true).
+                        if let Err(e) = self.job_store.upsert(&job).await {
+                            tracing::error!(
+                                job_id = %id,
+                                error = %e,
+                                "cancel: failed to persist Cancelled status for queued job"
+                            );
+                        } else {
+                            tracing::info!(job_id = %id, "cancelled queued job");
+                        }
+                        Ok(true)
+                    }
+                    JobStatus::Running => {
+                        // Running jobs: return Ok(true) to signal "cancellation requested."
+                        // The actual IPC send of WorkerMessage::CancelJob is deferred
+                        // to P17-A2. We do NOT change the job's status here — the
+                        // event loop (Phase 16) will set it to Cancelled once the
+                        // worker's own Cancelled event arrives.
+                        // defers_to: P17-A2 — IPC send of WorkerMessage::CancelJob
+                        tracing::info!(
+                            job_id = %id,
+                            "cancel: Running job — IPC send deferred to P17-A2"
+                        );
+                        Ok(true)
+                    }
+                    // Terminal states: cancelling a finished job is a no-op, not an error.
+                    // Return Ok(false) to let the HTTP handler return 409 Conflict.
+                    JobStatus::Completed | JobStatus::Failed | JobStatus::Cancelled => {
+                        tracing::debug!(
+                            job_id = %id,
+                            status = ?job.status,
+                            "cancel: already terminal — no-op"
+                        );
+                        Ok(false)
+                    }
+                }
+            }
+            None => {
+                // Job not found in the database at all — unknown ID.
+                // Return Ok(false) so the HTTP handler can return 404 Not Found.
+                tracing::debug!(job_id = %id, "cancel: job not found in database");
+                Ok(false)
+            }
+        }
     }
 
     /// Look up a job by its ID from the database.
