@@ -1369,3 +1369,210 @@ class TestDispatchLoopExecuteFailure:
         assert "Traceback" in tb, (
             f"traceback must contain 'Traceback', got {tb!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Dispatch loop CancelJob tests — P17-B5: cooperative cancellation
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchLoopCancelJob:
+    """Tests for _dispatch_loop()'s handling of CancelJob messages.
+
+    P17-B5 adds a CancelJob branch to _dispatch_loop() that matches the
+    incoming job_id against the currently-executing job and sets its
+    cancel_flag (a threading.Event). When the executor stops due to the
+    flag being set, the dispatch loop sends a Cancelled event back to the
+    supervisor.
+    """
+
+    def test_canceljob_sets_cancel_flag_for_current_job(self, monkeypatch) -> None:
+        """CancelJob for the currently-executing job sets NodeContext.cancel_flag.
+
+        Feeds an Execute message, then a CancelJob for the same job_id.
+        Mocks execute_graph to capture the cancel_flag from the ctx_factory
+        and asserts the flag gets set by the CancelJob handler.
+
+        Preconditions: worker.ipc is mockable via monkeypatch.
+        Expected output: execute_graph's ctx_factory produces a NodeContext
+            whose cancel_flag is set (is_set() returns True).
+        """
+        import unittest.mock as mock
+        import worker.ipc as ipc
+
+        captured_cancel_flag: "threading.Event | None" = None  # noqa: F821
+
+        def mock_execute_graph(graph: dict, ctx_factory) -> dict:
+            nonlocal captured_cancel_flag
+            ctx = ctx_factory()
+            captured_cancel_flag = ctx.cancel_flag
+            # Simulate a short execution window so CancelJob can arrive.
+            import time as _time
+            _time.sleep(0.01)
+            return {"cancelled": False, "results": {}}
+
+        sent_events: list[dict] = []
+        monkeypatch.setattr(ipc, "send_event", lambda data: sent_events.append(data))
+
+        messages = iter([
+            {"_type": "Execute", "job_id": "job-cancel", "graph": {"nodes": []}},
+            {"_type": "CancelJob", "job_id": "job-cancel"},
+        ])
+
+        def fake_recv_message():
+            try:
+                return next(messages)
+            except StopIteration:
+                raise ConnectionError("test: no more messages")
+
+        monkeypatch.setattr(ipc, "recv_message", fake_recv_message)
+
+        with mock.patch(
+            "worker.executor.execute_graph", side_effect=mock_execute_graph
+        ):
+            import worker.worker_main as worker_main
+
+            worker_main._dispatch_loop()
+
+        assert captured_cancel_flag is not None, "cancel_flag was never captured"
+        assert captured_cancel_flag.is_set(), (
+            "CancelJob should have set the cancel_flag for the current job"
+        )
+
+    def test_canceljob_for_nonmatching_job_id_is_ignored(self, monkeypatch) -> None:
+        """CancelJob for a non-matching job_id is logged at DEBUG and ignored.
+
+        Feeds an Execute message with job_id "job-a", then a CancelJob for
+        "job-b". Asserts no error is raised and the dispatch loop exits
+        cleanly (on the recv failure after CancelJob).
+
+        Preconditions: worker.ipc is mockable via monkeypatch.
+        Expected output: No exception raised; dispatch loop exits cleanly.
+        """
+        import worker.ipc as ipc
+
+        sent_events: list[dict] = []
+        monkeypatch.setattr(ipc, "send_event", lambda data: sent_events.append(data))
+
+        messages = iter([
+            {"_type": "Execute", "job_id": "job-a", "graph": {"nodes": []}},
+            {"_type": "CancelJob", "job_id": "job-b"},
+        ])
+
+        def fake_recv_message():
+            try:
+                return next(messages)
+            except StopIteration:
+                raise ConnectionError("test: no more messages")
+
+        monkeypatch.setattr(ipc, "recv_message", fake_recv_message)
+
+        import worker.worker_main as worker_main
+
+        # Must not raise — CancelJob for wrong job_id should be silently ignored.
+        worker_main._dispatch_loop()
+
+        # No Cancelled or Failed event should be sent.
+        cancelled_events = [e for e in sent_events if e.get("_type") == "Cancelled"]
+        failed_events = [e for e in sent_events if e.get("_type") == "Failed"]
+        assert len(cancelled_events) == 0, (
+            f"CancelJob for non-matching job should not send Cancelled, got {cancelled_events}"
+        )
+        assert len(failed_events) == 0, (
+            f"CancelJob for non-matching job should not cause failure, got {failed_events}"
+        )
+
+    def test_cancelled_execution_sends_cancelled_event(self, monkeypatch) -> None:
+        """When executor stops due to cancel_flag, Cancelled event is sent.
+
+        Feeds an Execute message then a CancelJob for the same job_id.
+        Mocks execute_graph to return {"cancelled": True}, verifying the
+        dispatch loop sends a Cancelled event with the correct job_id.
+
+        Preconditions: worker.ipc is mockable via monkeypatch.
+        Expected output: send_event() called with {"_type": "Cancelled",
+            "job_id": "job-cancelled"}.
+        """
+        import unittest.mock as mock
+        import worker.ipc as ipc
+
+        sent_events: list[dict] = []
+        monkeypatch.setattr(ipc, "send_event", lambda data: sent_events.append(data))
+
+        messages = iter([
+            {"_type": "Execute", "job_id": "job-cancelled", "graph": {"nodes": []}},
+            {"_type": "CancelJob", "job_id": "job-cancelled"},
+        ])
+
+        def fake_recv_message():
+            try:
+                return next(messages)
+            except StopIteration:
+                raise ConnectionError("test: no more messages")
+
+        monkeypatch.setattr(ipc, "recv_message", fake_recv_message)
+
+        def mock_execute_graph(graph: dict, ctx_factory) -> dict:
+            # Simulate a short execution so CancelJob can arrive and
+            # set the cancel flag before execute_graph returns.
+            import time as _time
+            _time.sleep(0.01)
+            return {"cancelled": True}
+
+        import worker.worker_main as worker_main
+
+        with mock.patch(
+            "worker.executor.execute_graph", side_effect=mock_execute_graph
+        ):
+            worker_main._dispatch_loop()
+
+        cancelled_events = [e for e in sent_events if e.get("_type") == "Cancelled"]
+        assert len(cancelled_events) == 1, (
+            f"Expected exactly one Cancelled event, got {len(cancelled_events)}: {sent_events}"
+        )
+        assert cancelled_events[0]["job_id"] == "job-cancelled", (
+            f"Cancelled event job_id must be 'job-cancelled', "
+            f"got {cancelled_events[0]['job_id']!r}"
+        )
+
+    def test_canceljob_after_job_completed_is_ignored(self, monkeypatch) -> None:
+        """CancelJob for a completed job is ignored without error or event.
+
+        Feeds an Execute message that completes successfully, then a
+        CancelJob for the same job_id. Since the job has already completed
+        and tracking is reset, the CancelJob should be ignored.
+
+        Preconditions: worker.ipc is mockable via monkeypatch.
+        Expected output: No Cancelled event sent; Completed event sent instead.
+        """
+        import worker.ipc as ipc
+
+        sent_events: list[dict] = []
+        monkeypatch.setattr(ipc, "send_event", lambda data: sent_events.append(data))
+
+        messages = iter([
+            {"_type": "Execute", "job_id": "job-done", "graph": {"nodes": []}},
+            {"_type": "CancelJob", "job_id": "job-done"},
+        ])
+
+        def fake_recv_message():
+            try:
+                return next(messages)
+            except StopIteration:
+                raise ConnectionError("test: no more messages")
+
+        monkeypatch.setattr(ipc, "recv_message", fake_recv_message)
+
+        import worker.worker_main as worker_main
+
+        worker_main._dispatch_loop()
+
+        # The Execute should have completed normally (Completed event).
+        completed_events = [e for e in sent_events if e.get("_type") == "Completed"]
+        cancelled_events = [e for e in sent_events if e.get("_type") == "Cancelled"]
+        assert len(completed_events) == 1, (
+            f"Expected exactly one Completed event, got {len(completed_events)}: {sent_events}"
+        )
+        assert len(cancelled_events) == 0, (
+            f"CancelJob after completion should not send Cancelled, got {cancelled_events}"
+        )

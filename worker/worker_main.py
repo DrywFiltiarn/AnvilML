@@ -77,14 +77,15 @@ def _import_nodes() -> list[dict]:
 
 def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = False) -> None:
     """Receive messages from the supervisor in a loop, answering keepalive
-    Pings, executing jobs on a background thread, and exiting cleanly on
-    Shutdown; all other message types are logged and skipped.
+    Pings, executing jobs on a background thread, handling cancellation
+    requests, and exiting cleanly on Shutdown; all other message types are
+    logged and skipped.
 
-    `Ping` and `Shutdown` are handled directly on the dispatch thread.
-    `Execute` spawns a background thread that calls ``execute_graph()``
+    `Ping`, `Shutdown`, and `CancelJob` are handled directly on the dispatch
+    thread. `Execute` spawns a background thread that calls ``execute_graph()``
     with a job-scoped ``NodeContext`` factory, keeping the dispatch loop
-    responsive to ``Ping`` and ``CancelJob`` (handled by a later task)
-    while the job executes.
+    responsive to ``Ping``, ``CancelJob``, and ``Shutdown`` while the job
+    executes.
 
     `Ping`: the Rust-side `KeepaliveWatchdog` (`P8-C2`/`P8-E5`) has been
     unconditionally active since Phase 8, sending a `Ping` immediately
@@ -115,11 +116,22 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
         RuntimeError: If ipc.connect() has not been called before entering
             the loop.
     """
-    # Import ipc here (not at module level) — dispatch_loop may be called
-    # in tests that don't go through the startup sequence.
+    # Import ipc and threading here (not at module level) — dispatch_loop
+    # may be called in tests that don't go through the startup sequence.
+    # threading is needed for cancel_flag type annotations and the
+    # CancelJob branch.
+    import threading
+
     import worker.ipc as ipc
 
     logger.info("dispatch_loop: starting")
+    # Track the currently-executing job so CancelJob messages can target it.
+    # These persist across loop iterations while a job is executing; they
+    # are reset only after the job completes (success, failure, or
+    # cancellation) or when the loop exits.
+    current_job_id: str | None = None
+    current_cancel_flag: threading.Event | None = None
+
     while True:
         try:
             msg = ipc.recv_message()
@@ -139,99 +151,58 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
             # Without this try/except, the worker would crash on supervisor
             # shutdown instead of exiting cleanly.
             logger.error("dispatch_loop: recv failed, exiting: error=%s", exc)
+            # If a background thread was spawned and the result has not
+            # yet been sent (current_job_id still set), join and send it.
+            # If current_job_id is None, the result was already sent in
+            # the main loop when the thread completed.
+            if "thread" in locals() and current_job_id is not None:
+                thread.join()
+                if result.get("cancelled"):
+                    ipc.send_event({"_type": "Cancelled", "job_id": job_id})
+                    logger.info("dispatch_loop: job cancelled job_id=%s", job_id)
+                elif result.get("success"):
+                    elapsed_ms = int((time.monotonic() - start) * 1000)
+                    ipc.send_event(
+                        {"_type": "Completed", "job_id": job_id, "elapsed_ms": elapsed_ms}
+                    )
+                    logger.info(
+                        "dispatch_loop: job completed job_id=%s elapsed_ms=%d",
+                        job_id,
+                        elapsed_ms,
+                    )
+                else:
+                    ipc.send_event({
+                        "_type": "Failed",
+                        "job_id": job_id,
+                        "error": result["error"],
+                        "traceback": result["traceback"],
+                    })
+                    logger.error(
+                        "dispatch_loop: execute failed job_id=%s error=%s",
+                        job_id,
+                        result["error"],
+                    )
+                current_job_id = None
+                current_cancel_flag = None
             break
 
         msg_type = msg.get("_type", "<unknown>")
         logger.debug("dispatch_loop: received message type=%s", msg_type)
 
-        if msg_type == "Ping":
-            # Echo the sequence number back as a Pong — see this function's
-            # own doc comment for why this is handled here rather than
-            # deferred. `seq` must round-trip exactly (matched by the
-            # watchdog against the ping it sent) — no other transformation.
-            seq = msg["seq"]
-            ipc.send_event({"_type": "Pong", "seq": seq})
-            logger.debug("dispatch_loop: replied Pong seq=%s", seq)
-        elif msg_type == "Shutdown":
-            # Exit the loop cleanly — see this function's own doc comment
-            # for why this is handled here rather than deferred.
-            # graceful_shutdown_child() (Rust side) is waiting on this
-            # process's own exit, bounded by graceful_shutdown_timeout;
-            # responding promptly here is what makes that wait actually
-            # succeed instead of always falling through to force-kill.
-            logger.info("dispatch_loop: received Shutdown, exiting cleanly")
-            break
-        elif msg_type == "Execute":
-            # Build a ctx_factory for this job — creates a NodeContext with
-            # a per-job cancel_flag so CancelJob (handled by a later task)
-            # can signal cancellation to the background execution thread.
-            import threading
-            import time
-
-            # Import execute_graph inside the handler (not at module level)
-            # to avoid transitive torch dependencies during test collection.
-            from worker.executor import execute_graph  # noqa: PLC0415
-
-            job_id = msg["job_id"]
-            graph = msg["graph"]
-            logger.info("dispatch_loop: executing job_id=%s", job_id)
-
-            # Capture start time before the background thread begins.
-            start = time.monotonic()
-
-            # Shared result container — the background thread writes either
-            # {"success": True} or {"success": False, "error": str, "traceback": str}
-            # into this dict.  No lock is needed because thread.join() establishes
-            # a happens-before guarantee: the main thread reads only after the
-            # background thread has finished writing.
-            result: dict = {}
-
-            def run_execute() -> None:
-                """Background thread target — runs execute_graph on a job-scoped context.
-
-                On success writes {"success": True} to *result*.
-                On any exception writes {"success": False, "error", "traceback"}
-                so the main thread can send a Failed event after join().
-                """
-                from worker.nodes.base import NodeContext
-
-                cancel_flag = threading.Event()
-                ctx_factory = lambda: NodeContext(
-                    job_id=job_id,
-                    device=device,
-                    caps=caps,
-                    cancel_flag=cancel_flag,
-                    emit=ipc.send_event,
-                    pipeline_cache=None,
-                    mock=mock,
-                )
-                try:
-                    # execute_graph returns {"cancelled": True} or
-                    # {"cancelled": False, "results": {...}}.
-                    # On success (no cancellation), the background thread
-                    # writes success and the main loop sends the Completed
-                    # event below.
-                    execute_graph(graph, ctx_factory)
-                    result["success"] = True
-                except Exception as exc:
-                    # Capture the exception info so the main thread can
-                    # send a Failed event with the error details.
-                    result["success"] = False
-                    result["error"] = str(exc)
-                    result["traceback"] = traceback.format_exc()
-
-            # Spawn a background thread so the dispatch loop remains
-            # responsive to CancelJob and Ping messages while the job
-            # executes. This is the key difference from the interim
-            # stopgap which ran _execute_job() synchronously on this thread.
-            thread = threading.Thread(target=run_execute, daemon=True)
-            thread.start()
-            thread.join()  # Wait for execution to complete.
-
-            # Check whether the background thread succeeded or failed.
-            # result is always populated because run_execute writes it
-            # before returning (either on success or in the except block).
-            if result.get("success"):
+        # If a background thread has completed, join it and send the
+        # result event before processing any further messages. This
+        # ensures the dispatch loop remains responsive to CancelJob
+        # messages while the thread is running, but still sends the
+        # terminal event (Completed/Failed/Cancelled) when done.
+        if "thread" in locals() and not thread.is_alive():
+            thread.join()
+            # Check whether the background thread succeeded, failed, or
+            # was cancelled. result is always populated because
+            # run_execute writes it before returning.
+            if result.get("cancelled"):
+                ipc.send_event({"_type": "Cancelled", "job_id": job_id})
+                logger.info("dispatch_loop: job cancelled job_id=%s", job_id)
+            elif result.get("success"):
                 elapsed_ms = int((time.monotonic() - start) * 1000)
                 ipc.send_event(
                     {"_type": "Completed", "job_id": job_id, "elapsed_ms": elapsed_ms}
@@ -256,6 +227,121 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
                     job_id,
                     result["error"],
                 )
+            # Reset tracking for the next job.
+            current_job_id = None
+            current_cancel_flag = None
+            # Break out of the loop — the job is done. The current
+            # message (if any) will be processed in the next iteration
+            # after tracking is reset.
+            continue
+
+        if msg_type == "Ping":
+            # Echo the sequence number back as a Pong — see this function's
+            # own doc comment for why this is handled here rather than
+            # deferred. `seq` must round-trip exactly (matched by the
+            # watchdog against the ping it sent) — no other transformation.
+            seq = msg["seq"]
+            ipc.send_event({"_type": "Pong", "seq": seq})
+            logger.debug("dispatch_loop: replied Pong seq=%s", seq)
+        elif msg_type == "Shutdown":
+            # Exit the loop cleanly — see this function's own doc comment
+            # for why this is handled here rather than deferred.
+            # graceful_shutdown_child() (Rust side) is waiting on this
+            # process's own exit, bounded by graceful_shutdown_timeout;
+            # responding promptly here is what makes that wait actually
+            # succeed instead of always falling through to force-kill.
+            logger.info("dispatch_loop: received Shutdown, exiting cleanly")
+            break
+        elif msg_type == "CancelJob":
+            # Compare the incoming cancel request against the currently-
+            # executing job. Only cancel the job that is actively running —
+            # this is cooperative cancellation; we never interrupt a node
+            # mid-execute. The cancel_flag is set so that execute_graph()
+            # observes it before the next node's execute() call.
+            cancel_job_id = msg["job_id"]
+            if current_job_id == cancel_job_id and current_cancel_flag is not None:
+                logger.info("dispatch_loop: cancelling job_id=%s", cancel_job_id)
+                current_cancel_flag.set()
+            else:
+                # The cancel was for a job that already completed, or a
+                # stale message. This is normal — a race between job
+                # completion and the cancel message arrival. Log at DEBUG,
+                # not error.
+                logger.debug(
+                    "dispatch_loop: CancelJob for non-current job_id=%s, ignoring",
+                    cancel_job_id,
+                )
+        elif msg_type == "Execute":
+            # Build a ctx_factory for this job — creates a NodeContext with
+            # a per-job cancel_flag so CancelJob can signal cancellation to
+            # the background execution thread.
+            import time
+
+            # Import execute_graph inside the handler (not at module level)
+            # to avoid transitive torch dependencies during test collection.
+            from worker.executor import execute_graph  # noqa: PLC0415
+
+            job_id = msg["job_id"]
+            graph = msg["graph"]
+            logger.info("dispatch_loop: executing job_id=%s", job_id)
+
+            # Track this job so CancelJob messages can target it.
+            current_job_id = job_id
+            # Create the cancel flag before the background thread so the
+            # dispatch loop can set it from a CancelJob message.
+            cancel_flag = threading.Event()
+            current_cancel_flag = cancel_flag
+
+            # Capture start time before the background thread begins.
+            start = time.monotonic()
+
+            # Shared result container — the background thread writes either
+            # {"success": True}, {"cancelled": True}, or
+            # {"success": False, "error": str, "traceback": str} into this
+            # dict.  No lock is needed because thread.join() establishes a
+            # happens-before guarantee: the main thread reads only after the
+            # background thread has finished writing.
+            result: dict = {}
+
+            def run_execute() -> None:
+                """Background thread target — runs execute_graph on a job-scoped context.
+
+                On success writes {"success": True} to *result*.
+                On cancellation writes {"cancelled": True} to *result*.
+                On any exception writes {"success": False, "error", "traceback"}
+                so the main thread can send a Failed event after join().
+                """
+                from worker.nodes.base import NodeContext
+
+                ctx_factory = lambda: NodeContext(
+                    job_id=job_id,
+                    device=device,
+                    caps=caps,
+                    cancel_flag=cancel_flag,
+                    emit=ipc.send_event,
+                    pipeline_cache=None,
+                    mock=mock,
+                )
+                try:
+                    result_data = execute_graph(graph, ctx_factory)
+                    if result_data.get("cancelled"):
+                        result["cancelled"] = True
+                    else:
+                        result["success"] = True
+                except Exception as exc:
+                    # Capture the exception info so the main thread can
+                    # send a Failed event with the error details.
+                    result["success"] = False
+                    result["error"] = str(exc)
+                    result["traceback"] = traceback.format_exc()
+
+            # Spawn a background thread so the dispatch loop remains
+            # responsive to CancelJob and Ping messages while the job
+            # executes. The thread is started here; the join is deferred
+            # to the next loop iteration so that the dispatch loop can
+            # process CancelJob messages before the thread finishes.
+            thread = threading.Thread(target=run_execute, daemon=True)
+            thread.start()
 
 
 

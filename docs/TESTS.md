@@ -6252,3 +6252,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `Execute` message with `job_id="job-tb"`, `graph={"nodes": []}`. `execute_graph` raises `ValueError("traceback test")`.
 **Expected output:** send_event() called with a `Failed` event whose `traceback` field is a non-empty string containing "Traceback".
 **Acceptance:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py::TestDispatchLoopExecuteFailure::test_execute_failure_traceback_is_populated -v` exits 0.
+
+---
+
+## test_canceljob_sets_cancel_flag_for_current_job (worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** `worker_main.py`'s `_dispatch_loop()` now handles `CancelJob` messages by matching the incoming `job_id` against the currently-executing job and setting its `NodeContext.cancel_flag` (a `threading.Event`).
+**Tests:** CancelJob for the currently-executing job sets the cancel_flag so `execute_graph()` observes it before the next node's execute() call.
+**Mode:** mock
+**Inputs:** Execute message with `job_id="job-cancel"`, then CancelJob for the same `job_id`. `execute_graph` is mocked to capture the cancel_flag from the ctx_factory.
+**Expected output:** The cancel_flag captured from the ctx_factory has `is_set() == True`.
+**Acceptance:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py::TestDispatchLoopCancelJob::test_canceljob_sets_cancel_flag_for_current_job -v` exits 0.
+
+---
+
+## test_canceljob_for_nonmatching_job_id_is_ignored (worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** `_dispatch_loop()`'s CancelJob branch compares the incoming `job_id` against `current_job_id` — a mismatch is normal (race between job completion and cancel arrival).
+**Tests:** CancelJob for a non-matching job_id is logged at DEBUG and ignored without error.
+**Mode:** mock
+**Inputs:** Execute message with `job_id="job-a"`, then CancelJob for `job_id="job-b"`.
+**Expected output:** No exception raised; dispatch loop exits cleanly; no Cancelled or Failed event sent.
+**Acceptance:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py::TestDispatchLoopCancelJob::test_canceljob_for_nonmatching_job_id_is_ignored -v` exits 0.
+
+---
+
+## test_cancelled_execution_sends_cancelled_event (worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** When `execute_graph()` returns `{"cancelled": True}` (because the cancel_flag was set), the dispatch loop sends a `Cancelled` event to the supervisor.
+**Tests:** When executor stops due to cancel_flag, `WorkerEvent::Cancelled{job_id}` is sent back to supervisor.
+**Mode:** mock
+**Inputs:** Execute message with `job_id="job-cancelled"`, then CancelJob for the same `job_id`. `execute_graph` is mocked to return `{"cancelled": True}`.
+**Expected output:** send_event() called with `{"_type": "Cancelled", "job_id": "job-cancelled"}`.
+**Acceptance:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py::TestDispatchLoopCancelJob::test_cancelled_execution_sends_cancelled_event -v` exits 0.
+
+---
+
+## test_canceljob_after_job_completed_is_ignored (worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** Tracking variables (`current_job_id`, `current_cancel_flag`) are reset to `None` after each job completes. A CancelJob arriving after completion finds no current job and is ignored.
+**Tests:** CancelJob for a completed job (job_id no longer current) is ignored without error or event.
+**Mode:** mock
+**Inputs:** Execute message with `job_id="job-done"` (completes normally), then CancelJob for the same `job_id`.
+**Expected output:** Completed event sent; no Cancelled event sent; no exception raised.
+**Acceptance:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py::TestDispatchLoopCancelJob::test_canceljob_after_job_completed_is_ignored -v` exits 0.
