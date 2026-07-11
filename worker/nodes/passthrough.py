@@ -1,5 +1,8 @@
 """PassThrough node — trivial no-op passthrough for testing the dispatch pipeline."""
 
+import os
+import time
+
 from worker.nodes.base import BaseNode, NodeContext, SlotSpec, register
 
 
@@ -52,6 +55,14 @@ class PassThrough(BaseNode):
         """
         if ctx.mock:
             # Mock branch: return input unchanged (no torch, no side effects).
+            # Apply ANVILML_MOCK_NODE_DELAY_MS if set — this env var creates an
+            # artificial delay per node execution so that jobs remain observable
+            # in intermediate states (Queued/Running) long enough for operations
+            # like cancellation to arrive before the job completes. The delay is
+            # in milliseconds; 0 or unset means no delay.
+            delay_ms = int(os.environ.get("ANVILML_MOCK_NODE_DELAY_MS", "0"))
+            if delay_ms > 0:
+                time.sleep(delay_ms / 1000.0)
             return {"value": inputs["value"]}
         else:
             # Real branch: same passthrough logic — no torch dependency exists

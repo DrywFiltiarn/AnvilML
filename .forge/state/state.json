@@ -162,16 +162,17 @@
     "P17-B2",
     "P17-B3",
     "P17-B4",
-    "P17-B5"
+    "P17-B5",
+    "P17-C1"
   ],
-  "in_progress": "P17-C1",
+  "in_progress": "P17-D1",
   "plan_approved": true,
   "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-11T17:30:41+0200",
-  "plan_approval_message_id": "1525520407204204825",
+  "last_updated": "2026-07-11T19:07:53+0200",
+  "plan_approval_message_id": "1525546719104733355",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1525520405538934884",
+  "plan_report_message_id": "1525546716907176104",
   "impl_report_message_id": null
 }
