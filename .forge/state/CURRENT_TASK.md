@@ -1,4 +1,4 @@
-Task: P17-B2
+Task: P17-B3
 Step: IMPLEMENT
 Status: COMPLETE
-Updated: 2026-07-11T13:31:00+0200
+Updated: 2026-07-11T13:30:00Z

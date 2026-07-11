@@ -158,16 +158,17 @@
     "P16-E1",
     "P17-A1",
     "P17-A2",
-    "P17-B1"
+    "P17-B1",
+    "P17-B2"
   ],
-  "in_progress": "P17-B2",
+  "in_progress": "P17-B3",
   "plan_approved": true,
-  "current_plan": "1. **Add `execute_graph()` function to `worker/executor.py`.**\n\n   Import `NODE_REGISTRY` from `worker.nodes.base` and `NodeContext` inside the function body (not at module level, following the established pattern in `worker_main.py` where `worker.ipc` is also imported inside functions to avoid transitive torch dependencies).\n\n   Function signature: `def execute_graph(graph: dict, ctx_factory) -> dict:`\n\n   Implementation steps:\n   a. Call `topo_sort(graph)` to get nodes in dependency order. Log at DEBUG level the number of nodes being executed.\n   b. Initialize an empty `results = {}` dict to accumulate node outputs keyed by node ID.\n   c. Create the context by calling `ctx_factory` \u2014 this factory (produced by `P17-B3`'s caller) will construct a `NodeContext` with a `threading.Event()` as the `cancel_flag`.\n   d. Iterate over each node in the sorted list:\n      - **Before** calling `node_instance.execute()`, check `ctx.cancel_flag.is_set()`. If set, return `{\"cancelled\": True}` immediately. This is the cooperative cancellation checkpoint.\n      - Instantiate the node class from `NODE_REGISTRY[node[\"type\"]]`.\n      - Call `node_instance.execute(ctx, **node.get(\"inputs\", {}))`.\n      - Store the result: `results[node[\"id\"]] = node_output`.\n   e. After the loop completes normally (no cancellation), return `{\"cancelled\": False}`.\n\n2. **Add tests to `worker/tests/test_executor.py`.**\n\n   Create a mock `NodeContext` for testing that does not import `torch` or any node module. The mock context needs:\n   - `cancel_flag`: a `threading.Event()`\n   - `emit`: a simple lambda that stores calls (no IPC needed)\n   - Other fields (`job_id`, `device`, `caps`, `pipeline_cache`, `mock`) with dummy values\n\n   Create a mock node class that:\n   - Implements `execute(ctx, **inputs)` and returns `{\"output\": inputs.get(\"value\", None)}`\n   - Can be registered in a local test-time `NODE_REGISTRY` or the test can use a minimal approach where the node class is a simple callable\n\n   Test cases (5 minimum):\n   a. `test_execute_graph_cancel_before_first`: cancel_flag is set before the loop starts. Asserts `execute_graph()` returns `{\"cancelled\": True}` and no node's `execute()` was called.\n   b. `test_execute_graph_cancel_after_first`: Two-node graph. cancel_flag is set inside the first node's `execute()` (via a mutable flag shared with the test). Asserts the first node ran, the second did not, and result is `{\"cancelled\": True}`.\n   c. `test_execute_graph_no_cancel_completes`: No cancel_flag set. Asserts all nodes execute in order, outputs are collected, and result is `{\"cancelled\": False}`.\n   d. `test_execute_graph_execution_order_matches_topo_sort`: Graph with a known topological order. Asserts the actual execution order (tracked via a list) matches the `topo_sort()` output order.\n   e. `test_execute_graph_results_dict`: Asserts the returned dict contains outputs keyed by node ID for all executed nodes.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-11T12:08:20+0200",
-  "plan_approval_message_id": "1525442685685465088",
+  "last_updated": "2026-07-11T12:53:40+0200",
+  "plan_approval_message_id": "1525453520462155918",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1525442683970125885",
+  "plan_report_message_id": "1525453518822051901",
   "impl_report_message_id": null
 }

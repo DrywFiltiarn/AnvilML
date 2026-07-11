@@ -74,88 +74,16 @@ def _import_nodes() -> list[dict]:
 
     return result
 
-
-def _execute_job(job_id: str, graph: dict, device: str, caps: dict, mock: bool) -> None:
-    """INTERIM STOPGAP — manual patch, applied ahead of Phase 17.
-
-    Runs every node in *graph["nodes"]* in list order (no topological sort,
-    no edge/dependency resolution) and reports the outcome back to the Rust
-    supervisor via ``Completed``/``Failed``.
-
-    This exists solely so Phase 14's own Runnable Proof (`P14-E1` — a
-    submitted `PassThrough` job must observably reach `Completed`) is
-    achievable now, rather than only after Phase 17 lands. It is
-    deliberately narrow: single-node, no-dependency graphs only, matching
-    exactly what `PassThrough` (`P14-B1`) needs.
-
-    DO NOT EXTEND THIS FUNCTION. Phase 17 (`P17-B1`/`P17-B2`) builds the
-    real `worker/executor.py::execute_graph()` — topological sort, per-node
-    `NodeContext` construction, cancellation checkpoints, `Progress`/
-    `ImageReady` emission. When Phase 17 executes, this function and its
-    call site below must be deleted wholesale and replaced by a call to
-    `execute_graph()`, not merged with it. See `docs/PHASES_GRAPH.md`'s
-    "Interim Job-Completion Patch" note.
-
-    Args:
-        job_id: The job's UUID, as the string received over IPC (Rust's
-            `Uuid` serializes to a plain string via msgpack) — passed back
-            verbatim in the `Completed`/`Failed` event, never parsed.
-        graph: The raw graph dict from the `Execute` message's `graph`
-            field — expected shape: `{"nodes": [{"id", "type", "inputs"}]}`.
-        device: Torch device string (unused by `PassThrough`; threaded
-            through for parity with `NodeContext`'s real field shape).
-        caps: The worker's `InferenceCaps`-shaped dict (real or mock).
-        mock: Whether this worker is running in mock mode.
-    """
-    import threading
-    import time
-    import traceback as tb_module
-
-    import worker.ipc as ipc
-    from worker.nodes.base import NODE_REGISTRY, NodeContext
-
-    start = time.monotonic()
-    try:
-        ctx = NodeContext(
-            job_id=job_id,
-            device=device,
-            caps=caps,
-            cancel_flag=threading.Event(),
-            emit=ipc.send_event,
-            pipeline_cache=None,
-            mock=mock,
-        )
-        for node in graph.get("nodes", []):
-            node_cls = NODE_REGISTRY[node["type"]]
-            node_instance = node_cls()
-            node_instance.execute(ctx, **node.get("inputs", {}))
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-        ipc.send_event({"_type": "Completed", "job_id": job_id, "elapsed_ms": elapsed_ms})
-        logger.info("interim_execute: job_id=%s completed, elapsed_ms=%d", job_id, elapsed_ms)
-    except Exception as exc:  # noqa: BLE001 - must report to supervisor, never crash the loop
-        logger.error("interim_execute: job_id=%s failed: %s", job_id, exc)
-        ipc.send_event({
-            "_type": "Failed",
-            "job_id": job_id,
-            "error": str(exc),
-            "traceback": tb_module.format_exc(),
-        })
-
-
 def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = False) -> None:
     """Receive messages from the supervisor in a loop, answering keepalive
-    Pings and exiting cleanly on Shutdown; `Execute` is handled by the
-    INTERIM STOPGAP `_execute_job()` above (manual patch, pre-Phase-17);
-    all other message types are still logged and skipped.
+    Pings, executing jobs on a background thread, and exiting cleanly on
+    Shutdown; all other message types are logged and skipped.
 
-    This started as a pure placeholder for Phase 9 (log-and-continue for
-    everything). `CancelJob` routing to a real executor remains a later
-    phase's concern (Phase 17), correctly out of scope here.
-
-    `Ping` and `Shutdown` are two of the exceptions, added here rather than
-    deferred, for the same underlying reason: the Rust side unconditionally
-    depends on both, and confirmed by an exhaustive search across every
-    phase's task doc, no task anywhere ever wires either into this loop.
+    `Ping` and `Shutdown` are handled directly on the dispatch thread.
+    `Execute` spawns a background thread that calls ``execute_graph()``
+    with a job-scoped ``NodeContext`` factory, keeping the dispatch loop
+    responsive to ``Ping`` and ``CancelJob`` (handled by a later task)
+    while the job executes.
 
     `Ping`: the Rust-side `KeepaliveWatchdog` (`P8-C2`/`P8-E5`) has been
     unconditionally active since Phase 8, sending a `Ping` immediately
@@ -233,18 +161,55 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
             logger.info("dispatch_loop: received Shutdown, exiting cleanly")
             break
         elif msg_type == "Execute":
-            # INTERIM STOPGAP — manual patch, pre-Phase-17. Runs the job
-            # synchronously on this thread (blocking the dispatch loop for
-            # the job's duration) via `_execute_job()` above. Phase 17's
-            # real implementation runs jobs on a background thread so Ping
-            # keepalives and CancelJob remain responsive during execution —
-            # this stopgap does not, since PassThrough-only jobs are
-            # effectively instantaneous. DO NOT extend this branch; replace
-            # it wholesale when Phase 17 lands.
+            # Build a ctx_factory for this job — creates a NodeContext with
+            # a per-job cancel_flag so CancelJob (handled by a later task)
+            # can signal cancellation to the background execution thread.
+            import threading
+            import time
+
+            # Import execute_graph inside the handler (not at module level)
+            # to avoid transitive torch dependencies during test collection.
+            from worker.executor import execute_graph  # noqa: PLC0415
+
             job_id = msg["job_id"]
             graph = msg["graph"]
-            logger.info("dispatch_loop: received Execute job_id=%s", job_id)
-            _execute_job(job_id, graph, device, caps or {}, mock)
+            logger.info("dispatch_loop: executing job_id=%s", job_id)
+
+            # Capture start time before the background thread begins.
+            start = time.monotonic()
+
+            def run_execute() -> None:
+                """Background thread target — runs execute_graph on a job-scoped context."""
+                from worker.nodes.base import NodeContext
+
+                cancel_flag = threading.Event()
+                ctx_factory = lambda: NodeContext(
+                    job_id=job_id,
+                    device=device,
+                    caps=caps,
+                    cancel_flag=cancel_flag,
+                    emit=ipc.send_event,
+                    pipeline_cache=None,
+                    mock=mock,
+                )
+                # execute_graph returns {"cancelled": True} or
+                # {"cancelled": False, "results": {...}}.
+                # On success (no cancellation), the background thread
+                # returns normally and the main loop sends the Completed
+                # event below.
+                execute_graph(graph, ctx_factory)
+
+            # Spawn a background thread so the dispatch loop remains
+            # responsive to CancelJob and Ping messages while the job
+            # executes. This is the key difference from the interim
+            # stopgap which ran _execute_job() synchronously on this thread.
+            thread = threading.Thread(target=run_execute, daemon=True)
+            thread.start()
+            thread.join()  # Wait for execution to complete.
+
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            ipc.send_event({"_type": "Completed", "job_id": job_id, "elapsed_ms": elapsed_ms})
+            logger.info("dispatch_loop: job completed job_id=%s elapsed_ms=%d", job_id, elapsed_ms)
 
 
 

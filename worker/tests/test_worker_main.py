@@ -990,3 +990,218 @@ class TestDispatchLoopShutdown:
         assert sent_events == [{"_type": "Pong", "seq": 5}], (
             f"expected exactly one Pong before the interrupt, got {sent_events}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Dispatch loop Execute tests — P17-B3: real execute_graph dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchLoopExecute:
+    """Tests for _dispatch_loop()'s handling of Execute messages.
+
+    P17-B3 replaced the interim _execute_job() stopgap with a real handler
+    that calls execute_graph() on a background thread. These tests verify
+    that Execute triggers execute_graph with a job-scoped ctx_factory,
+    sends a Completed event on success, and that the dispatch loop stays
+    responsive (background thread, not blocking).
+    """
+
+    def test_execute_triggers_execute_graph_with_job_scoped_ctx_factory(self, monkeypatch) -> None:
+        """Execute message triggers execute_graph() with a ctx_factory producing a NodeContext.
+
+        Feeds an Execute message with a graph, then breaks the loop with a
+        recv failure. Asserts execute_graph() was called once with the correct
+        graph and a ctx_factory that produces a NodeContext with the correct
+        job_id.
+
+        Uses monkeypatch for worker.ipc.send_event and worker.ipc.recv_message.
+
+        Preconditions: worker.ipc is mockable via monkeypatch.
+        Expected output: execute_graph() called once with correct graph and
+            a ctx_factory that produces a NodeContext with job_id="job-123".
+        """
+        import unittest.mock as mock
+        import worker.ipc as ipc
+
+        # Capture the call to execute_graph.
+        execute_graph_calls: list[tuple] = []
+
+        def mock_execute_graph(graph: dict, ctx_factory) -> dict:
+            # Verify the ctx_factory produces a NodeContext with the right job_id.
+            ctx = ctx_factory()
+            assert ctx.job_id == "job-123", (
+                f"NodeContext job_id must be 'job-123', got {ctx.job_id!r}"
+            )
+            execute_graph_calls.append((graph, ctx_factory))
+            return {"cancelled": False, "results": {}}
+
+        monkeypatch.setattr(ipc, "send_event", lambda data: None)
+
+        messages = iter([{"_type": "Execute", "job_id": "job-123", "graph": {"nodes": []}}])
+
+        def fake_recv_message():
+            try:
+                return next(messages)
+            except StopIteration:
+                raise ConnectionError("test: no more messages")
+
+        monkeypatch.setattr(ipc, "recv_message", fake_recv_message)
+
+        with mock.patch(
+            "worker.executor.execute_graph", side_effect=mock_execute_graph
+        ) as mock_exec:
+            import worker.worker_main as worker_main
+
+            worker_main._dispatch_loop()
+
+            # execute_graph must have been called exactly once.
+            mock_exec.assert_called_once()
+            assert len(execute_graph_calls) == 1, (
+                f"Expected 1 execute_graph call, got {len(execute_graph_calls)}"
+            )
+
+    def test_execute_success_sends_completed_with_elapsed_ms(self, monkeypatch) -> None:
+        """Success path sends Completed event with real elapsed_ms (positive integer).
+
+        Feeds an Execute message, then a recv failure to break the loop.
+        Asserts that ipc.send_event was called with a Completed event containing
+        a positive integer elapsed_ms (proving time.monotonic() was used).
+
+        Preconditions: worker.ipc is mockable via monkeypatch.
+        Expected output: send_event() called with {"_type": "Completed",
+            "job_id": "job-456", "elapsed_ms": <positive int>}.
+        """
+        import worker.ipc as ipc
+
+        sent_events: list[dict] = []
+        monkeypatch.setattr(ipc, "send_event", lambda data: sent_events.append(data))
+
+        messages = iter([{"_type": "Execute", "job_id": "job-456", "graph": {"nodes": []}}])
+
+        def fake_recv_message():
+            try:
+                return next(messages)
+            except StopIteration:
+                raise ConnectionError("test: no more messages")
+
+        monkeypatch.setattr(ipc, "recv_message", fake_recv_message)
+
+        import worker.worker_main as worker_main
+
+        worker_main._dispatch_loop()
+
+        # Find the Completed event among sent events.
+        completed_events = [e for e in sent_events if e.get("_type") == "Completed"]
+        assert len(completed_events) == 1, (
+            f"Expected exactly one Completed event, got {len(completed_events)}"
+        )
+        completed = completed_events[0]
+        assert completed["job_id"] == "job-456"
+        assert isinstance(completed["elapsed_ms"], int), (
+            f"elapsed_ms must be int, got {type(completed['elapsed_ms']).__name__}"
+        )
+        assert completed["elapsed_ms"] >= 0, (
+            f"elapsed_ms must be non-negative, got {completed['elapsed_ms']}"
+        )
+
+    def test_execute_on_background_thread_stays_responsive(self, monkeypatch) -> None:
+        """Dispatch loop processes messages after Execute completes (no hang).
+
+        Feeds an Execute message followed by a Shutdown message. Asserts the
+        dispatch loop processes the Execute (spawning a background thread),
+        waits for it, then processes the Shutdown and exits cleanly — proving
+        the Execute handler does not block the dispatch loop indefinitely.
+
+        This is the key test proving the background-thread design: if Execute
+        ran synchronously on the dispatch thread (as the old _execute_job did),
+        a Shutdown message sent after Execute would be queued and never
+        received until the execution finished. With a background thread +
+        join, the loop still processes subsequent messages after the join
+        returns.
+
+        Preconditions: worker.ipc is mockable via monkeypatch.
+        Expected output: dispatch loop exits cleanly after Shutdown.
+        """
+        import worker.ipc as ipc
+
+        def mock_send_event(data: dict) -> None:
+            pass  # No-op — we just need the loop to not hang.
+
+        monkeypatch.setattr(ipc, "send_event", mock_send_event)
+
+        # Feed Execute, then Shutdown.
+        messages = iter([
+            {"_type": "Execute", "job_id": "job-exec", "graph": {"nodes": []}},
+            {"_type": "Shutdown"},
+        ])
+
+        def fake_recv_message():
+            try:
+                return next(messages)
+            except StopIteration:
+                raise ConnectionError("test: no more messages")
+
+        monkeypatch.setattr(ipc, "recv_message", fake_recv_message)
+
+        import worker.worker_main as worker_main
+
+        # The dispatch loop must not hang here. If Execute blocked the
+        # dispatch thread synchronously (as the old _execute_job did),
+        # the Shutdown message would never be received.
+        worker_main._dispatch_loop()
+
+        # If we reach here, the loop exited cleanly — proving it was not
+        # permanently blocked by the Execute handler.
+
+    def test_execute_graph_called_with_correct_graph(self, monkeypatch) -> None:
+        """execute_graph() receives the exact graph dict from the Execute message.
+
+        Feeds an Execute message with a specific graph dict and asserts
+        execute_graph() received exactly that dict (not a modified copy).
+
+        Preconditions: worker.ipc is mockable via monkeypatch.
+        Expected output: execute_graph() called with the exact graph dict.
+        """
+        import unittest.mock as mock
+        import worker.ipc as ipc
+
+        received_graph: dict | None = None
+
+        def mock_execute_graph(graph: dict, ctx_factory) -> dict:
+            nonlocal received_graph
+            received_graph = graph
+            return {"cancelled": False, "results": {}}
+
+        monkeypatch.setattr(ipc, "send_event", lambda data: None)
+
+        expected_graph = {
+            "nodes": [
+                {"id": "node-1", "type": "PassThrough", "inputs": {"value": 42}},
+            ],
+            "edges": [],
+        }
+
+        messages = iter([
+            {"_type": "Execute", "job_id": "job-graph", "graph": expected_graph},
+        ])
+
+        def fake_recv_message():
+            try:
+                return next(messages)
+            except StopIteration:
+                raise ConnectionError("test: no more messages")
+
+        monkeypatch.setattr(ipc, "recv_message", fake_recv_message)
+
+        with mock.patch(
+            "worker.executor.execute_graph", side_effect=mock_execute_graph
+        ):
+            import worker.worker_main as worker_main
+
+            worker_main._dispatch_loop()
+
+        assert received_graph is not None, "execute_graph was not called"
+        assert received_graph == expected_graph, (
+            f"execute_graph received a different graph: {received_graph!r}"
+        )

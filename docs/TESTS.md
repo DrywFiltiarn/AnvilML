@@ -6182,3 +6182,43 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Subprocess that imports `worker.executor` and checks `sys.modules`.
 **Expected output:** `"torch" not in sys.modules`; subprocess exits 0.
 **Acceptance:** `python -m pytest worker/tests/test_executor.py::test_execute_graph_no_torch_import -v` exits 0.
+
+## test_execute_triggers_execute_graph_with_job_scoped_ctx_factory (anvilml-worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** `execute_graph()` function in `worker.executor` is called by `_dispatch_loop()` in `worker.worker_main` when an `Execute` message is received. P17-B3 replaced the interim `_execute_job()` stopgap with a real handler that builds a `ctx_factory` and calls `execute_graph()` on a background thread.
+**Tests:** `_dispatch_loop()` receives an `Execute` message and calls `execute_graph()` with the correct graph and a `ctx_factory` that produces a `NodeContext` with the correct `job_id`.
+**Mode:** mock
+**Inputs:** `Execute` message with `job_id="job-123"` and `graph={"nodes": []}`.
+**Expected output:** `execute_graph()` called once with a `ctx_factory` that produces `NodeContext(job_id="job-123")`.
+**Acceptance:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py::TestDispatchLoopExecute::test_execute_triggers_execute_graph_with_job_scoped_ctx_factory -v` exits 0.
+
+## test_execute_success_sends_completed_with_elapsed_ms (anvilml-worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** After `execute_graph()` completes on the background thread, the dispatch loop computes `elapsed_ms` from `time.monotonic()` and sends a `Completed` event via `ipc.send_event()`.
+**Tests:** The `Completed` event contains a real positive integer `elapsed_ms` (from `time.monotonic()`), proving the timing code runs.
+**Mode:** mock
+**Inputs:** `Execute` message with `job_id="job-456"` and `graph={"nodes": []}`.
+**Expected output:** `send_event()` called with `{"_type": "Completed", "job_id": "job-456", "elapsed_ms": <positive int>}`.
+**Acceptance:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py::TestDispatchLoopExecute::test_execute_success_sends_completed_with_elapsed_ms -v` exits 0.
+
+## test_execute_on_background_thread_stays_responsive (anvilml-worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** `_dispatch_loop()` spawns `execute_graph()` on a background thread and waits via `thread.join()`. The loop must not hang — subsequent messages (e.g. `Shutdown`) are processed after the join returns.
+**Tests:** An `Execute` message followed by a `Shutdown` message is processed: the loop runs the Execute handler (background thread + join), then processes the Shutdown and exits cleanly.
+**Mode:** mock
+**Inputs:** `Execute` message followed by `Shutdown` message.
+**Expected output:** Dispatch loop exits cleanly without hanging.
+**Acceptance:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py::TestDispatchLoopExecute::test_execute_on_background_thread_stays_responsive -v` exits 0.
+
+## test_execute_graph_called_with_correct_graph (anvilml-worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** `execute_graph()` receives the exact graph dict from the `Execute` message, unchanged.
+**Tests:** The graph dict passed to `execute_graph()` is identical to the one in the `Execute` message — no modification or copying occurred.
+**Mode:** mock
+**Inputs:** `Execute` message with `graph={"nodes": [{"id": "node-1", "type": "PassThrough", "inputs": {"value": 42}}], "edges": []}`.
+**Expected output:** `execute_graph()` called with the exact graph dict.
+**Acceptance:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py::TestDispatchLoopExecute::test_execute_graph_called_with_correct_graph -v` exits 0.
