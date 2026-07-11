@@ -43,14 +43,25 @@ the rescan endpoint, even though `ServerConfig.model_dirs` is already
 configured by that point. Per the project owner, models must always be scanned
 on startup, so `P18-C3` wires that trigger into `backend/main.rs` directly,
 reusing `P18-C2`'s own internal trigger function rather than duplicating it.
-Separately, the same audit pass that found this confirmed `P18-D2`'s premise —
-that "the pool's existing respawn-on-exit path (also Phase 8) already produces
-exactly the restart behavior needed" — was not actually true when `P18-D2` was
-authored: Phase 8's original task set never wired `RespawnPolicy` into a real
-respawn loop. That gap is now closed by `P900`-adjacent additions to Phase 8
-itself (`P8-E4`/`P8-E5`, inserted before Phase 8 executes), so `P18-D2`'s own
-text requires no change — it will simply become true once Phase 8 runs with
-its corrected task set, rather than needing its own retrofit here.
+Separately, the same audit pass that found this originally believed `P18-D2`'s
+premise — that "the pool's existing respawn-on-exit path (also Phase 8) already
+produces exactly the restart behavior needed" — would become true automatically
+once Phase 8's `P8-E4`/`P8-E5` wired `RespawnPolicy` into a real respawn loop,
+requiring no change to `P18-D2` itself. **That belief was wrong, confirmed
+against the live `P17`-verified repo during P18 planning:** `P8-E4`/`P8-E5`
+only wired respawn for the *crash* path (`RunOutcome::Crashed{should_respawn:
+true}`). `request_shutdown()` drives a different arm of the same `match` —
+`RunOutcome::ShutdownRequested` — which calls `graceful_shutdown_child()` and
+then `break`s the worker's supervising task permanently; it never loops back to
+respawn, regardless of `P8-E4`/`P8-E5`. `request_shutdown()` alone was never
+going to restart a worker, no matter which Phase 8 task set it ran against.
+This is a second, independent gap from the one `P8-E4`/`P8-E5` fixed, not a
+consequence of it. **Fixed by splitting the original `P18-D2` into `P18-D2`**
+(extracts a reusable `WorkerPool::spawn_worker()` from `spawn_all()`'s one-shot
+bulk-construction loop) **and `P18-D3`** (the actual restart handler: shuts the
+old worker down, awaits it, then explicitly calls `spawn_worker()` to bring up
+its replacement — composition of two real steps, not an assumed side effect).
+`P18-D1`'s `defers_to` was updated from `P18-D2` to `P18-D3` accordingly.
 
 ---
 
@@ -61,7 +72,7 @@ its corrected task set, rather than needing its own retrofit here.
 | A | Final AppState fields | P18-A1 | `hardware`, `env_report` |
 | B | System handlers | P18-B1 … P18-B2 | `/v1/system`, `/v1/system/env`, then `/v1/system/versions` |
 | C | Model handlers | P18-C1 … P18-C3 | `model_store` field + list/get, rescan, then startup auto-scan |
-| D | Worker handlers | P18-D1 … P18-D2 | List, then restart via existing respawn machinery |
+| D | Worker handlers | P18-D1 … P18-D3 | List, extract reusable single-worker spawn, then restart via explicit respawn |
 | E | Job deletion | P18-E1 … P18-E2 | Single-job delete, then bulk clear |
 | F | OpenAPI | P18-F1 … P18-F2 | Real generation, then the CI gate |
 | G | Proof | P18-G1 | The phase's Runnable Proof |
@@ -244,7 +255,8 @@ cargo test -p anvilml --test startup_scan_tests
 **Key implementation notes:**
 - Reuses a `list()`-equivalent method on `WorkerPool` if Phase 16's `stats_tick`
   task already added one — check before adding a duplicate.
-- `POST /v1/workers/:id/restart` is explicitly deferred to the next task.
+- `POST /v1/workers/:id/restart` is out of scope for this task, deferred via
+  `defers_to` to `P18-D3`.
 
 **Acceptance criterion:**
 ```bash
@@ -252,24 +264,57 @@ cargo test -p anvilml-server --features mock-hardware --test workers_tests
 # -> >=3 tests, exits 0
 ```
 
-#### P18-D2: anvilml-server: POST /v1/workers/:id/restart via existing respawn machinery
+#### P18-D2: anvilml-worker: WorkerPool::spawn_worker() reusable single-worker spawn
 
-**Goal:** Expose worker restart, composed entirely from machinery that already
-exists — no new restart-specific logic.
+**Goal:** Extract a reusable single-worker spawn method so a future restart
+task can bring up one replacement worker without duplicating `spawn_all()`'s
+bulk-construction logic.
+
+**Files to create or modify:**
+- `crates/anvilml-worker/src/pool.rs` — extracts `spawn_worker()`.
+
+**Key implementation notes:**
+- Pull `spawn_all()`'s per-device body (`WorkerEnv` build, `ManagedWorker::new()`,
+  `tokio::spawn(worker.run(...))`, `WorkerHandle` construction, push into
+  `self.handles`) into `spawn_worker(&mut self, device: GpuDevice) ->
+  Result<WorkerHandle, AnvilError>`. `spawn_all()` becomes a thin loop calling
+  it once per device.
+- Pure extraction — no behavior change. Existing `pool_tests.rs` must pass
+  unmodified.
+
+**Acceptance criterion:**
+```bash
+cargo test -p anvilml-worker --features mock-hardware --test pool_tests
+# -> >=5 tests, exits 0 (unchanged from Phase 8)
+```
+
+#### P18-D3: anvilml-server: POST /v1/workers/:id/restart via explicit respawn
+
+**Goal:** Expose worker restart. Unlike the original `P18-D2` text, this is
+**not** free composition of existing machinery — `request_shutdown()` alone
+does not trigger a respawn (see the retrofit note above), so this task
+explicitly drives both halves: shut the old worker down, then spawn its
+replacement.
 
 **Files to create or modify:**
 - `crates/anvilml-server/src/handlers/workers.rs` — adds `restart_worker()`.
 
 **Key implementation notes:**
-- This is **composition, not new logic**: `request_shutdown()` (Phase 8) plus the
-  pool's existing respawn-on-exit path (also Phase 8) already produces exactly the
-  restart behavior needed. Building a separate, parallel "restart" code path would
-  duplicate logic that already exists and works.
+- Look up the `WorkerHandle` and its `GpuDevice` by `worker_id`. `404` via
+  `AnvilError::WorkerNotFound` if unknown; `409` if the handle is already
+  mid-shutdown or gone.
+- Call `request_shutdown()`, await its `join_handle` bounded by
+  `graceful_shutdown_timeout` (same bound `pool.rs`'s `shutdown_all()` uses),
+  then call `spawn_worker()` (`P18-D2`) with the same device and replace
+  `self.handles[i]` with the new handle.
+- Return `202` once the new worker's task is spawned, not once it reaches
+  `Ready` — consistent with the async-completion pattern the other endpoints
+  in this phase use.
 
 **Acceptance criterion:**
 ```bash
 cargo test -p anvilml-server --features mock-hardware --test workers_tests
-# -> >=6 tests total in the file, exits 0
+# -> >=7 tests total in the file, exits 0
 ```
 
 ---

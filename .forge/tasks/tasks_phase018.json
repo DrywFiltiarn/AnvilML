@@ -81,21 +81,33 @@
     "prereqs": [
       "P18-A1"
     ],
-    "context": "Create crates/anvilml-server/src/handlers/workers.rs per \u00a713.4: list_workers(State(state): State<AppState>) -> Json<Vec<WorkerInfo>> delegates to state.workers (WorkerPool, Phase 14's P14-C1) via a list()-equivalent method (reuse one if Phase 16's P16-D1 stats_tick already added one to WorkerPool - do not duplicate; add it here only if genuinely absent). POST /v1/workers/:id/restart is the next task's scope - do not add it here. Update handlers/mod.rs and build_router() for the GET route. Acceptance: >=3 tests in crates/anvilml-server/tests/workers_tests.rs: list returns the current pool state, list with zero workers returns an empty array not an error, response shape matches WorkerInfo's serde representation; `cargo test -p anvilml-server --features mock-hardware --test workers_tests` exits 0.",
+    "context": "Create crates/anvilml-server/src/handlers/workers.rs per \u00a713.4: list_workers(State(state): State<AppState>) -> Json<Vec<WorkerInfo>> delegates to state.workers (WorkerPool, Phase 14's P14-C1) via a list()-equivalent method (reuse one if Phase 16's P16-D1 stats_tick already added one to WorkerPool - do not duplicate; add it here only if genuinely absent). POST /v1/workers/:id/restart is out of scope for this task, deferred via defers_to to P18-D3 (this group's restart handler). Update handlers/mod.rs and build_router() for the GET route. Acceptance: >=3 tests in crates/anvilml-server/tests/workers_tests.rs: list returns the current pool state, list with zero workers returns an empty array not an error, response shape matches WorkerInfo's serde representation; `cargo test -p anvilml-server --features mock-hardware --test workers_tests` exits 0.",
     "tags": [],
     "defers_to": [
-      "P18-D2"
+      "P18-D3"
     ]
   },
   {
     "id": "P18-D2",
-    "description": "anvilml-server: POST /v1/workers/:id/restart via existing respawn machinery",
+    "description": "anvilml-worker: WorkerPool::spawn_worker() reusable single-worker spawn",
     "phase": "18",
     "project": "anvilml",
     "prereqs": [
       "P18-D1"
     ],
-    "context": "Extend crates/anvilml-server/src/handlers/workers.rs with restart_worker(State, Path<String>) -> Result<StatusCode, AnvilError>, deferred by P18-D1: looks up the WorkerHandle by worker_id, calls request_shutdown() (Phase 8's P8-E1) to trigger a graceful restart via the EXISTING respawn machinery (Phase 8's P8-D1) - needs NO new restart logic, graceful shutdown plus the pool's existing respawn-on-exit path already produces a restart; confirm this composition works rather than building a separate code path. 404 via AnvilError::WorkerNotFound if the id is unknown. Update build_router() for POST /v1/workers/:id/restart. Acceptance: >=3 new tests in workers_tests.rs: restart on a known worker_id returns 202 and triggers shutdown (observable via handle status), restart on an unknown id returns 404, the respawned worker reaches Idle with no new restart-specific code path; `cargo test -p anvilml-server --features mock-hardware --test workers_tests` exits 0 (>=6 total).",
+    "context": "Refactor crates/anvilml-worker/src/pool.rs: extract spawn_all()'s per-device worker-construction body (WorkerEnv build, ManagedWorker::new(), tokio::spawn(worker.run(...)), WorkerHandle construction, push into self.handles) into a new method spawn_worker(&mut self, device: GpuDevice) -> Result<WorkerHandle, AnvilError>. spawn_all() becomes a thin loop calling spawn_worker() once per device and pushing device into self.devices. Pure extraction - no behavior change. Needed because P18-D3's restart handler requires spawning a single replacement worker into an existing slot, which spawn_all() (a one-shot bulk-construction loop) cannot currently do. Acceptance: existing pool_tests.rs suite (Phase 8, >=5 tests) continues to pass unmodified; `cargo test -p anvilml-worker --features mock-hardware --test pool_tests` exits 0.",
+    "tags": [],
+    "defers_to": []
+  },
+  {
+    "id": "P18-D3",
+    "description": "anvilml-server: POST /v1/workers/:id/restart via explicit respawn",
+    "phase": "18",
+    "project": "anvilml",
+    "prereqs": [
+      "P18-D2"
+    ],
+    "context": "Audit finding (verified against live code): request_shutdown() drives run() into RunOutcome::ShutdownRequested, which breaks the loop permanently (managed.rs), NOT the crash-respawn path (Crashed{should_respawn:true} only) - request_shutdown() alone never restarts a worker. Fix: extend crates/anvilml-server/src/handlers/workers.rs with restart_worker(State, Path<String>) -> Result<StatusCode, AnvilError>: look up WorkerHandle + GpuDevice by worker_id (404 unknown, 409 mid-shutdown), call request_shutdown(), await join_handle bounded by graceful_shutdown_timeout, then pool.spawn_worker(device) (P18-D2), replacing self.handles[i]. Return 202 once spawned, not once Ready. Wire build_router(). Acceptance: >=4 new tests in workers_tests.rs: restart returns 202, pool holds a NEW worker generation for that id, unknown id 404, already-shut-down id 409, respawned worker reaches Idle; `cargo test -p anvilml-server --features mock-hardware --test workers_tests` exits 0 (>=7 total).",
     "tags": [],
     "defers_to": []
   },
