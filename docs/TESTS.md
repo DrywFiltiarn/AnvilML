@@ -6222,3 +6222,33 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `Execute` message with `graph={"nodes": [{"id": "node-1", "type": "PassThrough", "inputs": {"value": 42}}], "edges": []}`.
 **Expected output:** `execute_graph()` called with the exact graph dict.
 **Acceptance:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py::TestDispatchLoopExecute::test_execute_graph_called_with_correct_graph -v` exits 0.
+
+## test_execute_failure_sends_failed_event (anvilml-worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** P17-B4 adds exception handling around `execute_graph()` in the Execute handler. When `execute_graph()` raises an exception, the dispatch loop sends `WorkerEvent::Failed{job_id, error, traceback}` instead of silently leaving the job without a terminal event.
+**Tests:** `execute_graph` is mocked to raise `ValueError("test error")`. An `Execute` message is fed, and a `Failed` event is verified to be sent with the correct `job_id` — not `Completed`, not silence.
+**Mode:** mock
+**Inputs:** `Execute` message with `job_id="job-fail"`, `graph={"nodes": []}`.
+**Expected output:** send_event() called with `{"_type": "Failed", "job_id": "job-fail", "error": "test error", "traceback": <non-empty string>}`.
+**Acceptance:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py::TestDispatchLoopExecuteFailure::test_execute_failure_sends_failed_event -v` exits 0.
+
+## test_execute_failure_error_contains_exception_message (anvilml-worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** P17-B4 captures the exception message via `str(exc)` and includes it in the `Failed` event's `error` field, matching the Rust `WorkerEvent::Failed` struct.
+**Tests:** `execute_graph` is mocked to raise `ValueError("specific error message")`. The `error` field in the `Failed` event is asserted to contain the original exception's string representation.
+**Mode:** mock
+**Inputs:** `Execute` message with `job_id="job-err"`, `graph={"nodes": []}`. `execute_graph` raises `ValueError("specific error message")`.
+**Expected output:** send_event() called with a `Failed` event whose `error` field contains "specific error message".
+**Acceptance:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py::TestDispatchLoopExecuteFailure::test_execute_failure_error_contains_exception_message -v` exits 0.
+
+## test_execute_failure_traceback_is_populated (anvilml-worker)
+
+**File:** `worker/tests/test_worker_main.py`
+**Context:** P17-B4 uses `traceback.format_exc()` to capture the full stack trace and includes it in the `Failed` event's `traceback` field, enabling the supervisor to diagnose the failure.
+**Tests:** `execute_graph` is mocked to raise an exception. The `traceback` field in the `Failed` event is asserted to be a non-empty string containing "Traceback" formatting markers.
+**Mode:** mock
+**Inputs:** `Execute` message with `job_id="job-tb"`, `graph={"nodes": []}`. `execute_graph` raises `ValueError("traceback test")`.
+**Expected output:** send_event() called with a `Failed` event whose `traceback` field is a non-empty string containing "Traceback".
+**Acceptance:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py::TestDispatchLoopExecuteFailure::test_execute_failure_traceback_is_populated -v` exits 0.

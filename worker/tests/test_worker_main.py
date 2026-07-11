@@ -1205,3 +1205,167 @@ class TestDispatchLoopExecute:
         assert received_graph == expected_graph, (
             f"execute_graph received a different graph: {received_graph!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Dispatch loop Execute failure tests — P17-B4: Failed event on exception
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchLoopExecuteFailure:
+    """Tests for _dispatch_loop()'s handling of Execute failures.
+
+    P17-B4 adds exception handling around execute_graph() so that when a node
+    raises an unhandled exception during a real job, the dispatch loop sends
+    ``WorkerEvent::Failed{job_id, error, traceback}`` instead of leaving the job
+    silently hung with no terminal event.
+
+    These tests verify that the Failed event is sent with correct job_id,
+    that the error field contains the exception message, and that the
+    traceback field is populated.
+    """
+
+    def test_execute_failure_sends_failed_event(self, monkeypatch) -> None:
+        """A node raising inside execute_graph() results in Failed being sent.
+
+        Mocks ``execute_graph`` to raise ``ValueError("test error")``, feeds
+        an Execute message, and asserts that a ``Failed`` event is sent with
+        the correct ``job_id`` — not ``Completed``, not silence.
+
+        Preconditions: ``worker.ipc`` is mockable via monkeypatch.
+        Expected output: send_event() called with a Failed event containing
+            ``_type="Failed"`` and ``job_id="job-fail"``.
+        """
+        import unittest.mock as mock
+        import worker.ipc as ipc
+
+        sent_events: list[dict] = []
+        monkeypatch.setattr(ipc, "send_event", lambda data: sent_events.append(data))
+
+        messages = iter([
+            {"_type": "Execute", "job_id": "job-fail", "graph": {"nodes": []}},
+        ])
+
+        def fake_recv_message():
+            try:
+                return next(messages)
+            except StopIteration:
+                raise ConnectionError("test: no more messages")
+
+        monkeypatch.setattr(ipc, "recv_message", fake_recv_message)
+
+        with mock.patch(
+            "worker.executor.execute_graph",
+            side_effect=ValueError("test error"),
+        ):
+            import worker.worker_main as worker_main
+
+            worker_main._dispatch_loop()
+
+        # Find the Failed event among sent events.
+        failed_events = [e for e in sent_events if e.get("_type") == "Failed"]
+        assert len(failed_events) == 1, (
+            f"Expected exactly one Failed event, got {len(failed_events)}: {sent_events}"
+        )
+        failed = failed_events[0]
+        assert failed["job_id"] == "job-fail", (
+            f"Failed event job_id must be 'job-fail', got {failed['job_id']!r}"
+        )
+
+    def test_execute_failure_error_contains_exception_message(self, monkeypatch) -> None:
+        """The error field contains the original exception's string representation.
+
+        Mocks ``execute_graph`` to raise ``ValueError("specific error message")``,
+        then asserts that the ``error`` field in the ``Failed`` event includes
+        the original exception's string representation.
+
+        Preconditions: ``worker.ipc`` is mockable via monkeypatch.
+        Expected output: send_event() called with a Failed event whose
+            ``error`` field contains "specific error message".
+        """
+        import unittest.mock as mock
+        import worker.ipc as ipc
+
+        sent_events: list[dict] = []
+        monkeypatch.setattr(ipc, "send_event", lambda data: sent_events.append(data))
+
+        messages = iter([
+            {"_type": "Execute", "job_id": "job-err", "graph": {"nodes": []}},
+        ])
+
+        def fake_recv_message():
+            try:
+                return next(messages)
+            except StopIteration:
+                raise ConnectionError("test: no more messages")
+
+        monkeypatch.setattr(ipc, "recv_message", fake_recv_message)
+
+        with mock.patch(
+            "worker.executor.execute_graph",
+            side_effect=ValueError("specific error message"),
+        ):
+            import worker.worker_main as worker_main
+
+            worker_main._dispatch_loop()
+
+        failed_events = [e for e in sent_events if e.get("_type") == "Failed"]
+        assert len(failed_events) == 1, (
+            f"Expected exactly one Failed event, got {len(failed_events)}"
+        )
+        failed = failed_events[0]
+        assert "specific error message" in failed["error"], (
+            f"error field must contain 'specific error message', "
+            f"got {failed['error']!r}"
+        )
+
+    def test_execute_failure_traceback_is_populated(self, monkeypatch) -> None:
+        """The traceback field is populated and non-empty.
+
+        Mocks ``execute_graph`` to raise an exception, then asserts that the
+        ``traceback`` field in the ``Failed`` event is a non-empty string
+        containing traceback formatting markers (e.g., "Traceback").
+
+        Preconditions: ``worker.ipc`` is mockable via monkeypatch.
+        Expected output: send_event() called with a Failed event whose
+            ``traceback`` field is a non-empty string containing "Traceback".
+        """
+        import unittest.mock as mock
+        import worker.ipc as ipc
+
+        sent_events: list[dict] = []
+        monkeypatch.setattr(ipc, "send_event", lambda data: sent_events.append(data))
+
+        messages = iter([
+            {"_type": "Execute", "job_id": "job-tb", "graph": {"nodes": []}},
+        ])
+
+        def fake_recv_message():
+            try:
+                return next(messages)
+            except StopIteration:
+                raise ConnectionError("test: no more messages")
+
+        monkeypatch.setattr(ipc, "recv_message", fake_recv_message)
+
+        with mock.patch(
+            "worker.executor.execute_graph",
+            side_effect=ValueError("traceback test"),
+        ):
+            import worker.worker_main as worker_main
+
+            worker_main._dispatch_loop()
+
+        failed_events = [e for e in sent_events if e.get("_type") == "Failed"]
+        assert len(failed_events) == 1, (
+            f"Expected exactly one Failed event, got {len(failed_events)}"
+        )
+        failed = failed_events[0]
+        tb = failed["traceback"]
+        assert isinstance(tb, str), (
+            f"traceback must be a string, got {type(tb).__name__}"
+        )
+        assert len(tb) > 0, "traceback must be non-empty"
+        assert "Traceback" in tb, (
+            f"traceback must contain 'Traceback', got {tb!r}"
+        )

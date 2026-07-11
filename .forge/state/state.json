@@ -159,16 +159,17 @@
     "P17-A1",
     "P17-A2",
     "P17-B1",
-    "P17-B2"
+    "P17-B2",
+    "P17-B3"
   ],
-  "in_progress": "P17-B3",
+  "in_progress": "P17-B4",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "1. **Modify `worker_main.py` Execute handler (lines 163\u2013212):** Add a `try/except Exception` around the `execute_graph()` call inside `run_execute()`. On exception, format the traceback using `traceback.format_exc()` and send `WorkerEvent::Failed{job_id, error: str(exc), traceback: formatted}` via `ipc.send_event()`. Log the failure at ERROR level with structured fields `job_id` and `error`. Do NOT re-raise the exception \u2014 the dispatch loop must continue processing subsequent messages.\n\n   Specifically, change the Execute handler to:\n   ```python\n   elif msg_type == \"Execute\":\n       # ... existing setup (imports, ctx_factory, start time) ...\n       thread = threading.Thread(target=run_execute, daemon=True)\n       thread.start()\n       thread.join()\n\n       # Check if the thread encountered an exception.\n       # We need a way to communicate whether execution succeeded or failed.\n       # Approach: use a result container that the background thread writes to,\n       # and the main thread reads after join().\n   ```\n\n   The implementation will use a shared result dict (or a `threading.Event` + result storage) so that `run_execute()` can communicate whether it succeeded or failed. After `thread.join()`, the main loop checks the result: on success, send `Completed`; on failure, send `Failed`.\n\n   This approach avoids the complexity of catching exceptions inside the daemon thread (which would need to propagate to the main thread via a shared mutable container anyway) and keeps the exception handling localized to where it belongs: the dispatch loop that owns the IPC send.\n\n2. **Add tests in `test_worker_main.py`** under a new test class `TestDispatchLoopExecuteFailure`:\n   - Test 1: A node raising inside `execute_graph()` results in `Failed` being sent (not `Completed`, not silence). Mock `execute_graph` to raise `ValueError(\"test error\")`, feed an Execute message, verify `Failed` event is sent with correct `job_id`.\n   - Test 2: The `error` field contains the exception message. Assert `event[\"error\"]` includes the original exception's string representation.\n   - Test 3: The `traceback` field is populated and non-empty. Assert `event[\"traceback\"]` is a non-empty string containing traceback formatting markers (e.g., \"Traceback\").\n\n   Each test follows the established pattern: monkeypatch `ipc.send_event` to capture sent events, feed messages via `iter()`, break the loop with `ConnectionError`, and patch `execute_graph` via `unittest.mock.patch`.\n\n3. **Add logging:** At the ERROR level, log `dispatch_loop: execute failed job_id=%s error=%s` after sending the Failed event. This satisfies the mandatory logging obligation.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-11T12:53:40+0200",
-  "plan_approval_message_id": "1525453520462155918",
+  "last_updated": "2026-07-11T13:33:03+0200",
+  "plan_approval_message_id": "1525464711045316749",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1525453518822051901",
+  "plan_report_message_id": "1525464709422387211",
   "impl_report_message_id": null
 }

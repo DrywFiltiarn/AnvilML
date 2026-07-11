@@ -11,6 +11,7 @@ IPC connect → probe capabilities → import nodes → send Ready event → dis
 import logging
 import os
 import sys
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -178,8 +179,20 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
             # Capture start time before the background thread begins.
             start = time.monotonic()
 
+            # Shared result container — the background thread writes either
+            # {"success": True} or {"success": False, "error": str, "traceback": str}
+            # into this dict.  No lock is needed because thread.join() establishes
+            # a happens-before guarantee: the main thread reads only after the
+            # background thread has finished writing.
+            result: dict = {}
+
             def run_execute() -> None:
-                """Background thread target — runs execute_graph on a job-scoped context."""
+                """Background thread target — runs execute_graph on a job-scoped context.
+
+                On success writes {"success": True} to *result*.
+                On any exception writes {"success": False, "error", "traceback"}
+                so the main thread can send a Failed event after join().
+                """
                 from worker.nodes.base import NodeContext
 
                 cancel_flag = threading.Event()
@@ -192,12 +205,20 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
                     pipeline_cache=None,
                     mock=mock,
                 )
-                # execute_graph returns {"cancelled": True} or
-                # {"cancelled": False, "results": {...}}.
-                # On success (no cancellation), the background thread
-                # returns normally and the main loop sends the Completed
-                # event below.
-                execute_graph(graph, ctx_factory)
+                try:
+                    # execute_graph returns {"cancelled": True} or
+                    # {"cancelled": False, "results": {...}}.
+                    # On success (no cancellation), the background thread
+                    # writes success and the main loop sends the Completed
+                    # event below.
+                    execute_graph(graph, ctx_factory)
+                    result["success"] = True
+                except Exception as exc:
+                    # Capture the exception info so the main thread can
+                    # send a Failed event with the error details.
+                    result["success"] = False
+                    result["error"] = str(exc)
+                    result["traceback"] = traceback.format_exc()
 
             # Spawn a background thread so the dispatch loop remains
             # responsive to CancelJob and Ping messages while the job
@@ -207,9 +228,34 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
             thread.start()
             thread.join()  # Wait for execution to complete.
 
-            elapsed_ms = int((time.monotonic() - start) * 1000)
-            ipc.send_event({"_type": "Completed", "job_id": job_id, "elapsed_ms": elapsed_ms})
-            logger.info("dispatch_loop: job completed job_id=%s elapsed_ms=%d", job_id, elapsed_ms)
+            # Check whether the background thread succeeded or failed.
+            # result is always populated because run_execute writes it
+            # before returning (either on success or in the except block).
+            if result.get("success"):
+                elapsed_ms = int((time.monotonic() - start) * 1000)
+                ipc.send_event(
+                    {"_type": "Completed", "job_id": job_id, "elapsed_ms": elapsed_ms}
+                )
+                logger.info(
+                    "dispatch_loop: job completed job_id=%s elapsed_ms=%d",
+                    job_id,
+                    elapsed_ms,
+                )
+            else:
+                # Execution failed — send a Failed event with error details.
+                # The error and traceback fields must match the Rust
+                # WorkerEvent::Failed struct for msgpack deserialization.
+                ipc.send_event({
+                    "_type": "Failed",
+                    "job_id": job_id,
+                    "error": result["error"],
+                    "traceback": result["traceback"],
+                })
+                logger.error(
+                    "dispatch_loop: execute failed job_id=%s error=%s",
+                    job_id,
+                    result["error"],
+                )
 
 
 
