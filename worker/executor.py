@@ -2,10 +2,15 @@
 
 Provides topological sorting of job graphs via Kahn's algorithm, enabling
 correct dependency-ordered node execution. The module operates on raw graph
-dicts and does not depend on NodeContext, NODE_REGISTRY, or any node class.
+dicts and does not depend on NodeContext, NODE_REGISTRY, or any node class
+at import time — those are imported inside function bodies to avoid
+transitive torch dependencies during test collection.
 """
 
+import logging
 from collections import defaultdict, deque
+
+logger = logging.getLogger(__name__)
 
 
 def topo_sort(graph: dict) -> list[dict]:
@@ -114,3 +119,97 @@ def topo_sort(graph: dict) -> list[dict]:
         )
 
     return result
+
+
+def execute_graph(graph: dict, ctx_factory) -> dict:
+    """Execute all nodes in *graph* in topological order, checking for cancellation.
+
+    Uses ``topo_sort()`` to determine a valid execution order, then instantiates
+    each node via ``NODE_REGISTRY`` and calls its ``execute()`` method.  Before
+    every node execution the function checks ``ctx.cancel_flag.is_set()`` — if the
+    flag is set the loop stops immediately and returns
+    ``{"cancelled": True}``.  On normal completion (all nodes executed without
+    cancellation) it returns ``{"cancelled": False}`` with a ``results`` dict
+    keyed by node ID.
+
+    ``NODE_REGISTRY`` and ``NodeContext`` are imported inside this function body
+    (not at module level) to avoid transitive ``torch`` dependencies during test
+    collection — the same pattern used in ``worker_main.py`` for ``worker.ipc``.
+
+    Args:
+        graph: A graph dict with ``"nodes"`` and optionally ``"edges"`` keys,
+            the same shape accepted by ``topo_sort()``.
+        ctx_factory: A callable that takes no arguments and returns a
+            ``NodeContext`` instance.  The factory is responsible for supplying
+            ``job_id``, ``cancel_flag`` (a ``threading.Event``), and all other
+            context fields.
+
+    Returns:
+        A dict with two possible shapes:
+        * ``{"cancelled": True}`` — the cancel flag was set before or during
+          execution.  No ``results`` key is present.
+        * ``{"cancelled": False, "results": {...}}`` — all nodes executed
+          successfully.  The ``results`` dict maps node IDs to their
+          ``execute()`` return values.
+
+    Raises:
+        ValueError: If the graph contains a cycle (propagated from ``topo_sort()``).
+        KeyError: If a node references a type not present in ``NODE_REGISTRY``.
+    """
+    # Import NODE_REGISTRY inside the function body — importing at module
+    # level would transitively pull in torch via worker.nodes.__init__.py.
+    # The worker_main.py pattern (importing worker.ipc inside functions)
+    # established this as the standard approach for avoiding transitive deps.
+    from worker.nodes.base import NODE_REGISTRY  # noqa: PLC0415
+
+    # Sort nodes into dependency order.  If the graph has no edges, every
+    # node has in-degree 0 and the result is their original insertion order.
+    sorted_nodes = topo_sort(graph)
+
+    # Log the number of nodes at DEBUG level — operators need this for
+    # diagnosing why a job is taking long (too many nodes) or completing
+    # instantly (zero nodes, which would be a validation gap).
+    logger.debug("execute_graph: %d nodes to execute", len(sorted_nodes))
+
+    # Accumulate node outputs keyed by node ID.  This dict is returned in
+    # the "cancelled": False result so callers can inspect intermediate
+    # outputs (e.g. for debugging or for passing to downstream nodes).
+    results: dict[str, dict] = {}
+
+    # Create the runtime context via the caller-supplied factory.  The
+    # factory (produced by the caller in worker_main.py) constructs a
+    # NodeContext with a threading.Event() as the cancel_flag, allowing
+    # the caller to set the flag from a different thread (e.g. on
+    # CancelJob IPC message).
+    ctx = ctx_factory()
+
+    for node in sorted_nodes:
+        # Cooperative cancellation checkpoint — check the cancel flag
+        # BEFORE executing each node.  This is the only cancellation point;
+        # we never interrupt a node mid-execute.  The flag is checked
+        # again after each node completes, so a node that sets the flag
+        # during its own execute() will prevent subsequent nodes from
+        # running.
+        if ctx.cancel_flag.is_set():
+            logger.info("execute_graph: cancel flag set, stopping after %d nodes", len(results))
+            return {"cancelled": True}
+
+        # Instantiate the node class from the registry.  The node type
+        # string comes from the graph dict (validated by the Rust scheduler
+        # before reaching the worker), so a KeyError here would indicate a
+        # missing node type registration — a bug, not a runtime condition.
+        node_cls = NODE_REGISTRY[node["type"]]
+
+        # Execute the node with its inputs.  The node's execute() method
+        # is responsible for reading from ctx and producing output.
+        # Inputs are passed as keyword arguments matching slot names.
+        node_instance = node_cls()
+        node_output = node_instance.execute(ctx, **node.get("inputs", {}))
+
+        # Store the output keyed by node ID.  This allows the caller to
+        # inspect results after execution completes (normal or cancelled).
+        results[node["id"]] = node_output
+
+    # All nodes executed without cancellation — return the full results
+    # dict so the caller can inspect intermediate outputs.
+    return {"cancelled": False, "results": results}

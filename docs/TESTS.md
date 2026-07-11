@@ -6122,3 +6122,63 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Subprocess that imports `worker.executor` and checks `sys.modules`.
 **Expected output:** `"torch" not in sys.modules`; subprocess exits 0.
 **Acceptance:** `python -m pytest worker/tests/test_executor.py::test_topo_sort_no_torch_import -v` exits 0.
+
+## test_execute_graph_cancel_before_first (anvilml-worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** `execute_graph()` function in `worker.executor`. Tests that when the cancel flag is set before the execution loop begins, the function returns immediately with `{"cancelled": True}` and no node's `execute()` is called.
+**Tests:** `execute_graph()` checks `ctx.cancel_flag.is_set()` before the first node and returns early.
+**Mode:** mock
+**Inputs:** Graph with 3 nodes, mock context with `cancel_flag` pre-set.
+**Expected output:** `{"cancelled": True}`, empty execution log.
+**Acceptance:** `python -m pytest worker/tests/test_executor.py::test_execute_graph_cancel_before_first -v` exits 0.
+
+## test_execute_graph_cancel_after_first (anvilml-worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** `execute_graph()` function in `worker.executor`. Tests cooperative cancellation mid-execution: the first node's `execute()` sets the cancel flag, which is checked before the second node runs.
+**Tests:** Cancel checkpoint happens before each node — first node runs and sets the flag, second node is skipped.
+**Mode:** mock
+**Inputs:** Graph with 2 nodes, mock context, first node overrides `execute()` to set `cancel_flag`.
+**Expected output:** `{"cancelled": True}`, execution log contains only the first node.
+**Acceptance:** `python -m pytest worker/tests/test_executor.py::test_execute_graph_cancel_after_first -v` exits 0.
+
+## test_execute_graph_no_cancel_completes (anvilml-worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** `execute_graph()` function in `worker.executor`. Tests normal completion when no cancellation occurs.
+**Tests:** All nodes execute in order, results dict is populated, and the return value is `{"cancelled": False, "results": {...}}`.
+**Mode:** mock
+**Inputs:** Graph with 3 independent nodes (no edges), cancel flag unset.
+**Expected output:** `{"cancelled": False, "results": {"node_0": ..., "node_1": ..., "node_2": ...}}`.
+**Acceptance:** `python -m pytest worker/tests/test_executor.py::test_execute_graph_no_cancel_completes -v` exits 0.
+
+## test_execute_graph_execution_order_matches_topo_sort (anvilml-worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** `execute_graph()` function in `worker.executor`. Tests that nodes execute in the same order as `topo_sort()` returns them.
+**Tests:** A linear chain A→B→C is created; the actual execution order matches the topological order.
+**Mode:** mock
+**Inputs:** Graph with 3 nodes connected as A→B→C.
+**Expected output:** Execution log == `["NodeA", "NodeB", "NodeC"]`.
+**Acceptance:** `python -m pytest worker/tests/test_executor.py::test_execute_graph_execution_order_matches_topo_sort -v` exits 0.
+
+## test_execute_graph_results_dict (anvilml-worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** `execute_graph()` function in `worker.executor`. Tests that the results dict is correctly populated with node outputs keyed by node ID.
+**Tests:** Each node's `execute()` return value is stored in the results dict under the node's ID.
+**Mode:** mock
+**Inputs:** Graph with 3 nodes, each returning `{"output": value}`.
+**Expected output:** `results` dict maps `"node_0"`→`{"output": 0}`, `"node_1"`→`{"output": 1}`, `"node_2"`→`{"output": 2}`.
+**Acceptance:** `python -m pytest worker/tests/test_executor.py::test_execute_graph_results_dict -v` exits 0.
+
+## test_execute_graph_no_torch_import (anvilml-worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** `worker.executor` module now contains `execute_graph()`, which imports `NODE_REGISTRY` inside the function body. Confirms the module still has no transitive torch dependency at import time.
+**Tests:** `import worker.executor` does not pull in torch at import time — `NODE_REGISTRY` is imported lazily inside `execute_graph()`.
+**Mode:** mock
+**Inputs:** Subprocess that imports `worker.executor` and checks `sys.modules`.
+**Expected output:** `"torch" not in sys.modules`; subprocess exits 0.
+**Acceptance:** `python -m pytest worker/tests/test_executor.py::test_execute_graph_no_torch_import -v` exits 0.
