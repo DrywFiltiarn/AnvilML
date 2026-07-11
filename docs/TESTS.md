@@ -6026,3 +6026,99 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Server running with mock-hardware; PassThrough node registered; job submitted with graph `[{"id": "n0", "type": "PassThrough", "inputs": {"value": 1}}]`.
 **Expected output:** A `job_completed` JSON frame with `type == "job_completed"` and the matching `job_id` is printed to stdout; the script exits 0.
 **Acceptance:** `python3 scripts/run_proof_p16_e1.py` exits 0.
+
+---
+
+## test_topo_sort_single_node (anvilml-worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** The `worker.executor` module provides `topo_sort()` — a pure data transformation function that performs Kahn's-algorithm topological sort on a job graph. No external dependencies (torch, NODE_REGISTRY, NodeContext) are needed.
+**Tests:** A graph with one node and no edges returns that node in a list.
+**Mode:** mock
+**Inputs:** Graph with `{"nodes": [{"id": "A", "type": "TestNode", "inputs": {}}]}` and no edges.
+**Expected output:** `[{"id": "A", "type": "TestNode", "inputs": {}}]`.
+**Acceptance:** `python -m pytest worker/tests/test_executor.py::test_topo_sort_single_node -v` exits 0.
+
+---
+
+## test_topo_sort_linear_chain (anvilml-worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** Same `worker.executor` module. Tests that a strict linear chain (A→B→C) produces the exact order [A, B, C].
+**Tests:** A→B→C chain returns nodes in correct dependency order.
+**Mode:** mock
+**Inputs:** Graph with nodes A, B, C and edges A→B, B→C.
+**Expected output:** `[A, B, C]` in that exact order.
+**Acceptance:** `python -m pytest worker/tests/test_executor.py::test_topo_sort_linear_chain -v` exits 0.
+
+---
+
+## test_topo_sort_parallel_branches (anvilml-worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** Same `worker.executor` module. Tests that a graph with parallel branches produces a valid topological order (A before B and C), without asserting a specific order between B and C.
+**Tests:** A graph with parallel branches (A→B, A→C) produces a valid topological order.
+**Mode:** mock
+**Inputs:** Graph with nodes A, B, C and edges A→B, A→C.
+**Expected output:** A appears before both B and C.
+**Acceptance:** `python -m pytest worker/tests/test_executor.py::test_topo_sort_parallel_branches -v` exits 0.
+
+---
+
+## test_topo_sort_cycle_detected (anvilml-worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** Same `worker.executor` module. Tests that a cyclic graph raises `ValueError` with cycle node IDs in the error message.
+**Tests:** A cyclic graph (A→B→C→A) raises `ValueError` with cycle node IDs in the message.
+**Mode:** mock
+**Inputs:** Graph with nodes A, B, C and edges A→B, B→C, C→A.
+**Expected output:** `ValueError` with message containing "Cycle detected" and node IDs A, B, C.
+**Acceptance:** `python -m pytest worker/tests/test_executor.py::test_topo_sort_cycle_detected -v` exits 0.
+
+---
+
+## test_topo_sort_no_edges_key (anvilml-worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** Same `worker.executor` module. Tests graceful handling of graphs without an `"edges"` key at all.
+**Tests:** A graph without an `"edges"` key returns nodes in original insertion order.
+**Mode:** mock
+**Inputs:** Graph with three nodes (X, Y, Z) and no `"edges"` key.
+**Expected output:** `[X, Y, Z]` in original insertion order.
+**Acceptance:** `python -m pytest worker/tests/test_executor.py::test_topo_sort_no_edges_key -v` exits 0.
+
+---
+
+## test_topo_sort_empty_graph (anvilml-worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** Same `worker.executor` module. Tests the edge case of an empty nodes list.
+**Tests:** A graph with an empty `"nodes"` list returns an empty list.
+**Mode:** mock
+**Inputs:** Graph with `{"nodes": []}`.
+**Expected output:** `[]`.
+**Acceptance:** `python -m pytest worker/tests/test_executor.py::test_topo_sort_empty_graph -v` exits 0.
+
+---
+
+## test_topo_sort_missing_nodes_key (anvilml-worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** Same `worker.executor` module. Tests graceful degradation when the `"nodes"` key is absent entirely.
+**Tests:** A graph without a `"nodes"` key returns an empty list.
+**Mode:** mock
+**Inputs:** Graph with `{"edges": []}` but no `"nodes"` key.
+**Expected output:** `[]`.
+**Acceptance:** `python -m pytest worker/tests/test_executor.py::test_topo_sort_missing_nodes_key -v` exits 0.
+
+---
+
+## test_executor_no_torch_import (anvilml-worker)
+
+**File:** `worker/tests/test_executor.py`
+**Context:** Same `worker.executor` module. Confirms the module has no transitive torch dependency at import time.
+**Tests:** `import worker.executor` does not pull in torch at import time.
+**Mode:** mock
+**Inputs:** Subprocess that imports `worker.executor` and checks `sys.modules`.
+**Expected output:** `"torch" not in sys.modules`; subprocess exits 0.
+**Acceptance:** `python -m pytest worker/tests/test_executor.py::test_topo_sort_no_torch_import -v` exits 0.

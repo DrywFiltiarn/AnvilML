@@ -156,16 +156,17 @@
     "P16-C2",
     "P16-D1",
     "P16-E1",
-    "P17-A1"
+    "P17-A1",
+    "P17-A2"
   ],
-  "in_progress": "P17-A2",
+  "in_progress": "P17-B1",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "1. **Create `worker/executor.py`** with a module docstring and the `topo_sort(graph: dict) -> list[dict]` function.\n\n   The function accepts a graph dict with the shape `{\"nodes\": [...], \"edges\": [...]}`. It builds a directed adjacency list from the `\"edges\"` array, computes in-degrees for all nodes, then runs Kahn's algorithm:\n   - Parse every `\"from\"` and `\"to\"` edge string (format: `\"node_id:slot_name\"`) to extract source and destination node IDs\n   - Build `adjacency: dict[str, list[str]]` and `in_degree: dict[str, int]`\n   - Initialize the processing queue with all nodes having in-degree 0\n   - Process the queue: pop a node, append to result, decrement in-degrees of neighbors, enqueue any reaching 0\n   - After processing, if `len(result) < len(nodes)`, a cycle exists \u2014 raise `ValueError` with the remaining node IDs\n   - Return the result list (nodes in valid topological order)\n\n   The adjacency list construction only uses `\"from\"` and `\"to\"` fields from edges \u2014 it does not parse slot names (those are handled by prior validation in `dag.rs`). The function iterates `\"edges\"` only if the key exists (graceful handling of graphs without an `\"edges\"` array).\n\n   Docstring follows Google style with `Args:`, `Returns:`, and `Raises:` sections.\n\n2. **Create `worker/tests/test_executor.py`** with \u22654 tests:\n\n   - `test_topo_sort_single_node`: A graph with one node and no edges returns that node in a list.\n   - `test_topo_sort_linear_chain`: A\u2192B\u2192C chain returns `[A, B, C]` (deterministic order since each node has exactly one predecessor).\n   - `test_topo_sort_parallel_branches`: A graph where A fans out to B and C (both depend only on A) returns a valid ordering where A comes before both B and C. Since Kahn's algorithm processes nodes in insertion order when multiple have in-degree 0, the test asserts `result.index(\"A\") < result.index(\"B\")` and `result.index(\"A\") < result.index(\"C\")` rather than a specific order between B and C.\n   - `test_topo_sort_cycle_detected`: A graph with a cycle (A\u2192B\u2192C\u2192A) raises `ValueError`. The test asserts the exception is raised and that the error message contains the cycle node IDs.\n\n   Each test function has a Google-style docstring. Tests use minimal node dicts with only `\"id\"`, `\"type\"`, and `\"inputs\"` keys \u2014 no `NodeContext` or registry needed since `topo_sort()` operates on raw graph data.\n\n3. **Verify syntax** by running `python -m py_compile worker/executor.py worker/tests/test_executor.py` before running tests (per ENVIRONMENT.md \u00a77, mandatory pre-test check for Python files).\n\n4. **Run acceptance test**: `python -m pytest worker/tests/test_executor.py -v` \u2014 must exit 0 with \u22654 tests passing.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-11T09:25:59+0200",
-  "plan_approval_message_id": "1525279501271961854",
+  "last_updated": "2026-07-11T11:35:33+0200",
+  "plan_approval_message_id": "1525427008895713280",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1525279499883905084",
+  "plan_report_message_id": "1525427006941036626",
   "impl_report_message_id": null
 }
