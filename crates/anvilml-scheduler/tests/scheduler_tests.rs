@@ -9,6 +9,7 @@ use anvilml_core::{
     AnvilError, JobSettings, NodeTypeDescriptor, NodeTypeRegistry, SlotDescriptor, SlotType,
 };
 use anvilml_registry::JobStore;
+use anvilml_scheduler::CancelOutcome;
 use anvilml_scheduler::JobScheduler;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use uuid::Uuid;
@@ -301,7 +302,10 @@ async fn test_cancel_queued_job_returns_true() {
         .await
         .expect("cancel must not error");
 
-    assert!(result, "cancel() must return true for a job in the queue");
+    assert!(
+        matches!(result, CancelOutcome::Accepted),
+        "cancel() must return Accepted for a job in the queue"
+    );
 }
 
 /// Test that `cancel()` returns `Ok(false)` for a job ID that was never submitted.
@@ -323,7 +327,10 @@ async fn test_cancel_unknown_id_returns_false() {
         .await
         .expect("cancel must not error");
 
-    assert!(!result, "cancel() must return false for an unknown job ID");
+    assert!(
+        matches!(result, CancelOutcome::NotFound),
+        "cancel() must return NotFound for an unknown job ID"
+    );
 }
 
 /// Test that `get_job()` returns `Ok(Some(job))` for a submitted job.
@@ -1850,7 +1857,10 @@ async fn test_cancel_queued_job_sets_cancelled_status() {
         .await
         .expect("cancel must not error");
 
-    assert!(result, "cancel() must return true for a Queued job");
+    assert!(
+        matches!(result, CancelOutcome::Accepted),
+        "cancel() must return Accepted for a Queued job"
+    );
 
     // The database record must now show Cancelled status.
     let after = scheduler
@@ -1914,8 +1924,8 @@ async fn test_cancel_running_job_sends_cancel_signal() {
         .expect("cancel must not error");
 
     assert!(
-        result,
-        "cancel() must return true for a Running job (cancellation accepted)"
+        matches!(result, CancelOutcome::Accepted),
+        "cancel() must return Accepted for a Running job (cancellation accepted)"
     );
 
     // The job's status must still be Running — cancel() does not change
@@ -1986,8 +1996,8 @@ async fn test_cancel_terminal_job_returns_false() {
             .expect("cancel must not error");
 
         assert!(
-            !result,
-            "cancel() must return false for a terminal job (status={:?})",
+            matches!(result, CancelOutcome::AlreadyTerminal),
+            "cancel() must return AlreadyTerminal for a terminal job (status={:?})",
             status
         );
 
@@ -2030,7 +2040,10 @@ async fn test_cancel_already_cancelled_queued_job_returns_false() {
         .cancel(job_id)
         .await
         .expect("first cancel must not error");
-    assert!(first_cancel, "first cancel must return true");
+    assert!(
+        matches!(first_cancel, CancelOutcome::Accepted),
+        "first cancel must return Accepted"
+    );
 
     // Cancel the same job again — must return Ok(false).
     let second_cancel = scheduler
@@ -2038,8 +2051,8 @@ async fn test_cancel_already_cancelled_queued_job_returns_false() {
         .await
         .expect("second cancel must not error");
     assert!(
-        !second_cancel,
-        "cancel() must return false for an already-cancelled job"
+        matches!(second_cancel, CancelOutcome::AlreadyTerminal),
+        "cancel() must return AlreadyTerminal for an already-cancelled job"
     );
 }
 
@@ -2089,8 +2102,8 @@ async fn test_cancel_running_sends_cancel_job() {
         .expect("cancel must not error");
 
     assert!(
-        result,
-        "cancel() must return true for a Running job with worker_id"
+        matches!(result, CancelOutcome::Accepted),
+        "cancel() must return Accepted for a Running job with worker_id"
     );
 
     // The job's status must still be Running.
@@ -2148,7 +2161,10 @@ async fn test_cancel_running_status_stays_running() {
         .cancel(running_id)
         .await
         .expect("cancel must not error");
-    assert!(result, "cancel() must return true for a Running job");
+    assert!(
+        matches!(result, CancelOutcome::Accepted),
+        "cancel() must return Accepted for a Running job"
+    );
 
     let after = scheduler
         .get_job(running_id)
@@ -2265,8 +2281,8 @@ async fn test_cancel_running_send_failure_handled() {
         .expect("cancel must not error");
 
     assert!(
-        result,
-        "cancel() must return true even when the CancelJob send fails"
+        matches!(result, CancelOutcome::Accepted),
+        "cancel() must return Accepted even when the CancelJob send fails"
     );
 
     // The status must still be Running.

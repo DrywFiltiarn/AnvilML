@@ -59,6 +59,26 @@ pub enum DispatchOutcome {
     Failed,
 }
 
+/// The outcome of a `JobScheduler::cancel()` call.
+///
+/// Distinguishes three outcomes needed by the HTTP handler:
+/// - `Accepted` — job was in a cancellable state (Queued or Running) and cancellation
+///   was accepted. For Queued jobs, the status is immediately updated to Cancelled.
+///   For Running jobs, a cooperative `CancelJob` IPC signal has been sent.
+/// - `AlreadyTerminal` — job exists but is in a terminal state (Completed/Failed/Cancelled);
+///   cancelling is a no-op. The HTTP handler maps this to 409 Conflict.
+/// - `NotFound` — no job with the given ID exists in the database. The HTTP handler
+///   maps this to 404 Not Found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelOutcome {
+    /// Cancellation accepted (queued or running).
+    Accepted,
+    /// Job exists but is already in a terminal state — no-op.
+    AlreadyTerminal,
+    /// No job found with the given ID.
+    NotFound,
+}
+
 /// The central async dispatcher for generation jobs.
 ///
 /// `JobScheduler` owns:
@@ -313,27 +333,32 @@ impl JobScheduler {
     /// Handles three cases:
     /// 1. **Queued** — calls `queue.cancel()` for lazy-removal, then updates the
     ///    job's database status to `Cancelled` so `get_job()` reflects the
-    ///    cancellation immediately. Returns `Ok(true)`.
-    /// 2. **Running** — returns `Ok(true)` without sending IPC (the actual
-    ///    `WorkerMessage::CancelJob` send is deferred to the next task).
-    ///    The job's status stays `Running` — the event loop will transition it
-    ///    to `Cancelled` when the worker's own `Cancelled` event arrives.
-    /// 3. **Terminal** (`Completed`/`Failed`/`Cancelled`) or **unknown ID** —
-    ///    returns `Ok(false)` as a no-op.
-    ///
-    /// Returns `Ok(true)` if cancellation was accepted (queued or running),
-    /// `Ok(false)` if the job was already terminal or not found.
+    ///    cancellation immediately. Returns `CancelOutcome::Accepted`.
+    /// 2. **Running** — sends a cooperative `CancelJob` IPC signal via the
+    ///    transport. The job's status stays `Running` — the event loop will
+    ///    transition it to `Cancelled` when the worker's own `Cancelled` event
+    ///    arrives. Returns `CancelOutcome::Accepted`.
+    /// 3. **Terminal** (`Completed`/`Failed`/`Cancelled`) — returns
+    ///    `CancelOutcome::AlreadyTerminal` as a no-op.
+    /// 4. **Unknown ID** — returns `CancelOutcome::NotFound`.
     ///
     /// # Arguments
     ///
     /// * `id` — The job UUID to cancel.
     ///
+    /// # Returns
+    ///
+    /// A `CancelOutcome` indicating whether cancellation was accepted, the job
+    /// was already terminal, or the job does not exist. This allows the HTTP
+    /// handler to return the correct status code (202/409/404).
+    ///
     /// # Errors
     ///
     /// Returns `AnvilError::Db` if the database query fails (e.g. connection error).
+    /// Returns `AnvilError::Internal` if a Running job has no assigned worker_id.
     #[tracing::instrument(skip(self), fields(job_id = %id))]
-    pub async fn cancel(&self, id: Uuid) -> Result<bool, AnvilError> {
-        // First, try the queue. This handles Queued jobs and returns false
+    pub async fn cancel(&self, id: Uuid) -> Result<CancelOutcome, AnvilError> {
+        // First, try the queue. This handles Queued jobs and returns NotFound
         // for IDs not in the queue (Running, terminal, or unknown).
         {
             let mut queue = self.queue.lock().await;
@@ -352,13 +377,13 @@ impl JobScheduler {
                         );
                         // Best-effort: if persist fails, the queue-level cancel
                         // still succeeded — the job won't be dispatched.
-                        // We return Ok(true) because the cancellation did take
+                        // We return Accepted because the cancellation did take
                         // effect at the queue level, which is what matters.
                     } else {
                         tracing::info!(job_id = %id, "cancelled queued job");
                     }
                 }
-                return Ok(true);
+                return Ok(CancelOutcome::Accepted);
             }
         }
 
@@ -374,7 +399,7 @@ impl JobScheduler {
                         // dispatch loop has popped the job but not yet dispatched
                         // it (e.g. the dispatch cycle is mid-iteration). Treat
                         // it as a cancellable queued job: update the DB status
-                        // and return Ok(true).
+                        // and return Accepted.
                         if let Err(e) = self.job_store.upsert(&job).await {
                             tracing::error!(
                                 job_id = %id,
@@ -384,7 +409,7 @@ impl JobScheduler {
                         } else {
                             tracing::info!(job_id = %id, "cancelled queued job");
                         }
-                        Ok(true)
+                        Ok(CancelOutcome::Accepted)
                     }
                     JobStatus::Running => {
                         // Running jobs: send a cooperative CancelJob signal via
@@ -399,7 +424,7 @@ impl JobScheduler {
                             Some(worker_id) => {
                                 // Build and send the CancelJob message via the transport.
                                 // The send is cooperative — even if it fails, cancel()
-                                // returns Ok(true) because the cancellation was accepted;
+                                // returns Accepted because the cancellation was accepted;
                                 // the signal just might not reach the worker.
                                 let msg = WorkerMessage::CancelJob { job_id: id };
                                 if let Err(e) = self.transport.send(worker_id, &msg).await {
@@ -421,7 +446,7 @@ impl JobScheduler {
                                         "cancel: Running job — CancelJob sent"
                                     );
                                 }
-                                Ok(true)
+                                Ok(CancelOutcome::Accepted)
                             }
                             None => {
                                 // A Running job without a worker_id is an unexpected state —
@@ -440,22 +465,22 @@ impl JobScheduler {
                         }
                     }
                     // Terminal states: cancelling a finished job is a no-op, not an error.
-                    // Return Ok(false) to let the HTTP handler return 409 Conflict.
+                    // Return AlreadyTerminal so the HTTP handler can return 409 Conflict.
                     JobStatus::Completed | JobStatus::Failed | JobStatus::Cancelled => {
                         tracing::debug!(
                             job_id = %id,
                             status = ?job.status,
                             "cancel: already terminal — no-op"
                         );
-                        Ok(false)
+                        Ok(CancelOutcome::AlreadyTerminal)
                     }
                 }
             }
             None => {
                 // Job not found in the database at all — unknown ID.
-                // Return Ok(false) so the HTTP handler can return 404 Not Found.
+                // Return NotFound so the HTTP handler can return 404 Not Found.
                 tracing::debug!(job_id = %id, "cancel: job not found in database");
-                Ok(false)
+                Ok(CancelOutcome::NotFound)
             }
         }
     }

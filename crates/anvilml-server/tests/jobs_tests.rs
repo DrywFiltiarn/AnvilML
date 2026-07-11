@@ -4,7 +4,7 @@
 //! in-process HTTP requests without opening a real socket.
 
 use anvilml_artifacts::ArtifactStore;
-use anvilml_core::{NodeTypeDescriptor, NodeTypeRegistry, ServerConfig};
+use anvilml_core::{JobSettings, NodeTypeDescriptor, NodeTypeRegistry, ServerConfig};
 use anvilml_ipc::EventBroadcaster;
 use anvilml_registry::JobStore;
 use anvilml_scheduler::JobScheduler;
@@ -546,4 +546,283 @@ async fn test_list_jobs_before_param_accepted() {
         .unwrap();
     let res = router.oneshot(get_req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
+}
+
+/// Verify that POST /v1/jobs/{id} on a Queued job returns 202 Accepted.
+///
+/// Submits a job (it enters Queued state), then calls POST /v1/jobs/{id}
+/// and asserts the response status is `StatusCode::ACCEPTED`. The scheduler's
+/// cancel method transitions Queued jobs to Cancelled and returns
+/// CancelOutcome::Accepted, which the handler maps to HTTP 202.
+#[tokio::test]
+async fn test_cancel_queued_job_returns_202() {
+    let descriptor = NodeTypeDescriptor {
+        type_name: "TestNode".to_string(),
+        display_name: "Test Node".to_string(),
+        category: "test".to_string(),
+        description: "A synthetic test node.".to_string(),
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+    };
+
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    node_registry.register_all(vec![descriptor]);
+
+    let state = make_test_state(node_registry).await;
+    let router = build_router(state);
+
+    // Submit a job — it enters Queued state.
+    let body = json!({
+        "graph": {
+            "nodes": [
+                { "id": "node1", "type": "TestNode", "inputs": {}, "outputs": {} }
+            ]
+        },
+        "settings": { "device_preference": null }
+    });
+
+    let post_req = Request::post("/v1/jobs")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap();
+    let post_res = router.clone().oneshot(post_req).await.unwrap();
+    assert_eq!(post_res.status(), StatusCode::ACCEPTED);
+
+    let body_bytes = to_bytes(post_res.into_body(), usize::MAX)
+        .await
+        .expect("body collection must succeed");
+    let post_body: serde_json::Value =
+        serde_json::from_slice(&body_bytes).expect("response body must be valid JSON");
+
+    let job_id = post_body["job_id"]
+        .as_str()
+        .expect("job_id must be a string");
+
+    // Cancel the job — POST /v1/jobs/{id} (same path as GET, different method).
+    let cancel_req = Request::post(&format!("/v1/jobs/{}", job_id))
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(cancel_req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::ACCEPTED);
+}
+
+/// Verify that POST /v1/jobs/{id} on a Completed job returns 409 Conflict.
+///
+/// Creates a separate AppState with a completed job persisted directly to the
+/// database (not via submit, so it is not in the in-memory queue). Calls
+/// POST /v1/jobs/{id} and asserts the response status is `StatusCode::CONFLICT`.
+/// The scheduler's cancel method returns CancelOutcome::AlreadyTerminal for
+/// terminal jobs, which the handler maps to HTTP 409.
+#[tokio::test]
+async fn test_cancel_completed_job_returns_409() {
+    use anvilml_core::Job;
+    use chrono::Utc;
+
+    let descriptor = NodeTypeDescriptor {
+        type_name: "TestNode".to_string(),
+        display_name: "Test Node".to_string(),
+        category: "test".to_string(),
+        description: "A synthetic test node.".to_string(),
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+    };
+
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    node_registry.register_all(vec![descriptor]);
+
+    let state = make_test_state(node_registry).await;
+
+    // Persist a Completed job directly to the database (not via submit, so
+    // it is NOT in the in-memory queue). This ensures cancel() skips the
+    // queue check and goes straight to the DB, where it sees Completed.
+    let job_id = Uuid::new_v4();
+    let completed_job = Job {
+        id: job_id,
+        status: anvilml_core::JobStatus::Completed,
+        graph: json!({
+            "nodes": [
+                { "id": "node1", "type": "TestNode", "inputs": {}, "outputs": {} }
+            ]
+        }),
+        settings: JobSettings {
+            device_preference: None,
+        },
+        created_at: Utc::now(),
+        started_at: Some(Utc::now()),
+        completed_at: Some(Utc::now()),
+        worker_id: Some("0".to_string()),
+        error: None,
+        queue_position: None,
+    };
+
+    let job_store = JobStore::new(state.db.clone());
+    job_store
+        .upsert(&completed_job)
+        .await
+        .expect("persist must succeed");
+
+    // Build the router with the AppState that now contains the completed job.
+    let router = build_router(state);
+
+    // Cancel the job — POST /v1/jobs/{id} should return 409 because it's terminal.
+    let cancel_req = Request::post(&format!("/v1/jobs/{}", job_id))
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(cancel_req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+}
+
+/// Verify that POST /v1/jobs/{id} on an unknown UUID returns 404 Not Found.
+///
+/// Calls cancel with a random UUID that was never submitted and asserts the
+/// response status is `StatusCode::NOT_FOUND`. The scheduler's cancel method
+/// returns CancelOutcome::NotFound for unknown IDs, which the handler maps
+/// to HTTP 404.
+#[tokio::test]
+async fn test_cancel_unknown_id_returns_404() {
+    let state = make_test_state(Arc::new(NodeTypeRegistry::new())).await;
+    let router = build_router(state);
+
+    // Use a random UUID that was never submitted.
+    let unknown_id = Uuid::new_v4();
+    let cancel_req = Request::post(&format!("/v1/jobs/{}", unknown_id))
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(cancel_req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+/// Verify that POST /v1/jobs/{id}/cancel on a Running job returns 202 Accepted.
+///
+/// Submits a job, manually sets its DB status to Running with a worker_id,
+/// then calls cancel and asserts the response status is `StatusCode::ACCEPTED`.
+/// The scheduler's cancel method sends a CancelJob signal via the transport
+/// (best-effort in tests since no real worker is connected) and returns
+/// CancelOutcome::Accepted, which the handler maps to HTTP 202.
+#[tokio::test]
+async fn test_cancel_running_job_returns_202() {
+    let descriptor = NodeTypeDescriptor {
+        type_name: "TestNode".to_string(),
+        display_name: "Test Node".to_string(),
+        category: "test".to_string(),
+        description: "A synthetic test node.".to_string(),
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+    };
+
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    node_registry.register_all(vec![descriptor]);
+
+    let state = make_test_state(node_registry).await;
+    let router = build_router(state.clone());
+
+    // Submit a job.
+    let body = json!({
+        "graph": {
+            "nodes": [
+                { "id": "node1", "type": "TestNode", "inputs": {}, "outputs": {} }
+            ]
+        },
+        "settings": { "device_preference": null }
+    });
+
+    let post_req = Request::post("/v1/jobs")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap();
+    let post_res = router.clone().oneshot(post_req).await.unwrap();
+    assert_eq!(post_res.status(), StatusCode::ACCEPTED);
+
+    let body_bytes = to_bytes(post_res.into_body(), usize::MAX)
+        .await
+        .expect("body collection must succeed");
+    let post_body: serde_json::Value =
+        serde_json::from_slice(&body_bytes).expect("response body must be valid JSON");
+
+    let job_id = post_body["job_id"]
+        .as_str()
+        .expect("job_id must be a string");
+    let parsed_id = Uuid::parse_str(job_id).expect("job_id must be a valid UUID");
+
+    // Manually update the job status to Running with a worker_id.
+    let job_store = JobStore::new(state.db.clone());
+    if let Ok(Some(mut job)) = job_store.get(parsed_id).await {
+        use anvilml_core::JobStatus;
+        job.status = JobStatus::Running;
+        job.worker_id = Some("0".to_string());
+        let _ = job_store.upsert(&job).await;
+    }
+
+    // Cancel the job — POST /v1/jobs/{id} should return 202 because Running is cancellable.
+    // The transport send is best-effort (no real worker connected) but the
+    // scheduler still returns Accepted because the cancellation was accepted.
+    let cancel_req = Request::post(&format!("/v1/jobs/{}", job_id))
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(cancel_req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::ACCEPTED);
+}
+
+/// Verify that POST /v1/jobs/{id}/cancel on an already-cancelled job returns 409 Conflict.
+///
+/// Submits a job, cancels it once (returns 202), then cancels again and asserts
+/// the response status is `StatusCode::CONFLICT`. This tests the idempotent-cancel
+/// principle: cancelling an already-cancelled job is a no-op that returns 409.
+#[tokio::test]
+async fn test_cancel_already_cancelled_job_returns_409() {
+    let descriptor = NodeTypeDescriptor {
+        type_name: "TestNode".to_string(),
+        display_name: "Test Node".to_string(),
+        category: "test".to_string(),
+        description: "A synthetic test node.".to_string(),
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+    };
+
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    node_registry.register_all(vec![descriptor]);
+
+    let state = make_test_state(node_registry).await;
+    let router = build_router(state);
+
+    // Submit a job.
+    let body = json!({
+        "graph": {
+            "nodes": [
+                { "id": "node1", "type": "TestNode", "inputs": {}, "outputs": {} }
+            ]
+        },
+        "settings": { "device_preference": null }
+    });
+
+    let post_req = Request::post("/v1/jobs")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap();
+    let post_res = router.clone().oneshot(post_req).await.unwrap();
+    assert_eq!(post_res.status(), StatusCode::ACCEPTED);
+
+    let body_bytes = to_bytes(post_res.into_body(), usize::MAX)
+        .await
+        .expect("body collection must succeed");
+    let post_body: serde_json::Value =
+        serde_json::from_slice(&body_bytes).expect("response body must be valid JSON");
+
+    let job_id = post_body["job_id"]
+        .as_str()
+        .expect("job_id must be a string");
+
+    // First cancel — should return 202 (queued job).
+    let cancel_req1 = Request::post(&format!("/v1/jobs/{}", job_id))
+        .body(Body::empty())
+        .unwrap();
+    let res1 = router.clone().oneshot(cancel_req1).await.unwrap();
+    assert_eq!(res1.status(), StatusCode::ACCEPTED);
+
+    // Second cancel — should return 409 (already cancelled).
+    let cancel_req2 = Request::post(&format!("/v1/jobs/{}", job_id))
+        .body(Body::empty())
+        .unwrap();
+    let res2 = router.oneshot(cancel_req2).await.unwrap();
+    assert_eq!(res2.status(), StatusCode::CONFLICT);
 }

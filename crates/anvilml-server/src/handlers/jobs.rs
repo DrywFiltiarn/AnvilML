@@ -9,6 +9,7 @@ use anvilml_core::AnvilError;
 use anvilml_core::Job;
 use anvilml_core::JobSettings;
 use anvilml_core::JobStatus;
+use anvilml_scheduler::CancelOutcome;
 use axum::Json;
 use axum::extract::Path;
 use axum::extract::Query;
@@ -158,4 +159,49 @@ pub(crate) async fn get_job(
     let job = state.scheduler.get_job(job_id).await?;
     job.ok_or_else(|| AnvilError::JobNotFound(job_id.to_string()))
         .map(Json)
+}
+
+/// Cancel a job by its ID.
+///
+/// Accepts a job UUID as a path parameter (`/v1/jobs/{id}/cancel`). Delegates
+/// entirely to `JobScheduler::cancel()`, which returns a `CancelOutcome`
+/// indicating whether the cancellation was accepted, the job was already
+/// terminal, or the job does not exist.
+///
+/// # Response
+///
+/// - `202 Accepted` — the job was in a cancellable state (Queued or Running)
+///   and cancellation was accepted.
+/// - `409 Conflict` — the job exists but is already in a terminal state
+///   (Completed/Failed/Cancelled). Cancelling a finished job is a no-op, not
+///   an error, per the idempotent-cancel principle.
+/// - `404 Not Found` — no job with the given ID exists in the database.
+///
+/// State is injected via `axum::extract::State<AppState>` which provides
+/// access to the `JobScheduler` through `state.scheduler`.
+#[tracing::instrument(skip(state), fields(job_id = %id))]
+pub(crate) async fn cancel_job(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, AnvilError> {
+    // Delegate to the scheduler's cancel method. The CancelOutcome enum
+    // distinguishes three cases so we can return the correct HTTP status:
+    // - Accepted → 202 (queued or running job accepted for cancellation)
+    // - AlreadyTerminal → 409 (job is already finished — no-op, not an error)
+    // - NotFound → 404 (job ID does not exist in the database)
+    // AnvilError is returned via ? for DB-level failures (mapped to 500).
+    match state.scheduler.cancel(id).await? {
+        CancelOutcome::Accepted => {
+            tracing::info!(job_id = %id, "cancel accepted");
+            Ok(StatusCode::ACCEPTED)
+        }
+        CancelOutcome::AlreadyTerminal => {
+            tracing::debug!(job_id = %id, "cancel rejected: already terminal");
+            Ok(StatusCode::CONFLICT)
+        }
+        CancelOutcome::NotFound => {
+            tracing::debug!(job_id = %id, "cancel: job not found");
+            Ok(StatusCode::NOT_FOUND)
+        }
+    }
 }

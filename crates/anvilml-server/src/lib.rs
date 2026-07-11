@@ -41,8 +41,12 @@ pub fn build_router(app_state: AppState) -> axum::Router {
             axum::routing::get(handlers::jobs::list_jobs).post(handlers::jobs::submit_job),
         )
         // GET /v1/jobs/{id} — look up a single job by UUID
+        // POST /v1/jobs/{id} — cancel a job by UUID
         // Axum 0.8+ uses `{capture}` syntax instead of `:capture` for path params.
-        .route("/v1/jobs/{id}", axum::routing::get(handlers::jobs::get_job))
+        .route(
+            "/v1/jobs/{id}",
+            axum::routing::get(handlers::jobs::get_job).post(handlers::jobs::cancel_job),
+        )
         .route("/v1/nodes", axum::routing::get(handlers::nodes::list_nodes))
         // GET /v1/artifacts — list artifact metadata (with optional job_id filter)
         .route(
