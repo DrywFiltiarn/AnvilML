@@ -31,6 +31,16 @@ pub use state::AppState;
 pub fn build_router(app_state: AppState) -> axum::Router {
     axum::Router::new()
         .route("/health", axum::routing::get(handlers::health::health))
+        // GET /v1/system — hardware snapshot
+        .route(
+            "/v1/system",
+            axum::routing::get(handlers::system::get_system),
+        )
+        // GET /v1/system/env — Python environment report
+        .route(
+            "/v1/system/env",
+            axum::routing::get(handlers::system::get_system_env),
+        )
         // GET /v1/jobs — list jobs (with optional status/limit filters)
         // POST /v1/jobs — submit a new job
         // The GET route must be registered before the /v1/jobs/{id} route

@@ -6336,3 +6336,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `AppState` constructed via `make_full_state()`, then cloned.
 **Expected output:** Both `hardware` and `env_report` `Arc` pointers are shared between original and clone.
 **Acceptance:** `cargo test -p anvilml-server --test state_tests -- clone_shares` exits 0.
+
+---
+
+## test_get_system_returns_200 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/system_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `axum`, `serde`, `serde_json`, and `tower` dev-dependencies. `build_router()` accepts an `AppState` with `hardware` and `env_report` fields populated by sentinel values.
+**Tests:** `GET /v1/system` returns `200 OK` with a JSON body containing `HardwareInfo` fields matching the sentinel values — `host.hostname == "test-host"`, `host.os == "Linux"`, and an empty `gpus` array.
+**Mode:** both
+**Inputs:** `GET /v1/system` with empty body; `build_router()` called with `AppState` containing `HardwareInfo { host: HostInfo { hostname: "test-host", os: "Linux" }, gpus: [], inference_caps: InferenceCaps::default() }`.
+**Expected output:** `StatusCode::OK`; JSON body contains `"host": {"hostname": "test-host", "os": "Linux"}` and `"gpus": []`.
+**Acceptance:** `cargo test -p anvilml-server --test system_tests test_get_system_returns_200` exits 0.
+
+---
+
+## test_get_system_reflects_hardware_update (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/system_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `axum`, `serde`, `serde_json`, and `tower` dev-dependencies. `AppState` holds `hardware` as `Arc<RwLock<HardwareInfo>>` so the write lock can mutate the snapshot between requests.
+**Tests:** After writing a new `HardwareInfo` through the `RwLock` write lock, `GET /v1/system` returns the updated `host.hostname` — proving the handler reads the live snapshot, not a stale clone.
+**Mode:** both
+**Inputs:** `GET /v1/system` → original response → write lock updates `hostname` to `"updated-host"`, `os` to `"Windows"` → second `GET /v1/system`.
+**Expected output:** First response: `hostname == "test-host"`. Second response: `hostname == "updated-host"`, `os == "Windows"`.
+**Acceptance:** `cargo test -p anvilml-server --test system_tests test_get_system_reflects_hardware_update` exits 0.
+
+---
+
+## test_get_system_env_returns_200 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/system_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `axum`, `serde`, `serde_json`, and `tower` dev-dependencies. `build_router()` accepts an `AppState` with `env_report` field populated by sentinel values.
+**Tests:** `GET /v1/system/env` returns `200 OK` with a JSON body containing `EnvReport` fields matching the sentinel values — `python_path` is set and `preflight_ok == false`.
+**Mode:** both
+**Inputs:** `GET /v1/system/env` with empty body; `build_router()` called with `AppState` containing `EnvReport { python_path: Some("./worker/.venv/bin/python3"), python_version: None, torch_version: None, provisioning: NotStarted, preflight_ok: false, reason: None, node_types: [] }`.
+**Expected output:** `StatusCode::OK`; JSON body contains `"python_path": "./worker/.venv/bin/python3"` and `"preflight_ok": false`.
+**Acceptance:** `cargo test -p anvilml-server --test system_tests test_get_system_env_returns_200` exits 0.
+
+---
+
+## test_get_system_env_reflects_env_report_update (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/system_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `axum`, `serde`, `serde_json`, and `tower` dev-dependencies. `AppState` holds `env_report` as `Arc<RwLock<EnvReport>>` so the write lock can mutate the report between requests.
+**Tests:** After writing a new `EnvReport` through the `RwLock` write lock, `GET /v1/system/env` returns the updated `python_version` and `provisioning` — proving the handler reads the live snapshot.
+**Mode:** both
+**Inputs:** `GET /v1/system/env` → original response → write lock updates `python_version` to `"3.12.3"`, `torch_version` to `"2.5.0"`, `provisioning` to `Ready`, `preflight_ok` to `true` → second `GET /v1/system/env`.
+**Expected output:** First response: `python_version == null`, `provisioning == "not_started"`. Second response: `python_version == "3.12.3"`, `torch_version == "2.5.0"`, `provisioning == "ready"`, `preflight_ok == true`.
+**Acceptance:** `cargo test -p anvilml-server --test system_tests test_get_system_env_reflects_env_report_update` exits 0.
