@@ -56,16 +56,18 @@ async fn make_test_state(node_registry: Arc<NodeTypeRegistry>) -> AppState {
         db.clone(),
     ));
 
-    let scheduler = Arc::new(JobScheduler::new(
-        job_store,
-        Arc::clone(&node_registry),
-        artifact_store.clone(),
-    ));
     let workers = Arc::new(
         WorkerPool::new()
             .await
             .expect("WorkerPool::new() must succeed in test"),
     );
+
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        Arc::clone(&node_registry),
+        artifact_store.clone(),
+        Arc::clone(&workers).transport().clone(),
+    ));
 
     AppState {
         config: Arc::new(ServerConfig::default()),

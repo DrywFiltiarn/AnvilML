@@ -243,6 +243,7 @@ async fn main() {
         job_store,
         Arc::clone(&node_registry),
         Arc::clone(&artifact_store),
+        Arc::clone(&workers).transport().clone(),
     ));
 
     // Keep the dispatch loop's JoinHandle (not discarded via `_`) — the

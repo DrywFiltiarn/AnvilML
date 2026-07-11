@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anvilml_artifacts::ArtifactStore;
 use anvilml_core::types::worker::WorkerStatus;
 use anvilml_core::{AnvilError, Job, JobSettings, JobStatus, NodeTypeRegistry};
-use anvilml_ipc::WorkerMessage;
+use anvilml_ipc::{RouterTransport, WorkerMessage};
 use anvilml_registry::JobStore;
 use chrono::Utc;
 use serde_json::Value;
@@ -128,6 +128,16 @@ pub struct JobScheduler {
     /// the event loop task.
     #[allow(dead_code)]
     pub(crate) artifact_store: Arc<ArtifactStore>,
+
+    /// The ZeroMQ ROUTER transport shared by all workers in this pool.
+    ///
+    /// Used by `cancel()` to send `WorkerMessage::CancelJob` to a running
+    /// job's assigned worker. The transport is owned by `WorkerPool` and
+    /// cloned into the scheduler so that cancellation signals can reach
+    /// workers without requiring the scheduler to hold a reference to the
+    /// entire pool.
+    #[allow(dead_code)] // Used by cancel() for Running jobs (P17-A2).
+    transport: Arc<RouterTransport>,
 }
 
 impl JobScheduler {
@@ -145,10 +155,13 @@ impl JobScheduler {
     ///   constructs this; it is wrapped in an `Arc` for sharing.
     /// * `artifact_store` — The artifact storage backend for persisting generated
     ///   images. Passed through to the `event_loop` module for `ImageReady` handling.
+    /// * `transport` — The ZeroMQ ROUTER transport for sending messages to workers.
+    ///   Used by `cancel()` to dispatch `WorkerMessage::CancelJob` to running jobs.
     pub fn new(
         job_store: JobStore,
         node_registry: Arc<NodeTypeRegistry>,
         artifact_store: Arc<ArtifactStore>,
+        transport: Arc<RouterTransport>,
     ) -> Self {
         Self {
             queue: Mutex::new(JobQueue::new()),
@@ -158,6 +171,7 @@ impl JobScheduler {
             dispatch_notify: Arc::new(Notify::new()),
             dispatch_wake_count: Arc::new(AtomicUsize::new(0)),
             artifact_store,
+            transport,
         }
     }
 
@@ -373,17 +387,57 @@ impl JobScheduler {
                         Ok(true)
                     }
                     JobStatus::Running => {
-                        // Running jobs: return Ok(true) to signal "cancellation requested."
-                        // The actual IPC send of WorkerMessage::CancelJob is deferred
-                        // to P17-A2. We do NOT change the job's status here — the
-                        // event loop (Phase 16) will set it to Cancelled once the
-                        // worker's own Cancelled event arrives.
-                        // defers_to: P17-A2 — IPC send of WorkerMessage::CancelJob
-                        tracing::info!(
-                            job_id = %id,
-                            "cancel: Running job — IPC send deferred to P17-A2"
-                        );
-                        Ok(true)
+                        // Running jobs: send a cooperative CancelJob signal via
+                        // the transport. We do NOT change the job's status here —
+                        // the event loop (Phase 16) will set it to Cancelled once
+                        // the worker's own Cancelled event arrives.
+                        // The job's worker_id identifies which worker received this
+                        // job during dispatch_one() — it is always Some in normal
+                        // operation because dispatch_one sets it when transitioning
+                        // the job to Running.
+                        match &job.worker_id {
+                            Some(worker_id) => {
+                                // Build and send the CancelJob message via the transport.
+                                // The send is cooperative — even if it fails, cancel()
+                                // returns Ok(true) because the cancellation was accepted;
+                                // the signal just might not reach the worker.
+                                let msg = WorkerMessage::CancelJob { job_id: id };
+                                if let Err(e) = self.transport.send(worker_id, &msg).await {
+                                    // Send failure is a warning, not a fatal error.
+                                    // The cancellation was accepted — it's just that the signal
+                                    // didn't reach the worker. The worker may be slow, the
+                                    // network may be congested, or the worker may have died
+                                    // (in which case the keepalive watchdog will detect it).
+                                    tracing::warn!(
+                                        job_id = %id,
+                                        worker_id = %worker_id,
+                                        error = %e,
+                                        "cancel: Running job — CancelJob send failed (cancellation still accepted)"
+                                    );
+                                } else {
+                                    tracing::info!(
+                                        job_id = %id,
+                                        worker_id = %worker_id,
+                                        "cancel: Running job — CancelJob sent"
+                                    );
+                                }
+                                Ok(true)
+                            }
+                            None => {
+                                // A Running job without a worker_id is an unexpected state —
+                                // this should never happen in normal operation because the
+                                // dispatch loop (dispatch_one) sets worker_id when transitioning
+                                // a job to Running. If it occurs, it indicates a bug elsewhere
+                                // in the system. Return an Internal error rather than panicking.
+                                tracing::error!(
+                                    job_id = %id,
+                                    "cancel: Running job has no assigned worker_id — internal error"
+                                );
+                                Err(AnvilError::Internal(
+                                    "Running job has no assigned worker_id".into(),
+                                ))
+                            }
+                        }
                     }
                     // Terminal states: cancelling a finished job is a no-op, not an error.
                     // Return Ok(false) to let the HTTP handler return 409 Conflict.

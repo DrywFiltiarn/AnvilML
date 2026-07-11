@@ -155,16 +155,17 @@
     "P16-C1",
     "P16-C2",
     "P16-D1",
-    "P16-E1"
+    "P16-E1",
+    "P17-A1"
   ],
-  "in_progress": "P17-A1",
+  "in_progress": "P17-A2",
   "plan_approved": true,
   "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-11T00:19:50+0200",
-  "plan_approval_message_id": "1525263758019137657",
+  "last_updated": "2026-07-11T09:25:59+0200",
+  "plan_approval_message_id": "1525279501271961854",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1525263756458721280",
+  "plan_report_message_id": "1525279499883905084",
   "impl_report_message_id": null
 }

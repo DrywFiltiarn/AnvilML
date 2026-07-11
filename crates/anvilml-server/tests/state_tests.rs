@@ -49,16 +49,18 @@ async fn make_full_state(
     let db = create_test_pool().await;
     let job_store = JobStore::new(db.clone());
 
-    let scheduler = Arc::new(JobScheduler::new(
-        job_store,
-        Arc::clone(&node_registry),
-        artifact_store.clone(),
-    ));
     let workers = Arc::new(
         WorkerPool::new()
             .await
             .expect("WorkerPool::new() must succeed in test"),
     );
+
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        Arc::clone(&node_registry),
+        artifact_store.clone(),
+        Arc::clone(&workers).transport().clone(),
+    ));
 
     let broadcaster = Arc::new(EventBroadcaster::new());
 
@@ -83,6 +85,19 @@ async fn make_full_state(
 /// that the registry reports `is_empty() == true`.
 #[test]
 fn test_app_state_constructs() {
+    // Create workers first so we can pass their transport to the scheduler.
+    let workers = Arc::new(
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                WorkerPool::new()
+                    .await
+                    .expect("WorkerPool::new() must succeed")
+            }),
+    );
+
     let state = AppState {
         config: Arc::new(ServerConfig::default()),
         node_registry: Arc::new(NodeTypeRegistry::new()),
@@ -94,18 +109,9 @@ fn test_app_state_constructs() {
                 std::env::temp_dir().join("anvilml-test-artifacts-state"),
                 create_test_pool_sync(),
             )),
+            Arc::clone(&workers).transport().clone(),
         )),
-        workers: Arc::new(
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(async {
-                    WorkerPool::new()
-                        .await
-                        .expect("WorkerPool::new() must succeed")
-                }),
-        ),
+        workers,
         db: create_test_pool_sync(),
         artifact_store: Arc::new(ArtifactStore::new(
             std::env::temp_dir().join("anvilml-test-artifacts"),

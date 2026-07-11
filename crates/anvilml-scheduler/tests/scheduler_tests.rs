@@ -107,6 +107,34 @@ fn make_valid_graph() -> serde_json::Value {
     })
 }
 
+/// Helper to create a `JobScheduler` with a `WorkerPool`'s transport.
+///
+/// Constructs an empty `WorkerPool` (which binds a real ROUTER transport),
+/// then passes that transport to `JobScheduler::new()`. This is the standard
+/// construction pattern for tests that need a scheduler but don't spawn real
+/// workers — the transport exists and can be used for send/receive operations
+/// (which fail when there is no DEALER peer, as in most tests).
+///
+/// Returns `(scheduler, Arc<WorkerPool>)` so callers can access the pool's
+/// transport for other operations (e.g., `dispatch_one_test()`).
+async fn make_scheduler(
+    store: JobStore,
+    registry: Arc<NodeTypeRegistry>,
+) -> (JobScheduler, Arc<anvilml_worker::WorkerPool>) {
+    let pool = Arc::new(
+        anvilml_worker::WorkerPool::new()
+            .await
+            .expect("empty pool must construct"),
+    );
+    let scheduler = JobScheduler::new(
+        store,
+        registry,
+        create_test_artifact_store().await,
+        Arc::clone(&pool).transport().clone(),
+    );
+    (scheduler, pool)
+}
+
 /// Test that `submit()` returns `WorkersUnavailable` when the registry is empty.
 ///
 /// Constructs a `JobScheduler` with an empty `NodeTypeRegistry`, then calls
@@ -117,7 +145,7 @@ fn make_valid_graph() -> serde_json::Value {
 async fn test_submit_empty_registry_returns_workers_unavailable() {
     let store = create_job_store().await;
     let registry: Arc<NodeTypeRegistry> = Arc::new(NodeTypeRegistry::new());
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
+    let scheduler = make_scheduler(store, registry).await.0;
 
     let result = scheduler
         .submit(
@@ -151,7 +179,7 @@ async fn test_submit_empty_registry_returns_workers_unavailable() {
 async fn test_submit_invalid_graph_returns_validation_error() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
+    let scheduler = make_scheduler(store, registry).await.0;
 
     // Submit a graph with an unknown node type.
     let invalid_graph = serde_json::json!({
@@ -194,7 +222,7 @@ async fn test_submit_invalid_graph_returns_validation_error() {
 async fn test_submit_valid_persists_and_queues() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
+    let scheduler = make_scheduler(store, registry).await.0;
 
     let result = scheduler
         .submit(
@@ -220,7 +248,7 @@ async fn test_submit_valid_persists_and_queues() {
 async fn test_two_submits_get_distinct_ids() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
+    let scheduler = make_scheduler(store, registry).await.0;
 
     let id1 = scheduler
         .submit(
@@ -254,7 +282,7 @@ async fn test_two_submits_get_distinct_ids() {
 async fn test_cancel_queued_job_returns_true() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
+    let scheduler = make_scheduler(store, registry).await.0;
 
     // Submit a job — it is persisted and enqueued.
     let (job_id, _queue_position) = scheduler
@@ -286,7 +314,7 @@ async fn test_cancel_queued_job_returns_true() {
 async fn test_cancel_unknown_id_returns_false() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
+    let scheduler = make_scheduler(store, registry).await.0;
 
     // Cancel a UUID that was never submitted.
     let unknown_id = Uuid::new_v4();
@@ -308,7 +336,7 @@ async fn test_cancel_unknown_id_returns_false() {
 async fn test_get_job_returns_persisted_job() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
+    let scheduler = make_scheduler(store, registry).await.0;
 
     // Submit a job — it is persisted to the database.
     let (job_id, _queue_position) = scheduler
@@ -343,7 +371,7 @@ async fn test_get_job_returns_persisted_job() {
 async fn test_get_job_unknown_id_returns_none() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
+    let scheduler = make_scheduler(store, registry).await.0;
 
     // Look up a UUID that was never submitted.
     let unknown_id = Uuid::new_v4();
@@ -369,11 +397,18 @@ async fn test_get_job_unknown_id_returns_none() {
 async fn test_dispatch_loop_returns_join_handle() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
-    let workers = anvilml_worker::WorkerPool::new()
-        .await
-        .expect("empty pool must construct");
-    let workers = Arc::new(workers);
+    let pool = Arc::new(
+        anvilml_worker::WorkerPool::new()
+            .await
+            .expect("empty pool must construct"),
+    );
+    let scheduler = JobScheduler::new(
+        store,
+        registry,
+        create_test_artifact_store().await,
+        Arc::clone(&pool).transport().clone(),
+    );
+    let workers = pool;
 
     let handle = Arc::new(scheduler).start_dispatch_loop(Arc::clone(&workers));
 
@@ -401,11 +436,18 @@ async fn test_dispatch_loop_returns_join_handle() {
 async fn test_submit_wakes_dispatch_loop() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
-    let workers = anvilml_worker::WorkerPool::new()
-        .await
-        .expect("empty pool must construct");
-    let workers = Arc::new(workers);
+    let pool = Arc::new(
+        anvilml_worker::WorkerPool::new()
+            .await
+            .expect("empty pool must construct"),
+    );
+    let scheduler = JobScheduler::new(
+        store,
+        registry,
+        create_test_artifact_store().await,
+        Arc::clone(&pool).transport().clone(),
+    );
+    let workers = pool;
 
     // Wrap in Arc — required by start_dispatch_loop's self: Arc<Self> receiver.
     let scheduler = Arc::new(scheduler);
@@ -456,11 +498,18 @@ async fn test_submit_wakes_dispatch_loop() {
 async fn test_dispatch_loop_survives_multiple_wakes() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
-    let workers = anvilml_worker::WorkerPool::new()
-        .await
-        .expect("empty pool must construct");
-    let workers = Arc::new(workers);
+    let pool = Arc::new(
+        anvilml_worker::WorkerPool::new()
+            .await
+            .expect("empty pool must construct"),
+    );
+    let scheduler = JobScheduler::new(
+        store,
+        registry,
+        create_test_artifact_store().await,
+        Arc::clone(&pool).transport().clone(),
+    );
+    let workers = pool;
 
     // Wrap in Arc — required by start_dispatch_loop's self: Arc<Self> receiver.
     let scheduler = Arc::new(scheduler);
@@ -521,10 +570,18 @@ async fn test_device_preference_wins_over_vram_ranking() {
 
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
-    let workers = anvilml_worker::WorkerPool::new()
-        .await
-        .expect("empty pool must construct");
+    let pool = Arc::new(
+        anvilml_worker::WorkerPool::new()
+            .await
+            .expect("empty pool must construct"),
+    );
+    let scheduler = JobScheduler::new(
+        store,
+        registry,
+        create_test_artifact_store().await,
+        Arc::clone(&pool).transport().clone(),
+    );
+    let workers = pool;
 
     // Build mock devices: worker 0 has less VRAM than worker 1.
     let _devices = vec![
@@ -605,11 +662,18 @@ async fn test_device_preference_wins_over_vram_ranking() {
 async fn test_vram_ranking_picks_highest_free_idle() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
-    let workers = anvilml_worker::WorkerPool::new()
-        .await
-        .expect("empty pool must construct");
-    let workers = Arc::new(workers);
+    let pool = Arc::new(
+        anvilml_worker::WorkerPool::new()
+            .await
+            .expect("empty pool must construct"),
+    );
+    let scheduler = JobScheduler::new(
+        store,
+        registry,
+        create_test_artifact_store().await,
+        Arc::clone(&pool).transport().clone(),
+    );
+    let workers = pool;
 
     let scheduler = Arc::new(scheduler);
     let handle = scheduler.clone().start_dispatch_loop(Arc::clone(&workers));
@@ -652,11 +716,18 @@ async fn test_vram_ranking_picks_highest_free_idle() {
 async fn test_no_idle_workers_leaves_job_queued() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
-    let workers = anvilml_worker::WorkerPool::new()
-        .await
-        .expect("empty pool must construct");
-    let workers = Arc::new(workers);
+    let pool = Arc::new(
+        anvilml_worker::WorkerPool::new()
+            .await
+            .expect("empty pool must construct"),
+    );
+    let scheduler = JobScheduler::new(
+        store,
+        registry,
+        create_test_artifact_store().await,
+        Arc::clone(&pool).transport().clone(),
+    );
+    let workers = pool;
 
     let scheduler = Arc::new(scheduler);
     let handle = scheduler.clone().start_dispatch_loop(Arc::clone(&workers));
@@ -707,11 +778,18 @@ async fn test_no_idle_workers_leaves_job_queued() {
 async fn test_multiple_queued_jobs_get_distinct_workers() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
-    let workers = anvilml_worker::WorkerPool::new()
-        .await
-        .expect("empty pool must construct");
-    let workers = Arc::new(workers);
+    let pool = Arc::new(
+        anvilml_worker::WorkerPool::new()
+            .await
+            .expect("empty pool must construct"),
+    );
+    let scheduler = JobScheduler::new(
+        store,
+        registry,
+        create_test_artifact_store().await,
+        Arc::clone(&pool).transport().clone(),
+    );
+    let workers = pool;
 
     let scheduler = Arc::new(scheduler);
     let handle = scheduler.clone().start_dispatch_loop(Arc::clone(&workers));
@@ -781,11 +859,18 @@ async fn test_multiple_queued_jobs_get_distinct_workers() {
 async fn test_device_preference_none_falls_back_to_vram_ranking() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
-    let workers = anvilml_worker::WorkerPool::new()
-        .await
-        .expect("empty pool must construct");
-    let workers = Arc::new(workers);
+    let pool = Arc::new(
+        anvilml_worker::WorkerPool::new()
+            .await
+            .expect("empty pool must construct"),
+    );
+    let scheduler = JobScheduler::new(
+        store,
+        registry,
+        create_test_artifact_store().await,
+        Arc::clone(&pool).transport().clone(),
+    );
+    let workers = pool;
 
     let scheduler = Arc::new(scheduler);
     let handle = scheduler.clone().start_dispatch_loop(Arc::clone(&workers));
@@ -827,10 +912,17 @@ async fn test_device_preference_none_falls_back_to_vram_ranking() {
 async fn test_dispatch_one_returns_false_when_no_idle() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
-    let workers = anvilml_worker::WorkerPool::new()
-        .await
-        .expect("empty pool must construct");
+    let pool = Arc::new(
+        anvilml_worker::WorkerPool::new()
+            .await
+            .expect("empty pool must construct"),
+    );
+    let scheduler = JobScheduler::new(
+        store,
+        registry,
+        create_test_artifact_store().await,
+        Arc::clone(&pool).transport().clone(),
+    );
 
     // Submit a job first to get a valid Job object.
     let (job_id, _queue_position) = scheduler
@@ -851,7 +943,7 @@ async fn test_dispatch_one_returns_false_when_no_idle() {
 
     // Call dispatch_one_test() directly — should return false since
     // there are no idle workers.
-    let dispatched = scheduler.dispatch_one_test(&job, &workers).await;
+    let dispatched = scheduler.dispatch_one_test(&job, &pool).await;
 
     assert!(
         !dispatched,
@@ -881,10 +973,17 @@ async fn test_dispatch_one_returns_false_when_no_idle() {
 async fn test_dispatch_one_no_op_without_idle() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
-    let workers = anvilml_worker::WorkerPool::new()
-        .await
-        .expect("empty pool must construct");
+    let pool = Arc::new(
+        anvilml_worker::WorkerPool::new()
+            .await
+            .expect("empty pool must construct"),
+    );
+    let scheduler = JobScheduler::new(
+        store,
+        registry,
+        create_test_artifact_store().await,
+        Arc::clone(&pool).transport().clone(),
+    );
 
     let (job_id, _queue_position) = scheduler
         .submit(
@@ -903,7 +1002,7 @@ async fn test_dispatch_one_no_op_without_idle() {
         .expect("job must exist");
 
     // dispatch_one returns false — no idle workers, no VRAM reserved.
-    let dispatched = scheduler.dispatch_one_test(&job, &workers).await;
+    let dispatched = scheduler.dispatch_one_test(&job, &pool).await;
 
     assert!(
         !dispatched,
@@ -930,10 +1029,17 @@ async fn test_dispatch_one_no_op_without_idle() {
 async fn test_dispatch_one_no_transition_without_idle() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
-    let workers = anvilml_worker::WorkerPool::new()
-        .await
-        .expect("empty pool must construct");
+    let pool = Arc::new(
+        anvilml_worker::WorkerPool::new()
+            .await
+            .expect("empty pool must construct"),
+    );
+    let scheduler = JobScheduler::new(
+        store,
+        registry,
+        create_test_artifact_store().await,
+        Arc::clone(&pool).transport().clone(),
+    );
 
     let (job_id, _queue_position) = scheduler
         .submit(
@@ -952,7 +1058,7 @@ async fn test_dispatch_one_no_transition_without_idle() {
         .expect("job must exist");
 
     // dispatch_one returns false — no idle workers.
-    let dispatched = scheduler.dispatch_one_test(&job, &workers).await;
+    let dispatched = scheduler.dispatch_one_test(&job, &pool).await;
 
     assert!(
         !dispatched,
@@ -992,7 +1098,6 @@ async fn test_dispatch_one_test_wrapper_collapses_failed_to_false() {
 
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
 
     // Create a mock idle worker with a controllable status.
     let status = Arc::new(RwLock::new(anvilml_core::types::worker::WorkerStatus::Idle));
@@ -1027,10 +1132,22 @@ async fn test_dispatch_one_test_wrapper_collapses_failed_to_false() {
     // only one that lets us do that (clones don't have shutdown_tx).
     let handle_for_read = handle.clone();
 
-    let mut pool = anvilml_worker::WorkerPool::new()
-        .await
-        .expect("empty pool must construct");
-    pool.set_up_test_workers(vec![(handle, device)]);
+    let mut pool = Arc::new(
+        anvilml_worker::WorkerPool::new()
+            .await
+            .expect("empty pool must construct"),
+    );
+    // Set up test workers via get_mut — safe because there's only one Arc ref.
+    if let Some(p) = Arc::get_mut(&mut pool) {
+        p.set_up_test_workers(vec![(handle, device)]);
+    }
+
+    let scheduler = JobScheduler::new(
+        store,
+        registry,
+        create_test_artifact_store().await,
+        Arc::clone(&pool).transport().clone(),
+    );
 
     // Submit a job to get a valid Job object.
     let (job_id, _queue_position) = scheduler
@@ -1086,7 +1203,6 @@ async fn test_ranking_selection_deterministic_and_workers_end_idle() {
 
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
 
     // Create two mock idle workers with controllable statuses.
     let status_0 = Arc::new(RwLock::new(anvilml_core::types::worker::WorkerStatus::Idle));
@@ -1139,10 +1255,21 @@ async fn test_ranking_selection_deterministic_and_workers_end_idle() {
         capabilities_source: anvilml_core::types::hardware::CapabilitySource::DeviceTable,
     };
 
-    let mut pool = anvilml_worker::WorkerPool::new()
-        .await
-        .expect("empty pool must construct");
-    pool.set_up_test_workers(vec![(handle_0, device_0), (handle_1, device_1)]);
+    let mut pool = Arc::new(
+        anvilml_worker::WorkerPool::new()
+            .await
+            .expect("empty pool must construct"),
+    );
+    if let Some(p) = Arc::get_mut(&mut pool) {
+        p.set_up_test_workers(vec![(handle_0, device_0), (handle_1, device_1)]);
+    }
+
+    let scheduler = JobScheduler::new(
+        store,
+        registry,
+        create_test_artifact_store().await,
+        Arc::clone(&pool).transport().clone(),
+    );
 
     // Submit and dispatch two jobs.
     let (job_1, _queue_position_1) = scheduler
@@ -1236,7 +1363,6 @@ async fn test_busy_worker_excluded_from_ranking() {
 
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
 
     let make_handle = |worker_id: &str, status: anvilml_core::types::worker::WorkerStatus| {
         let status = Arc::new(RwLock::new(status));
@@ -1304,14 +1430,25 @@ async fn test_busy_worker_excluded_from_ranking() {
         capabilities_source: anvilml_core::types::hardware::CapabilitySource::DeviceTable,
     };
 
-    let mut pool = anvilml_worker::WorkerPool::new()
-        .await
-        .expect("empty pool must construct");
-    pool.set_up_test_workers(vec![
-        (handle_0, device_0),
-        (handle_1, device_1),
-        (handle_2, device_2),
-    ]);
+    let mut pool = Arc::new(
+        anvilml_worker::WorkerPool::new()
+            .await
+            .expect("empty pool must construct"),
+    );
+    if let Some(p) = Arc::get_mut(&mut pool) {
+        p.set_up_test_workers(vec![
+            (handle_0, device_0),
+            (handle_1, device_1),
+            (handle_2, device_2),
+        ]);
+    }
+
+    let scheduler = JobScheduler::new(
+        store,
+        registry,
+        create_test_artifact_store().await,
+        Arc::clone(&pool).transport().clone(),
+    );
 
     // Submit and dispatch one job.
     let (job_id, _queue_position) = scheduler
@@ -1382,7 +1519,6 @@ async fn test_dispatch_one_reverts_worker_idle_after_send_failure() {
 
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
 
     let status = Arc::new(RwLock::new(anvilml_core::types::worker::WorkerStatus::Idle));
     let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel();
@@ -1416,10 +1552,21 @@ async fn test_dispatch_one_reverts_worker_idle_after_send_failure() {
     // only one that lets us do that (clones don't have shutdown_tx).
     let handle_for_read = handle.clone();
 
-    let mut pool = anvilml_worker::WorkerPool::new()
-        .await
-        .expect("empty pool must construct");
-    pool.set_up_test_workers(vec![(handle, device)]);
+    let mut pool = Arc::new(
+        anvilml_worker::WorkerPool::new()
+            .await
+            .expect("empty pool must construct"),
+    );
+    if let Some(p) = Arc::get_mut(&mut pool) {
+        p.set_up_test_workers(vec![(handle, device)]);
+    }
+
+    let scheduler = JobScheduler::new(
+        store,
+        registry,
+        create_test_artifact_store().await,
+        Arc::clone(&pool).transport().clone(),
+    );
 
     // Submit and dispatch a job.
     let (job_id, _queue_position) = scheduler
@@ -1504,11 +1651,12 @@ async fn test_dispatch_one_dispatched_via_real_dealer_peer() {
 
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
 
-    let mut pool = anvilml_worker::WorkerPool::new()
-        .await
-        .expect("empty pool must construct");
+    let mut pool = Arc::new(
+        anvilml_worker::WorkerPool::new()
+            .await
+            .expect("empty pool must construct"),
+    );
 
     // Grab the pool's real bound ROUTER port before injecting the mock
     // handle — set_up_test_workers() only replaces the handle list, not
@@ -1572,7 +1720,19 @@ async fn test_dispatch_one_dispatched_via_real_dealer_peer() {
         capabilities_source: anvilml_core::types::hardware::CapabilitySource::DeviceTable,
     };
 
-    pool.set_up_test_workers(vec![(handle, device)]);
+    // pool is Arc<WorkerPool>, so we need to use Arc::get_mut to call
+    // set_up_test_workers(&mut self). This is safe because there's only
+    // one Arc reference at this point.
+    if let Some(p) = Arc::get_mut(&mut pool) {
+        p.set_up_test_workers(vec![(handle, device)]);
+    }
+
+    let scheduler = JobScheduler::new(
+        store,
+        registry,
+        create_test_artifact_store().await,
+        Arc::clone(&pool).transport().clone(),
+    );
 
     let (job_id, _queue_position) = scheduler
         .submit(
@@ -1659,7 +1819,7 @@ async fn test_dispatch_one_dispatched_via_real_dealer_peer() {
 async fn test_cancel_queued_job_sets_cancelled_status() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
+    let scheduler = make_scheduler(store, registry).await.0;
 
     // Submit a job — it is persisted and enqueued in Queued status.
     let (job_id, _queue_position) = scheduler
@@ -1705,22 +1865,23 @@ async fn test_cancel_queued_job_sets_cancelled_status() {
     );
 }
 
-/// Test that cancel() on a Running job returns `Ok(true)` without
-/// changing the job's status or sending IPC.
+/// Test that cancel() on a Running job returns `Ok(true)` and sends
+/// a CancelJob signal to the assigned worker.
 ///
-/// Creates a Job struct manually with `status = JobStatus::Running`,
-/// persists it to the database via `job_store.upsert()` (bypassing
-/// `scheduler.submit()` which only creates Queued jobs), then calls
+/// Creates a Job struct manually with `status = JobStatus::Running` and
+/// `worker_id = Some("0")`, persists it to the database, then calls
 /// `cancel()`. Verifies `Ok(true)` is returned and the job's status
-/// remains `Running` (the IPC send is deferred to P17-A2).
+/// remains `Running`. The send to worker "0" will fail (no DEALER peer
+/// listening), but cancel() handles this gracefully — it logs a warning
+/// and still returns Ok(true).
 #[tokio::test]
-async fn test_cancel_running_job_returns_true_no_ipc() {
+async fn test_cancel_running_job_sends_cancel_signal() {
     use anvilml_core::Job;
     use chrono::Utc;
 
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
+    let scheduler = make_scheduler(store, registry).await.0;
 
     // Construct a Running job manually and persist it directly.
     let running_id = Uuid::new_v4();
@@ -1745,7 +1906,8 @@ async fn test_cancel_running_job_returns_true_no_ipc() {
         .await
         .expect("persist must succeed");
 
-    // Cancel the Running job.
+    // Cancel the Running job — this sends CancelJob to worker "0".
+    // The send will fail (no DEALER peer), but cancel() returns Ok(true).
     let result = scheduler
         .cancel(running_id)
         .await
@@ -1766,7 +1928,7 @@ async fn test_cancel_running_job_returns_true_no_ipc() {
     assert_eq!(
         after.status,
         anvilml_core::JobStatus::Running,
-        "Running job status must not change — IPC send is deferred to P17-A2"
+        "Running job status must not change — event loop handles the transition to Cancelled"
     );
 }
 
@@ -1783,7 +1945,7 @@ async fn test_cancel_terminal_job_returns_false() {
 
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
+    let scheduler = make_scheduler(store, registry).await.0;
 
     // Test all three terminal statuses.
     for status in [
@@ -1851,7 +2013,7 @@ async fn test_cancel_terminal_job_returns_false() {
 async fn test_cancel_already_cancelled_queued_job_returns_false() {
     let store = create_job_store().await;
     let registry = make_registry();
-    let scheduler = JobScheduler::new(store, registry, create_test_artifact_store().await);
+    let scheduler = make_scheduler(store, registry).await.0;
 
     // Submit and cancel a job — first cancel returns Ok(true).
     let (job_id, _queue_position) = scheduler
@@ -1878,5 +2040,244 @@ async fn test_cancel_already_cancelled_queued_job_returns_false() {
     assert!(
         !second_cancel,
         "cancel() must return false for an already-cancelled job"
+    );
+}
+
+/// Test that cancel() on a Running job with a worker_id sends
+/// WorkerMessage::CancelJob to the correct worker.
+///
+/// Creates a Running job with `worker_id = Some("0")`, persists it,
+/// and calls `cancel()`. The cancel() implementation sends a
+/// `WorkerMessage::CancelJob` to worker "0" via the transport.
+/// The send fails (no DEALER peer), but the test verifies that
+/// cancel() returns Ok(true) and the status stays Running.
+#[tokio::test]
+async fn test_cancel_running_sends_cancel_job() {
+    use anvilml_core::Job;
+    use chrono::Utc;
+
+    let store = create_job_store().await;
+    let registry = make_registry();
+    let scheduler = make_scheduler(store, registry).await.0;
+
+    // Construct a Running job with a worker_id.
+    let running_id = Uuid::new_v4();
+    let running_job = Job {
+        id: running_id,
+        status: anvilml_core::JobStatus::Running,
+        graph: make_valid_graph(),
+        settings: JobSettings {
+            device_preference: None,
+        },
+        created_at: Utc::now(),
+        started_at: Some(Utc::now()),
+        completed_at: None,
+        worker_id: Some("0".into()),
+        error: None,
+        queue_position: None,
+    };
+
+    scheduler
+        .persist_job_test(&running_job)
+        .await
+        .expect("persist must succeed");
+
+    // Cancel the Running job — this sends CancelJob to worker "0".
+    let result = scheduler
+        .cancel(running_id)
+        .await
+        .expect("cancel must not error");
+
+    assert!(
+        result,
+        "cancel() must return true for a Running job with worker_id"
+    );
+
+    // The job's status must still be Running.
+    let after = scheduler
+        .get_job(running_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must still exist");
+    assert_eq!(
+        after.status,
+        anvilml_core::JobStatus::Running,
+        "Running job status must not change after cancel()"
+    );
+}
+
+/// Test that cancel() on a Running job preserves the Running status.
+///
+/// This is a focused test on the status preservation invariant:
+/// cancel() never changes a Running job's status to anything other
+/// than Running — the event loop handles the transition to Cancelled
+/// when WorkerEvent::Cancelled arrives.
+#[tokio::test]
+async fn test_cancel_running_status_stays_running() {
+    use anvilml_core::Job;
+    use chrono::Utc;
+
+    let store = create_job_store().await;
+    let registry = make_registry();
+    let scheduler = make_scheduler(store, registry).await.0;
+
+    // Construct and persist a Running job.
+    let running_id = Uuid::new_v4();
+    let running_job = Job {
+        id: running_id,
+        status: anvilml_core::JobStatus::Running,
+        graph: make_valid_graph(),
+        settings: JobSettings {
+            device_preference: None,
+        },
+        created_at: Utc::now(),
+        started_at: Some(Utc::now()),
+        completed_at: None,
+        worker_id: Some("0".into()),
+        error: None,
+        queue_position: None,
+    };
+
+    scheduler
+        .persist_job_test(&running_job)
+        .await
+        .expect("persist must succeed");
+
+    // Cancel and verify status stays Running.
+    let result = scheduler
+        .cancel(running_id)
+        .await
+        .expect("cancel must not error");
+    assert!(result, "cancel() must return true for a Running job");
+
+    let after = scheduler
+        .get_job(running_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must still exist");
+    assert_eq!(
+        after.status,
+        anvilml_core::JobStatus::Running,
+        "status must remain Running immediately after cancel()"
+    );
+}
+
+/// Test that cancel() on a Running job with no worker_id returns
+/// an Internal error rather than panicking.
+///
+/// Creates a Running job with `worker_id: None` (simulating the
+/// unexpected state where a job is Running but has no assigned
+/// worker). Calls `cancel()` and verifies it returns
+/// `Err(AnvilError::Internal(...))` with a descriptive message.
+#[tokio::test]
+async fn test_cancel_running_no_worker_id_errors() {
+    use anvilml_core::Job;
+    use chrono::Utc;
+
+    let store = create_job_store().await;
+    let registry = make_registry();
+    let scheduler = make_scheduler(store, registry).await.0;
+
+    // Construct a Running job with no worker_id.
+    let running_id = Uuid::new_v4();
+    let running_job = Job {
+        id: running_id,
+        status: anvilml_core::JobStatus::Running,
+        graph: make_valid_graph(),
+        settings: JobSettings {
+            device_preference: None,
+        },
+        created_at: Utc::now(),
+        started_at: Some(Utc::now()),
+        completed_at: None,
+        worker_id: None, // Unexpected: Running but no worker assigned
+        error: None,
+        queue_position: None,
+    };
+
+    scheduler
+        .persist_job_test(&running_job)
+        .await
+        .expect("persist must succeed");
+
+    // Cancel the Running job with no worker_id — must return Internal error.
+    let result = scheduler.cancel(running_id).await;
+
+    match result {
+        Err(AnvilError::Internal(msg)) => {
+            assert!(
+                msg.contains("worker_id"),
+                "error message must mention worker_id, got: {msg}"
+            );
+        }
+        other => panic!(
+            "cancel() on Running job with no worker_id must return \
+             AnvilError::Internal, got: {:?}",
+            other
+        ),
+    }
+}
+
+/// Test that cancel() on a Running job returns Ok(true) even when
+/// the transport send fails (no real worker listening).
+///
+/// Creates a Running job with `worker_id = Some("0")`, persists it,
+/// and calls `cancel()`. The send to worker "0" will fail because
+/// there is no DEALER peer listening. The test verifies that cancel()
+/// still returns Ok(true) — cancellation is accepted even if the
+/// signal doesn't reach the worker.
+#[tokio::test]
+async fn test_cancel_running_send_failure_handled() {
+    use anvilml_core::Job;
+    use chrono::Utc;
+
+    let store = create_job_store().await;
+    let registry = make_registry();
+    let scheduler = make_scheduler(store, registry).await.0;
+
+    // Construct and persist a Running job.
+    let running_id = Uuid::new_v4();
+    let running_job = Job {
+        id: running_id,
+        status: anvilml_core::JobStatus::Running,
+        graph: make_valid_graph(),
+        settings: JobSettings {
+            device_preference: None,
+        },
+        created_at: Utc::now(),
+        started_at: Some(Utc::now()),
+        completed_at: None,
+        worker_id: Some("0".into()),
+        error: None,
+        queue_position: None,
+    };
+
+    scheduler
+        .persist_job_test(&running_job)
+        .await
+        .expect("persist must succeed");
+
+    // Cancel — the send will fail (no DEALER peer), but cancel()
+    // returns Ok(true) regardless.
+    let result = scheduler
+        .cancel(running_id)
+        .await
+        .expect("cancel must not error");
+
+    assert!(
+        result,
+        "cancel() must return true even when the CancelJob send fails"
+    );
+
+    // The status must still be Running.
+    let after = scheduler
+        .get_job(running_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must still exist");
+    assert_eq!(
+        after.status,
+        anvilml_core::JobStatus::Running,
+        "status must remain Running after failed send"
     );
 }

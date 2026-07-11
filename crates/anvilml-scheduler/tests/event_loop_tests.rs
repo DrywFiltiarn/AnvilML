@@ -499,11 +499,16 @@ async fn test_spawn_event_loop_receives_and_publishes() {
     let job_store = JobStore::new(db_pool);
     let node_registry = Arc::new(NodeTypeRegistry::new());
 
-    // Create the scheduler with our test artifact_store.
-    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
-
     // Create a WorkerPool with one mock handle (needed by spawn_event_loop).
     let pool = create_test_pool(WorkerStatus::Idle).await.0;
+
+    // Create the scheduler with our test artifact_store and the pool's transport.
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        node_registry,
+        artifact_store,
+        Arc::clone(&pool).transport().clone(),
+    ));
 
     // Spawn the event loop.
     let _handle = spawn_event_loop(
@@ -614,10 +619,16 @@ async fn test_spawn_event_loop_handles_recv_error() {
     let job_store = JobStore::new(db_pool);
     let node_registry = Arc::new(NodeTypeRegistry::new());
 
-    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
-
     // Create a WorkerPool with one mock handle (needed by spawn_event_loop).
     let pool = create_test_pool(WorkerStatus::Idle).await.0;
+
+    // Create the scheduler with the pool's transport for cancellation support.
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        node_registry,
+        artifact_store,
+        Arc::clone(&pool).transport().clone(),
+    ));
 
     // Spawn the event loop.
     let handle = spawn_event_loop(
@@ -682,7 +693,16 @@ async fn test_completed_persists_status_and_releases_ledger() {
 
     let job_store = JobStore::new(db_pool);
     let node_registry = Arc::new(NodeTypeRegistry::new());
-    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
+
+    // Create a WorkerPool for the scheduler's transport.
+    let pool = create_test_pool(WorkerStatus::Idle).await.0;
+
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        node_registry,
+        artifact_store,
+        Arc::clone(&pool).transport().clone(),
+    ));
 
     // Reserve VRAM on device 0 (simulating a dispatch that reserved VRAM).
     {
@@ -833,7 +853,16 @@ async fn test_failed_persists_status_error_and_releases_ledger() {
 
     let job_store = JobStore::new(db_pool);
     let node_registry = Arc::new(NodeTypeRegistry::new());
-    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
+
+    // Create a WorkerPool for the scheduler's transport.
+    let pool = create_test_pool(WorkerStatus::Idle).await.0;
+
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        node_registry,
+        artifact_store,
+        Arc::clone(&pool).transport().clone(),
+    ));
 
     // Reserve VRAM on device 0.
     {
@@ -988,7 +1017,16 @@ async fn test_cancelled_persists_status_and_releases_ledger() {
 
     let job_store = JobStore::new(db_pool);
     let node_registry = Arc::new(NodeTypeRegistry::new());
-    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
+
+    // Create a WorkerPool for the scheduler's transport.
+    let pool = create_test_pool(WorkerStatus::Idle).await.0;
+
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        node_registry,
+        artifact_store,
+        Arc::clone(&pool).transport().clone(),
+    ));
 
     // Reserve VRAM on device 1.
     {
@@ -1133,10 +1171,16 @@ async fn test_terminal_events_publish_ws_event() {
 
     let job_store = JobStore::new(db_pool);
     let node_registry = Arc::new(NodeTypeRegistry::new());
-    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
-
     // Create a WorkerPool with one mock handle (needed by spawn_event_loop).
     let pool = create_test_pool(WorkerStatus::Idle).await.0;
+
+    // Create the scheduler with the pool's transport for cancellation support.
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        node_registry,
+        artifact_store,
+        Arc::clone(&pool).transport().clone(),
+    ));
 
     // Spawn the event loop.
     let _handle = spawn_event_loop(
@@ -1295,10 +1339,16 @@ async fn test_terminal_event_unknown_job_logs_warning() {
 
     let job_store = JobStore::new(db_pool);
     let node_registry = Arc::new(NodeTypeRegistry::new());
-    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
-
     // Create a WorkerPool with one mock handle (needed by spawn_event_loop).
     let pool = create_test_pool(WorkerStatus::Idle).await.0;
+
+    // Create the scheduler with the pool's transport for cancellation support.
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        node_registry,
+        artifact_store,
+        Arc::clone(&pool).transport().clone(),
+    ));
 
     // Spawn the event loop.
     let _handle = spawn_event_loop(
@@ -1401,10 +1451,16 @@ async fn test_progress_still_published_via_map_worker_event() {
 
     let job_store = JobStore::new(db_pool);
     let node_registry = Arc::new(NodeTypeRegistry::new());
-    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
-
     // Create a WorkerPool with one mock handle (needed by spawn_event_loop).
     let pool = create_test_pool(WorkerStatus::Idle).await.0;
+
+    // Create the scheduler with the pool's transport for cancellation support.
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        node_registry,
+        artifact_store,
+        Arc::clone(&pool).transport().clone(),
+    ));
 
     // Spawn the event loop.
     let _handle = spawn_event_loop(
@@ -1547,9 +1603,17 @@ async fn test_completed_restores_worker_idle_wakes_dispatch() {
 
     let job_store = JobStore::new(db_pool);
     let node_registry = Arc::new(NodeTypeRegistry::new());
-    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
-
     // Create a WorkerPool with one mock handle at Busy status.
+    let pool = create_test_pool(WorkerStatus::Busy).await.0;
+
+    // Create the scheduler with the pool's transport for cancellation support.
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        node_registry,
+        artifact_store,
+        Arc::clone(&pool).transport().clone(),
+    ));
+
     let (pool, handle) = create_test_pool(WorkerStatus::Busy).await;
 
     // Create and persist a Running job with worker_id="0".
@@ -1679,9 +1743,15 @@ async fn test_failed_restores_worker_idle_wakes_dispatch() {
 
     let job_store = JobStore::new(db_pool);
     let node_registry = Arc::new(NodeTypeRegistry::new());
-    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
-
     let (pool, handle) = create_test_pool(WorkerStatus::Busy).await;
+
+    // Create the scheduler with the pool's transport for cancellation support.
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        node_registry,
+        artifact_store,
+        Arc::clone(&pool).transport().clone(),
+    ));
 
     let job_id = Uuid::new_v4();
     let running_job = anvilml_core::Job {
@@ -1797,9 +1867,15 @@ async fn test_cancelled_restores_worker_idle_wakes_dispatch() {
 
     let job_store = JobStore::new(db_pool);
     let node_registry = Arc::new(NodeTypeRegistry::new());
-    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
-
     let (pool, handle) = create_test_pool(WorkerStatus::Busy).await;
+
+    // Create the scheduler with the pool's transport for cancellation support.
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        node_registry,
+        artifact_store,
+        Arc::clone(&pool).transport().clone(),
+    ));
 
     let job_id = Uuid::new_v4();
     let running_job = anvilml_core::Job {
@@ -1912,9 +1988,15 @@ async fn test_progress_does_not_wake_dispatch() {
 
     let job_store = JobStore::new(db_pool);
     let node_registry = Arc::new(NodeTypeRegistry::new());
-    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
-
     let (pool, _handle) = create_test_pool(WorkerStatus::Idle).await;
+
+    // Create the scheduler with the pool's transport for cancellation support.
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        node_registry,
+        artifact_store,
+        Arc::clone(&pool).transport().clone(),
+    ));
 
     // Verify initial wake count is 0.
     let initial_count = scheduler.dispatch_wake_count_test().await;
@@ -2024,9 +2106,17 @@ async fn test_queued_job_dispatched_after_first_completes() {
         outputs: vec![],
     }]);
 
-    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
-
     // Create a WorkerPool with one mock handle at Busy status.
+    let pool = create_test_pool(WorkerStatus::Busy).await.0;
+
+    // Create the scheduler with the pool's transport for cancellation support.
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        node_registry,
+        artifact_store,
+        Arc::clone(&pool).transport().clone(),
+    ));
+
     let (pool, handle) = create_test_pool(WorkerStatus::Busy).await;
 
     // Submit two jobs — both go into the queue.
@@ -2193,8 +2283,14 @@ async fn test_spawn_event_loop_subscription_exists_before_return() {
 
     let job_store = JobStore::new(db_pool);
     let node_registry = Arc::new(NodeTypeRegistry::new());
-    let scheduler = Arc::new(JobScheduler::new(job_store, node_registry, artifact_store));
     let pool = create_test_pool(WorkerStatus::Idle).await.0;
+
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        node_registry,
+        artifact_store,
+        Arc::clone(&pool).transport().clone(),
+    ));
 
     let _handle = spawn_event_loop(
         Arc::clone(&scheduler),
