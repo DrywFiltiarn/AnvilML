@@ -14,7 +14,9 @@
 //! and the `Lagged`-disconnect rule.
 
 use anvilml_artifacts::ArtifactStore;
-use anvilml_core::{NodeTypeRegistry, ServerConfig, WsEvent};
+use anvilml_core::{
+    EnvReport, HardwareInfo, NodeTypeRegistry, ProvisioningState, ServerConfig, WsEvent,
+};
 use anvilml_ipc::EventBroadcaster;
 use anvilml_registry::JobStore;
 use anvilml_scheduler::JobScheduler;
@@ -24,6 +26,7 @@ use futures_util::StreamExt;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::Message as ClientMessage;
 use uuid::Uuid;
 
@@ -87,6 +90,23 @@ async fn make_test_state() -> AppState {
         db,
         artifact_store,
         broadcaster: Arc::new(EventBroadcaster::new()),
+        hardware: Arc::new(RwLock::new(HardwareInfo {
+            host: anvilml_core::HostInfo {
+                hostname: "test-host".to_string(),
+                os: "Linux".to_string(),
+            },
+            gpus: vec![],
+            inference_caps: anvilml_core::InferenceCaps::default(),
+        })),
+        env_report: Arc::new(RwLock::new(EnvReport {
+            python_path: Some("./worker/.venv/bin/python3".to_string()),
+            python_version: None,
+            torch_version: None,
+            provisioning: ProvisioningState::NotStarted,
+            preflight_ok: false,
+            reason: None,
+            node_types: Vec::new(),
+        })),
     }
 }
 

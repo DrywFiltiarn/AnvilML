@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
 use anvilml_artifacts::ArtifactStore;
-use anvilml_core::{NodeTypeRegistry, ServerConfig};
+use anvilml_core::{EnvReport, HardwareInfo, NodeTypeRegistry, ServerConfig};
 use anvilml_ipc::EventBroadcaster;
 use anvilml_scheduler::JobScheduler;
 use anvilml_worker::WorkerPool;
 use sqlx::SqlitePool;
+use tokio::sync::RwLock;
 
 /// Shared application state for the AnvilML HTTP server.
 ///
@@ -68,4 +69,18 @@ pub struct AppState {
     /// scheduler's event loop (`spawn_event_loop`), so HTTP-layer
     /// subscribers receive all events the scheduler publishes.
     pub broadcaster: Arc<EventBroadcaster>,
+
+    /// Snapshot of the host machine's hardware (GPU/CPU devices and capabilities).
+    ///
+    /// Populated once at server startup via `detect_all_devices()`. The `RwLock`
+    /// allows the scheduler to read the snapshot during dispatch while a future
+    /// VRAM-refresh path can update it without reconstructing the entire struct.
+    pub hardware: Arc<RwLock<HardwareInfo>>,
+
+    /// Python environment health report collected at startup preflight.
+    ///
+    /// Contains the interpreter path, Python version, torch availability, and
+    /// provisioning status. Best-effort initial populate at startup — a full
+    /// preflight subsystem is a later concern.
+    pub env_report: Arc<RwLock<EnvReport>>,
 }

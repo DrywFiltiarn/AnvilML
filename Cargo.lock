@@ -209,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-server"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "anvilml-artifacts",
  "anvilml-core",

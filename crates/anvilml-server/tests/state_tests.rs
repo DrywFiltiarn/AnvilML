@@ -4,7 +4,9 @@
 //! of the shared application state used by the AnvilML HTTP server.
 
 use anvilml_artifacts::ArtifactStore;
-use anvilml_core::{NodeTypeDescriptor, NodeTypeRegistry, ServerConfig};
+use anvilml_core::{
+    EnvReport, HardwareInfo, NodeTypeDescriptor, NodeTypeRegistry, ProvisioningState, ServerConfig,
+};
 use anvilml_ipc::EventBroadcaster;
 use anvilml_registry::JobStore;
 use anvilml_scheduler::JobScheduler;
@@ -12,6 +14,7 @@ use anvilml_server::AppState;
 use anvilml_worker::WorkerPool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 /// Helper to create an in-memory SQLite pool with migrations applied.
 ///
@@ -73,6 +76,23 @@ async fn make_full_state(
         db,
         artifact_store,
         broadcaster,
+        hardware: Arc::new(RwLock::new(HardwareInfo {
+            host: anvilml_core::HostInfo {
+                hostname: "test-host".to_string(),
+                os: "Linux".to_string(),
+            },
+            gpus: vec![],
+            inference_caps: anvilml_core::InferenceCaps::default(),
+        })),
+        env_report: Arc::new(RwLock::new(EnvReport {
+            python_path: Some("./worker/.venv/bin/python3".to_string()),
+            python_version: None,
+            torch_version: None,
+            provisioning: ProvisioningState::NotStarted,
+            preflight_ok: false,
+            reason: None,
+            node_types: Vec::new(),
+        })),
     }
 }
 
@@ -118,6 +138,23 @@ fn test_app_state_constructs() {
             create_test_pool_sync(),
         )),
         broadcaster: Arc::new(EventBroadcaster::new()),
+        hardware: Arc::new(RwLock::new(HardwareInfo {
+            host: anvilml_core::HostInfo {
+                hostname: "test-host".to_string(),
+                os: "Linux".to_string(),
+            },
+            gpus: vec![],
+            inference_caps: anvilml_core::InferenceCaps::default(),
+        })),
+        env_report: Arc::new(RwLock::new(EnvReport {
+            python_path: Some("./worker/.venv/bin/python3".to_string()),
+            python_version: None,
+            torch_version: None,
+            provisioning: ProvisioningState::NotStarted,
+            preflight_ok: false,
+            reason: None,
+            node_types: Vec::new(),
+        })),
     };
 
     // Verify both fields are accessible and the registry starts empty.
@@ -384,5 +421,91 @@ async fn test_app_state_broadcaster_clone_shares() {
             Arc::as_ptr(&cloned.broadcaster),
         ),
         "broadcaster Arc must be shared between original and clone"
+    );
+}
+
+/// Verify that `AppState` constructs with a valid `hardware` field
+/// backed by an `Arc<RwLock<HardwareInfo>>` containing at least a
+/// host entry.
+///
+/// Constructs `AppState` via `make_full_state()`, then acquires a
+/// read lock on `hardware` and asserts the `HostInfo` contains
+/// non-empty hostname and OS fields. Also verifies the `Arc` pointer
+/// is valid via `Arc::as_ptr()`. This confirms the hardware snapshot
+/// field is properly constructed and accessible.
+#[tokio::test]
+async fn test_app_state_hardware_field_constructs() {
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let artifact_store = create_test_artifact_store().await;
+    let state = make_full_state(node_registry, artifact_store).await;
+
+    // Verify the hardware field is accessible and the Arc pointer is valid.
+    let ptr = Arc::as_ptr(&state.hardware);
+    assert!(!ptr.is_null(), "hardware Arc pointer must be valid");
+
+    // Acquire a read lock and verify the hardware snapshot contains
+    // at least a host entry with non-empty fields.
+    let hw = state.hardware.read().await;
+    assert!(
+        !hw.host.hostname.is_empty(),
+        "hardware host hostname must not be empty"
+    );
+    assert!(!hw.host.os.is_empty(), "hardware host os must not be empty");
+}
+
+/// Verify that `AppState` constructs with a valid `env_report` field
+/// backed by an `Arc<RwLock<EnvReport>>` with conservative initial values.
+///
+/// Constructs `AppState` via `make_full_state()`, then acquires a read
+/// lock on `env_report` and asserts `preflight_ok` is `false` (best-effort,
+/// no full preflight at startup). Also verifies the `Arc` pointer is valid.
+/// This confirms the environment report field is properly constructed and
+/// carries the expected conservative initial values.
+#[tokio::test]
+async fn test_app_state_env_report_field_constructs() {
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let artifact_store = create_test_artifact_store().await;
+    let state = make_full_state(node_registry, artifact_store).await;
+
+    // Verify the env_report field is accessible and the Arc pointer is valid.
+    let ptr = Arc::as_ptr(&state.env_report);
+    assert!(!ptr.is_null(), "env_report Arc pointer must be valid");
+
+    // Acquire a read lock and verify preflight_ok is false (best-effort).
+    let report = state.env_report.read().await;
+    assert!(
+        !report.preflight_ok,
+        "env_report preflight_ok must be false at best-effort startup"
+    );
+}
+
+/// Verify that cloning `AppState` shares the `Arc` pointers for both
+/// `hardware` and `env_report` — identical to the pattern used by all
+/// other `Arc` fields in `AppState`.
+///
+/// Constructs `AppState`, clones it, then asserts via pointer comparison
+/// (`std::ptr::eq(Arc::as_ptr(...))`) that both `hardware` and `env_report`
+/// share the same allocation between the original and cloned state.
+#[tokio::test]
+async fn test_app_state_hardware_env_report_clone_shares() {
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let artifact_store = create_test_artifact_store().await;
+    let state = make_full_state(node_registry, artifact_store).await;
+
+    let cloned = state.clone();
+
+    // Both clones must share the same Arc<HardwareInfo> allocation.
+    assert!(
+        std::ptr::eq(Arc::as_ptr(&state.hardware), Arc::as_ptr(&cloned.hardware),),
+        "hardware Arc must be shared between original and clone"
+    );
+
+    // Both clones must share the same Arc<EnvReport> allocation.
+    assert!(
+        std::ptr::eq(
+            Arc::as_ptr(&state.env_report),
+            Arc::as_ptr(&cloned.env_report),
+        ),
+        "env_report Arc must be shared between original and clone"
     );
 }

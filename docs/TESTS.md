@@ -6300,3 +6300,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Execute message with `job_id="job-done"` (completes normally), then CancelJob for the same `job_id`.
 **Expected output:** Completed event sent; no Cancelled event sent; no exception raised.
 **Acceptance:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_worker_main.py::TestDispatchLoopCancelJob::test_canceljob_after_job_completed_is_ignored -v` exits 0.
+
+---
+
+## test_app_state_hardware_field_constructs (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/state_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `tokio` (sync feature) providing `tokio::sync::RwLock`, and `anvilml-core` providing `HardwareInfo`, `HostInfo`, and `InferenceCaps`.
+**Tests:** `hardware` field is present on `AppState`, contains a valid `HardwareInfo` with non-empty `HostInfo` (hostname and OS), and the `Arc<RwLock<HardwareInfo>>` pointer is valid (non-null).
+**Mode:** both
+**Inputs:** `AppState` constructed via `make_full_state()` with synthetic `HardwareInfo { host: HostInfo { hostname: "test-host", os: "Linux" }, gpus: [], inference_caps: InferenceCaps::default() }`.
+**Expected output:** `Arc::as_ptr()` returns non-null; read lock yields `HostInfo` with non-empty hostname and OS.
+**Acceptance:** `cargo test -p anvilml-server --test state_tests -- hardware_field_constructs` exits 0.
+
+---
+
+## test_app_state_env_report_field_constructs (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/state_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `tokio` (sync feature) providing `tokio::sync::RwLock`, and `anvilml-core` providing `EnvReport` and `ProvisioningState`.
+**Tests:** `env_report` field is present on `AppState`, `preflight_ok` is `false` (best-effort, no full preflight at startup), and the `Arc<RwLock<EnvReport>>` pointer is valid (non-null).
+**Mode:** both
+**Inputs:** `AppState` constructed via `make_full_state()` with synthetic `EnvReport { python_path: Some("./worker/.venv/bin/python3"), python_version: None, torch_version: None, provisioning: NotStarted, preflight_ok: false, reason: None, node_types: [] }`.
+**Expected output:** `Arc::as_ptr()` returns non-null; read lock yields `preflight_ok == false`.
+**Acceptance:** `cargo test -p anvilml-server --test state_tests -- env_report_field_constructs` exits 0.
+
+---
+
+## test_app_state_hardware_env_report_clone_shares (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/state_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `tokio` (sync feature) providing `tokio::sync::RwLock`, and `anvilml-core` providing `HardwareInfo` and `EnvReport`.
+**Tests:** Both `hardware` and `env_report` `Arc` pointers are identical between original and cloned `AppState` (verified via `std::ptr::eq(Arc::as_ptr(...))`).
+**Mode:** both
+**Inputs:** `AppState` constructed via `make_full_state()`, then cloned.
+**Expected output:** Both `hardware` and `env_report` `Arc` pointers are shared between original and clone.
+**Acceptance:** `cargo test -p anvilml-server --test state_tests -- clone_shares` exits 0.

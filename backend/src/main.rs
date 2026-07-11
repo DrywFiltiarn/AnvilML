@@ -5,7 +5,9 @@ use tracing_subscriber::EnvFilter;
 use anvilml::shutdown;
 use anvilml_artifacts::ArtifactStore;
 use anvilml_core::CliOverrides;
+use anvilml_core::EnvReport;
 use anvilml_core::NodeTypeRegistry;
+use anvilml_core::ProvisioningState;
 use anvilml_core::config_load;
 use anvilml_hardware::detect_all_devices;
 use anvilml_ipc::EventBroadcaster;
@@ -20,6 +22,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
+use tokio::sync::RwLock;
 
 /// Entry point for the AnvilML server binary.
 ///
@@ -187,6 +190,14 @@ async fn main() {
         "hardware devices detected"
     );
 
+    // Wrap the hardware snapshot in Arc<RwLock> for sharing with AppState.
+    // Clone before wrapping so the original `hw_info` is still available
+    // for WorkerPool::spawn_all() below — we need `&hw_info.gpus`.
+    // The RwLock allows future VRAM-refresh paths to update the snapshot
+    // without reconstructing the entire struct; the scheduler reads it
+    // during dispatch.
+    let hardware = Arc::new(RwLock::new(hw_info.clone()));
+
     // Construct the worker pool (empty), spawn workers for each device,
     // then wrap in Arc for sharing with AppState and the dispatch loop.
     // WorkerPool::new() binds a RouterTransport and spawns the bridge;
@@ -288,6 +299,27 @@ async fn main() {
     // handler returns a real elapsed-time measurement.
     let start_time = Instant::now();
 
+    // Best-effort initial EnvReport at startup.
+    // A full preflight subsystem is a later concern — this just captures
+    // the interpreter path and a conservative preflight status.
+    // torch_version is None because Rust cannot import Python modules;
+    // the Python worker will populate this on its Ready event later.
+    let env_report = Arc::new(RwLock::new(EnvReport {
+        python_path: Some(
+            config
+                .venv_path
+                .join("bin/python3")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        python_version: None, // Will be filled by worker Ready event
+        torch_version: None,
+        provisioning: ProvisioningState::NotStarted,
+        preflight_ok: false,
+        reason: None,
+        node_types: Vec::new(),
+    }));
+
     // Construct `AppState` with the loaded config, a fresh empty node
     // registry (populated later when the Python worker sends Ready),
     // the captured start instant, and the subsystem fields.
@@ -300,6 +332,8 @@ async fn main() {
         db: pool,
         artifact_store,
         broadcaster: Arc::clone(&broadcaster),
+        hardware,
+        env_report,
     };
 
     // Extract the listen address from the Arc-wrapped config before moving

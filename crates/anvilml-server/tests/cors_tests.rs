@@ -5,7 +5,7 @@
 //! the pattern established in `health_tests.rs`.
 
 use anvilml_artifacts::ArtifactStore;
-use anvilml_core::{NodeTypeRegistry, ServerConfig};
+use anvilml_core::{EnvReport, HardwareInfo, NodeTypeRegistry, ProvisioningState, ServerConfig};
 use anvilml_ipc::EventBroadcaster;
 use anvilml_registry::JobStore;
 use anvilml_scheduler::JobScheduler;
@@ -15,6 +15,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tower::util::ServiceExt;
 
 /// Helper to create an in-memory SQLite pool with migrations applied.
@@ -74,6 +75,23 @@ async fn make_test_state(node_registry: Arc<NodeTypeRegistry>) -> AppState {
         db,
         artifact_store,
         broadcaster: Arc::new(EventBroadcaster::new()),
+        hardware: Arc::new(RwLock::new(HardwareInfo {
+            host: anvilml_core::HostInfo {
+                hostname: "test-host".to_string(),
+                os: "Linux".to_string(),
+            },
+            gpus: vec![],
+            inference_caps: anvilml_core::InferenceCaps::default(),
+        })),
+        env_report: Arc::new(RwLock::new(EnvReport {
+            python_path: Some("./worker/.venv/bin/python3".to_string()),
+            python_version: None,
+            torch_version: None,
+            provisioning: ProvisioningState::NotStarted,
+            preflight_ok: false,
+            reason: None,
+            node_types: Vec::new(),
+        })),
     }
 }
 
