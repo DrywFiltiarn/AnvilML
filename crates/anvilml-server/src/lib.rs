@@ -41,6 +41,11 @@ pub fn build_router(app_state: AppState) -> axum::Router {
             "/v1/system/env",
             axum::routing::get(handlers::system::get_system_env),
         )
+        // GET /v1/system/versions — per-component version report
+        .route(
+            "/v1/system/versions",
+            axum::routing::get(handlers::system::get_system_versions),
+        )
         // GET /v1/jobs — list jobs (with optional status/limit filters)
         // POST /v1/jobs — submit a new job
         // The GET route must be registered before the /v1/jobs/{id} route

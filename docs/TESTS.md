@@ -6384,3 +6384,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `GET /v1/system/env` → original response → write lock updates `python_version` to `"3.12.3"`, `torch_version` to `"2.5.0"`, `provisioning` to `Ready`, `preflight_ok` to `true` → second `GET /v1/system/env`.
 **Expected output:** First response: `python_version == null`, `provisioning == "not_started"`. Second response: `python_version == "3.12.3"`, `torch_version == "2.5.0"`, `provisioning == "ready"`, `preflight_ok == true`.
 **Acceptance:** `cargo test -p anvilml-server --test system_tests test_get_system_env_reflects_env_report_update` exits 0.
+
+---
+
+## test_get_system_versions_returns_200 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/system_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `axum`, `serde`, `serde_json`, `tower` dev-dependencies, and the `rustc_version_runtime` runtime dependency (v0.3.0, resolved via rust-docs MCP). `build_router()` accepts an `AppState` with `env_report` field having `python_version` and `torch_version` as `None` (the `make_test_state` default).
+**Tests:** `GET /v1/system/versions` returns `200 OK` with a JSON body containing `ComponentVersions` fields — `anvilml_version` is a non-empty string (from `CARGO_PKG_VERSION`), `rust_version` is a non-empty string (from `rustc_version_runtime::version()`), and `python_version` and `torch_version` are `null` (from the `None` env_report defaults).
+**Mode:** both
+**Inputs:** `GET /v1/system/versions` with empty body; `build_router()` called with `AppState` containing default `EnvReport { python_version: None, torch_version: None, ... }`.
+**Expected output:** `StatusCode::OK`; JSON body has `"anvilml_version"` as non-empty string, `"rust_version"` as non-empty string, `"python_version": null`, `"torch_version": null`.
+**Acceptance:** `cargo test -p anvilml-server --test system_tests test_get_system_versions_returns_200` exits 0.
+
+---
+
+## test_get_system_versions_reflects_env_report_values (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/system_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `axum`, `serde`, `serde_json`, `tower` dev-dependencies, and the `rustc_version_runtime` runtime dependency (v0.3.0). `AppState` holds `env_report` as `Arc<RwLock<EnvReport>>` so the write lock can mutate the report between requests.
+**Tests:** After writing new `EnvReport` values through the `RwLock` write lock, `GET /v1/system/versions` returns the updated `python_version` and `torch_version` — proving the handler reads the live snapshot.
+**Mode:** both
+**Inputs:** `GET /v1/system/versions` → original response → write lock updates `python_version` to `"3.12.3"`, `torch_version` to `"2.5.0"` → second `GET /v1/system/versions`.
+**Expected output:** Both responses: `anvilml_version` is non-empty string, `rust_version` is non-empty string. Second response: `python_version == "3.12.3"`, `torch_version == "2.5.0"`.
+**Acceptance:** `cargo test -p anvilml-server --test system_tests test_get_system_versions_reflects_env_report_values` exits 0.
+
+---
+
+## test_get_system_versions_null_when_env_report_unset (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/system_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `axum`, `serde`, `serde_json`, `tower` dev-dependencies, and the `rustc_version_runtime` runtime dependency (v0.3.0). `make_test_state()` constructs `EnvReport` with `python_version: None` and `torch_version: None` by default.
+**Tests:** `GET /v1/system/versions` returns `200 OK` with `python_version` and `torch_version` both `null` in the JSON body — confirming that `None` values from `EnvReport` serialize as JSON `null`.
+**Mode:** both
+**Inputs:** `GET /v1/system/versions` with empty body; `build_router()` called with `AppState` containing `EnvReport { python_version: None, torch_version: None, ... }` (default from `make_test_state`).
+**Expected output:** `StatusCode::OK`; JSON body has `"python_version": null`, `"torch_version": null`.
+**Acceptance:** `cargo test -p anvilml-server --test system_tests test_get_system_versions_null_when_env_report_unset` exits 0.

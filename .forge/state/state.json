@@ -165,16 +165,17 @@
     "P17-B5",
     "P17-C1",
     "P17-D1",
-    "P18-A1"
+    "P18-A1",
+    "P18-B1"
   ],
-  "in_progress": "P18-B1",
+  "in_progress": "P18-B2",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "1. **Add dependency to `Cargo.toml`.** Add `rustc_version_runtime = \"0.3.0\"` to the `[dependencies]` section of `crates/anvilml-server/Cargo.toml`. This is a runtime dependency (not dev-dependency) because the handler needs to call `rustc_version_runtime::version()` at request time.\n\n2. **Define `ComponentVersions` struct in `system.rs`.** Add a new `pub(crate)` struct with `#[derive(Debug, Clone, serde::Serialize)]` and fields:\n   - `anvilml_version: String` \u2014 from `env!(\"CARGO_PKG_VERSION\")` (compile-time constant)\n   - `rust_version: String` \u2014 from `rustc_version_runtime::version()` (called at runtime, returns `&'static str`)\n   - `python_version: Option<String>` \u2014 from `state.env_report.read().await.python_version`\n   - `torch_version: Option<String>` \u2014 from `state.env_report.read().await.torch_version`\n   \n   The struct follows the same pattern as `HealthResponse` in `health.rs`: a plain struct with `serde::Serialize`, no `ToSchema` derive needed (OpenAPI annotations are handled by P18-F1 in a later task).\n\n3. **Implement `get_system_versions()` handler.** Add a new `pub(crate) async fn` handler in `system.rs` with signature:\n   ```rust\n   pub(crate) async fn get_system_versions(State(state): State<AppState>) -> Json<ComponentVersions>\n   ```\n   Implementation: acquire a read lock on `state.env_report`, clone the `EnvReport`, construct `ComponentVersions` from the locked values, return `Json(...)`. The handler is a thin delegation with no business logic \u2014 consistent with the pattern in `get_system()` and `get_system_env()`.\n\n4. **Register the route in `build_router()`.** Add a `.route(\"/v1/system/versions\", axum::routing::get(handlers::system::get_system_versions))` call in `lib.rs`, placed immediately after the existing `/v1/system/env` route to keep the system routes grouped together.\n\n5. **Write integration tests in `system_tests.rs`.** Add three new test functions:\n   - `test_get_system_versions_returns_200`: verifies the endpoint returns 200 OK with a non-empty `anvilml_version` field (asserting the field exists and is not an empty string).\n   - `test_get_system_versions_reflects_env_report_values`: constructs state with `python_version = Some(\"3.12.3\")` and `torch_version = Some(\"2.5.0\")` in `env_report`, sends the request, and asserts both fields match in the JSON response.\n   - `test_get_system_versions_null_when_env_report_unset`: constructs state with `python_version = None` and `torch_version = None` (the default in `make_test_state`), sends the request, and asserts both fields are `null` in the JSON response.\n\n6. **Bump crate version.** Increment `anvilml-server` patch version from `0.1.18` to `0.1.19` in `crates/anvilml-server/Cargo.toml`.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-12T00:37:16+0200",
-  "plan_approval_message_id": "1525629356330713238",
+  "last_updated": "2026-07-12T01:12:18+0200",
+  "plan_approval_message_id": "1525640642456326357",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1525629354497806439",
+  "plan_report_message_id": "1525640640837451858",
   "impl_report_message_id": null
 }

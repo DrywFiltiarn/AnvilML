@@ -1,8 +1,9 @@
 //! Integration tests for the system information handlers.
 //!
-//! Tests verify that `GET /v1/system` returns the hardware snapshot
-//! and `GET /v1/system/env` returns the Python environment report,
-//! both as JSON bodies with correct status codes and field values.
+//! Tests verify that `GET /v1/system` returns the hardware snapshot,
+//! `GET /v1/system/env` returns the Python environment report, and
+//! `GET /v1/system/versions` returns per-component version info,
+//! all as JSON bodies with correct status codes and field values.
 
 use anvilml_artifacts::ArtifactStore;
 use anvilml_core::{EnvReport, HardwareInfo, NodeTypeRegistry, ProvisioningState, ServerConfig};
@@ -252,4 +253,109 @@ async fn test_get_system_env_reflects_env_report_update() {
     assert_eq!(body2["torch_version"], "2.5.0");
     assert_eq!(body2["provisioning"], "ready");
     assert_eq!(body2["preflight_ok"], true);
+}
+
+/// Verify that GET /v1/system/versions returns 200 OK with a JSON body
+/// containing non-empty `anvilml_version` and `rust_version` fields.
+///
+/// Constructs a `GET /v1/system/versions` request, sends it through the
+/// router built by `build_router()`, and asserts the response status is
+/// `StatusCode::OK` plus both version strings are present and non-empty.
+/// `python_version` and `torch_version` are `null` (the `make_test_state`
+/// default).
+#[tokio::test]
+async fn test_get_system_versions_returns_200() {
+    let state = make_test_state(Arc::new(NodeTypeRegistry::new())).await;
+    let router = build_router(state);
+    let req = Request::get("/v1/system/versions")
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+
+    // Parse response body and assert on the version fields.
+    let body_bytes = to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body collection must succeed");
+    let body: Value =
+        serde_json::from_slice(&body_bytes).expect("response body must be valid JSON");
+
+    // anvilml_version must be present and non-empty (from CARGO_PKG_VERSION).
+    let anvilml_ver = body["anvilml_version"]
+        .as_str()
+        .expect("anvilml_version must be a string");
+    assert!(!anvilml_ver.is_empty(), "anvilml_version must not be empty");
+
+    // rust_version must be present and non-empty (from rustc_version_runtime).
+    let rust_ver = body["rust_version"]
+        .as_str()
+        .expect("rust_version must be a string");
+    assert!(!rust_ver.is_empty(), "rust_version must not be empty");
+
+    // python_version and torch_version are null in make_test_state defaults.
+    assert_eq!(body["python_version"], Value::Null);
+    assert_eq!(body["torch_version"], Value::Null);
+}
+
+/// Verify that GET /v1/system/versions reflects env_report values set
+/// in the test state — specifically `python_version` and `torch_version`.
+///
+/// Constructs state with `python_version = Some("3.12.3")` and
+/// `torch_version = Some("2.5.0")`, sends a request, and asserts both
+/// fields match in the JSON response.
+#[tokio::test]
+async fn test_get_system_versions_reflects_env_report_values() {
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let state = make_test_state(node_registry).await;
+    let router = build_router(state.clone());
+
+    // Update the env_report with sentinel version strings.
+    let mut report = state.env_report.write().await;
+    report.python_version = Some("3.12.3".to_string());
+    report.torch_version = Some("2.5.0".to_string());
+    // Write lock is released here.
+    drop(report);
+
+    let req = Request::get("/v1/system/versions")
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+
+    let body_bytes = to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body collection must succeed");
+    let body: Value =
+        serde_json::from_slice(&body_bytes).expect("response body must be valid JSON");
+
+    // The python_version and torch_version must match the sentinel values.
+    assert_eq!(body["python_version"], "3.12.3");
+    assert_eq!(body["torch_version"], "2.5.0");
+}
+
+/// Verify that GET /v1/system/versions returns null for python_version
+/// and torch_version when the env_report has `None` for those fields
+/// (the default in `make_test_state`).
+///
+/// Constructs state without modifying env_report (so both fields are
+/// `None`), sends a request, and asserts both are `null` in the JSON.
+#[tokio::test]
+async fn test_get_system_versions_null_when_env_report_unset() {
+    let state = make_test_state(Arc::new(NodeTypeRegistry::new())).await;
+    let router = build_router(state);
+    let req = Request::get("/v1/system/versions")
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+
+    let body_bytes = to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body collection must succeed");
+    let body: Value =
+        serde_json::from_slice(&body_bytes).expect("response body must be valid JSON");
+
+    // Both fields must be null when the env_report has None for them.
+    assert_eq!(body["python_version"], Value::Null);
+    assert_eq!(body["torch_version"], Value::Null);
 }

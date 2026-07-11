@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-server"
-version = "0.1.18"
+version = "0.1.19"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -13,6 +13,7 @@ anvilml-core = { path = "../anvilml-core" }
 anvilml-ipc = { path = "../anvilml-ipc" }
 anvilml-hardware = { path = "../anvilml-hardware" }
 axum = { version = "0.8.9", features = ["ws"] }
+rustc_version_runtime = "0.3.0"
 sysinfo = "0.39.6"
 tokio = { version = "1.47.0", features = ["sync", "rt", "time"] }
 
