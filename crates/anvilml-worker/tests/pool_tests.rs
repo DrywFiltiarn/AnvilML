@@ -245,11 +245,15 @@ async fn test_spawn_all_creates_one_handle_per_device() {
         "spawn() should have been called exactly once per device"
     );
 
-    let mut worker_ids: Vec<&str> = pool
-        .handles()
-        .iter()
-        .map(|h| h.worker_id.as_str())
-        .collect();
+    // handles() now returns an owned Vec<WorkerHandle> (P18-D2/D3 gave
+    // WorkerPool's handles field interior mutability, which means it can
+    // no longer hand back a borrow tied to `pool`'s own lifetime — see
+    // that method's own doc comment). Collecting owned Strings here
+    // (rather than the original &str borrowed from that temporary Vec)
+    // is the minimal adjustment this forces: a &str borrowed from
+    // handles()'s temporary can't outlive the statement that creates it,
+    // but worker_ids is used in the next statement (`.sort()`) below.
+    let mut worker_ids: Vec<String> = pool.handles().iter().map(|h| h.worker_id.clone()).collect();
     worker_ids.sort();
     assert_eq!(
         worker_ids,

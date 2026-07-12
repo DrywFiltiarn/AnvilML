@@ -282,6 +282,18 @@ bulk-construction logic.
 - Pure extraction — no behavior change. Existing `pool_tests.rs` must pass
   unmodified.
 
+> **Retrofit note (post-implementation):** Both bullets above needed correction once
+> `P18-D3` was implemented. `spawn_worker()`'s actual signature is `&self`, not
+> `&mut self` — required so `P18-D3`'s restart handler can call it through
+> `AppState.workers`'s bare `Arc<WorkerPool>`, which never yields exclusive `&mut`
+> access. That in turn required `WorkerPool.handles` to become interior-mutable
+> (`std::sync::RwLock<Vec<WorkerHandle>>`), which changed `handles()`'s return type
+> from `&[WorkerHandle]` to an owned `Vec<WorkerHandle>` snapshot — and *that* forced
+> one line in `pool_tests.rs` to change (a `&str`-collecting assertion that doesn't
+> compile against an owned-temporary return type; fixed by collecting owned `String`s
+> instead, same coverage). See `docs/PHASES_GRAPH.md` gap #28 and
+> `.forge/reports/P18-D2_plan.md`/`P18-D2_implement.md` for the full reasoning.
+
 **Acceptance criterion:**
 ```bash
 cargo test -p anvilml-worker --features mock-hardware --test pool_tests

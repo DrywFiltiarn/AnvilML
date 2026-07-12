@@ -6528,3 +6528,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** GET request to `/v1/workers` with a pool containing one mock worker.
 **Expected output:** `StatusCode::OK` (200) with a JSON array of length 1, containing exactly the six `WorkerInfo` fields with correct types and values.
 **Acceptance:** `cargo test -p anvilml-server --features mock-hardware --test workers_tests test_workers_response_shape_matches_workerinfo` exits 0.
+
+---
+
+## test_restart_unknown_worker_returns_404 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/workers_tests.rs`
+**Context:** `AppState` with a `WorkerPool` populated via `spawn_all_with_spawner()` (a `MockWorkerSpawner`, not `set_up_test_workers()` — `restart_worker()` needs `spawn_config` populated, which only the real spawn path sets) with one worker on device index 0.
+**Tests:** `POST /v1/workers/{id}/restart` returns `404 Not Found` when `id` doesn't match any worker in the pool.
+**Mode:** both
+**Inputs:** `POST /v1/workers/99/restart` against a pool that only has worker `"0"`.
+**Expected output:** `StatusCode::NOT_FOUND` (404).
+**Acceptance:** `cargo test -p anvilml-server --features mock-hardware --test workers_tests test_restart_unknown_worker_returns_404` exits 0.
+
+---
+
+## test_restart_known_worker_returns_202_and_spawns_new_generation (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/workers_tests.rs`
+**Context:** Same spawner-backed pool as above, one worker on device index 0. Polls `MockWorkerSpawner::call_count()` to confirm the initial spawn completed before restarting, then again after, to distinguish "the old process was left running" from "a genuinely new generation was spawned" — the exact distinction the `P18-D3` audit finding turns on (`request_shutdown()` alone does not respawn).
+**Tests:** Restarting a known, non-`Dying` worker returns `202 Accepted` and causes a second `spawner.spawn()` call.
+**Mode:** both
+**Inputs:** `POST /v1/workers/0/restart` against a pool with one already-spawned worker.
+**Expected output:** `StatusCode::ACCEPTED` (202); `spawner.call_count() == 2` within 2s of the restart request.
+**Acceptance:** `cargo test -p anvilml-server --features mock-hardware --test workers_tests test_restart_known_worker_returns_202_and_spawns_new_generation` exits 0.
+
+---
+
+## test_restart_already_dying_returns_409 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/workers_tests.rs`
+**Context:** Same spawner-backed pool, one worker on device index 0, forced into `WorkerStatus::Dying` via `set_status()` on a cloned handle (clones share the underlying status lock) before the restart request — simulating a shutdown already in flight (e.g. from a concurrent `shutdown_all()`).
+**Tests:** Restarting an already-`Dying` worker returns `409 Conflict` and does **not** trigger a second spawn.
+**Mode:** both
+**Inputs:** `POST /v1/workers/0/restart` against a worker whose status was forced to `Dying`.
+**Expected output:** `StatusCode::CONFLICT` (409); `spawner.call_count()` stays at 1.
+**Acceptance:** `cargo test -p anvilml-server --features mock-hardware --test workers_tests test_restart_already_dying_returns_409` exits 0.
+
+---
+
+## test_restart_respawned_worker_reaches_idle (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/workers_tests.rs`
+**Context:** Same spawner-backed pool, one worker on device index 0. After restarting, connects a DEALER socket to the pool's shared `RouterTransport` (same pattern as `crates/anvilml-worker/tests/pool_tests.rs`'s `connect_dealer`/`send_event`/`ready_event` helpers) and sends a synthetic `WorkerEvent::Ready` for worker `"0"`, retrying the send within the poll loop to absorb the small window between the new generation's process launching and its `Demux::register()` call completing.
+**Tests:** The worker spawned by a restart genuinely reaches `Idle`, not just that a new OS process was launched.
+**Mode:** both
+**Inputs:** `POST /v1/workers/0/restart`, followed by a synthetic `Ready` event for the same `worker_id`.
+**Expected output:** `StatusCode::ACCEPTED` (202) on the restart; the respawned worker's status reaches `WorkerStatus::Idle` within 3s.
+**Acceptance:** `cargo test -p anvilml-server --features mock-hardware --test workers_tests test_restart_respawned_worker_reaches_idle` exits 0.

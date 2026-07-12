@@ -171,14 +171,16 @@
     "P18-C1",
     "P18-C2",
     "P18-C3",
-    "P18-D1"
+    "P18-D1",
+    "P18-D2",
+    "P18-D3"
   ],
   "in_progress": null,
   "plan_approved": false,
   "current_plan": null,
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-12T13:44:29+0200",
+  "last_updated": "2026-07-12T14:30:00+0200",
   "plan_approval_message_id": "1525800794815725600",
   "push_approval_message_id": "1525816986632847461",
   "plan_report_message_id": "1525800793092001873",
