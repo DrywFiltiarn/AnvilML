@@ -3,10 +3,10 @@
 //! Provides `list_models()`, `get_model()`, and `rescan_models()` — thin-delegation
 //! handlers that read from or write to the `model_store` field of `AppState` and
 //! return JSON responses. No business logic lives here; all data access is delegated
-//! to `anvilml_registry::ModelStore` and `anvilml_registry::ModelScanner`.
+//! to `anvilml_registry::ModelStore` and `anvilml_registry::trigger_model_scan`.
 
 use anvilml_core::{AnvilError, ModelKind, ModelMeta};
-use anvilml_registry::ModelScanner;
+use anvilml_registry::trigger_model_scan;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
@@ -84,59 +84,14 @@ pub async fn rescan_models(State(state): State<AppState>) -> impl IntoResponse {
         state.config.model_dirs.len()
     );
 
-    // Clone the SQLite pool from `state.db` — this is the same pool used by
-    // `ModelStore`, so the scanner writes to the same database that the
-    // list/get handlers read from. We clone rather than use `state.db` directly
-    // because the spawned task needs to own the pool for its lifetime.
+    // Delegate to the shared scan trigger.
+    // `trigger_model_scan()` spawns a fire-and-forget tokio task internally,
+    // so the handler returns 202 immediately without awaiting. Errors are
+    // logged at WARN level inside the spawned task rather than propagated.
     let pool = state.db.clone();
     let model_dirs = state.config.model_dirs.clone();
     let model_scan_depth = state.config.model_scan_depth;
-
-    // Spawn a fire-and-forget background task. The handler returns 202
-    // immediately without awaiting the scan. Errors are logged at WARN
-    // level rather than propagated, since the caller already got their
-    // 202 response.
-    tokio::spawn(async move {
-        let scanner = ModelScanner::new(pool);
-
-        for entry in &model_dirs {
-            // When recursive is false, depth is 0 (scan root only).
-            // When recursive is true, use the entry's max_depth or the
-            // config default model_scan_depth.
-            let depth = if entry.recursive {
-                entry.max_depth.unwrap_or(model_scan_depth)
-            } else {
-                0
-            };
-
-            tracing::debug!(
-                path = %entry.path.display(),
-                depth,
-                recursive = entry.recursive,
-                "scanning model directory"
-            );
-
-            match scanner.scan_dir(&entry.path, depth).await {
-                Ok(models) => {
-                    tracing::debug!(
-                        path = %entry.path.display(),
-                        count = models.len(),
-                        "scan complete for {}: {} models scanned",
-                        entry.path.display(),
-                        models.len()
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        path = %entry.path.display(),
-                        error = %e,
-                        "rescan failed for {}: {e}",
-                        entry.path.display()
-                    );
-                }
-            }
-        }
-    });
+    trigger_model_scan(pool, model_dirs, model_scan_depth);
 
     StatusCode::ACCEPTED
 }

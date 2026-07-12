@@ -14,6 +14,7 @@ use anvilml_ipc::EventBroadcaster;
 use anvilml_registry::JobStore;
 use anvilml_registry::ModelStore;
 use anvilml_registry::create_pool;
+use anvilml_registry::trigger_model_scan;
 use anvilml_scheduler::JobScheduler;
 use anvilml_scheduler::spawn_event_loop;
 use anvilml_server::ws::spawn_stats_tick;
@@ -340,6 +341,16 @@ async fn main() {
         // different tables (jobs vs models) but use the same SQLite file.
         model_store: Arc::new(ModelStore::new(pool)),
     };
+
+    // Trigger a background model directory scan at startup.
+    // This ensures the model registry is populated before the server starts
+    // accepting requests — matching the contract that models must always be
+    // scanned on startup (P18-C3). The scan runs in a spawned tokio task,
+    // so it does not block the listener bind. Reuses trigger_model_scan()
+    // to avoid duplicating the scan logic from the /v1/models/rescan handler.
+    let model_dirs = app_state.config.model_dirs.clone();
+    let model_scan_depth = app_state.config.model_scan_depth;
+    trigger_model_scan(app_state.db.clone(), model_dirs, model_scan_depth);
 
     // Extract the listen address from the Arc-wrapped config before moving
     // `app_state` into `build_router`. The `Arc` ensures the config data
