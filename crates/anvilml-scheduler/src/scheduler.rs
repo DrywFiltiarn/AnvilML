@@ -650,6 +650,100 @@ impl JobScheduler {
         }
     }
 
+    /// Resolve model_id SHA256 hashes to filesystem paths in the graph.
+    ///
+    /// Walks the graph's `nodes` array. For each node whose `type` is
+    /// `LoadModel`, `LoadVae`, or `LoadClip`, reads `inputs.model_id`,
+    /// looks it up via `job_store.get_model()`, and replaces the hash
+    /// with the resolved filesystem path.
+    ///
+    /// Only the three loader types carry `model_id` fields. Other nodes
+    /// (Sampler, VaeDecode, etc.) reference models via node-output
+    /// references (`{"node_id": "...", "output_slot": "..."}`).
+    ///
+    /// Returns `Err(AnvilError::UnknownModelId(hash))` if any hash is
+    /// not found in the registry. The caller must fail the job before
+    /// any IPC send.
+    ///
+    /// Operates in-place on `graph` (mutating the Value tree).
+    #[tracing::instrument(skip(self, graph), fields(job_id))]
+    async fn resolve_model_ids(&self, graph: &mut serde_json::Value) -> Result<(), AnvilError> {
+        // Access the "nodes" array. If missing or not an array, skip —
+        // this shouldn't happen for a validated graph, but we handle it
+        // gracefully rather than panicking.
+        let nodes = match graph.get_mut("nodes") {
+            Some(serde_json::Value::Array(nodes)) => nodes,
+            _ => return Ok(()), // No nodes to resolve
+        };
+
+        // Only these three node types carry model_id fields that need
+        // resolution. Other node types (Sampler, VaeDecode, etc.)
+        // reference models via node-output references, not model_id.
+        const LOADER_TYPES: &[&str] = &["LoadModel", "LoadVae", "LoadClip"];
+
+        for node in nodes {
+            // Check if this is a loader node.
+            let node_type = match node.get("type").and_then(|v| v.as_str()) {
+                Some(t) if LOADER_TYPES.contains(&t) => t.to_string(),
+                _ => continue, // Not a loader node — skip
+            };
+
+            // Access inputs.model_id. If missing or not a string, skip.
+            // A loader node without model_id is malformed but we handle
+            // it gracefully rather than failing.
+            let hash = match node
+                .get_mut("inputs")
+                .and_then(|inputs| inputs.get_mut("model_id"))
+                .and_then(|v| v.as_str())
+            {
+                Some(h) => h.to_string(),
+                None => continue, // No model_id on this loader — skip
+            };
+
+            // Look up the model in the registry.
+            match self.job_store.get_model(&hash).await {
+                Ok(Some(meta)) => {
+                    // Replace the hash with the resolved filesystem path.
+                    // This mutates the graph in-place so the dispatched copy
+                    // carries paths instead of hashes.
+                    // Use get_mut to get a mutable reference to the inner value
+                    // — direct indexing with [] on a &mut Value returns a
+                    // Value (not a reference), so we cannot dereference it.
+                    if let Some(val) = node.get_mut("inputs").and_then(|i| i.get_mut("model_id")) {
+                        *val = serde_json::json!(meta.path.to_string_lossy().into_owned());
+                    }
+                    tracing::debug!(
+                        node_type = node_type,
+                        hash = hash,
+                        path = %meta.path.to_string_lossy(),
+                        "resolved model_id hash to path (OK)"
+                    );
+                    tracing::debug!(
+                        node_type = node_type,
+                        hash = hash,
+                        path = %meta.path.to_string_lossy(),
+                        "resolved model_id hash to path"
+                    );
+                }
+                Ok(None) => {
+                    // Hash not found — fail immediately. The caller must
+                    // fail the job before any IPC send.
+                    return Err(AnvilError::UnknownModelId(hash));
+                }
+                Err(e) => {
+                    // Database error — propagate as a generic error.
+                    tracing::error!(
+                        error = %e,
+                        "failed to look up model_id in registry"
+                    );
+                    return Err(e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Attempt to dispatch a single job to an idle worker.
     ///
     /// Implements the two-step worker selection algorithm from
@@ -676,8 +770,8 @@ impl JobScheduler {
     /// this rollback the worker would be stranded `Busy` indefinitely.
     ///
     /// The IPC-send-failure path additionally reverts the job's *database*
-    /// record back to `Queued` — step (iii)'s persist already wrote
-    /// `Running` before step (iv)'s send failed, and the caller re-enqueues
+    /// record back to `Queued` — step (iv)'s persist already wrote
+    /// `Running` before step (v)'s send failed, and the caller re-enqueues
     /// the original (still-`Queued`) `Job` on any `Failed` outcome, so
     /// without this second write `get_job()` (DB-authoritative) would
     /// disagree with the in-memory queue about the job's own status.
@@ -863,14 +957,46 @@ impl JobScheduler {
 
         // (ii) Transition job to Running. Set status, worker_id, and
         // started_at timestamp. This is in-memory only — the persistent
-        // copy is written in step (iii).
+        // copy is written in step (iv).
         let mut job = job.clone();
         job.status = JobStatus::Running;
         job.worker_id = Some(worker_id.clone());
         job.started_at = Some(chrono::Utc::now());
 
-        // (iii) Persist the updated job to the database via upsert().
-        // This writes the Running status, worker_id, and started_at.
+        // (iii) Resolve model_id hashes to filesystem paths in the dispatched copy.
+        // The persisted Job.graph keeps the original hash (submitted by the client);
+        // only the IPC message sent to the worker has hashes rewritten to paths.
+        // Per ANVILML_DESIGN.md Appendix B.2, only LoadModel/LoadVae/LoadClip nodes
+        // carry model_id fields that need resolution. An unknown hash fails the job
+        // before any IPC send, reverting the worker to Idle and releasing VRAM.
+        if let Err(e) = self.resolve_model_ids(&mut job.graph).await {
+            // Mark the job as Failed in the database.
+            self.update_job_terminal_status(job.id, JobStatus::Failed, Some(e.to_string()))
+                .await;
+            tracing::error!(
+                job_id = %job.id,
+                error = %e,
+                "dispatch_one: model_id resolution failed — job marked Failed"
+            );
+            // Revert worker to Idle and release VRAM reservation.
+            // The worker was marked Busy at line 837, and VRAM was reserved at line 856.
+            // Since the job never reaches the Execute send, the normal completion-time
+            // Idle restoration never fires — we must clean up here.
+            {
+                let mut ledger = self.ledger.lock().await;
+                ledger.release(device_index, vram_to_reserve);
+            }
+            selected.set_status(WorkerStatus::Idle).await;
+            tracing::warn!(
+                worker_id = %worker_id,
+                "dispatch_one: model_id resolution failed, worker reverted to Idle"
+            );
+            return (DispatchOutcome::Failed, Some(worker_id));
+        }
+
+        // (iv) Persist the updated job to the database via upsert().
+        // This writes the Running status, worker_id, started_at, and the
+        // resolved graph (with model_id hashes replaced by filesystem paths).
         if let Err(e) = self.job_store.upsert(&job).await {
             tracing::error!(
                 job_id = %job.id,
@@ -886,7 +1012,7 @@ impl JobScheduler {
                 ledger.release(device_index, vram_to_reserve);
             }
             // Revert the worker's status to Idle. The Execute message was
-            // never sent (we failed before reaching step (iv)), so no
+            // never sent (we failed before reaching step (v)), so no
             // terminal WorkerEvent will ever arrive for this job to trigger
             // the normal completion-time Idle restoration — without this,
             // the worker would be stranded Busy indefinitely.

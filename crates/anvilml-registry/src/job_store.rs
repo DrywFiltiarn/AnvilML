@@ -5,10 +5,29 @@
 //! Jobs are serialized to JSON TEXT columns (`graph`, `settings`) and stored
 //! with RFC 3339 timestamps for reliable roundtripping.
 
-use anvilml_core::{AnvilError, Job, JobSettings, JobStatus};
+use anvilml_core::{AnvilError, Job, JobSettings, JobStatus, ModelMeta};
 use chrono::{DateTime, Utc};
+use serde_json;
 use sqlx::SqlitePool;
+use std::path::PathBuf;
 use uuid::Uuid;
+
+/// Helper struct for reading `models` table rows as raw values.
+///
+/// Mirrors `ModelMetaRow` from `store.rs` (which is private). This local
+/// definition avoids coupling job_store.rs to store.rs internals.
+#[derive(sqlx::FromRow)]
+pub(super) struct ModelMetaRow {
+    id: String,
+    name: String,
+    path: String,
+    kind: String,
+    dtype: String,
+    format: String,
+    size_bytes: i64,
+    mtime_unix: i64,
+    scanned_at: String,
+}
 
 /// SQLite-backed persistence for `Job` records.
 ///
@@ -393,5 +412,109 @@ impl JobStore {
             // always a small positive integer stored as INTEGER.
             queue_position: row.queue_position.map(|p| p as u32),
         }
+    }
+
+    /// Look up a model by its SHA256 hash ID.
+    ///
+    /// Returns `Ok(None)` if no model with the given ID exists.
+    /// Used by the scheduler to resolve `model_id` hashes to filesystem paths
+    /// before dispatch (P19-A1).
+    ///
+    /// # Arguments
+    ///
+    /// * `id` — The model ID (SHA256 hex digest).
+    ///
+    /// # Errors
+    ///
+    /// Returns `AnvilError::Db` if the query fails.
+    #[tracing::instrument(fields(id = %id), skip(self))]
+    pub async fn get_model(&self, id: &str) -> Result<Option<ModelMeta>, AnvilError> {
+        let row = sqlx::query_as::<_, ModelMetaRow>(
+            "SELECT id, name, path, kind, dtype, format, size_bytes, mtime_unix, scanned_at \
+             FROM models WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(r) => Ok(Some(self.model_row_to_meta(r))),
+            None => Ok(None),
+        }
+    }
+
+    /// Convert a raw `ModelMetaRow` into a `ModelMeta`.
+    ///
+    /// Mirrors the conversion logic in `ModelStore::row_to_meta()` (store.rs)
+    /// to avoid coupling between job_store.rs and store.rs.
+    fn model_row_to_meta(&self, row: ModelMetaRow) -> ModelMeta {
+        use anvilml_core::{ModelDtype, ModelFormat, ModelKind};
+
+        let kind = serde_json::from_str::<ModelKind>(&format!("\"{}\"", row.kind))
+            .expect("kind should parse — stored value comes from serde_json serialization");
+        let dtype = serde_json::from_str::<ModelDtype>(&format!("\"{}\"", row.dtype))
+            .expect("dtype should parse — stored value comes from serde_json serialization");
+        let format = serde_json::from_str::<ModelFormat>(&format!("\"{}\"", row.format))
+            .expect("format should parse — stored value comes from serde_json serialization");
+
+        let scanned_at = DateTime::parse_from_rfc3339(&row.scanned_at)
+            .expect("scanned_at should be valid RFC 3339")
+            .with_timezone(&Utc);
+
+        ModelMeta {
+            id: row.id,
+            name: row.name,
+            path: PathBuf::from(row.path),
+            kind,
+            dtype,
+            format,
+            size_bytes: row.size_bytes as u64,
+            mtime_unix: row.mtime_unix,
+            scanned_at,
+        }
+    }
+
+    /// Insert a model row into the `models` table for testing.
+    ///
+    /// Uses the same column layout and serialization as `ModelStore::upsert()`.
+    /// Only available when the `test-util` feature is enabled.
+    ///
+    /// # Arguments
+    ///
+    /// * `meta` — The model metadata to insert.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AnvilError::Db` if the SQL statement fails.
+    /// Returns `AnvilError::Serde` if enum serialization fails.
+    #[cfg(feature = "test-util")]
+    pub async fn insert_model_test(&self, meta: &ModelMeta) -> Result<(), AnvilError> {
+        // Same upsert logic as ModelStore::upsert() but on the same pool.
+        let kind_text =
+            serde_json::to_string(&meta.kind).map_err(|e| AnvilError::Serde(e.to_string()))?;
+        let dtype_text =
+            serde_json::to_string(&meta.dtype).map_err(|e| AnvilError::Serde(e.to_string()))?;
+        let format_text =
+            serde_json::to_string(&meta.format).map_err(|e| AnvilError::Serde(e.to_string()))?;
+
+        sqlx::query(
+            "INSERT OR REPLACE INTO models \
+             (id, name, path, kind, dtype, format, size_bytes, mtime_unix, scanned_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&meta.id)
+        .bind(&meta.name)
+        .bind(meta.path.to_string_lossy().into_owned())
+        .bind(kind_text.trim_matches('"'))
+        .bind(dtype_text.trim_matches('"'))
+        .bind(format_text.trim_matches('"'))
+        .bind(meta.size_bytes as i64)
+        .bind(meta.mtime_unix)
+        .bind(meta.scanned_at.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+
+        tracing::debug!(id = %meta.id, "inserted model for test");
+        Ok(())
     }
 }

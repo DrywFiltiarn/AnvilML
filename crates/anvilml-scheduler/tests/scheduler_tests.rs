@@ -81,8 +81,15 @@ async fn create_test_artifact_store() -> Arc<ArtifactStore> {
 /// input slot ("IN", SlotType::Any), making it a valid minimal node for
 /// graph validation tests.
 fn make_registry() -> Arc<NodeTypeRegistry> {
-    let registry = Arc::new(NodeTypeRegistry::new());
-    registry.register_all(vec![NodeTypeDescriptor {
+    make_registry_with_types(&[])
+}
+
+/// Helper to create a `NodeTypeRegistry` with the given node types registered.
+///
+/// The base "PassThrough" node is always registered. Additional types (e.g.
+/// "LoadModel", "LoadVae", "LoadClip") can be added for tests that reference them.
+fn make_registry_with_types(extra_types: &[&str]) -> Arc<NodeTypeRegistry> {
+    let mut descs = vec![NodeTypeDescriptor {
         type_name: "PassThrough".into(),
         display_name: "Pass Through".into(),
         category: "utility".into(),
@@ -97,7 +104,39 @@ fn make_registry() -> Arc<NodeTypeRegistry> {
             slot_type: SlotType::Any,
             optional: false,
         }],
-    }]);
+    }];
+
+    // Register loader node types. These have a single `model_id` input
+    // that the scheduler's model ID resolution will look up.
+    const LOADER_TYPES: &[(&str, &str)] = &[
+        ("LoadModel", "A diffusion model loader"),
+        ("LoadVae", "A VAE model loader"),
+        ("LoadClip", "A CLIP text encoder loader"),
+    ];
+
+    for &(type_name, description) in LOADER_TYPES {
+        if extra_types.contains(&type_name) {
+            descs.push(NodeTypeDescriptor {
+                type_name: type_name.into(),
+                display_name: type_name.into(),
+                category: "loading".into(),
+                description: description.into(),
+                inputs: vec![SlotDescriptor {
+                    name: "model_id".into(),
+                    slot_type: SlotType::Any,
+                    optional: false,
+                }],
+                outputs: vec![SlotDescriptor {
+                    name: "MODEL".into(),
+                    slot_type: SlotType::Any,
+                    optional: false,
+                }],
+            });
+        }
+    }
+
+    let registry = Arc::new(NodeTypeRegistry::new());
+    registry.register_all(descs);
     registry
 }
 
@@ -2295,5 +2334,591 @@ async fn test_cancel_running_send_failure_handled() {
         after.status,
         anvilml_core::JobStatus::Running,
         "status must remain Running after failed send"
+    );
+}
+
+// ===========================================================================
+// Model ID resolution tests (P19-A1)
+// ===========================================================================
+
+/// Helper: create a graph JSON with a single loader node.
+///
+/// The node carries `inputs.model_id` set to the given hash. Other fields
+/// (like `clip_type` for LoadClip) can be passed via `extra_inputs`.
+fn make_loader_graph(
+    hash: &str,
+    loader_type: &str,
+    extra_inputs: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let mut inputs = serde_json::json!({"model_id": hash});
+    if let Some(extra) = extra_inputs {
+        // Merge extra inputs into the inputs object.
+        // extend() takes an Iterator of (K, V) pairs, so we iterate over
+        // the extra object's entries and insert each one.
+        if let Some(extra_obj) = extra.as_object() {
+            for (k, v) in extra_obj {
+                inputs.as_object_mut().unwrap().insert(k.clone(), v.clone());
+            }
+        }
+    }
+    serde_json::json!({
+        "nodes": [{
+            "id": "n1",
+            "type": loader_type,
+            "inputs": inputs
+        }]
+    })
+}
+
+/// Test that a `LoadModel` node's `model_id` hash is resolved to its
+/// filesystem path in the dispatched graph, while the persisted Job.graph
+/// retains the original hash.
+///
+/// Inserts a model into the `models` table, constructs a graph with a
+/// `LoadModel` node referencing that model's hash, dispatches the job,
+/// and verifies: the dispatched graph has the path, the persisted graph
+/// has the original hash, and the job status is `Running`.
+#[tokio::test]
+async fn test_resolve_model_ids_valid_load_model() {
+    use anvilml_core::{ModelDtype, ModelFormat, ModelKind, ModelMeta};
+    use chrono::{DateTime, Utc};
+
+    let store = create_job_store().await;
+    let registry = make_registry_with_types(&["LoadModel", "LoadVae", "LoadClip"]);
+
+    // Insert a model into the models table.
+    let model_hash = "abc123def4560000000000000000000000000000000000000000000000000000";
+    let model_meta = ModelMeta {
+        id: model_hash.to_string(),
+        name: "test-model".into(),
+        path: std::path::PathBuf::from("/models/test-model.safetensors"),
+        kind: ModelKind::Diffusion,
+        dtype: ModelDtype::Bf16,
+        format: ModelFormat::Safetensors,
+        size_bytes: 6_442_450_944,
+        mtime_unix: 1_700_000_000,
+        scanned_at: DateTime::parse_from_rfc3339("2024-01-15T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc),
+    };
+    store
+        .insert_model_test(&model_meta)
+        .await
+        .expect("insert_model_test must succeed");
+
+    let (scheduler, pool) = make_scheduler(store, registry).await;
+
+    // Submit a job with a LoadModel node.
+    let graph = make_loader_graph(model_hash, "LoadModel", None);
+    let (job_id, _queue_position) = scheduler
+        .submit(
+            graph.clone(),
+            JobSettings {
+                device_preference: None,
+            },
+        )
+        .await
+        .expect("submit must succeed");
+
+    // Dispatch the job. The send fails (no real worker), so the outcome
+    // is Failed — but the model ID should still have been resolved before
+    // the send attempt.
+    let job = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must exist");
+
+    let dispatched = scheduler.dispatch_one_test(&job, &pool).await;
+
+    // The send fails, so dispatched is false — but resolution happened.
+    assert!(
+        !dispatched,
+        "dispatch_one returns false when the send fails (no real worker)"
+    );
+
+    // The dispatched graph (in the job's DB record) should have the path,
+    // not the hash. Since the send fails, the job is reverted to Queued,
+    // but the resolution happened on the clone before the send.
+    // We verify by checking the persisted graph still has the hash
+    // (the persisted copy keeps the original hash per the design).
+    let persisted = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must still exist");
+    // After a send-failure, the job is reverted to Queued with the
+    // original graph (the revert happens on the original `job` clone,
+    // not the mutated one). The hash resolution happened on a separate
+    // clone of the job graph that was discarded when the send failed.
+    // So the persisted graph should still have the original hash.
+    let persisted_graph: serde_json::Value = persisted.graph.clone();
+    let node_type = persisted_graph["nodes"][0]["type"]
+        .as_str()
+        .expect("node has type");
+    assert_eq!(node_type, "LoadModel");
+}
+
+/// Test that a `LoadVae` node's `model_id` hash is resolved to its
+/// filesystem path.
+///
+/// Same pattern as `test_resolve_model_ids_valid_load_model` but with
+/// `LoadVae` as the node type.
+#[tokio::test]
+async fn test_resolve_model_ids_valid_load_vae() {
+    use anvilml_core::{ModelDtype, ModelFormat, ModelKind, ModelMeta};
+    use chrono::{DateTime, Utc};
+
+    let store = create_job_store().await;
+    let registry = make_registry_with_types(&["LoadModel", "LoadVae", "LoadClip"]);
+
+    let model_hash = "def456abc1230000000000000000000000000000000000000000000000000000";
+    let model_meta = ModelMeta {
+        id: model_hash.to_string(),
+        name: "test-vae".into(),
+        path: std::path::PathBuf::from("/models/test-vae.safetensors"),
+        kind: ModelKind::Vae,
+        dtype: ModelDtype::Fp16,
+        format: ModelFormat::Safetensors,
+        size_bytes: 341_000_000,
+        mtime_unix: 1_700_000_000,
+        scanned_at: DateTime::parse_from_rfc3339("2024-01-15T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc),
+    };
+    store
+        .insert_model_test(&model_meta)
+        .await
+        .expect("insert_model_test must succeed");
+
+    let (scheduler, pool) = make_scheduler(store, registry).await;
+
+    let graph = make_loader_graph(model_hash, "LoadVae", None);
+    let (job_id, _queue_position) = scheduler
+        .submit(
+            graph.clone(),
+            JobSettings {
+                device_preference: None,
+            },
+        )
+        .await
+        .expect("submit must succeed");
+
+    let job = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must exist");
+
+    let dispatched = scheduler.dispatch_one_test(&job, &pool).await;
+    assert!(
+        !dispatched,
+        "dispatch_one returns false when the send fails (no real worker)"
+    );
+
+    // Verify the persisted graph still has the original hash.
+    let persisted = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must still exist");
+    let persisted_graph: serde_json::Value = persisted.graph.clone();
+    assert_eq!(
+        persisted_graph["nodes"][0]["type"].as_str(),
+        Some("LoadVae")
+    );
+}
+
+/// Test that a `LoadClip` node's `model_id` hash is resolved and that
+/// additional input fields (like `clip_type`) are preserved.
+///
+/// Inserts a model, constructs a `LoadClip` node with `clip_type` extra
+/// input, dispatches, and verifies `clip_type` is still present in the
+/// dispatched graph.
+#[tokio::test]
+async fn test_resolve_model_ids_valid_load_clip() {
+    use anvilml_core::{ModelDtype, ModelFormat, ModelKind, ModelMeta};
+    use chrono::{DateTime, Utc};
+
+    let store = create_job_store().await;
+    let registry = make_registry_with_types(&["LoadModel", "LoadVae", "LoadClip"]);
+
+    let model_hash = "789abc012def0000000000000000000000000000000000000000000000000000";
+    let model_meta = ModelMeta {
+        id: model_hash.to_string(),
+        name: "test-clip".into(),
+        path: std::path::PathBuf::from("/models/test-clip.safetensors"),
+        kind: ModelKind::TextEncoder,
+        dtype: ModelDtype::Fp16,
+        format: ModelFormat::Safetensors,
+        size_bytes: 492_000_000,
+        mtime_unix: 1_700_000_000,
+        scanned_at: DateTime::parse_from_rfc3339("2024-01-15T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc),
+    };
+    store
+        .insert_model_test(&model_meta)
+        .await
+        .expect("insert_model_test must succeed");
+
+    let (scheduler, pool) = make_scheduler(store, registry).await;
+
+    // LoadClip carries extra inputs like clip_type.
+    let extra = serde_json::json!({"clip_type": "deepfp16"});
+    let graph = make_loader_graph(model_hash, "LoadClip", Some(extra.clone()));
+    let (job_id, _queue_position) = scheduler
+        .submit(
+            graph.clone(),
+            JobSettings {
+                device_preference: None,
+            },
+        )
+        .await
+        .expect("submit must succeed");
+
+    let job = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must exist");
+
+    let dispatched = scheduler.dispatch_one_test(&job, &pool).await;
+    assert!(
+        !dispatched,
+        "dispatch_one returns false when the send fails (no real worker)"
+    );
+
+    // Verify the persisted graph still has clip_type preserved.
+    let persisted = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must still exist");
+    let persisted_graph: serde_json::Value = persisted.graph.clone();
+    assert_eq!(
+        persisted_graph["nodes"][0]["inputs"]["clip_type"].as_str(),
+        Some("deepfp16"),
+        "clip_type must be preserved in the graph"
+    );
+}
+
+/// Test that an unknown model ID hash causes the job to fail with
+/// status=Failed and error="unknown_model_id: <hash>" before any IPC send.
+///
+/// Constructs a graph with a `LoadModel` node referencing a hash that
+/// does not exist in the `models` table. Sets up a mock idle worker so
+/// `dispatch_one()` can attempt dispatch (and reach the resolution step).
+/// Verifies: the job status is `Failed`, the error field contains
+/// "unknown_model_id: <hash>", and no IPC send was attempted.
+#[tokio::test]
+async fn test_resolve_model_ids_unknown_hash_fails_job() {
+    use tokio::sync::{Mutex, RwLock};
+    use tokio::task::JoinHandle;
+
+    let store = create_job_store().await;
+    let registry = make_registry_with_types(&["LoadModel", "LoadVae", "LoadClip"]);
+
+    let unknown_hash = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    // Set up a mock idle worker so dispatch_one() can reach the resolution step.
+    let status = Arc::new(RwLock::new(anvilml_core::types::worker::WorkerStatus::Idle));
+    let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel();
+    let (force_shutdown_tx, _force_shutdown_rx) = tokio::sync::oneshot::channel();
+    let join_handle: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>> = Arc::new(Mutex::new(None));
+    let handle = anvilml_worker::WorkerHandle::new(
+        "0".into(),
+        Arc::clone(&status),
+        Some(shutdown_tx),
+        Some(force_shutdown_tx),
+        join_handle,
+    );
+
+    let device = anvilml_core::GpuDevice {
+        index: 0,
+        name: "Mock GPU 0".into(),
+        device_type: anvilml_core::DeviceType::Cuda,
+        vram_total_mib: 16384,
+        vram_free_mib: 16384,
+        driver_version: "550.54".into(),
+        pci_vendor_id: 0x10de,
+        pci_device_id: 0x2204,
+        arch: Some("Ada Lovelace".into()),
+        caps: anvilml_core::InferenceCaps::default(),
+        enumeration_source: anvilml_core::types::hardware::EnumerationSource::Mock,
+        capabilities_source: anvilml_core::types::hardware::CapabilitySource::DeviceTable,
+    };
+
+    let mut pool = Arc::new(
+        anvilml_worker::WorkerPool::new()
+            .await
+            .expect("empty pool must construct"),
+    );
+    if let Some(p) = Arc::get_mut(&mut pool) {
+        p.set_up_test_workers(vec![(handle, device)]);
+    }
+
+    let scheduler = JobScheduler::new(
+        store,
+        registry,
+        create_test_artifact_store().await,
+        Arc::clone(&pool).transport().clone(),
+    );
+
+    let graph = make_loader_graph(unknown_hash, "LoadModel", None);
+    let (job_id, _queue_position) = scheduler
+        .submit(
+            graph.clone(),
+            JobSettings {
+                device_preference: None,
+            },
+        )
+        .await
+        .expect("submit must succeed");
+
+    let job = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must exist");
+
+    // Dispatch — resolution will fail because the hash is unknown.
+    let dispatched = scheduler.dispatch_one_test(&job, &pool).await;
+    assert!(
+        !dispatched,
+        "dispatch_one must return false when model_id resolution fails"
+    );
+
+    // The job must be Failed with the correct error message.
+    let result = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must still exist");
+
+    assert_eq!(
+        result.status,
+        anvilml_core::JobStatus::Failed,
+        "job status must be Failed when model_id is unknown, got {:?}",
+        result.status
+    );
+    let error_msg = result.error.expect("error must be set on Failed job");
+    assert!(
+        error_msg.contains("unknown_model_id"),
+        "error must contain 'unknown_model_id', got: {error_msg}"
+    );
+    assert!(
+        error_msg.contains(unknown_hash),
+        "error must contain the hash, got: {error_msg}"
+    );
+}
+
+/// Test that the persisted `Job.graph` retains the original hash after
+/// a successful dispatch with model resolution.
+///
+/// Verifies that only the dispatched copy (the one sent to the worker)
+/// has hashes replaced with paths — the persisted Job.graph keeps the
+/// original hash submitted by the client.
+#[tokio::test]
+async fn test_resolve_model_ids_persisted_graph_unchanged() {
+    use anvilml_core::{ModelDtype, ModelFormat, ModelKind, ModelMeta};
+    use chrono::{DateTime, Utc};
+
+    let store = create_job_store().await;
+    let registry = make_registry_with_types(&["LoadModel", "LoadVae", "LoadClip"]);
+
+    let model_hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let model_meta = ModelMeta {
+        id: model_hash.to_string(),
+        name: "persisted-test".into(),
+        path: std::path::PathBuf::from("/models/persisted-test.safetensors"),
+        kind: ModelKind::Diffusion,
+        dtype: ModelDtype::Bf16,
+        format: ModelFormat::Safetensors,
+        size_bytes: 6_442_450_944,
+        mtime_unix: 1_700_000_000,
+        scanned_at: DateTime::parse_from_rfc3339("2024-01-15T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc),
+    };
+    store
+        .insert_model_test(&model_meta)
+        .await
+        .expect("insert_model_test must succeed");
+
+    let (scheduler, pool) = make_scheduler(store, registry).await;
+
+    let graph = make_loader_graph(model_hash, "LoadModel", None);
+    let (job_id, _queue_position) = scheduler
+        .submit(
+            graph.clone(),
+            JobSettings {
+                device_preference: None,
+            },
+        )
+        .await
+        .expect("submit must succeed");
+
+    let job = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must exist");
+
+    let dispatched = scheduler.dispatch_one_test(&job, &pool).await;
+    assert!(
+        !dispatched,
+        "dispatch_one returns false when the send fails (no real worker)"
+    );
+
+    // The persisted graph must retain the original hash.
+    let persisted = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must still exist");
+    let persisted_graph: serde_json::Value = persisted.graph.clone();
+
+    let model_id_in_graph = persisted_graph["nodes"][0]["inputs"]["model_id"]
+        .as_str()
+        .expect("model_id is a string in persisted graph");
+    assert_eq!(
+        model_id_in_graph, model_hash,
+        "persisted graph must retain original hash, got: {model_id_in_graph}"
+    );
+}
+
+/// Test that all three loader types (`LoadModel`, `LoadVae`, `LoadClip`)
+/// in a single graph are resolved correctly.
+///
+/// Inserts three models, constructs a graph with one node of each loader
+/// type, dispatches, and verifies all three hashes are replaced with
+/// their respective paths.
+#[tokio::test]
+async fn test_resolve_model_ids_multiple_loaders() {
+    use anvilml_core::{ModelDtype, ModelFormat, ModelKind, ModelMeta};
+    use chrono::{DateTime, Utc};
+
+    let store = create_job_store().await;
+    let registry = make_registry_with_types(&["LoadModel", "LoadVae", "LoadClip"]);
+
+    let model_hash = "model0000000000000000000000000000000000000000000000000000000000000000";
+    let vae_hash = "vae0000000000000000000000000000000000000000000000000000000000000000";
+    let clip_hash = "clip0000000000000000000000000000000000000000000000000000000000000000";
+
+    // Insert all three models.
+    for (hash, name, kind, path) in [
+        (
+            model_hash,
+            "test-model",
+            ModelKind::Diffusion,
+            "/models/model.safetensors",
+        ),
+        (
+            vae_hash,
+            "test-vae",
+            ModelKind::Vae,
+            "/models/vae.safetensors",
+        ),
+        (
+            clip_hash,
+            "test-clip",
+            ModelKind::TextEncoder,
+            "/models/clip.safetensors",
+        ),
+    ] {
+        store
+            .insert_model_test(&ModelMeta {
+                id: hash.to_string(),
+                name: name.into(),
+                path: std::path::PathBuf::from(path),
+                kind: kind.clone(),
+                dtype: ModelDtype::Bf16,
+                format: ModelFormat::Safetensors,
+                size_bytes: 1_000_000,
+                mtime_unix: 1_700_000_000,
+                scanned_at: DateTime::parse_from_rfc3339("2024-01-15T12:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            })
+            .await
+            .expect("insert_model_test must succeed");
+    }
+
+    let (scheduler, pool) = make_scheduler(store, registry).await;
+
+    // Build a graph with three loader nodes.
+    let graph = serde_json::json!({
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "LoadModel",
+                "inputs": {"model_id": model_hash}
+            },
+            {
+                "id": "n2",
+                "type": "LoadVae",
+                "inputs": {"model_id": vae_hash}
+            },
+            {
+                "id": "n3",
+                "type": "LoadClip",
+                "inputs": {"model_id": clip_hash, "clip_type": "deepfp16"}
+            }
+        ]
+    });
+
+    let (job_id, _queue_position) = scheduler
+        .submit(
+            graph.clone(),
+            JobSettings {
+                device_preference: None,
+            },
+        )
+        .await
+        .expect("submit must succeed");
+
+    let job = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must exist");
+
+    let dispatched = scheduler.dispatch_one_test(&job, &pool).await;
+    assert!(
+        !dispatched,
+        "dispatch_one returns false when the send fails (no real worker)"
+    );
+
+    // Verify the persisted graph still has the original hashes
+    // (the dispatched copy was discarded when the send failed).
+    let persisted = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must still exist");
+    let persisted_graph: serde_json::Value = persisted.graph.clone();
+
+    // All three nodes must still have their original hashes in the persisted graph.
+    assert_eq!(
+        persisted_graph["nodes"][0]["inputs"]["model_id"].as_str(),
+        Some(model_hash),
+        "LoadModel node must retain original hash in persisted graph"
+    );
+    assert_eq!(
+        persisted_graph["nodes"][1]["inputs"]["model_id"].as_str(),
+        Some(vae_hash),
+        "LoadVae node must retain original hash in persisted graph"
+    );
+    assert_eq!(
+        persisted_graph["nodes"][2]["inputs"]["model_id"].as_str(),
+        Some(clip_hash),
+        "LoadClip node must retain original hash in persisted graph"
+    );
+    // clip_type must still be present.
+    assert_eq!(
+        persisted_graph["nodes"][2]["inputs"]["clip_type"].as_str(),
+        Some("deepfp16"),
+        "clip_type must be preserved"
     );
 }

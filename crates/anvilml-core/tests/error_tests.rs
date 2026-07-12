@@ -161,6 +161,17 @@ async fn test_workers_unavailable_returns_503() {
     assert_eq!(body["error"], "workers_unavailable");
 }
 
+/// `AnvilError::UnknownModelId` maps to HTTP 404 (Not Found).
+#[tokio::test]
+async fn test_unknown_model_id_returns_404() {
+    let err = AnvilError::UnknownModelId("abc123def456".to_string());
+    let resp = err.into_response();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    let body = body_as_value(resp).await;
+    assert_eq!(body["error"], "unknown_model_id");
+}
+
 /// `AnvilError::Internal` maps to HTTP 500 (Internal Server Error).
 #[tokio::test]
 async fn test_internal_returns_500() {
@@ -217,6 +228,7 @@ async fn test_error_field_is_snake_case() {
         AnvilError::CycleDetected(vec!["x".into()]),
         AnvilError::ModelNotFound("x".into()),
         AnvilError::ArtifactNotFound("x".into()),
+        AnvilError::UnknownModelId("x".into()),
         AnvilError::WorkersUnavailable("x".into()),
         AnvilError::Internal("x".into()),
     ];

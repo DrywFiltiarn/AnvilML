@@ -1,13 +1,13 @@
 [package]
 name = "anvilml-scheduler"
-version = "0.1.28"
+version = "0.1.29"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 anvilml-worker = { path = "../anvilml-worker" }
 anvilml-ipc = { path = "../anvilml-ipc" }
-anvilml-registry = { path = "../anvilml-registry" }
+anvilml-registry = { path = "../anvilml-registry", features = ["test-util"] }
 anvilml-artifacts = { path = "../anvilml-artifacts" }
 anvilml-core = { path = "../anvilml-core" }
 anvilml-hardware = { path = "../anvilml-hardware" }

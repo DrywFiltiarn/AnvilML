@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-registry"
-version = "0.1.9"
+version = "0.1.10"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -18,3 +18,8 @@ uuid = { version = "1.23", features = ["serde"] }
 [dev-dependencies]
 tempfile = "3.26"
 uuid = { version = "1.23", features = ["v4"] }
+
+[features]
+# Gates insert_model_test() — test-only model row insertion for scheduler tests.
+# Only enabled during `cargo test`, never in normal builds.
+test-util = []

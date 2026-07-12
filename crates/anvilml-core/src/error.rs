@@ -105,6 +105,15 @@ pub enum AnvilError {
     #[error("artifact not found: {0}")]
     ArtifactNotFound(String),
 
+    /// A model ID hash was not found in the model registry.
+    ///
+    /// Mapped to HTTP 404 because the model resource does not exist. This variant
+    /// is used by the scheduler's model ID resolution (P19-A1) when a `LoadModel`,
+    /// `LoadVae`, or `LoadClip` node references a model_id hash that has no
+    /// corresponding row in the `models` table.
+    #[error("unknown_model_id: {0}")]
+    UnknownModelId(String),
+
     /// No workers are available to accept jobs (all dead or unresponsive).
     ///
     /// Mapped to HTTP 503 (Service Unavailable) because the condition is temporary —
@@ -189,6 +198,13 @@ impl IntoResponse for AnvilError {
                 StatusCode::NOT_FOUND,
                 "artifact_not_found",
                 format!("artifact not found: {id}"),
+            ),
+
+            // Unknown model ID → 404
+            Self::UnknownModelId(id) => (
+                StatusCode::NOT_FOUND,
+                "unknown_model_id",
+                format!("unknown_model_id: {id}"),
             ),
 
             // Temporarily unavailable → 503
