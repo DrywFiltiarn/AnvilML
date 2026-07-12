@@ -6708,3 +6708,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Cache with `max_entries=2`; insert A, insert B, insert C, re-insert A.
 **Expected output:** `loader_fn` called four times total (A, B, C, re-loaded A).
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_pipeline_cache.py::test_evicted_entry_is_truly_removed -v` exits 0.
+
+---
+
+## test_load_model_mock_returns_sentinel (worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `LoadModel` node class is implemented in `worker/nodes/loader.py` with a mock/real execute branch. The mock branch returns a sentinel dict; the real branch raises NotImplementedError (deferred to P19-C2). The `@register` decorator populates `NODE_REGISTRY` at module load time.
+**Tests:** Mock-mode `execute()` returns the sentinel dict shape `{"model": {"mock": True, "model_id": "test_model"}}`. Constructs a `NodeContext` with `mock=True`, calls `execute(model_id="test_model")`, and asserts the return dict matches.
+**Mode:** mock
+**Inputs:** `NodeContext(mock=True)`, `model_id="test_model"`.
+**Expected output:** `{"model": {"mock": True, "model_id": "test_model"}}`.
+**Acceptance:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_model_mock_returns_sentinel -v` exits 0.
+
+---
+
+## test_load_model_real_raises_not_implemented (worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `LoadModel` node class is implemented in `worker/nodes/loader.py`. The real branch raises `NotImplementedError` with a message indicating the deferred implementation (P19-C2). This is a bare placeholder — no `pipeline_cache` call, no model loading logic.
+**Tests:** Real-mode `execute()` raises `NotImplementedError`. Constructs a `NodeContext` with `mock=False`, calls `execute(model_id="test_model")`, and asserts `NotImplementedError` is raised with a message containing "P19-C2".
+**Mode:** real
+**Inputs:** `NodeContext(mock=False)`, `model_id="test_model"`.
+**Expected output:** `NotImplementedError` is raised with message containing "P19-C2".
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_model_real_raises_not_implemented -v -m real_mode` exits 0.
+
+---
+
+## test_load_model_in_registry (worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `LoadModel` node class is implemented in `worker/nodes/loader.py` and decorated with `@register`. Importing `worker.nodes.loader` triggers the `@register` side effect which populates `NODE_REGISTRY`.
+**Tests:** `LoadModel` appears in `NODE_REGISTRY` after importing the module. Uses subprocess isolation to avoid cross-test pollution from prior imports.
+**Mode:** both
+**Inputs:** Fresh subprocess that imports `worker.nodes.loader` and checks `NODE_REGISTRY`.
+**Expected output:** `NODE_REGISTRY` contains `"LoadModel"` as a key.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_model_in_registry -v` exits 0.

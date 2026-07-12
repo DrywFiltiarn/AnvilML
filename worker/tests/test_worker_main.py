@@ -468,10 +468,18 @@ class TestNoMockGate:
                             assert event["_type"] == "Ready"
                             assert event["capabilities_source"] == "pytorch"
                             # PassThrough is registered via auto-import.
+                            # Check presence anywhere in the list (not at
+                            # index 0) because the order of node types
+                            # depends on filesystem ordering of modules
+                            # in nodes/ which changes when new modules
+                            # are added.
                             assert len(event["node_types"]) >= 1
-                            assert (
-                                event["node_types"][0]["type_name"]
-                                == "PassThrough"
+                            assert any(
+                                nt["type_name"] == "PassThrough"
+                                for nt in event["node_types"]
+                            ), (
+                                f"node_types should contain PassThrough, "
+                                f"got: {[nt['type_name'] for nt in event['node_types']]}"
                             )
         finally:
             for key, value in saved.items():
@@ -497,7 +505,12 @@ class TestNoMockGate:
 
         result = worker_main._import_nodes()
         assert len(result) >= 1, f"Expected at least one node, got {result!r}"
-        assert result[0]["type_name"] == "PassThrough"
+        # Check presence anywhere in the list (not at index 0) because
+        # the order of node types depends on filesystem ordering of
+        # modules in nodes/ which changes when new modules are added.
+        assert any(
+            nt["type_name"] == "PassThrough" for nt in result
+        ), f"result should contain PassThrough, got: {[nt['type_name'] for nt in result]}"
 
     @pytest.mark.real_mode
     def test_dispatch_loop_exists_and_is_callable(self) -> None:
@@ -689,10 +702,18 @@ class TestNoMockGate:
                         assert event["_type"] == "Ready"
                         assert event["capabilities_source"] == "mock"
                         # PassThrough is registered via auto-import.
+                        # Check presence anywhere in the list (not at
+                        # index 0) because the order of node types
+                        # depends on filesystem ordering of modules
+                        # in nodes/ which changes when new modules
+                        # are added.
                         assert len(event["node_types"]) >= 1
-                        assert (
-                            event["node_types"][0]["type_name"]
-                            == "PassThrough"
+                        assert any(
+                            nt["type_name"] == "PassThrough"
+                            for nt in event["node_types"]
+                        ), (
+                            f"node_types should contain PassThrough, "
+                            f"got: {[nt['type_name'] for nt in event['node_types']]}"
                         )
         finally:
             for key, value in saved.items():

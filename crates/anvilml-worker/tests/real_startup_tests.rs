@@ -167,10 +167,14 @@ async fn test_real_subprocess_sends_ready() {
         !node_types.is_empty(),
         "node_types should contain registered nodes (e.g. PassThrough), got empty list"
     );
-    assert_eq!(
-        node_types[0].type_name, "PassThrough",
-        "first node_type should be PassThrough, got '{}'",
-        node_types[0].type_name
+    // Check that PassThrough is present anywhere in the list (not at
+    // a fixed index) — the order of node types depends on the
+    // filesystem ordering of modules in nodes/ which changes when new
+    // modules are added.
+    assert!(
+        node_types.iter().any(|n| n.type_name == "PassThrough"),
+        "node_types should contain PassThrough, got: {:?}",
+        node_types.iter().map(|n| &n.type_name).collect::<Vec<_>>()
     );
 
     // Verify the identity matches the worker_id we set — proves the ROUTER
