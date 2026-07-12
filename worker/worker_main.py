@@ -230,10 +230,23 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
             # Reset tracking for the next job.
             current_job_id = None
             current_cancel_flag = None
-            # Break out of the loop — the job is done. The current
-            # message (if any) will be processed in the next iteration
-            # after tracking is reset.
-            continue
+            # Do NOT `continue` here. `ipc.recv_message()` is a fully
+            # blocking call — the only reason this iteration is running
+            # at all is that `msg` just arrived and woke it up. If a
+            # background job thread happens to finish in that same
+            # instant (the common case: the very message that wakes us
+            # is the next keepalive Ping, landing right on the job's
+            # completion boundary), `continue` would jump straight back
+            # into `ipc.recv_message()` and discard `msg` completely —
+            # it is never dispatched, "the next iteration" never
+            # reprocesses it. For a dropped Ping specifically, that
+            # means no Pong is ever sent for that seq, and
+            # `KeepaliveWatchdog` (Rust side) declares this worker dead
+            # `watchdog_pong_timeout` later and force-respawns it, even
+            # though the job completed successfully. Falling through
+            # instead lets `msg` reach its handler below in this same
+            # iteration.
+            pass
 
         if msg_type == "Ping":
             # Echo the sequence number back as a Pong — see this function's
