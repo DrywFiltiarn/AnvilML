@@ -1,4 +1,4 @@
-Task: P18-E1
+Task: P18-E2
 Step: IMPLEMENT
 Status: COMPLETE
-Updated: 2026-07-12T15:31:00Z
+Updated: 2026-07-12T16:35:00+0200

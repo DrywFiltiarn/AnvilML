@@ -48,12 +48,15 @@ pub fn build_router(app_state: AppState) -> axum::Router {
         )
         // GET /v1/jobs — list jobs (with optional status/limit filters)
         // POST /v1/jobs — submit a new job
+        // DELETE /v1/jobs — bulk clear terminal jobs by status filter
         // The GET route must be registered before the /v1/jobs/{id} route
         // so axum matches the literal path `/v1/jobs` before the parameterised
         // path `/v1/jobs/{id}`.
         .route(
             "/v1/jobs",
-            axum::routing::get(handlers::jobs::list_jobs).post(handlers::jobs::submit_job),
+            axum::routing::get(handlers::jobs::list_jobs)
+                .post(handlers::jobs::submit_job)
+                .delete(handlers::jobs::bulk_clear_jobs),
         )
         // GET /v1/jobs/{id} — look up a single job by UUID
         // POST /v1/jobs/{id} — cancel a job by UUID

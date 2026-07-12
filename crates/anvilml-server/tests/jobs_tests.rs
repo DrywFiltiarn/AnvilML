@@ -1191,3 +1191,474 @@ async fn test_delete_unknown_id_returns_404() {
     let res = router.oneshot(delete_req).await.unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 }
+
+/// Verify that DELETE /v1/jobs?status=completed removes only Completed jobs.
+///
+/// Creates 3 completed jobs + 1 queued job via direct DB persistence.
+/// Calls DELETE /v1/jobs?status=completed and asserts 200 with
+/// `{ removed: 3 }`. Verifies only the 3 completed jobs are gone,
+/// the queued job remains.
+#[tokio::test]
+async fn test_bulk_clear_completed_status() {
+    use anvilml_core::Job;
+    use chrono::Utc;
+
+    let descriptor = NodeTypeDescriptor {
+        type_name: "TestNode".to_string(),
+        display_name: "Test Node".to_string(),
+        category: "test".to_string(),
+        description: "A synthetic test node.".to_string(),
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+    };
+
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    node_registry.register_all(vec![descriptor]);
+
+    let state = make_test_state(node_registry).await;
+    let job_store = JobStore::new(state.db.clone());
+
+    // Persist 3 completed jobs.
+    let mut completed_ids = Vec::new();
+    for _i in 0..3 {
+        let id = Uuid::new_v4();
+        let job = Job {
+            id,
+            status: anvilml_core::JobStatus::Completed,
+            graph: json!({
+                "nodes": [
+                    { "id": "node1", "type": "TestNode", "inputs": {}, "outputs": {} }
+                ]
+            }),
+            settings: JobSettings {
+                device_preference: None,
+            },
+            created_at: Utc::now(),
+            started_at: Some(Utc::now()),
+            completed_at: Some(Utc::now()),
+            worker_id: Some("0".to_string()),
+            error: None,
+            queue_position: None,
+        };
+        job_store
+            .upsert(&job)
+            .await
+            .expect("upsert completed job must succeed");
+        completed_ids.push(id);
+    }
+
+    // Persist 1 queued job.
+    let queued_id = Uuid::new_v4();
+    let queued_job = Job {
+        id: queued_id,
+        status: anvilml_core::JobStatus::Queued,
+        graph: json!({
+            "nodes": [
+                { "id": "node1", "type": "TestNode", "inputs": {}, "outputs": {} }
+            ]
+        }),
+        settings: JobSettings {
+            device_preference: None,
+        },
+        created_at: Utc::now(),
+        started_at: None,
+        completed_at: None,
+        worker_id: None,
+        error: None,
+        queue_position: None,
+    };
+    job_store
+        .upsert(&queued_job)
+        .await
+        .expect("persist queued job must succeed");
+
+    let router = build_router(state.clone());
+
+    // Bulk clear completed jobs.
+    let req = Request::delete("/v1/jobs?status=completed")
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_bytes = to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body collection must succeed");
+    let body: serde_json::Value =
+        serde_json::from_slice(&body_bytes).expect("response body must be valid JSON");
+
+    let removed = body["removed"]
+        .as_u64()
+        .expect("removed must be a non-negative integer");
+    assert_eq!(removed, 3, "should have removed exactly 3 completed jobs");
+
+    // Verify completed jobs are gone and queued job remains.
+    for id in &completed_ids {
+        let remaining = job_store.get(*id).await.expect("query must succeed");
+        assert!(remaining.is_none(), "completed job {id} should be deleted");
+    }
+
+    let remaining_queued = job_store.get(queued_id).await.expect("query must succeed");
+    assert!(remaining_queued.is_some(), "queued job should still exist");
+}
+
+/// Verify that DELETE /v1/jobs?status=failed removes only Failed jobs.
+///
+/// Creates 2 failed jobs + 1 completed job. Calls DELETE /v1/jobs?status=failed.
+/// Asserts 200 with `{ removed: 2 }`. Verifies the completed job remains.
+#[tokio::test]
+async fn test_bulk_clear_failed_status() {
+    use anvilml_core::Job;
+    use chrono::Utc;
+
+    let descriptor = NodeTypeDescriptor {
+        type_name: "TestNode".to_string(),
+        display_name: "Test Node".to_string(),
+        category: "test".to_string(),
+        description: "A synthetic test node.".to_string(),
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+    };
+
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    node_registry.register_all(vec![descriptor]);
+
+    let state = make_test_state(node_registry).await;
+    let job_store = JobStore::new(state.db.clone());
+
+    // Persist 2 failed jobs.
+    let mut failed_ids = Vec::new();
+    for _i in 0..2 {
+        let id = Uuid::new_v4();
+        let job = Job {
+            id,
+            status: anvilml_core::JobStatus::Failed,
+            graph: json!({
+                "nodes": [
+                    { "id": "node1", "type": "TestNode", "inputs": {}, "outputs": {} }
+                ]
+            }),
+            settings: JobSettings {
+                device_preference: None,
+            },
+            created_at: Utc::now(),
+            started_at: Some(Utc::now()),
+            completed_at: Some(Utc::now()),
+            worker_id: Some("0".to_string()),
+            error: Some("test failure".to_string()),
+            queue_position: None,
+        };
+        job_store
+            .upsert(&job)
+            .await
+            .expect("upsert failed job must succeed");
+        failed_ids.push(id);
+    }
+
+    // Persist 1 completed job.
+    let completed_id = Uuid::new_v4();
+    let completed_job = Job {
+        id: completed_id,
+        status: anvilml_core::JobStatus::Completed,
+        graph: json!({
+            "nodes": [
+                { "id": "node1", "type": "TestNode", "inputs": {}, "outputs": {} }
+            ]
+        }),
+        settings: JobSettings {
+            device_preference: None,
+        },
+        created_at: Utc::now(),
+        started_at: Some(Utc::now()),
+        completed_at: Some(Utc::now()),
+        worker_id: Some("0".to_string()),
+        error: None,
+        queue_position: None,
+    };
+    job_store
+        .upsert(&completed_job)
+        .await
+        .expect("persist completed job must succeed");
+
+    let router = build_router(state.clone());
+
+    // Bulk clear failed jobs.
+    let req = Request::delete("/v1/jobs?status=failed")
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_bytes = to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body collection must succeed");
+    let body: serde_json::Value =
+        serde_json::from_slice(&body_bytes).expect("response body must be valid JSON");
+
+    let removed = body["removed"]
+        .as_u64()
+        .expect("removed must be a non-negative integer");
+    assert_eq!(removed, 2, "should have removed exactly 2 failed jobs");
+
+    // Verify failed jobs are gone and completed job remains.
+    for id in &failed_ids {
+        let remaining = job_store.get(*id).await.expect("query must succeed");
+        assert!(remaining.is_none(), "failed job {id} should be deleted");
+    }
+
+    let remaining = job_store
+        .get(completed_id)
+        .await
+        .expect("query must succeed");
+    assert!(remaining.is_some(), "completed job should still exist");
+}
+
+/// Verify that DELETE /v1/jobs?status=cancelled removes only Cancelled jobs.
+///
+/// Creates 2 cancelled jobs + 1 failed job. Calls DELETE /v1/jobs?status=cancelled.
+/// Asserts 200 with `{ removed: 2 }`. Verifies the failed job remains.
+#[tokio::test]
+async fn test_bulk_clear_cancelled_status() {
+    use anvilml_core::Job;
+    use chrono::Utc;
+
+    let descriptor = NodeTypeDescriptor {
+        type_name: "TestNode".to_string(),
+        display_name: "Test Node".to_string(),
+        category: "test".to_string(),
+        description: "A synthetic test node.".to_string(),
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+    };
+
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    node_registry.register_all(vec![descriptor]);
+
+    let state = make_test_state(node_registry).await;
+    let job_store = JobStore::new(state.db.clone());
+
+    // Persist 2 cancelled jobs.
+    let mut cancelled_ids = Vec::new();
+    for _i in 0..2 {
+        let id = Uuid::new_v4();
+        let job = Job {
+            id,
+            status: anvilml_core::JobStatus::Cancelled,
+            graph: json!({
+                "nodes": [
+                    { "id": "node1", "type": "TestNode", "inputs": {}, "outputs": {} }
+                ]
+            }),
+            settings: JobSettings {
+                device_preference: None,
+            },
+            created_at: Utc::now(),
+            started_at: None,
+            completed_at: None,
+            worker_id: None,
+            error: None,
+            queue_position: None,
+        };
+        job_store
+            .upsert(&job)
+            .await
+            .expect("upsert cancelled job must succeed");
+        cancelled_ids.push(id);
+    }
+
+    // Persist 1 failed job.
+    let failed_id = Uuid::new_v4();
+    let failed_job = Job {
+        id: failed_id,
+        status: anvilml_core::JobStatus::Failed,
+        graph: json!({
+            "nodes": [
+                { "id": "node1", "type": "TestNode", "inputs": {}, "outputs": {} }
+            ]
+        }),
+        settings: JobSettings {
+            device_preference: None,
+        },
+        created_at: Utc::now(),
+        started_at: Some(Utc::now()),
+        completed_at: Some(Utc::now()),
+        worker_id: Some("0".to_string()),
+        error: Some("test failure".to_string()),
+        queue_position: None,
+    };
+    job_store
+        .upsert(&failed_job)
+        .await
+        .expect("persist failed job must succeed");
+
+    let router = build_router(state.clone());
+
+    // Bulk clear cancelled jobs.
+    let req = Request::delete("/v1/jobs?status=cancelled")
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_bytes = to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body collection must succeed");
+    let body: serde_json::Value =
+        serde_json::from_slice(&body_bytes).expect("response body must be valid JSON");
+
+    let removed = body["removed"]
+        .as_u64()
+        .expect("removed must be a non-negative integer");
+    assert_eq!(removed, 2, "should have removed exactly 2 cancelled jobs");
+
+    // Verify cancelled jobs are gone and failed job remains.
+    for id in &cancelled_ids {
+        let remaining = job_store.get(*id).await.expect("query must succeed");
+        assert!(remaining.is_none(), "cancelled job {id} should be deleted");
+    }
+
+    let remaining = job_store.get(failed_id).await.expect("query must succeed");
+    assert!(remaining.is_some(), "failed job should still exist");
+}
+
+/// Verify that DELETE /v1/jobs?status=all removes all terminal jobs.
+///
+/// Creates 1 completed, 1 failed, 1 cancelled, and 1 queued job.
+/// Calls DELETE /v1/jobs?status=all. Asserts 200 with `{ removed: 3 }`.
+/// Verifies the queued job remains.
+#[tokio::test]
+async fn test_bulk_clear_all_status() {
+    use anvilml_core::Job;
+    use chrono::Utc;
+
+    let descriptor = NodeTypeDescriptor {
+        type_name: "TestNode".to_string(),
+        display_name: "Test Node".to_string(),
+        category: "test".to_string(),
+        description: "A synthetic test node.".to_string(),
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+    };
+
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    node_registry.register_all(vec![descriptor]);
+
+    let state = make_test_state(node_registry).await;
+    let job_store = JobStore::new(state.db.clone());
+
+    // Persist 1 completed, 1 failed, 1 cancelled job.
+    let mut terminal_ids = Vec::new();
+    for status in [
+        anvilml_core::JobStatus::Completed,
+        anvilml_core::JobStatus::Failed,
+        anvilml_core::JobStatus::Cancelled,
+    ] {
+        let id = Uuid::new_v4();
+        let job = Job {
+            id,
+            status: status.clone(),
+            graph: json!({
+                "nodes": [
+                    { "id": "node1", "type": "TestNode", "inputs": {}, "outputs": {} }
+                ]
+            }),
+            settings: JobSettings {
+                device_preference: None,
+            },
+            created_at: Utc::now(),
+            started_at: Some(Utc::now()),
+            completed_at: Some(Utc::now()),
+            worker_id: Some("0".to_string()),
+            error: None,
+            queue_position: None,
+        };
+        job_store
+            .upsert(&job)
+            .await
+            .expect("upsert terminal job must succeed");
+        terminal_ids.push(id);
+    }
+
+    // Persist 1 queued job.
+    let queued_id = Uuid::new_v4();
+    let queued_job = Job {
+        id: queued_id,
+        status: anvilml_core::JobStatus::Queued,
+        graph: json!({
+            "nodes": [
+                { "id": "node1", "type": "TestNode", "inputs": {}, "outputs": {} }
+            ]
+        }),
+        settings: JobSettings {
+            device_preference: None,
+        },
+        created_at: Utc::now(),
+        started_at: None,
+        completed_at: None,
+        worker_id: None,
+        error: None,
+        queue_position: None,
+    };
+    job_store
+        .upsert(&queued_job)
+        .await
+        .expect("persist queued job must succeed");
+
+    let router = build_router(state.clone());
+
+    // Bulk clear all terminal jobs.
+    let req = Request::delete("/v1/jobs?status=all")
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_bytes = to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body collection must succeed");
+    let body: serde_json::Value =
+        serde_json::from_slice(&body_bytes).expect("response body must be valid JSON");
+
+    let removed = body["removed"]
+        .as_u64()
+        .expect("removed must be a non-negative integer");
+    assert_eq!(removed, 3, "should have removed exactly 3 terminal jobs");
+
+    // Verify all terminal jobs are gone and queued job remains.
+    for id in &terminal_ids {
+        let remaining = job_store.get(*id).await.expect("query must succeed");
+        assert!(remaining.is_none(), "terminal job {id} should be deleted");
+    }
+
+    let remaining = job_store.get(queued_id).await.expect("query must succeed");
+    assert!(remaining.is_some(), "queued job should still exist");
+}
+
+/// Verify that DELETE /v1/jobs?status=unknown returns 400 Bad Request.
+///
+/// Calls DELETE /v1/jobs?status=unknown and asserts 400 Bad Request.
+/// Verifies no jobs are deleted.
+#[tokio::test]
+async fn test_bulk_clear_invalid_status_returns_400() {
+    let descriptor = NodeTypeDescriptor {
+        type_name: "TestNode".to_string(),
+        display_name: "Test Node".to_string(),
+        category: "test".to_string(),
+        description: "A synthetic test node.".to_string(),
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+    };
+
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    node_registry.register_all(vec![descriptor]);
+
+    let state = make_test_state(node_registry).await;
+    let router = build_router(state);
+
+    // Send a request with an invalid status value.
+    let req = Request::delete("/v1/jobs?status=unknown")
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
