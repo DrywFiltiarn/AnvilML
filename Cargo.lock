@@ -78,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "anvilml-artifacts",
  "anvilml-core",

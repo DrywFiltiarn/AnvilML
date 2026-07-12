@@ -26,6 +26,17 @@ use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 
+/// Maximum time to wait, after the shutdown signal fires, for in-flight HTTP
+/// connections to close on their own before proceeding with shutdown anyway.
+///
+/// This bounds only the post-signal drain phase — NOT the wait for the
+/// signal itself, which is unbounded by design (the server runs until
+/// Ctrl-C). Without this bound, a client holding a connection open
+/// indefinitely — most notably a `GET /v1/events` WebSocket — would prevent
+/// the process from ever exiting. See the call site in `main()` for the
+/// full reasoning.
+const HTTP_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Entry point for the AnvilML server binary.
 ///
 /// Parses CLI arguments, loads `ServerConfig` through the four-layer
@@ -360,12 +371,78 @@ async fn main() {
     let router = build_router(app_state);
     let listener = TcpListener::bind(&addr).await.unwrap();
     tracing::info!(addr = %addr, "listening");
+    // NOTE: this is deliberately NOT a plain `tokio::select! { axum::serve(..), signal }`,
+    // and NOT a bare `axum::serve(..).with_graceful_shutdown(signal).await` either.
+    //
+    // axum::serve()'s accept loop spawns an independent tokio task per accepted
+    // connection — each carrying its own clone of `router` (and therefore
+    // `AppState`, therefore `Arc<WorkerPool>`). `.with_graceful_shutdown(signal)`
+    // is what actually stops the accept loop AND waits for those already-spawned
+    // connection tasks to finish once `signal` resolves — a plain `select!`
+    // dropping the bare `axum::serve(..)` future does neither of those things
+    // for tasks already spawned off of it.
+    //
+    // But `.with_graceful_shutdown(signal).await` on its own waits for that
+    // drain *unboundedly* — a client that opens a long-lived connection (a
+    // `GET /v1/events` WebSocket is the common case: you're typically watching
+    // one specifically because you're expecting to observe something, e.g. a
+    // worker respawn) and never disconnects would then block this `.await`
+    // forever. An open WebSocket must never be able to prevent this process
+    // from exiting.
+    //
+    // So the two phases are split explicitly: `wait_for_shutdown_signal()`
+    // itself is awaited with NO timeout (the server must run indefinitely
+    // until Ctrl-C — that wait is supposed to take arbitrarily long); only
+    // once it resolves does `HTTP_DRAIN_TIMEOUT`'s clock start, bounding just
+    // the post-signal drain. `signal_tx`/`signal_rx` is what lets the second
+    // `select!` branch below know when to start that clock, since the signal
+    // future itself is consumed by `with_graceful_shutdown` and can't also be
+    // awaited a second time out here.
+    let (signal_tx, signal_rx) = tokio::sync::oneshot::channel::<()>();
+    let mut serve_fut = Box::pin(
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async move {
+                shutdown::wait_for_shutdown_signal().await;
+                tracing::info!("shutdown signal received, draining in-flight http connections");
+                let _ = signal_tx.send(());
+            })
+            // `WithGracefulShutdown` implements `IntoFuture`, not `Future`
+            // directly — a bare `.await` desugars through `IntoFuture`
+            // transparently, but `Box::pin()` needs a concrete `Future`,
+            // so that conversion has to happen explicitly here.
+            .into_future(),
+    );
     tokio::select! {
-        _ = axum::serve(listener, router) => {},
-        _ = shutdown::wait_for_shutdown_signal() => {
-            tracing::info!("shutdown signal received");
+        result = &mut serve_fut => {
+            if let Err(e) = result {
+                tracing::error!(error = %e, "http server exited with an error");
+            }
+        }
+        _ = async {
+            let _ = signal_rx.await;
+            tokio::time::sleep(HTTP_DRAIN_TIMEOUT).await;
+        } => {
+            tracing::warn!(
+                timeout_secs = HTTP_DRAIN_TIMEOUT.as_secs(),
+                "not every http connection drained within the timeout (e.g. a still-open \
+                 GET /v1/events websocket) — proceeding with shutdown anyway; \
+                 Arc::try_unwrap(workers) below may fail as a result, which is expected \
+                 here and falls back to non-graceful worker cleanup"
+            );
         }
     }
+    // `serve_fut` is boxed (not `tokio::pin!`-shadowed) specifically so it
+    // can be dropped explicitly here, on both branches — releasing whatever
+    // Arc<WorkerPool> clone the accept-loop's own state was holding for
+    // itself. `tokio::pin!` would leave that clone alive until `main()`
+    // returns regardless of which select! branch won, which would make
+    // Arc::try_unwrap(workers) below fail unconditionally on the timeout
+    // path rather than only when a connection task is genuinely still open.
+    // Any already-spawned, still-open connection task (the stuck WebSocket)
+    // is a separate, independent tokio task — dropping serve_fut cannot
+    // reach it, and that is the one remaining, expected reason
+    // Arc::try_unwrap(workers) can still fail below.
+    drop(serve_fut);
 
     // Graceful shutdown (ANVILML_DESIGN.md §19.3): stop every worker's IPC
     // message loop and subprocess cleanly, rather than relying solely on
@@ -416,19 +493,28 @@ async fn main() {
             tracing::info!("all workers shut down gracefully");
         }
         Err(_) => {
-            // Should not happen given the ordering above — if it does,
-            // something unexpected is still holding a clone. Workers
-            // still get terminated via Drop (JobObjectGuard's
-            // kill-on-drop) when this function returns, just not
-            // gracefully — logged as an error since it means the
-            // ordering assumption above no longer holds and needs
-            // re-investigating, not because the process fails to exit.
+            // Two possible causes now, not one:
+            // 1. HTTP_DRAIN_TIMEOUT above elapsed with a connection still
+            //    open (e.g. a client that never closes its GET /v1/events
+            //    WebSocket) — its per-connection task is still alive and
+            //    still holds its own Arc<WorkerPool> clone via AppState.
+            //    This is an EXPECTED, handled outcome of that timeout, not
+            //    a bug.
+            // 2. Something else entirely is still holding a clone — the
+            //    ordering assumption for dispatch_handle/event_loop_handle/
+            //    stats_tick_handle above no longer holds and needs
+            //    re-investigating.
+            // Either way, workers still get terminated via Drop
+            // (JobObjectGuard's kill-on-drop) when this function returns,
+            // just not gracefully — logged at error level so case 2 stays
+            // visible, even though case 1 alone is not itself a defect.
             tracing::error!(
                 "could not reclaim exclusive WorkerPool ownership for \
-                 graceful shutdown_all() — an unexpected additional \
-                 Arc<WorkerPool> clone is still alive; workers will \
-                 still be terminated via Drop (JobObjectGuard), just \
-                 not gracefully"
+                 graceful shutdown_all() — an additional Arc<WorkerPool> \
+                 clone is still alive (a still-open http connection past \
+                 HTTP_DRAIN_TIMEOUT is one known, expected cause; anything \
+                 else warrants investigation); workers will still be \
+                 terminated via Drop (JobObjectGuard), just not gracefully"
             );
         }
     }
