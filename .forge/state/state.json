@@ -176,16 +176,17 @@
     "P18-D3",
     "P18-E1",
     "P18-E2",
-    "P18-F1"
+    "P18-F1",
+    "P18-F2"
   ],
-  "in_progress": "P18-F2",
+  "in_progress": "P18-G1",
   "plan_approved": true,
-  "current_plan": "1. **Read the current `openapi-drift` job** in `.github/workflows/ci.yml` (lines 116\u2013122). It currently has two steps: checkout and a placeholder `echo`.\n\n2. **Replace the placeholder steps** with the real Gate 2 sequence from `ENVIRONMENT.md \u00a78`:\n   - Keep the checkout step (already present).\n   - Install the Rust toolchain (add the same `actions-rust-lang/setup-rust-toolchain@v1` step used by other CI jobs \u2014 required because `cargo run` needs a compiler).\n   - Replace the `echo \"no openapi/config yet\"` step with:\n     ```yaml\n     - name: Generate OpenAPI spec\n       run: cargo run -p anvilml-openapi\n     - name: Check for drift\n       run: git diff --exit-code api/openapi.json\n     ```\n   - The `cargo run -p anvilml-openapi` command regenerates the file in-place. If the committed spec is stale, the file changes and `git diff --exit-code` returns non-zero, causing the job to fail. If the spec is current, the file is unchanged and `git diff --exit-code` returns 0.\n\n3. **Verify idempotency locally**: run `cargo run -p anvilml-openapi && git diff --exit-code api/openapi.json` to confirm it exits 0 (already confirmed: 47,919-byte file matches regenerated output).\n\n4. **Stage changes**: `git add -A` to stage the CI workflow file. No other files change \u2014 `api/openapi.json` is already committed and up to date.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-12T18:02:20+0200",
-  "plan_approval_message_id": "1525894057933672501",
+  "last_updated": "2026-07-12T18:41:03+0200",
+  "plan_approval_message_id": "1525901501535490219",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1525894056192774245",
+  "plan_report_message_id": "1525901499501117470",
   "impl_report_message_id": null
 }
