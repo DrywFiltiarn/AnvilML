@@ -1,6 +1,6 @@
 [package]
 name = "anvilml-server"
-version = "0.1.23"
+version = "0.1.24"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -37,6 +37,15 @@ futures-util = "0.3"
 # without spawning real worker subprocesses. Same pattern as
 # crates/anvilml-scheduler/Cargo.toml's own dev-dependency override.
 anvilml-worker = { path = "../anvilml-worker", features = ["test-utils"] }
+# zeromq + bytes + rmp-serde: used by workers_tests.rs's restart tests
+# (P18-D3) to spin up a real DEALER peer connected to a WorkerPool's
+# RouterTransport and send a synthetic WorkerEvent::Ready, proving a
+# restarted worker reaches Idle the same way a normal startup spawn does.
+# Same versions/features as anvilml-worker's own dev-dependencies — see
+# crates/anvilml-worker/tests/pool_tests.rs for the pattern this follows.
+zeromq = { version = "0.6", default-features = false, features = ["tokio-runtime"] }
+bytes = "1"
+rmp-serde = "1"
 
 [features]
 mock-hardware = ["anvilml-hardware/mock-hardware"]

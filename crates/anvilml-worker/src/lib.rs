@@ -27,7 +27,7 @@ pub use managed::{
 };
 
 mod pool;
-pub use pool::WorkerPool;
+pub use pool::{RestartOutcome, WorkerPool};
 
 mod respawn;
 pub use respawn::RespawnPolicy;

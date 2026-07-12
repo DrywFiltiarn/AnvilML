@@ -49,7 +49,17 @@ use crate::spawn::{ProcessWorkerSpawner, WorkerSpawner};
 /// channel — see `bridge.rs`'s own doc comment for why one shared bridge,
 /// not one per worker.
 pub struct WorkerPool {
-    handles: Vec<WorkerHandle>,
+    /// Interior-mutable so `spawn_worker()`/`restart_worker()` (P18-D2/
+    /// P18-D3) can add or replace a handle through a shared `&self` —
+    /// e.g. via `Arc<WorkerPool>`, which is how `AppState.workers` holds
+    /// this pool and thus how an HTTP handler ever reaches it. `std::sync`
+    /// (not `tokio::sync`) deliberately: every access here is a brief,
+    /// synchronous read-or-mutate (never held across an `.await`), so a
+    /// blocking lock avoids the overhead of an async one; see
+    /// `handles()`'s own doc comment for how callers on the hot dispatch
+    /// path (`anvilml-scheduler`'s `dispatch_one()`) avoid ever holding
+    /// this lock across an `.await` at all.
+    handles: std::sync::RwLock<Vec<WorkerHandle>>,
     /// Device metadata for all workers in this pool, populated at spawn time
     /// by `spawn_all()`. The device at index `i` corresponds to the worker
     /// handle at `handles()[i]`. Used by the scheduler's dispatch loop to
@@ -64,6 +74,46 @@ pub struct WorkerPool {
     /// (writer task, reader task) — see `bridge::spawn_bridge()`'s own
     /// doc comment for what each does.
     bridge_handles: (JoinHandle<()>, JoinHandle<()>),
+    /// Per-device construction context captured by `spawn_all_impl()` the
+    /// first time it runs, and reused by `spawn_worker()` (P18-D2) for any
+    /// later single-device (re)spawn — e.g. P18-D3's restart handler. Kept
+    /// as `Option` because a freshly-`new()`-ed pool hasn't spawned
+    /// anything yet and so has no context to reuse; `spawn_worker()` on
+    /// such a pool returns `AnvilError::Internal` rather than panicking.
+    /// `None` after `new()`, `Some` after the first `spawn_all()`/
+    /// `spawn_all_with_spawner()` call. Never mutated again after that
+    /// first call, so — unlike `handles` — a plain field is fine: every
+    /// read of it (from `spawn_worker()`) happens strictly after the one
+    /// write (from `spawn_all_impl()`), by construction (`spawn_worker()`
+    /// has no other caller that could run concurrently with the pool's
+    /// initial startup spawn).
+    spawn_config: Option<PoolSpawnConfig>,
+    /// Serializes `restart_worker()` calls (P18-D3) — held for a whole
+    /// restart (shutdown request → await exit → respawn → splice into
+    /// the pool). Restarts are a rare, operator-triggered administrative
+    /// action, not a hot path, so this simple global serialization is
+    /// deliberately preferred over finer-grained per-worker locking: it
+    /// guarantees that `spawn_worker()`'s tail-append (see that method's
+    /// own doc comment on how it mutates `handles`) can never be raced by
+    /// a second, concurrently-in-flight restart of a *different* worker,
+    /// which would otherwise make "which tail entry is mine" ambiguous.
+    restart_lock: tokio::sync::Mutex<()>,
+}
+
+/// Everything `spawn_worker()` needs to construct one more `ManagedWorker`
+/// identically to how `spawn_all_impl()`'s original per-device loop body
+/// built each one — captured once (per `spawn_all_impl()` call) so that a
+/// later single-device restart doesn't require its caller to re-supply
+/// `ServerConfig`, the `WorkerSpawner`, and the shared `NodeTypeRegistry`.
+/// `Clone` is cheap: `Arc` bumps plus a `PathBuf`/`String` clone.
+#[derive(Clone)]
+struct PoolSpawnConfig {
+    venv_path: std::path::PathBuf,
+    max_ipc_payload_mib: u32,
+    log_level: String,
+    mock: bool,
+    spawner: Arc<dyn WorkerSpawner>,
+    node_registry: Arc<NodeTypeRegistry>,
 }
 
 /// Whether an `ANVILML_FORCE_WORKER_MOCK` env var value should force mock
@@ -82,6 +132,21 @@ pub struct WorkerPool {
 /// running test could observe or clobber the same process-wide value).
 fn force_mock_from_env_value(value: Option<&str>) -> bool {
     value == Some("1")
+}
+
+/// Outcome of `WorkerPool::restart_worker()` (P18-D3), mirroring the
+/// established `CancelOutcome` pattern (`anvilml-scheduler`'s
+/// `JobScheduler::cancel()`) so the HTTP handler's own status-code mapping
+/// stays a simple match, not ad-hoc error-string inspection.
+pub enum RestartOutcome {
+    /// The old generation exited (or was force-timed-out waiting) and a
+    /// replacement was spawned and spliced into the same slot.
+    Accepted(WorkerHandle),
+    /// No worker with the given `worker_id` exists in the pool.
+    NotFound,
+    /// The worker is already `Dying` — a shutdown (this restart's own, a
+    /// concurrent one, or `shutdown_all()`) is already in flight for it.
+    Conflict,
 }
 
 impl WorkerPool {
@@ -105,21 +170,46 @@ impl WorkerPool {
             spawn_bridge(Arc::clone(&transport), Arc::clone(&demux));
 
         Ok(Self {
-            handles: Vec::new(),
+            handles: std::sync::RwLock::new(Vec::new()),
             devices: Vec::new(),
             transport,
             demux,
             bridge_tx,
             bridge_handles: (writer_handle, reader_handle),
+            spawn_config: None,
+            restart_lock: tokio::sync::Mutex::new(()),
         })
     }
 
-    /// The pool's currently-tracked worker handles.
+    /// A snapshot of the pool's currently-tracked worker handles.
     ///
     /// Empty immediately after `new()`; populated by `spawn_all()`, one
     /// handle per device.
-    pub fn handles(&self) -> &[WorkerHandle] {
-        &self.handles
+    ///
+    /// Returns an owned `Vec<WorkerHandle>` (each element a cheap `Clone`
+    /// — a few `Arc` bumps plus a small `String`), not a borrowed
+    /// `&[WorkerHandle]` — a deliberate change from this method's
+    /// pre-P18-D2/D3 shape. `handles` is now interior-mutable (a
+    /// `std::sync::RwLock`, see that field's own doc comment) so
+    /// `spawn_worker()`/`restart_worker()` can mutate it through a shared
+    /// `&self`; a borrowed slice can't outlive the lock guard that
+    /// produces it, so returning one is no longer possible. Returning a
+    /// snapshot instead is also strictly *safer* for this method's
+    /// existing callers than a guard would have been: `dispatch_one()`
+    /// (`anvilml-scheduler`, the hot per-job dispatch path) iterates this
+    /// return value while calling `.await` on each handle — holding a
+    /// `std::sync::RwLockReadGuard` across those awaits would be a real
+    /// anti-pattern (a blocking guard held across suspension points); an
+    /// owned snapshot has no such hazard. Every existing call site
+    /// (`for handle in workers.handles()`, `.iter()`, `.len()`,
+    /// `.is_empty()`) is already source-compatible with this signature
+    /// change — Rust's iteration and Deref-based method resolution work
+    /// identically whether `handles()` returns owned data or a borrow.
+    pub fn handles(&self) -> Vec<WorkerHandle> {
+        self.handles
+            .read()
+            .expect("WorkerPool handles lock poisoned")
+            .clone()
     }
 
     /// Return the device list for all workers in this pool.
@@ -153,8 +243,14 @@ impl WorkerPool {
     /// method doesn't otherwise cross — left as a known, explicit gap
     /// rather than fabricated data.
     pub async fn list(&self) -> Vec<WorkerInfo> {
-        let mut out = Vec::with_capacity(self.handles.len());
-        for (handle, device) in self.handles.iter().zip(self.devices.iter()) {
+        // Snapshot handles() first (releases the lock immediately — see
+        // that method's own doc comment) rather than iterating the locked
+        // field directly: this loop calls handle.status().await per
+        // element, and a std::sync lock must never be held across an
+        // .await.
+        let handles = self.handles();
+        let mut out = Vec::with_capacity(handles.len());
+        for (handle, device) in handles.iter().zip(self.devices.iter()) {
             out.push(WorkerInfo {
                 worker_id: handle.worker_id.clone(),
                 status: handle.status().await,
@@ -299,8 +395,15 @@ impl WorkerPool {
     /// by `new()`. This method only populates the handles and devices lists.
     #[cfg(feature = "test-utils")]
     pub fn set_up_test_workers(&mut self, workers: Vec<(WorkerHandle, GpuDevice)>) {
+        // `&mut self` already guarantees exclusive access, so `get_mut()`
+        // bypasses the lock entirely — no blocking, no need for this to
+        // be async.
+        let handles = self
+            .handles
+            .get_mut()
+            .expect("WorkerPool handles lock poisoned");
         for (handle, device) in workers {
-            self.handles.push(handle);
+            handles.push(handle);
             self.devices.push(device);
         }
     }
@@ -340,64 +443,263 @@ impl WorkerPool {
             force_mock_from_env_value(std::env::var("ANVILML_FORCE_WORKER_MOCK").ok().as_deref());
         let mock = cfg!(feature = "mock-hardware") || force_mock;
 
+        // Capture this call's construction context so a later single-device
+        // spawn_worker() call (P18-D2/P18-D3) can rebuild an identical
+        // ManagedWorker without its caller re-supplying ServerConfig, the
+        // WorkerSpawner, or the shared NodeTypeRegistry. Overwritten on
+        // every spawn_all_impl() call — in practice this runs exactly once
+        // per pool, at startup.
+        self.spawn_config = Some(PoolSpawnConfig {
+            venv_path: cfg.venv_path.clone(),
+            max_ipc_payload_mib: cfg.max_ipc_payload_mib,
+            log_level,
+            mock,
+            spawner,
+            node_registry,
+        });
+
+        // Thin loop: spawn_worker() does the actual per-device construction
+        // (WorkerEnv build, ManagedWorker::new(), tokio::spawn(worker.run()),
+        // WorkerHandle construction, push into self.handles) and device
+        // tracking is kept here, preserving the invariant that
+        // handles()[i] corresponds to devices()[i].
         for device in devices {
-            let worker_id = device.index.to_string();
-
-            let env = WorkerEnv::build(
-                self.transport.port,
-                &worker_id,
-                device.index,
-                device.device_type,
-                mock,
-                &log_level,
-                cfg.max_ipc_payload_mib,
-            );
-
-            let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
-            let (pong_tx, _pong_rx) = mpsc::channel(16);
-            let (shutdown_tx, shutdown_rx) = oneshot::channel();
-            let (force_shutdown_tx, force_shutdown_rx) = oneshot::channel();
-
-            let worker = ManagedWorker::new(ManagedWorkerConfig {
-                worker_id: worker_id.clone(),
-                transport: Arc::clone(&self.transport),
-                demux: Arc::clone(&self.demux),
-                status: Arc::clone(&status),
-                // Share the node registry with the scheduler and server —
-                // worker Ready events populate this same Arc so that
-                // `node_registry.is_empty()` in the scheduler is false
-                // once any worker has sent Ready.
-                // Clone the Arc for each worker (cheap ref-count bump).
-                node_registry: Arc::clone(&node_registry),
-                respawn_policy: RespawnPolicy::default(),
-                init_timeout: DEFAULT_INIT_TIMEOUT,
-                pong_tx,
-                watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
-                watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
-                graceful_shutdown_timeout: DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT,
-                venv_path: cfg.venv_path.clone(),
-                env,
-                spawner: Arc::clone(&spawner),
-            });
-
-            let join_handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
-            let join_handle = Arc::new(tokio::sync::Mutex::new(Some(join_handle)));
-            let handle = WorkerHandle::new(
-                worker_id,
-                status,
-                Some(shutdown_tx),
-                Some(force_shutdown_tx),
-                join_handle,
-            );
-            self.handles.push(handle);
+            self.spawn_worker(device.clone()).await?;
+            self.devices.push(device.clone());
         }
 
-        // Store the device list for the scheduler's dispatch loop to query
-        // worker device type and VRAM for selection decisions (P14-A4).
-        // The device at index i corresponds to handles()[i].
-        self.devices = devices.to_vec();
-
         Ok(())
+    }
+
+    /// Spawn one `ManagedWorker` for `device`, register a `WorkerHandle` for
+    /// it into `self.handles`, and return that handle.
+    ///
+    /// Pure extraction of `spawn_all_impl()`'s original per-device loop
+    /// body (P18-D2) — no behavior change from what `spawn_all()` already
+    /// did, just callable for a single device on its own. Reuses the
+    /// `ServerConfig`/`WorkerSpawner`/`NodeTypeRegistry` context captured by
+    /// the most recent `spawn_all_impl()` call (`self.spawn_config`) rather
+    /// than taking them as parameters — needed so a later caller (P18-D3's
+    /// restart handler) can spawn a single replacement worker knowing only
+    /// which `device` it's replacing.
+    ///
+    /// Does **not** push `device` into `self.devices` — `spawn_all_impl()`'s
+    /// own thin loop does that (bulk spawn), and P18-D3's restart handler
+    /// does its own device-slot bookkeeping (it isn't adding a new device,
+    /// it's replacing an existing slot's worker).
+    ///
+    /// # Errors
+    ///
+    /// Returns `AnvilError::Internal` if called before any
+    /// `spawn_all()`/`spawn_all_with_spawner()` call has populated
+    /// `self.spawn_config` — `spawn_worker()` has no `ServerConfig`/
+    /// `WorkerSpawner`/`NodeTypeRegistry` of its own to build a worker from
+    /// in that case.
+    ///
+    /// Takes `&self`, not `&mut self`: `handles` is interior-mutable
+    /// (`std::sync::RwLock`, see that field's own doc comment)
+    /// specifically so this method is callable through a shared
+    /// `Arc<WorkerPool>` — e.g. `AppState.workers` — which is how
+    /// `restart_worker()` (P18-D3) reaches it from a live HTTP handler,
+    /// where exclusive `&mut` access to the pool is never available.
+    /// `spawn_all_impl()` (still `&mut self`, unchanged) calls this via
+    /// an automatic `&mut self -> &self` reborrow, so its own callers
+    /// (`spawn_all()`/`spawn_all_with_spawner()`) needed no signature
+    /// change.
+    pub async fn spawn_worker(&self, device: GpuDevice) -> Result<WorkerHandle, AnvilError> {
+        let cfg = self.spawn_config.clone().ok_or_else(|| {
+            AnvilError::Internal(
+                "spawn_worker() called before spawn_all()/spawn_all_with_spawner() \
+                 populated the pool's spawn context"
+                    .to_string(),
+            )
+        })?;
+
+        let worker_id = device.index.to_string();
+
+        let env = WorkerEnv::build(
+            self.transport.port,
+            &worker_id,
+            device.index,
+            device.device_type,
+            cfg.mock,
+            &cfg.log_level,
+            cfg.max_ipc_payload_mib,
+        );
+
+        let status = Arc::new(RwLock::new(WorkerStatus::Initializing));
+        let (pong_tx, _pong_rx) = mpsc::channel(16);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (force_shutdown_tx, force_shutdown_rx) = oneshot::channel();
+
+        let worker = ManagedWorker::new(ManagedWorkerConfig {
+            worker_id: worker_id.clone(),
+            transport: Arc::clone(&self.transport),
+            demux: Arc::clone(&self.demux),
+            status: Arc::clone(&status),
+            // Share the node registry with the scheduler and server —
+            // worker Ready events populate this same Arc so that
+            // `node_registry.is_empty()` in the scheduler is false
+            // once any worker has sent Ready.
+            node_registry: Arc::clone(&cfg.node_registry),
+            respawn_policy: RespawnPolicy::default(),
+            init_timeout: DEFAULT_INIT_TIMEOUT,
+            pong_tx,
+            watchdog_ping_interval: DEFAULT_WATCHDOG_PING_INTERVAL,
+            watchdog_pong_timeout: DEFAULT_WATCHDOG_PONG_TIMEOUT,
+            graceful_shutdown_timeout: DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT,
+            venv_path: cfg.venv_path.clone(),
+            env,
+            spawner: Arc::clone(&cfg.spawner),
+        });
+
+        let join_handle = tokio::spawn(worker.run(shutdown_rx, force_shutdown_rx));
+        let join_handle = Arc::new(tokio::sync::Mutex::new(Some(join_handle)));
+        let handle = WorkerHandle::new(
+            worker_id,
+            status,
+            Some(shutdown_tx),
+            Some(force_shutdown_tx),
+            join_handle,
+        );
+        // Appends to the tail — see this method's own doc comment for why
+        // `&self` (not `&mut self`) works here. `restart_worker()` (P18-D3)
+        // relies specifically on "tail" (not "some unspecified position")
+        // and on `restart_lock` serializing every call into this method
+        // from that path, so the tail entry after this push is
+        // unambiguously the one just constructed here.
+        self.handles
+            .write()
+            .expect("WorkerPool handles lock poisoned")
+            .push(handle.clone());
+        Ok(handle)
+    }
+
+    /// Restart the worker currently occupying `worker_id`'s slot: request
+    /// its graceful shutdown, wait for the outgoing generation to exit,
+    /// then spawn a fresh replacement into the same slot (P18-D3).
+    ///
+    /// # Why this exists — the audit finding it closes
+    ///
+    /// `WorkerHandle::request_shutdown()` alone does **not** restart a
+    /// worker. Per `managed.rs`'s own `RunOutcome` documentation,
+    /// `request_shutdown()` drives `ManagedWorker::run()` into
+    /// `RunOutcome::ShutdownRequested`, which breaks its loop
+    /// permanently — that generation simply exits. Only the crash path
+    /// (`RunOutcome::Crashed { should_respawn: true }`, consulting
+    /// `RespawnPolicy`) causes `run()` to loop back and spawn a new
+    /// generation on its own. So a caller that only calls
+    /// `request_shutdown()` and waits gets a worker that gracefully
+    /// exits and *stays* exited — not a restart. This method performs the
+    /// actual two-step restart explicitly: shut the old generation down,
+    /// then call `spawn_worker()` itself.
+    ///
+    /// # Concurrency
+    ///
+    /// The whole sequence runs under `self.restart_lock` — see that
+    /// field's own doc comment for why a simple global serialization
+    /// (rather than finer-grained per-worker locking) is the right
+    /// tradeoff here.
+    ///
+    /// # Returns
+    ///
+    /// * `RestartOutcome::NotFound` if no handle with `worker_id` exists.
+    /// * `RestartOutcome::Conflict` if that worker is already `Dying` —
+    ///   some shutdown (this restart's own retry, or `shutdown_all()`) is
+    ///   already in flight for it.
+    /// * `RestartOutcome::Accepted(new_handle)` once the replacement has
+    ///   been spawned and spliced into the slot. "Accepted" mirrors
+    ///   `cancel_job()`'s own `202`-not-`200` framing (`ANVILML_DESIGN.md
+    ///   §13.5`) — spawning is async under the hood (`spawn_worker()`
+    ///   only waits for the `tokio::spawn()` call to register, not for
+    ///   the new generation to reach `Ready`/`Idle`), so the caller gets
+    ///   "the restart was accepted and is proceeding," not "the worker is
+    ///   ready again."
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever `spawn_worker()` returns, including
+    /// `AnvilError::Internal` if (unreachably, in practice — a worker
+    /// existing at all means `spawn_all_impl()` already ran once)
+    /// `self.spawn_config` was never populated.
+    pub async fn restart_worker(&self, worker_id: &str) -> Result<RestartOutcome, AnvilError> {
+        let _guard = self.restart_lock.lock().await;
+
+        // Locate the slot and snapshot its current handle. Brief,
+        // synchronous critical section — no .await while the lock is
+        // held.
+        let found = {
+            let handles = self
+                .handles
+                .read()
+                .expect("WorkerPool handles lock poisoned");
+            handles
+                .iter()
+                .position(|h| h.worker_id == worker_id)
+                .map(|pos| (pos, handles[pos].clone()))
+        };
+        let Some((pos, old_handle)) = found else {
+            return Ok(RestartOutcome::NotFound);
+        };
+
+        // Already shutting down (this worker's own prior request, or a
+        // concurrent shutdown_all()) — a second restart on top of that is
+        // a conflicting operation, not a queued-up retry.
+        if old_handle.status().await == WorkerStatus::Dying {
+            return Ok(RestartOutcome::Conflict);
+        }
+
+        let Some(device) = self.devices.get(pos).cloned() else {
+            // Can't happen in practice — every handle is pushed alongside
+            // its device at the same index by spawn_all_impl()'s thin
+            // loop — but surfaced as an Internal error rather than a
+            // panic/unwrap, matching this crate's established
+            // never-panic-on-a-live-request discipline.
+            return Err(AnvilError::Internal(format!(
+                "worker {worker_id} has a handle at index {pos} but no \
+                 corresponding device — pool's handles/devices invariant violated"
+            )));
+        };
+
+        // Request graceful shutdown on the ORIGINAL handle still sitting
+        // in self.handles[pos] — old_handle (the snapshot above) is a
+        // clone, and clones never carry shutdown_tx (see
+        // WorkerHandle::clone()'s own doc comment), so calling
+        // request_shutdown() on old_handle would silently do nothing.
+        {
+            let mut handles = self
+                .handles
+                .write()
+                .expect("WorkerPool handles lock poisoned");
+            handles[pos].request_shutdown();
+        }
+
+        // Await the outgoing generation's exit, bounded by the same
+        // production graceful-shutdown timeout every other exit path
+        // uses. old_handle shares the same underlying join_handle Arc as
+        // self.handles[pos] (WorkerHandle::clone() clones that Arc, not
+        // the task itself), so awaiting on this clone observes the same
+        // task exiting.
+        old_handle
+            .await_exit(DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT)
+            .await;
+
+        // Spawn the replacement. spawn_worker() appends it to the tail of
+        // self.handles (its own documented contract) — restart_lock
+        // guarantees no other spawn_worker() call (from a concurrent
+        // restart_worker()) can interleave here, so that tail entry is
+        // unambiguously this call's own.
+        let new_handle = self.spawn_worker(device).await?;
+        {
+            let mut handles = self
+                .handles
+                .write()
+                .expect("WorkerPool handles lock poisoned");
+            handles.pop();
+            handles[pos] = new_handle.clone();
+        }
+
+        Ok(RestartOutcome::Accepted(new_handle))
     }
 
     /// Gracefully shut down every worker in the pool, per
@@ -440,7 +742,17 @@ impl WorkerPool {
     ///    should still need `transport.send()` (`KeepaliveWatchdog`) or the
     ///    bridge's own event routing by that point.
     pub async fn shutdown_all(&mut self, timeout: Duration) {
-        for handle in &mut self.handles {
+        // `&mut self` already guarantees exclusive access, so `get_mut()`
+        // bypasses the lock entirely (no blocking, nothing async needed
+        // just to read/mutate it) — the lock only matters for the
+        // concurrent-`&self` paths `spawn_worker()`/`restart_worker()`
+        // (P18-D2/P18-D3) use.
+        let handles = self
+            .handles
+            .get_mut()
+            .expect("WorkerPool handles lock poisoned");
+
+        for handle in handles.iter_mut() {
             handle.request_shutdown();
         }
 
@@ -449,8 +761,8 @@ impl WorkerPool {
         // them directly inside each spawned task — force_shutdown() needs
         // the ORIGINAL handle's own force_shutdown_tx, which a clone
         // doesn't have.
-        let (report_tx, mut report_rx) = mpsc::channel(self.handles.len().max(1));
-        for (index, handle) in self.handles.iter().cloned().enumerate() {
+        let (report_tx, mut report_rx) = mpsc::channel(handles.len().max(1));
+        for (index, handle) in handles.iter().cloned().enumerate() {
             let report_tx = report_tx.clone();
             tokio::spawn(async move {
                 if !handle.await_exit(timeout).await {
@@ -470,7 +782,7 @@ impl WorkerPool {
         // stragglers is fine — the actual waiting happens concurrently
         // next.
         for &index in &stragglers {
-            let handle = &mut self.handles[index];
+            let handle = &mut handles[index];
             tracing::warn!(
                 worker_id = %handle.worker_id,
                 "worker did not exit within shutdown_all()'s timeout — forcing"
@@ -483,7 +795,7 @@ impl WorkerPool {
         // for why this must be concurrent, not sequential.
         let mut force_tasks = Vec::with_capacity(stragglers.len());
         for &index in &stragglers {
-            let handle = self.handles[index].clone();
+            let handle = handles[index].clone();
             force_tasks.push(tokio::spawn(async move {
                 if !handle.await_exit(Duration::from_secs(5)).await {
                     tracing::error!(

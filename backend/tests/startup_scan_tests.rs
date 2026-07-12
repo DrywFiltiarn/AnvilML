@@ -92,18 +92,30 @@ mod tests {
         // Write a TOML config pointing to the temp directory.
         // Use a unique DB path inside the temp dir so tests don't share state.
         let db_path = dir.path().join("test_anvilml.db");
+        // db_path/model_dir are embedded as TOML *literal* strings (single
+        // quotes), not basic strings (double quotes). On Windows,
+        // tempfile::tempdir() paths look like
+        // `C:\Users\runneradmin\AppData\Local\Temp\...` — inside a TOML
+        // basic string, `\U` is parsed as the start of an 8-hex-digit
+        // Unicode escape, and the literal text following it isn't valid
+        // hex, so config_load::load() fails to parse the TOML on Windows
+        // and the binary exits before ever logging "listening" (this is
+        // what actually made these tests fail on rust-windows CI — not a
+        // genuine 5-second startup delay). TOML literal strings take their
+        // content verbatim with no escape processing, which is exactly
+        // right for a filesystem path that may itself contain backslashes.
         let config_content = format!(
             r#"
 host = "127.0.0.1"
 port = 8488
-db_path = "{}"
+db_path = '{}'
 artifact_dir = "./artifacts"
 venv_path = "./worker/.venv"
 model_scan_depth = 2
 max_ipc_payload_mib = 256
 
 [[model_dirs]]
-path = "{}"
+path = '{}'
 recursive = false
 "#,
             db_path.display(),
@@ -205,18 +217,21 @@ recursive = false
         // Write a TOML config pointing to the empty temp model directory.
         // Use a unique DB path inside the temp dir so tests don't share state.
         let db_path = dir.path().join("test_anvilml.db");
+        // See the identical comment in test_startup_scan_displays_planted_model
+        // above: literal (single-quoted) TOML strings avoid the Windows
+        // `C:\Users\...` → `\U` invalid-escape TOML parse failure.
         let config_content = format!(
             r#"
 host = "127.0.0.1"
 port = 8488
-db_path = "{}"
+db_path = '{}'
 artifact_dir = "./artifacts"
 venv_path = "./worker/.venv"
 model_scan_depth = 2
 max_ipc_payload_mib = 256
 
 [[model_dirs]]
-path = "{}"
+path = '{}'
 recursive = false
 "#,
             db_path.display(),

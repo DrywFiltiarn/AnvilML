@@ -1,22 +1,29 @@
-//! Integration tests for the `GET /v1/workers` handler.
+//! Integration tests for the `GET /v1/workers` and
+//! `POST /v1/workers/{id}/restart` handlers.
 //!
 //! Tests use the crate's public API (`build_router()`) to make
 //! in-process HTTP requests without opening a real socket.
 
+use std::collections::HashMap;
+use std::future::Future;
+use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use anvilml_artifacts::ArtifactStore;
 use anvilml_core::types::hardware::{CapabilitySource, EnumerationSource};
 use anvilml_core::types::worker::WorkerStatus;
 use anvilml_core::{
-    DeviceType, EnvReport, GpuDevice, HardwareInfo, InferenceCaps, NodeTypeRegistry,
+    AnvilError, DeviceType, EnvReport, GpuDevice, HardwareInfo, InferenceCaps, NodeTypeRegistry,
     ProvisioningState, ServerConfig,
 };
-use anvilml_ipc::EventBroadcaster;
+use anvilml_ipc::{EventBroadcaster, RouterTransport, WorkerEvent};
 use anvilml_registry::{JobStore, ModelStore};
 use anvilml_scheduler::JobScheduler;
 use anvilml_server::{AppState, build_router};
-use anvilml_worker::{WorkerHandle, WorkerPool};
+use anvilml_worker::{WorkerHandle, WorkerPool, WorkerSpawner};
 use axum::body::Body;
 use axum::body::to_bytes;
 use axum::http::Request;
@@ -25,6 +32,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle as TokioJoinHandle;
 use tower::util::ServiceExt;
+use zeromq::prelude::*;
+use zeromq::util::PeerIdentity;
+use zeromq::{DealerSocket, SocketOptions, ZmqMessage};
 
 /// Build a `GpuDevice` stub with the given index/type — the fields beyond
 /// index and device_type don't matter for these tests, only that the struct
@@ -201,7 +211,193 @@ async fn make_test_state_with_workers(
     }
 }
 
-/// Verify that `GET /v1/workers` returns 200 OK with a JSON array whose
+/// Spawns a real, long-lived, harmless process (`sleep 999` / `cmd timeout
+/// 999`) — matching `crates/anvilml-worker/tests/pool_tests.rs`'s own
+/// established `MockWorkerSpawner` pattern, needed because
+/// `WorkerPool::spawn_all()`'s real path always constructs a
+/// `ProcessWorkerSpawner`, which launches a real Python interpreter from a
+/// real virtualenv — nothing a test environment has.
+/// `spawn_all_with_spawner()` (`test-utils`-gated) is what the restart
+/// tests below actually call, since `restart_worker()` needs a pool whose
+/// `spawn_config` is populated (only `spawn_all()`/`spawn_all_with_spawner()`
+/// do that) — unlike `set_up_test_workers()`, which injects handles
+/// directly and leaves `spawn_config` unset.
+struct MockWorkerSpawner {
+    call_count: AtomicUsize,
+}
+
+impl MockWorkerSpawner {
+    fn new() -> Self {
+        Self {
+            call_count: AtomicUsize::new(0),
+        }
+    }
+
+    fn call_count(&self) -> usize {
+        self.call_count.load(Ordering::SeqCst)
+    }
+}
+
+impl WorkerSpawner for MockWorkerSpawner {
+    fn spawn<'a>(
+        &'a self,
+        _venv_path: &'a Path,
+        _env: HashMap<String, String>,
+    ) -> Pin<Box<dyn Future<Output = Result<tokio::process::Child, AnvilError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+
+            #[cfg(unix)]
+            let mut cmd = {
+                let mut c = tokio::process::Command::new("sleep");
+                c.arg("999");
+                c
+            };
+            #[cfg(windows)]
+            let mut cmd = {
+                let mut c = tokio::process::Command::new("cmd");
+                c.args(["/c", "timeout", "999"]);
+                c
+            };
+
+            cmd.stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+
+            cmd.spawn().map_err(AnvilError::Io)
+        })
+    }
+}
+
+/// Connect a DEALER socket to a `RouterTransport`'s bound endpoint —
+/// matching `pool_tests.rs`'s own established `connect_dealer` helper.
+async fn connect_dealer(transport: &RouterTransport, worker_id: &str) -> DealerSocket {
+    let mut opts = SocketOptions::default();
+    opts.peer_identity(
+        PeerIdentity::try_from(bytes::Bytes::from(worker_id.to_string())).expect("valid identity"),
+    );
+    let mut dealer = DealerSocket::with_options(opts);
+    let endpoint = format!("tcp://127.0.0.1:{}", transport.port);
+    dealer
+        .connect(&endpoint)
+        .await
+        .expect("DEALER connect to ROUTER should succeed");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    dealer
+}
+
+async fn send_event(dealer: &mut DealerSocket, event: &WorkerEvent) {
+    let payload = rmp_serde::to_vec_named(event).expect("event should serialize");
+    let mut msg = ZmqMessage::from(bytes::Bytes::from(""));
+    msg.push_back(bytes::Bytes::from(payload));
+    dealer.send(msg).await.expect("DEALER send should succeed");
+}
+
+fn ready_event(worker_id: &str) -> WorkerEvent {
+    WorkerEvent::Ready {
+        worker_id: worker_id.to_string(),
+        device_index: 0,
+        device_name: "Mock GPU".to_string(),
+        device_type: "cpu".to_string(),
+        vram_total_mib: 1024,
+        vram_free_mib: 900,
+        torch_version: "2.5.0".to_string(),
+        fp16: true,
+        bf16: true,
+        fp8: false,
+        flash_attention: false,
+        capabilities_source: "mock".to_string(),
+        node_types: vec![],
+    }
+}
+
+/// Construct an `AppState` whose `WorkerPool` was populated via the real
+/// `spawn_all_with_spawner()` path (not `set_up_test_workers()`), so
+/// `spawn_config` is populated and `restart_worker()` can actually spawn a
+/// replacement. Returns the `MockWorkerSpawner` alongside so tests can poll
+/// `call_count()` to confirm a new generation was spawned.
+async fn make_test_state_with_spawned_workers(
+    node_registry: Arc<NodeTypeRegistry>,
+    devices: &[GpuDevice],
+) -> (AppState, Arc<MockWorkerSpawner>) {
+    let db = make_test_pool().await;
+    let job_store = JobStore::new(db.clone());
+
+    let artifact_store = Arc::new(ArtifactStore::new(
+        std::env::temp_dir().join("anvilml-test-artifacts"),
+        db.clone(),
+    ));
+
+    let mut pool = WorkerPool::new()
+        .await
+        .expect("WorkerPool::new() must succeed in test");
+    let spawner = Arc::new(MockWorkerSpawner::new());
+    let cfg = ServerConfig::default();
+    pool.spawn_all_with_spawner(
+        devices,
+        &cfg,
+        Arc::clone(&spawner) as Arc<dyn WorkerSpawner>,
+        Arc::clone(&node_registry),
+    )
+    .await
+    .expect("spawn_all_with_spawner() should succeed");
+    let workers = Arc::new(pool);
+
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        Arc::clone(&node_registry),
+        artifact_store.clone(),
+        Arc::clone(&workers).transport().clone(),
+    ));
+
+    let state = AppState {
+        config: Arc::new(cfg),
+        node_registry,
+        start_time: std::time::Instant::now(),
+        scheduler,
+        workers,
+        db: db.clone(),
+        artifact_store,
+        broadcaster: Arc::new(EventBroadcaster::new()),
+        hardware: Arc::new(RwLock::new(HardwareInfo {
+            host: anvilml_core::HostInfo {
+                hostname: "test-host".to_string(),
+                os: "Linux".to_string(),
+            },
+            gpus: vec![],
+            inference_caps: anvilml_core::InferenceCaps::default(),
+        })),
+        env_report: Arc::new(RwLock::new(EnvReport {
+            python_path: Some("./worker/.venv/bin/python3".to_string()),
+            python_version: None,
+            torch_version: None,
+            provisioning: ProvisioningState::NotStarted,
+            preflight_ok: false,
+            reason: None,
+            node_types: Vec::new(),
+        })),
+        model_store: Arc::new(ModelStore::new(db.clone())),
+    };
+
+    (state, spawner)
+}
+
+/// Poll `spawner.call_count()` until it reaches at least `n`, bounded by
+/// `timeout` — `spawn_all_with_spawner()`/`spawn_worker()` only schedule
+/// the spawn via `tokio::spawn()`, they don't wait for the spawner itself
+/// to actually run.
+async fn wait_for_spawn_calls(spawner: &MockWorkerSpawner, n: usize, timeout: Duration) {
+    tokio::time::timeout(timeout, async {
+        loop {
+            if spawner.call_count() >= n {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("expected >= {n} spawn() calls within {timeout:?}"));
+}
+
 /// elements match the injected mock workers' `worker_id`, `status`,
 /// `device_index`, and `device_type`.
 ///
@@ -382,4 +578,137 @@ async fn test_workers_response_shape_matches_workerinfo() {
         "response must contain exactly the WorkerInfo fields, got {:?}",
         actual_keys
     );
+}
+
+/// Verify that `POST /v1/workers/{id}/restart` returns `404 Not Found`
+/// when no worker with the given id exists in the pool.
+#[tokio::test]
+async fn test_restart_unknown_worker_returns_404() {
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let devices = vec![make_test_device(0, DeviceType::Cpu)];
+    let (state, _spawner) = make_test_state_with_spawned_workers(node_registry, &devices).await;
+
+    let router = build_router(state);
+    let req = Request::post("/v1/workers/99/restart")
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), axum::http::StatusCode::NOT_FOUND);
+}
+
+/// Verify that restarting a known, non-`Dying` worker returns `202
+/// Accepted` and actually spawns a brand-new generation — observed via a
+/// second `MockWorkerSpawner::spawn()` call, not just the HTTP status.
+///
+/// This is the acceptance test for the audit finding P18-D3 closes:
+/// `request_shutdown()` alone does not respawn a worker, so this confirms
+/// the handler does the full shutdown-then-spawn sequence, not just the
+/// first half.
+#[tokio::test]
+async fn test_restart_known_worker_returns_202_and_spawns_new_generation() {
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let devices = vec![make_test_device(0, DeviceType::Cpu)];
+    let (state, spawner) = make_test_state_with_spawned_workers(node_registry, &devices).await;
+
+    // Wait for the pool's initial spawn to actually invoke spawner.spawn()
+    // before restarting — otherwise a call_count() of 1 after restart
+    // would be ambiguous (initial spawn vs. restart's own spawn).
+    wait_for_spawn_calls(&spawner, 1, Duration::from_secs(2)).await;
+
+    let router = build_router(state);
+    let req = Request::post("/v1/workers/0/restart")
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), axum::http::StatusCode::ACCEPTED);
+
+    // A second spawn() call proves a genuinely new generation was spawned,
+    // not merely that the old one was left running.
+    wait_for_spawn_calls(&spawner, 2, Duration::from_secs(2)).await;
+}
+
+/// Verify that restarting an already-`Dying` worker returns `409 Conflict`
+/// rather than starting a second, overlapping shutdown-then-spawn
+/// sequence.
+///
+/// Forces the worker into `Dying` directly via `set_status()` on a cloned
+/// handle — clones share the same underlying status lock as the pool's
+/// own handle (see `WorkerHandle::clone()`'s own doc comment), so this
+/// reliably simulates "a shutdown is already in flight" (e.g. from
+/// `shutdown_all()`) without needing a real in-progress shutdown race.
+#[tokio::test]
+async fn test_restart_already_dying_returns_409() {
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let devices = vec![make_test_device(0, DeviceType::Cpu)];
+    let (state, spawner) = make_test_state_with_spawned_workers(node_registry, &devices).await;
+    wait_for_spawn_calls(&spawner, 1, Duration::from_secs(2)).await;
+
+    let handles = state.workers.handles();
+    let handle = handles
+        .iter()
+        .find(|h| h.worker_id == "0")
+        .expect("worker 0 should exist");
+    handle.set_status(WorkerStatus::Dying).await;
+
+    let router = build_router(state);
+    let req = Request::post("/v1/workers/0/restart")
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), axum::http::StatusCode::CONFLICT);
+
+    // Conflict must not have triggered a spawn — still exactly the one
+    // call from initial startup.
+    assert_eq!(
+        spawner.call_count(),
+        1,
+        "a 409 conflict must not spawn a replacement"
+    );
+}
+
+/// Verify that the worker spawned by a restart genuinely reaches `Idle` —
+/// not just that a new OS process was launched (the previous test's
+/// concern), but that the new generation completes registration the same
+/// way a normal startup spawn does.
+///
+/// Sends a synthetic `WorkerEvent::Ready` over a DEALER socket connected
+/// to the pool's shared `RouterTransport`, matching
+/// `pool_tests.rs`'s own established pattern for driving a mock-spawned
+/// worker to `Idle` in tests. Retries the send within the poll loop
+/// (rather than sending once) to absorb the small, otherwise-racy window
+/// between the new generation's process launching and its
+/// `Demux::register()` call completing.
+#[tokio::test]
+async fn test_restart_respawned_worker_reaches_idle() {
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let devices = vec![make_test_device(0, DeviceType::Cpu)];
+    let (state, spawner) = make_test_state_with_spawned_workers(node_registry, &devices).await;
+    wait_for_spawn_calls(&spawner, 1, Duration::from_secs(2)).await;
+
+    let transport = Arc::clone(state.workers.transport());
+    let router = build_router(state.clone());
+    let req = Request::post("/v1/workers/0/restart")
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), axum::http::StatusCode::ACCEPTED);
+
+    wait_for_spawn_calls(&spawner, 2, Duration::from_secs(2)).await;
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let mut dealer = connect_dealer(&transport, "0").await;
+            send_event(&mut dealer, &ready_event("0")).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            let handles = state.workers.handles();
+            if let Some(h) = handles.iter().find(|h| h.worker_id == "0")
+                && h.status().await == WorkerStatus::Idle
+            {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("respawned worker should reach Idle within 3s");
 }

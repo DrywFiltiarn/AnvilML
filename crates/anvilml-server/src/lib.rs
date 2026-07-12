@@ -94,6 +94,12 @@ pub fn build_router(app_state: AppState) -> axum::Router {
             "/v1/workers",
             axum::routing::get(handlers::workers::list_workers),
         )
+        // POST /v1/workers/{id}/restart — graceful shutdown + explicit
+        // respawn into the same slot (P18-D3).
+        .route(
+            "/v1/workers/{id}/restart",
+            axum::routing::post(handlers::workers::restart_worker),
+        )
         // GET /v1/events — WebSocket upgrade for the live event stream.
         // Per ANVILML_DESIGN.md §13.6: subscribe, send the initial
         // SystemStats frame, then (from P16-C2 on) forward subsequent
