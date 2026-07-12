@@ -118,8 +118,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
-      - name: Check openapi drift
-        run: echo "no openapi/config yet"
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Generate OpenAPI spec
+        run: cargo run -p anvilml-openapi
+
+      - name: Check for drift
+        run: git diff --exit-code api/openapi.json
 
   config-drift:
     runs-on: ubuntu-latest
