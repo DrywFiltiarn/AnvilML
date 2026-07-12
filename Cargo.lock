@@ -162,10 +162,11 @@ dependencies = [
 
 [[package]]
 name = "anvilml-openapi"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anvilml-core",
  "anvilml-server",
+ "utoipa",
 ]
 
 [[package]]
@@ -210,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-server"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anvilml-artifacts",
  "anvilml-core",
@@ -234,6 +235,7 @@ dependencies = [
  "tower",
  "tower-http 0.7.0",
  "tracing",
+ "utoipa",
  "uuid",
  "zeromq",
 ]
@@ -2955,6 +2957,7 @@ checksum = "6ba0b99ee52df3028635d93840c797102da61f8a7bb3cf751032455895b52ef8"
 dependencies = [
  "proc-macro2",
  "quote",
+ "regex",
  "syn",
  "uuid",
 ]

@@ -18,7 +18,7 @@ use crate::AppState;
 /// - `rust_version`: runtime `rustc` SemVer from `rustc_version_runtime::version()`.
 /// - `python_version`: from `AppState.env_report`, `None` if not yet collected.
 /// - `torch_version`: from `AppState.env_report`, `None` if not yet collected.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
 pub(crate) struct ComponentVersions {
     /// AnvilML crate version, resolved at compile time.
     pub(crate) anvilml_version: String,
@@ -37,9 +37,17 @@ pub(crate) struct ComponentVersions {
 /// Returns `200 OK` with the current `HardwareInfo` snapshot — per
 /// `ANVILML_DESIGN.md §13.4`. Acquires a read lock on the shared
 /// `hardware` field, clones the value, and returns it as JSON.
-///
-/// The clone ensures the response is independent of any concurrent
-/// write that may occur after this handler returns.
+#[utoipa::path(
+    get,
+    path = "/v1/system",
+    tag = "System",
+    operation_id = "get_system",
+    summary = "Get system hardware info",
+    description = "Returns the current hardware snapshot including GPU/CPU devices and capabilities.",
+    responses(
+        (status = 200, description = "Hardware snapshot", body = anvilml_core::HardwareInfo)
+    )
+)]
 pub(crate) async fn get_system(State(state): State<AppState>) -> Json<anvilml_core::HardwareInfo> {
     // Read-lock the hardware snapshot and clone the value out.
     // The clone ensures the response is independent of any concurrent
@@ -52,9 +60,17 @@ pub(crate) async fn get_system(State(state): State<AppState>) -> Json<anvilml_co
 /// Returns `200 OK` with the current `EnvReport` — per
 /// `ANVILML_DESIGN.md §13.4`. Acquires a read lock on the shared
 /// `env_report` field, clones the value, and returns it as JSON.
-///
-/// The clone ensures the response is independent of any concurrent
-/// write that may occur after this handler returns.
+#[utoipa::path(
+    get,
+    path = "/v1/system/env",
+    tag = "System",
+    operation_id = "get_system_env",
+    summary = "Get system environment report",
+    description = "Returns the Python environment health report collected at server startup preflight.",
+    responses(
+        (status = 200, description = "Environment report", body = anvilml_core::EnvReport)
+    )
+)]
 pub(crate) async fn get_system_env(State(state): State<AppState>) -> Json<anvilml_core::EnvReport> {
     // Read-lock the environment report and clone the value out.
     // Same pattern as get_system — one-line delegation with no
@@ -68,10 +84,17 @@ pub(crate) async fn get_system_env(State(state): State<AppState>) -> Json<anvilm
 /// AnvilML crate version (compile-time), the Rust compiler version
 /// (runtime), and the Python/PyTorch versions from the env report
 /// — per `ANVILML_DESIGN.md §13.4`.
-///
-/// Acquires a read lock on `env_report` to extract python_version and
-/// torch_version, then constructs the response with the compile-time
-/// and runtime version values.
+#[utoipa::path(
+    get,
+    path = "/v1/system/versions",
+    tag = "System",
+    operation_id = "get_system_versions",
+    summary = "Get system version report",
+    description = "Returns per-component version information: AnvilML crate version, Rust compiler version, Python version, and PyTorch version.",
+    responses(
+        (status = 200, description = "Component versions", body = ComponentVersions)
+    )
+)]
 pub(crate) async fn get_system_versions(State(state): State<AppState>) -> Json<ComponentVersions> {
     // Read-lock the environment report to extract python_version and
     // torch_version. The report is cloned so the lock is released

@@ -18,7 +18,8 @@ use crate::state::AppState;
 /// Query parameters for the `GET /v1/models` list endpoint.
 ///
 /// All fields are optional — when absent, the handler returns all models.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
+#[into_params(parameter_in = Query)]
 pub struct ListModelsParams {
     /// Filter results to only models of this kind.
     ///
@@ -31,10 +32,19 @@ pub struct ListModelsParams {
 /// Returns a JSON array of `ModelMeta` objects. When the `kind` query
 /// parameter is provided, only models matching that architecture family
 /// are returned; otherwise all models are returned.
-///
-/// # Errors
-///
-/// Returns HTTP 500 if the database query fails.
+#[utoipa::path(
+    get,
+    path = "/v1/models",
+    tag = "Models",
+    operation_id = "list_models",
+    summary = "List models",
+    description = "Lists all discovered models, optionally filtered by architecture kind.",
+    params(ListModelsParams),
+    responses(
+        (status = 200, description = "List of models", body = Vec<ModelMeta>),
+        (status = 500, description = "Database error")
+    )
+)]
 #[instrument(skip(state), fields(kind = ?params.kind))]
 pub async fn list_models(
     State(state): State<AppState>,
@@ -48,12 +58,21 @@ pub async fn list_models(
 ///
 /// Returns the `ModelMeta` for the model whose ID matches the `{id}`
 /// path parameter. If no model with that ID exists, returns HTTP 404.
-///
-/// # Errors
-///
-/// Returns HTTP 404 (`AnvilError::ModelNotFound`) if no model with the
-/// given ID exists in the registry. Returns HTTP 500 if the database
-/// query fails.
+#[utoipa::path(
+    get,
+    path = "/v1/models/{id}",
+    tag = "Models",
+    operation_id = "get_model",
+    summary = "Get a model",
+    description = "Looks up a single model by its ID.",
+    params(
+        ("id" = String, Path, description = "Model ID")
+    ),
+    responses(
+        (status = 200, description = "Model metadata", body = ModelMeta),
+        (status = 404, description = "Model not found")
+    )
+)]
 #[instrument(skip(state), fields(model_id = %model_id))]
 pub async fn get_model(
     State(state): State<AppState>,
@@ -70,12 +89,17 @@ pub async fn get_model(
 /// Returns HTTP 202 Accepted immediately without waiting for the scan to
 /// complete. The scan runs in a spawned tokio task and writes discovered
 /// models into the `ModelStore` via the shared SQLite pool.
-///
-/// The scan iterates over `state.config.model_dirs`, calling
-/// `ModelScanner::scan_dir()` for each entry. When `recursive` is `false`,
-/// the depth is set to `0` (scan only the root directory); when
-/// `recursive` is `true`, the entry's `max_depth` (or the config default
-/// `model_scan_depth`) is used.
+#[utoipa::path(
+    post,
+    path = "/v1/models/rescan",
+    tag = "Models",
+    operation_id = "rescan_models",
+    summary = "Rescan model directories",
+    description = "Triggers a background scan of all configured model directories.",
+    responses(
+        (status = 202, description = "Rescan triggered")
+    )
+)]
 #[instrument(skip(state))]
 pub async fn rescan_models(State(state): State<AppState>) -> impl IntoResponse {
     tracing::info!(

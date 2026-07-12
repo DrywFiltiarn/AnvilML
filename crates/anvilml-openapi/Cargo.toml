@@ -1,9 +1,10 @@
 [package]
 name = "anvilml-openapi"
-version.workspace = true
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 anvilml-core = { path = "../anvilml-core" }
 anvilml-server = { path = "../anvilml-server" }
+utoipa = { version = "5.5.0", features = ["macros", "axum_extras", "uuid"] }

@@ -15,7 +15,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 
 use anvilml_core::AnvilError;
-use anvilml_core::types::worker::WorkerInfo;
+use anvilml_core::WorkerInfo;
 use anvilml_worker::RestartOutcome;
 
 use crate::AppState;
@@ -25,11 +25,17 @@ use crate::AppState;
 /// Returns `200 OK` with a JSON array of `WorkerInfo` objects, one per
 /// worker in the pool. The array is empty (not `null`) when no workers
 /// have been spawned yet.
-///
-/// Per `ANVILML_DESIGN.md §13.4`: `GET /v1/workers → 200 [WorkerInfo, ...]`.
-///
-/// State is injected via `axum::extract::State<AppState>` which provides
-/// access to the `WorkerPool` through `state.workers`.
+#[utoipa::path(
+    get,
+    path = "/v1/workers",
+    tag = "Workers",
+    operation_id = "list_workers",
+    summary = "List workers",
+    description = "Lists all registered Python workers and their current lifecycle states.",
+    responses(
+        (status = 200, description = "List of workers", body = Vec<WorkerInfo>)
+    )
+)]
 pub(crate) async fn list_workers(State(state): State<AppState>) -> Json<Vec<WorkerInfo>> {
     // Delegate to WorkerPool::list() which acquires the internal lock on
     // each WorkerHandle's status, zips handles with their GpuDevice
@@ -48,23 +54,22 @@ pub(crate) async fn list_workers(State(state): State<AppState>) -> Json<Vec<Work
 /// drives the worker into a terminal exit, not a respawn. See
 /// `WorkerPool::restart_worker()`'s own doc comment for the full audit
 /// finding and why this handler's real work happens there, not here.
-///
-/// # Responses
-///
-/// * `202 Accepted` — the old generation exited (or was bounded-timed-out)
-///   and a replacement has been spawned. Matches `cancel_job()`'s own
-///   `202`-not-`200` framing (`ANVILML_DESIGN.md §13.5`): the new worker is
-///   spawned, not necessarily `Ready`/`Idle` yet.
-/// * `404 Not Found` — no worker with the given `id` exists in the pool.
-/// * `409 Conflict` — that worker is already `Dying` (a shutdown, from
-///   this same restart's own retry or from `shutdown_all()`, is already in
-///   flight for it).
-///
-/// State is injected via `axum::extract::State<AppState>`, which provides
-/// access to the `WorkerPool` through `state.workers` — `Arc<WorkerPool>`,
-/// shared with the dispatch loop and event loop, so this handler never has
-/// exclusive `&mut` access; `WorkerPool::restart_worker()` takes `&self`
-/// for exactly this reason.
+#[utoipa::path(
+    post,
+    path = "/v1/workers/{id}/restart",
+    tag = "Workers",
+    operation_id = "restart_worker",
+    summary = "Restart a worker",
+    description = "Restarts the worker identified by ID: graceful shutdown followed by respawn into the same device slot.",
+    params(
+        ("id" = String, Path, description = "Worker ID")
+    ),
+    responses(
+        (status = 202, description = "Restart accepted"),
+        (status = 404, description = "Worker not found"),
+        (status = 409, description = "Worker already shutting down")
+    )
+)]
 #[tracing::instrument(skip(state), fields(worker_id = %id))]
 pub(crate) async fn restart_worker(
     State(state): State<AppState>,

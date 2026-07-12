@@ -26,7 +26,7 @@ use crate::state::AppState;
 /// Contains the computation graph (`serde_json::Value`) and execution
 /// settings (`JobSettings`). The graph is validated by the scheduler
 /// before acceptance.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct SubmitJobRequest {
     /// The computation graph to execute, in the format expected by workers.
     pub graph: serde_json::Value,
@@ -37,7 +37,7 @@ pub(crate) struct SubmitJobRequest {
 /// HTTP response body for `POST /v1/jobs` on success.
 ///
 /// Per `ANVILML_DESIGN.md §13.5`: `202 { job_id, queue_position }`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub(crate) struct SubmitJobResponse {
     /// The UUID v4 assigned to the newly submitted job.
     pub job_id: Uuid,
@@ -56,7 +56,8 @@ pub(crate) struct SubmitJobResponse {
 /// - `all` — all terminal jobs (Completed + Failed + Cancelled)
 ///
 /// Returns `400 Bad Request` for any unrecognized value.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
+#[into_params(parameter_in = Query)]
 pub(crate) struct BulkClearParams {
     /// Filter by job status. Must be one of: completed, failed, cancelled, all.
     pub status: String,
@@ -65,7 +66,7 @@ pub(crate) struct BulkClearParams {
 /// HTTP response body for `DELETE /v1/jobs` on success.
 ///
 /// Per `ANVILML_DESIGN.md §13.4`: `200 { removed: u32 }`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub(crate) struct RemovedCount {
     /// Number of jobs removed by the bulk clear operation.
     pub removed: u32,
@@ -131,9 +132,22 @@ async fn delete_single_job(
 /// - `WorkersUnavailable` → 503 (no workers registered)
 /// - `InvalidGraph` / `CycleDetected` → 400 (graph validation failed)
 /// - `Db` → 500 (database error)
-///
-/// State is injected via `axum::extract::State<AppState>` which provides
-/// access to the `JobScheduler` through `state.scheduler`.
+#[utoipa::path(
+    post,
+    path = "/v1/jobs",
+    tag = "Jobs",
+    operation_id = "submit_job",
+    summary = "Submit a job",
+    description = "Submits a computation graph for execution. The graph is validated by the scheduler before acceptance.",
+    request_body = SubmitJobRequest,
+    responses(
+        (status = 202, description = "Job accepted for execution", body = SubmitJobResponse),
+        (status = 400, description = "Bad request — malformed JSON or invalid graph"),
+        (status = 409, description = "Conflict — graph contains a cycle"),
+        (status = 500, description = "Database error"),
+        (status = 503, description = "Workers unavailable — no idle workers registered")
+    )
+)]
 pub(crate) async fn submit_job(
     State(state): State<AppState>,
     Json(body): Json<SubmitJobRequest>,
@@ -160,7 +174,8 @@ pub(crate) async fn submit_job(
 /// - `before` is a cursor for future pagination support; the persistence
 ///   layer does not yet use it, so it is accepted at the HTTP layer but
 ///   silently ignored (forward-compatibility per `ANVILML_DESIGN.md §13.4`).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
+#[into_params(parameter_in = Query)]
 pub(crate) struct ListJobsParams {
     /// Optional status filter — only jobs matching this status are returned.
     pub status: Option<JobStatus>,
@@ -183,17 +198,19 @@ pub(crate) struct ListJobsParams {
 /// Accepts optional `status` and `limit` query parameters. Delegates to
 /// `JobScheduler::list_jobs()` which queries the database and returns all
 /// matching jobs.
-///
-/// The `before` query parameter is accepted for forward-compatibility but
-/// is not passed to the persistence layer — `JobStore::list()` does not
-/// support a before-cursor parameter (per `ANVILML_DESIGN.md §13.4`).
-///
-/// # Response
-///
-/// Returns `200 OK` with a JSON array of `Job` objects.
-///
-/// State is injected via `axum::extract::State<AppState>` which provides
-/// access to the `JobScheduler` through `state.scheduler`.
+#[utoipa::path(
+    get,
+    path = "/v1/jobs",
+    tag = "Jobs",
+    operation_id = "list_jobs",
+    summary = "List jobs",
+    description = "Lists all jobs, optionally filtered by status and limited by count.",
+    params(ListJobsParams),
+    responses(
+        (status = 200, description = "List of jobs", body = Vec<Job>),
+        (status = 500, description = "Database error")
+    )
+)]
 #[tracing::instrument(skip(state), fields(status, limit))]
 pub(crate) async fn list_jobs(
     State(state): State<AppState>,
@@ -215,14 +232,21 @@ pub(crate) async fn list_jobs(
 ///
 /// Accepts a job UUID as a path parameter (`/v1/jobs/:id`). Delegates to
 /// `JobScheduler::get_job()` which queries the database.
-///
-/// # Response
-///
-/// Returns `200 OK` with the `Job` object, or `404 Not Found` if the job
-/// does not exist in the database.
-///
-/// State is injected via `axum::extract::State<AppState>` which provides
-/// access to the `JobScheduler` through `state.scheduler`.
+#[utoipa::path(
+    get,
+    path = "/v1/jobs/{id}",
+    tag = "Jobs",
+    operation_id = "get_job",
+    summary = "Get a job",
+    description = "Looks up a single job by its UUID.",
+    params(
+        ("id" = Uuid, Path, description = "Job UUID")
+    ),
+    responses(
+        (status = 200, description = "Job details", body = Job),
+        (status = 404, description = "Job not found")
+    )
+)]
 #[tracing::instrument(skip(state), fields(job_id))]
 pub(crate) async fn get_job(
     State(state): State<AppState>,
@@ -241,18 +265,22 @@ pub(crate) async fn get_job(
 /// entirely to `JobScheduler::cancel()`, which returns a `CancelOutcome`
 /// indicating whether the cancellation was accepted, the job was already
 /// terminal, or the job does not exist.
-///
-/// # Response
-///
-/// - `202 Accepted` — the job was in a cancellable state (Queued or Running)
-///   and cancellation was accepted.
-/// - `409 Conflict` — the job exists but is already in a terminal state
-///   (Completed/Failed/Cancelled). Cancelling a finished job is a no-op, not
-///   an error, per the idempotent-cancel principle.
-/// - `404 Not Found` — no job with the given ID exists in the database.
-///
-/// State is injected via `axum::extract::State<AppState>` which provides
-/// access to the `JobScheduler` through `state.scheduler`.
+#[utoipa::path(
+    post,
+    path = "/v1/jobs/{id}/cancel",
+    tag = "Jobs",
+    operation_id = "cancel_job",
+    summary = "Cancel a job",
+    description = "Cancels a job by its UUID. Returns 202 if accepted, 409 if already terminal, 404 if not found.",
+    params(
+        ("id" = Uuid, Path, description = "Job UUID")
+    ),
+    responses(
+        (status = 202, description = "Cancellation accepted"),
+        (status = 404, description = "Job not found"),
+        (status = 409, description = "Job is already in a terminal state")
+    )
+)]
 #[tracing::instrument(skip(state), fields(job_id = %id))]
 pub(crate) async fn cancel_job(
     State(state): State<AppState>,
@@ -286,25 +314,22 @@ pub(crate) async fn cancel_job(
 /// looks up the job, verifies it is in a terminal state (Completed, Failed,
 /// or Cancelled), then delegates to `delete_single_job()` for artifact and
 /// job deletion.
-///
-/// # Response
-///
-/// - `204 No Content` — the job was terminal and has been deleted along with
-///   all associated artifacts.
-/// - `409 Conflict` — the job exists but is in a non-terminal state (Queued
-///   or Running). Deleting an active job is not allowed — use cancel first.
-/// - `404 Not Found` — no job with the given ID exists in the database.
-///
-/// # State Access
-///
-/// Reads from `state.db` via `JobStore` and from `state.artifact_store` for
-/// artifact listing and deletion.
-///
-/// # Note
-///
-/// Per `ANVILML_DESIGN.md §13.4`, only terminal-status jobs may be deleted.
-/// Non-terminal jobs must be cancelled first (POST /v1/jobs/{id}/cancel).
-/// Bulk delete is available via `DELETE /v1/jobs?status=<value>`.
+#[utoipa::path(
+    delete,
+    path = "/v1/jobs/{id}",
+    tag = "Jobs",
+    operation_id = "delete_job",
+    summary = "Delete a job",
+    description = "Deletes a job by its UUID and all associated artifacts. Only terminal-status jobs may be deleted.",
+    params(
+        ("id" = Uuid, Path, description = "Job UUID")
+    ),
+    responses(
+        (status = 204, description = "Job and artifacts deleted"),
+        (status = 404, description = "Job not found"),
+        (status = 409, description = "Job is not in a terminal state")
+    )
+)]
 #[tracing::instrument(skip(state), fields(job_id = %id))]
 pub(crate) async fn delete_job(
     State(state): State<AppState>,
@@ -349,17 +374,19 @@ pub(crate) async fn delete_job(
 /// Accepts `DELETE /v1/jobs?status=<value>` where `<value>` is one of:
 /// `completed`, `failed`, `cancelled`, or `all`. For each matching job,
 /// delegates to `delete_single_job()` to remove the job and its artifacts.
-///
-/// # Response
-///
-/// - `200 OK` — `{ removed: u32 }` with the count of jobs removed.
-/// - `400 Bad Request` — the `status` query parameter is not one of the
-///   four recognized values.
-///
-/// # State Access
-///
-/// Reads from `state.db` via `JobStore` and from `state.artifact_store` for
-/// artifact deletion.
+#[utoipa::path(
+    delete,
+    path = "/v1/jobs",
+    tag = "Jobs",
+    operation_id = "bulk_clear_jobs",
+    summary = "Bulk clear terminal jobs",
+    description = "Bulk-clear terminal jobs matching the given status filter.",
+    params(BulkClearParams),
+    responses(
+        (status = 200, description = "Bulk clear completed", body = RemovedCount),
+        (status = 400, description = "Bad request — invalid status parameter")
+    )
+)]
 #[tracing::instrument(skip(state), fields(status))]
 pub(crate) async fn bulk_clear_jobs(
     State(state): State<AppState>,

@@ -1,0 +1,1452 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "anvilml-server",
+    "description": "",
+    "license": {
+      "name": ""
+    },
+    "version": "0.1.27"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Health check",
+        "description": "Liveness probe returning server status, version, and elapsed uptime.",
+        "operationId": "health_check",
+        "responses": {
+          "200": {
+            "description": "Server is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/artifacts": {
+      "get": {
+        "tags": [
+          "Artifacts"
+        ],
+        "summary": "List artifacts",
+        "description": "Lists artifact metadata, optionally filtered by job ID.",
+        "operationId": "list_artifacts",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "query",
+            "description": "Optional job UUID to filter artifacts — only artifacts from this job are returned.\n`None` returns all artifacts regardless of job.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of artifacts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ArtifactMeta"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error"
+          }
+        }
+      }
+    },
+    "/v1/artifacts/{hash}": {
+      "get": {
+        "tags": [
+          "Artifacts"
+        ],
+        "summary": "Get artifact",
+        "description": "Serves raw PNG bytes for a content-addressed artifact by its SHA-256 hash.",
+        "operationId": "get_artifact",
+        "parameters": [
+          {
+            "name": "hash",
+            "in": "path",
+            "description": "SHA-256 content hash of the artifact",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Raw PNG bytes",
+            "content": {
+              "image/png": {}
+            }
+          },
+          "404": {
+            "description": "Artifact not found"
+          },
+          "500": {
+            "description": "I/O error"
+          }
+        }
+      }
+    },
+    "/v1/jobs": {
+      "get": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "List jobs",
+        "description": "Lists all jobs, optionally filtered by status and limited by count.",
+        "operationId": "list_jobs",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Optional status filter — only jobs matching this status are returned.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/JobStatus"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Optional maximum number of jobs to return.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Cursor for future pagination — accepted but not yet passed to the\npersistence layer (forward-compatibility per `ANVILML_DESIGN.md §13.4`).\nThis field is intentionally unused by the handler — the struct field\nexists so the HTTP API accepts the query parameter without returning\na 400 error, but the handler does not forward it to `list_jobs()`.\nStored as String because serde_urlencoded cannot deserialize\nDateTime<Utc> from query strings.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of jobs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Job"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Submit a job",
+        "description": "Submits a computation graph for execution. The graph is validated by the scheduler before acceptance.",
+        "operationId": "submit_job",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitJobRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Job accepted for execution",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitJobResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request — malformed JSON or invalid graph"
+          },
+          "409": {
+            "description": "Conflict — graph contains a cycle"
+          },
+          "500": {
+            "description": "Database error"
+          },
+          "503": {
+            "description": "Workers unavailable — no idle workers registered"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Bulk clear terminal jobs",
+        "description": "Bulk-clear terminal jobs matching the given status filter.",
+        "operationId": "bulk_clear_jobs",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Filter by job status. Must be one of: completed, failed, cancelled, all.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bulk clear completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemovedCount"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request — invalid status parameter"
+          }
+        }
+      }
+    },
+    "/v1/jobs/{id}": {
+      "get": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Get a job",
+        "description": "Looks up a single job by its UUID.",
+        "operationId": "get_job",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Job UUID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Job not found"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Delete a job",
+        "description": "Deletes a job by its UUID and all associated artifacts. Only terminal-status jobs may be deleted.",
+        "operationId": "delete_job",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Job UUID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Job and artifacts deleted"
+          },
+          "404": {
+            "description": "Job not found"
+          },
+          "409": {
+            "description": "Job is not in a terminal state"
+          }
+        }
+      }
+    },
+    "/v1/jobs/{id}/cancel": {
+      "post": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Cancel a job",
+        "description": "Cancels a job by its UUID. Returns 202 if accepted, 409 if already terminal, 404 if not found.",
+        "operationId": "cancel_job",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Job UUID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Cancellation accepted"
+          },
+          "404": {
+            "description": "Job not found"
+          },
+          "409": {
+            "description": "Job is already in a terminal state"
+          }
+        }
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "tags": [
+          "Models"
+        ],
+        "summary": "List models",
+        "description": "Lists all discovered models, optionally filtered by architecture kind.",
+        "operationId": "list_models",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "Filter results to only models of this kind.\n\nWhen `None`, all models are returned regardless of kind.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ModelKind"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of models",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ModelMeta"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error"
+          }
+        }
+      }
+    },
+    "/v1/models/rescan": {
+      "post": {
+        "tags": [
+          "Models"
+        ],
+        "summary": "Rescan model directories",
+        "description": "Triggers a background scan of all configured model directories.",
+        "operationId": "rescan_models",
+        "responses": {
+          "202": {
+            "description": "Rescan triggered"
+          }
+        }
+      }
+    },
+    "/v1/models/{id}": {
+      "get": {
+        "tags": [
+          "Models"
+        ],
+        "summary": "Get a model",
+        "description": "Looks up a single model by its ID.",
+        "operationId": "get_model",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Model ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Model metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelMeta"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Model not found"
+          }
+        }
+      }
+    },
+    "/v1/nodes": {
+      "get": {
+        "tags": [
+          "Nodes"
+        ],
+        "summary": "List node types",
+        "description": "Lists all registered Python worker node type descriptors.",
+        "operationId": "list_nodes",
+        "responses": {
+          "200": {
+            "description": "List of node types",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/NodeTypeDescriptor"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/system": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Get system hardware info",
+        "description": "Returns the current hardware snapshot including GPU/CPU devices and capabilities.",
+        "operationId": "get_system",
+        "responses": {
+          "200": {
+            "description": "Hardware snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HardwareInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/system/env": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Get system environment report",
+        "description": "Returns the Python environment health report collected at server startup preflight.",
+        "operationId": "get_system_env",
+        "responses": {
+          "200": {
+            "description": "Environment report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnvReport"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/system/versions": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Get system version report",
+        "description": "Returns per-component version information: AnvilML crate version, Rust compiler version, Python version, and PyTorch version.",
+        "operationId": "get_system_versions",
+        "responses": {
+          "200": {
+            "description": "Component versions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComponentVersions"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workers": {
+      "get": {
+        "tags": [
+          "Workers"
+        ],
+        "summary": "List workers",
+        "description": "Lists all registered Python workers and their current lifecycle states.",
+        "operationId": "list_workers",
+        "responses": {
+          "200": {
+            "description": "List of workers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WorkerInfo"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workers/{id}/restart": {
+      "post": {
+        "tags": [
+          "Workers"
+        ],
+        "summary": "Restart a worker",
+        "description": "Restarts the worker identified by ID: graceful shutdown followed by respawn into the same device slot.",
+        "operationId": "restart_worker",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Worker ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Restart accepted"
+          },
+          "404": {
+            "description": "Worker not found"
+          },
+          "409": {
+            "description": "Worker already shutting down"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ArtifactMeta": {
+        "type": "object",
+        "description": "Metadata for a generated, content-addressed PNG artifact.\n\nThis struct captures the identity, generation parameters, and\nstorage location of a single output artifact produced by a worker.\nThe `hash` field is the SHA-256 hex content address used by\n`anvilml-artifacts` as its primary key.",
+        "required": [
+          "hash",
+          "job_id",
+          "width",
+          "height",
+          "seed",
+          "steps",
+          "created_at",
+          "file_path"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Timestamp when the artifact was created."
+          },
+          "file_path": {
+            "type": "string",
+            "description": "Filesystem path to the saved PNG file."
+          },
+          "hash": {
+            "type": "string",
+            "description": "SHA-256 hex content address — primary key for artifact storage."
+          },
+          "height": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Generated image height in pixels.",
+            "minimum": 0
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "UUID of the job that produced this artifact."
+          },
+          "seed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Random seed used for generation (i64 to support negative seeds)."
+          },
+          "steps": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of diffusion steps used in generation.",
+            "minimum": 0
+          },
+          "width": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Generated image width in pixels.",
+            "minimum": 0
+          }
+        }
+      },
+      "BulkClearParams": {
+        "type": "object",
+        "description": "HTTP query parameters for `DELETE /v1/jobs` (bulk clear endpoint).\n\nThe `status` parameter selects which terminal jobs to remove:\n- `completed` — only Completed jobs\n- `failed` — only Failed jobs\n- `cancelled` — only Cancelled jobs\n- `all` — all terminal jobs (Completed + Failed + Cancelled)\n\nReturns `400 Bad Request` for any unrecognized value.",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Filter by job status. Must be one of: completed, failed, cancelled, all."
+          }
+        }
+      },
+      "CapabilitySource": {
+        "type": "string",
+        "description": "Where an `InferenceCaps` value came from.\n\n`PyTorch` is the only source an arch module's loader is permitted to make a\ncompute-dtype decision from at runtime. `DeviceTable` and `Fallback` are\npre-spawn hints for scheduling estimates only.",
+        "enum": [
+          "pytorch",
+          "device_table",
+          "fallback"
+        ]
+      },
+      "ComponentVersions": {
+        "type": "object",
+        "description": "Per-component version report returned by `GET /v1/system/versions`.\n\nFields:\n- `anvilml_version`: compile-time crate version from `CARGO_PKG_VERSION`.\n- `rust_version`: runtime `rustc` SemVer from `rustc_version_runtime::version()`.\n- `python_version`: from `AppState.env_report`, `None` if not yet collected.\n- `torch_version`: from `AppState.env_report`, `None` if not yet collected.",
+        "required": [
+          "anvilml_version",
+          "rust_version"
+        ],
+        "properties": {
+          "anvilml_version": {
+            "type": "string",
+            "description": "AnvilML crate version, resolved at compile time."
+          },
+          "python_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Python interpreter version string, or `None` if the worker has not\nyet reported it."
+          },
+          "rust_version": {
+            "type": "string",
+            "description": "Rust compiler version, resolved at runtime via `rustc_version_runtime`."
+          },
+          "torch_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "PyTorch version string, or `None` if the import failed or torch\nis not installed."
+          }
+        }
+      },
+      "DeviceType": {
+        "type": "string",
+        "description": "The compute backend or execution target of a device.",
+        "enum": [
+          "cuda",
+          "rocm",
+          "cpu"
+        ]
+      },
+      "EnumerationSource": {
+        "type": "string",
+        "description": "Where a device was enumerated from.",
+        "enum": [
+          "vulkan",
+          "dxgi",
+          "sysfs",
+          "nvml",
+          "cpu",
+          "mock",
+          "override"
+        ]
+      },
+      "EnvReport": {
+        "type": "object",
+        "description": "Python runtime environment report collected at worker startup preflight.\n\nThe scheduler uses this to verify the worker's Python and PyTorch\nenvironment, provisioning status, and the node types it supports.",
+        "required": [
+          "provisioning",
+          "preflight_ok",
+          "node_types"
+        ],
+        "properties": {
+          "node_types": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NodeTypeDescriptor"
+            },
+            "description": "The node types registered by this worker, reported at startup."
+          },
+          "preflight_ok": {
+            "type": "boolean",
+            "description": "Whether all preflight checks passed (interpreter exists, Python version OK, torch importable)."
+          },
+          "provisioning": {
+            "$ref": "#/components/schemas/ProvisioningState",
+            "description": "The provisioning status of the worker's environment."
+          },
+          "python_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Path to the Python interpreter used by the worker (e.g. `./worker/.venv/bin/python3`)."
+          },
+          "python_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Python interpreter version string (e.g. `\"3.12.3\"`), or `None` if unavailable."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An optional human-readable reason when `preflight_ok` is `false`."
+          },
+          "torch_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The PyTorch version string if `import torch` succeeded, or `None` if\nthe import failed or torch is not installed."
+          }
+        }
+      },
+      "GpuDevice": {
+        "type": "object",
+        "description": "A single detected compute device (GPU or CPU).",
+        "required": [
+          "index",
+          "name",
+          "device_type",
+          "vram_total_mib",
+          "vram_free_mib",
+          "driver_version",
+          "pci_vendor_id",
+          "pci_device_id",
+          "caps",
+          "enumeration_source",
+          "capabilities_source"
+        ],
+        "properties": {
+          "arch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Architecture string (e.g. \"Ada Lovelace\", \"RDNA 3\"). None for CPU."
+          },
+          "capabilities_source": {
+            "$ref": "#/components/schemas/CapabilitySource",
+            "description": "Where the capability values came from."
+          },
+          "caps": {
+            "$ref": "#/components/schemas/InferenceCaps",
+            "description": "Per-device inference capabilities (bf16, fp16, fp8, etc.)."
+          },
+          "device_type": {
+            "$ref": "#/components/schemas/DeviceType",
+            "description": "The compute backend type."
+          },
+          "driver_version": {
+            "type": "string",
+            "description": "Driver version string (e.g. \"550.54.15\")."
+          },
+          "enumeration_source": {
+            "$ref": "#/components/schemas/EnumerationSource",
+            "description": "How this device was enumerated."
+          },
+          "index": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Zero-based device index as reported by the OS/driver.",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string",
+            "description": "Human-readable device name (e.g. \"NVIDIA GeForce RTX 4090\")."
+          },
+          "pci_device_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "PCI device ID (vendor-specific).",
+            "minimum": 0
+          },
+          "pci_vendor_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "PCI vendor ID (e.g. 0x10de for NVIDIA).",
+            "minimum": 0
+          },
+          "vram_free_mib": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Free VRAM in mebibytes at time of detection.",
+            "minimum": 0
+          },
+          "vram_total_mib": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Total VRAM in mebibytes.",
+            "minimum": 0
+          }
+        }
+      },
+      "HardwareInfo": {
+        "type": "object",
+        "description": "Complete hardware snapshot: host info, all detected compute devices, and\nthe aggregate inference capabilities across all devices.\n\nThis is the primary output of hardware enumeration — produced once at server\nstartup and used by the scheduler for device selection and the worker\ndispatcher for routing jobs.",
+        "required": [
+          "host",
+          "gpus",
+          "inference_caps"
+        ],
+        "properties": {
+          "gpus": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GpuDevice"
+            },
+            "description": "All detected compute devices on the host."
+          },
+          "host": {
+            "$ref": "#/components/schemas/HostInfo",
+            "description": "The host machine's basic information."
+          },
+          "inference_caps": {
+            "$ref": "#/components/schemas/InferenceCaps",
+            "description": "Aggregate inference capabilities across all detected devices.\nRepresents the intersection of per-device capabilities."
+          }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "description": "JSON response body for the `/health` liveness probe.\n\nPer `ANVILML_DESIGN.md §13.4`: `200 { status, version, uptime_s }`.",
+        "required": [
+          "status",
+          "version",
+          "uptime_s"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Always `\"ok\"` for a healthy server."
+          },
+          "uptime_s": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds of uptime, computed as `(Instant::now() - start_time).as_secs()`.",
+            "minimum": 0
+          },
+          "version": {
+            "type": "string",
+            "description": "Compile-time crate version from `CARGO_PKG_VERSION`."
+          }
+        }
+      },
+      "HostInfo": {
+        "type": "object",
+        "description": "Minimal host information for the hardware snapshot.",
+        "required": [
+          "hostname",
+          "os"
+        ],
+        "properties": {
+          "hostname": {
+            "type": "string",
+            "description": "The hostname of the machine as reported by the OS."
+          },
+          "os": {
+            "type": "string",
+            "description": "The operating system name (e.g. \"Linux\", \"Windows\")."
+          }
+        }
+      },
+      "InferenceCaps": {
+        "type": "object",
+        "description": "Inference precision capabilities.\n\nPre-spawn values (`capabilities_source = DeviceTable` or `Fallback`) are HINTS\nonly — they exist so the scheduler can make a provisional VRAM/dtype guess before\nany worker has started. They are never trusted as ground truth for an actual\ninference decision. The authoritative values come from the Python worker's own\nruntime probe at `Ready` (`capabilities_source = PyTorch`) — see §6.6.",
+        "required": [
+          "fp32",
+          "fp16",
+          "bf16",
+          "fp8",
+          "fp4",
+          "flash_attention"
+        ],
+        "properties": {
+          "bf16": {
+            "type": "boolean",
+            "description": "Device supports BF16 compute."
+          },
+          "flash_attention": {
+            "type": "boolean",
+            "description": "Device supports Flash Attention."
+          },
+          "fp16": {
+            "type": "boolean",
+            "description": "Device supports FP16 compute."
+          },
+          "fp32": {
+            "type": "boolean",
+            "description": "Device supports FP32 compute."
+          },
+          "fp4": {
+            "type": "boolean",
+            "description": "Device supports FP4 compute."
+          },
+          "fp8": {
+            "type": "boolean",
+            "description": "Device supports FP8 compute."
+          }
+        }
+      },
+      "Job": {
+        "type": "object",
+        "description": "A single generation job submitted to the AnvilML scheduler.\n\nA `Job` represents a request to run a computation graph on a worker.\nIt carries the graph definition, execution settings, lifecycle timestamps,\nand the current status. Fields that are only populated after the job\nenters a later lifecycle stage (`started_at`, `completed_at`, `worker_id`,\n`error`, `queue_position`) are `Option` types.",
+        "required": [
+          "id",
+          "status",
+          "graph",
+          "settings",
+          "created_at"
+        ],
+        "properties": {
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Timestamp when the job finished (completed or failed). None while running."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Timestamp when the job was first created and queued."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Error message if the job failed. Set only for `Failed` jobs."
+          },
+          "graph": {
+            "description": "The computation graph to execute, in the format expected by workers."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Stable unique identifier for this job (UUID v4)."
+          },
+          "queue_position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Position in the queue. Set when `Queued`, cleared when picked up.",
+            "minimum": 0
+          },
+          "settings": {
+            "$ref": "#/components/schemas/JobSettings",
+            "description": "Optional execution settings (device preference, etc.)."
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Timestamp when a worker began executing the job. None while queued."
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus",
+            "description": "Current lifecycle status."
+          },
+          "worker_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "ID of the worker that executed this job. Set after execution begins."
+          }
+        }
+      },
+      "JobSettings": {
+        "type": "object",
+        "description": "Optional settings that control how a job is executed.",
+        "properties": {
+          "device_preference": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Requested device. None = auto-select by VRAM."
+          }
+        }
+      },
+      "JobStatus": {
+        "type": "string",
+        "description": "The lifecycle status of a generation job.\n\nJobs progress through this state machine:\n`Queued` → `Running` → (`Completed` | `Failed`) | `Cancelled` (at any point).",
+        "enum": [
+          "queued",
+          "running",
+          "completed",
+          "failed",
+          "cancelled"
+        ]
+      },
+      "ListArtifactsParams": {
+        "type": "object",
+        "description": "Query parameters for `GET /v1/artifacts`.\n\nAll fields are optional:\n- `job_id` filters artifacts to those produced by a specific job.",
+        "properties": {
+          "job_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Optional job UUID to filter artifacts — only artifacts from this job are returned.\n`None` returns all artifacts regardless of job."
+          }
+        }
+      },
+      "ListJobsParams": {
+        "type": "object",
+        "description": "Query parameters for `GET /v1/jobs` (list endpoint).\n\nAll fields are optional:\n- `status` filters jobs by their lifecycle status.\n- `limit` caps the number of returned jobs.\n- `before` is a cursor for future pagination support; the persistence\n  layer does not yet use it, so it is accepted at the HTTP layer but\n  silently ignored (forward-compatibility per `ANVILML_DESIGN.md §13.4`).",
+        "properties": {
+          "before": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Cursor for future pagination — accepted but not yet passed to the\npersistence layer (forward-compatibility per `ANVILML_DESIGN.md §13.4`).\nThis field is intentionally unused by the handler — the struct field\nexists so the HTTP API accepts the query parameter without returning\na 400 error, but the handler does not forward it to `list_jobs()`.\nStored as String because serde_urlencoded cannot deserialize\nDateTime<Utc> from query strings."
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Optional maximum number of jobs to return.",
+            "minimum": 0
+          },
+          "status": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/JobStatus",
+                "description": "Optional status filter — only jobs matching this status are returned."
+              }
+            ]
+          }
+        }
+      },
+      "ListModelsParams": {
+        "type": "object",
+        "description": "Query parameters for the `GET /v1/models` list endpoint.\n\nAll fields are optional — when absent, the handler returns all models.",
+        "properties": {
+          "kind": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ModelKind",
+                "description": "Filter results to only models of this kind.\n\nWhen `None`, all models are returned regardless of kind."
+              }
+            ]
+          }
+        }
+      },
+      "ModelDtype": {
+        "type": "string",
+        "description": "The data type or precision of a model's weights.\n\nThis enum covers the most common weight precisions encountered in\ngenerative-AI model files, from full FP32 through FP4 quantisation.",
+        "enum": [
+          "fp32",
+          "fp16",
+          "bf16",
+          "fp8",
+          "fp4",
+          "unknown"
+        ]
+      },
+      "ModelFormat": {
+        "type": "string",
+        "description": "The storage format of a model file.\n\nEach variant names a file format used to serialise model weights\non disk. The `Unknown` variant is used when the file extension or\nheader does not match any recognised format.",
+        "enum": [
+          "safetensors",
+          "ckpt",
+          "pt",
+          "bin",
+          "unknown"
+        ]
+      },
+      "ModelKind": {
+        "type": "string",
+        "description": "The architecture family of a model file.\n\nEach variant names a distinct role a model plays in the AnvilML\ncomputation graph — diffusion base model, text encoder, VAE, LoRA\nadapter, ControlNet, or upscaler.",
+        "enum": [
+          "diffusion",
+          "text_encoder",
+          "vae",
+          "lora",
+          "control_net",
+          "upscale",
+          "unknown"
+        ]
+      },
+      "ModelMeta": {
+        "type": "object",
+        "description": "Metadata about a discovered model file.\n\nThis struct is the primary output of the model scanner: it captures\nthe stable identity, location, architecture family, data type, file\nformat, size, modification time, and scan timestamp of a single\nmodel file on disk.",
+        "required": [
+          "id",
+          "name",
+          "path",
+          "kind",
+          "dtype",
+          "format",
+          "size_bytes",
+          "mtime_unix",
+          "scanned_at"
+        ],
+        "properties": {
+          "dtype": {
+            "$ref": "#/components/schemas/ModelDtype",
+            "description": "The model's data type / precision."
+          },
+          "format": {
+            "$ref": "#/components/schemas/ModelFormat",
+            "description": "The model file format."
+          },
+          "id": {
+            "type": "string",
+            "description": "Stable identifier: SHA256 hex of the first 1 MiB of the file."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ModelKind",
+            "description": "The model's architecture family."
+          },
+          "mtime_unix": {
+            "type": "integer",
+            "format": "int64",
+            "description": "File modification time as Unix epoch seconds (populated by the scanner)."
+          },
+          "name": {
+            "type": "string",
+            "description": "Human-readable model name."
+          },
+          "path": {
+            "type": "string",
+            "description": "Filesystem path to the model file."
+          },
+          "scanned_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Timestamp when this metadata was scanned."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "File size in bytes.",
+            "minimum": 0
+          }
+        }
+      },
+      "NodeTypeDescriptor": {
+        "type": "object",
+        "description": "Description of a node type as reported by the Python worker at Ready.\n\nA `NodeTypeDescriptor` captures the shape of a node: its unique\nidentifier, human-facing metadata, and the typed input/output slots\nthat the scheduler uses to validate graph connectivity.",
+        "required": [
+          "type_name",
+          "display_name",
+          "category",
+          "description",
+          "inputs",
+          "outputs"
+        ],
+        "properties": {
+          "category": {
+            "type": "string",
+            "description": "The node's category in the UI (e.g. \"loaders\", \"conditioning\")."
+          },
+          "description": {
+            "type": "string",
+            "description": "A human-readable description of what this node does."
+          },
+          "display_name": {
+            "type": "string",
+            "description": "Human-readable display name (e.g. \"Load Checkpoint\")."
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SlotDescriptor"
+            },
+            "description": "The node's typed input slots."
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SlotDescriptor"
+            },
+            "description": "The node's typed output slots."
+          },
+          "type_name": {
+            "type": "string",
+            "description": "Unique identifier for this node type (e.g. \"LoadModel\")."
+          }
+        }
+      },
+      "ProvisioningState": {
+        "type": "string",
+        "description": "The provisioning status of a worker's environment.\n\nUsed by the provisioning subsystem to track whether a worker's Python\ndependencies (torch, node packages) have been installed and are ready.",
+        "enum": [
+          "not_started",
+          "provisioning",
+          "ready",
+          "failed"
+        ]
+      },
+      "RemovedCount": {
+        "type": "object",
+        "description": "HTTP response body for `DELETE /v1/jobs` on success.\n\nPer `ANVILML_DESIGN.md §13.4`: `200 { removed: u32 }`.",
+        "required": [
+          "removed"
+        ],
+        "properties": {
+          "removed": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of jobs removed by the bulk clear operation.",
+            "minimum": 0
+          }
+        }
+      },
+      "SlotDescriptor": {
+        "type": "object",
+        "description": "Describes one input or output slot on a node type.\n\nEach `SlotDescriptor` defines a slot's name, semantic type, and\nwhether it may be omitted. Optional slots enable a node to use\nan internal default when the caller does not provide a value.",
+        "required": [
+          "name",
+          "slot_type",
+          "optional"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The slot's identifier within the node type (e.g. \"positive\")."
+          },
+          "optional": {
+            "type": "boolean",
+            "description": "True if this input can be omitted in favor of a node-internal default."
+          },
+          "slot_type": {
+            "$ref": "#/components/schemas/SlotType",
+            "description": "The semantic type this slot carries."
+          }
+        }
+      },
+      "SlotType": {
+        "type": "string",
+        "description": "The semantic type of a node slot.\n\nUsed by the scheduler to verify connected slots are type-compatible\nat job submission time. `SlotType::Any` disables type checking for\nthat slot entirely, allowing any connection.",
+        "enum": [
+          "MODEL",
+          "CLIP",
+          "VAE",
+          "CONDITIONING",
+          "LATENT",
+          "IMAGE",
+          "STRING",
+          "INT",
+          "FLOAT",
+          "BOOL",
+          "ANY"
+        ]
+      },
+      "SubmitJobRequest": {
+        "type": "object",
+        "description": "HTTP request body for `POST /v1/jobs`.\n\nContains the computation graph (`serde_json::Value`) and execution\nsettings (`JobSettings`). The graph is validated by the scheduler\nbefore acceptance.",
+        "required": [
+          "graph",
+          "settings"
+        ],
+        "properties": {
+          "graph": {
+            "description": "The computation graph to execute, in the format expected by workers."
+          },
+          "settings": {
+            "$ref": "#/components/schemas/JobSettings",
+            "description": "Optional execution settings (device preference, etc.)."
+          }
+        }
+      },
+      "SubmitJobResponse": {
+        "type": "object",
+        "description": "HTTP response body for `POST /v1/jobs` on success.\n\nPer `ANVILML_DESIGN.md §13.5`: `202 { job_id, queue_position }`.",
+        "required": [
+          "job_id",
+          "queue_position"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The UUID v4 assigned to the newly submitted job."
+          },
+          "queue_position": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The job's 1-based position in the submission queue at the time of\nacceptance. This is captured atomically with the enqueue operation\ninside `JobScheduler::submit()`.",
+            "minimum": 0
+          }
+        }
+      },
+      "WorkerInfo": {
+        "type": "object",
+        "description": "Metadata the scheduler uses for worker selection and job assignment.\n\nConstructed from the hardware snapshot (for `device_type`) and the worker's\nregistration message (for `worker_id`, `status`, `device_index`, `pid`).\nThe `current_job_id` is updated when the scheduler assigns a job.",
+        "required": [
+          "worker_id",
+          "status",
+          "device_index",
+          "device_type"
+        ],
+        "properties": {
+          "current_job_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The job currently assigned to this worker, if any."
+          },
+          "device_index": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Zero-based device index as reported by the OS/driver.",
+            "minimum": 0
+          },
+          "device_type": {
+            "$ref": "#/components/schemas/DeviceType",
+            "description": "The compute backend of the worker's device."
+          },
+          "pid": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "OS process ID of the worker subprocess, if known.",
+            "minimum": 0
+          },
+          "status": {
+            "$ref": "#/components/schemas/WorkerStatus",
+            "description": "Current lifecycle state of the worker process."
+          },
+          "worker_id": {
+            "type": "string",
+            "description": "Stable worker identity — the bare device index as a string (e.g. `\"0\"`)."
+          }
+        }
+      },
+      "WorkerStatus": {
+        "type": "string",
+        "description": "The lifecycle state of a Python worker process.\n\nWorkers transition through these states as the scheduler spawns, assigns jobs,\nand eventually shuts them down. The scheduler uses this enum to decide which\nworkers are eligible for job assignment.\n\nState machine (per `ANVILML_DESIGN.md §5.7`):\n```text\nInitializing → Idle ↔ Busy → Dying → Dead → Respawning → Initializing\n```",
+        "enum": [
+          "initializing",
+          "idle",
+          "busy",
+          "dying",
+          "dead",
+          "respawning"
+        ]
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Health",
+      "description": "Health check endpoints"
+    },
+    {
+      "name": "System",
+      "description": "System information endpoints"
+    },
+    {
+      "name": "Jobs",
+      "description": "Job management endpoints"
+    },
+    {
+      "name": "Models",
+      "description": "Model registry endpoints"
+    },
+    {
+      "name": "Workers",
+      "description": "Worker management endpoints"
+    },
+    {
+      "name": "Artifacts",
+      "description": "Artifact storage endpoints"
+    },
+    {
+      "name": "Nodes",
+      "description": "Node type registry endpoints"
+    }
+  ]
+}

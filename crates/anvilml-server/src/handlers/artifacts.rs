@@ -24,7 +24,8 @@ use crate::state::AppState;
 ///
 /// All fields are optional:
 /// - `job_id` filters artifacts to those produced by a specific job.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
+#[into_params(parameter_in = Query)]
 pub(crate) struct ListArtifactsParams {
     /// Optional job UUID to filter artifacts — only artifacts from this job are returned.
     /// `None` returns all artifacts regardless of job.
@@ -37,20 +38,19 @@ pub(crate) struct ListArtifactsParams {
 /// Accepts an optional `job_id` query parameter. Delegates entirely to
 /// `ArtifactStore::list()` which queries the database and returns all
 /// matching artifact metadata rows.
-///
-/// # Response
-///
-/// Returns `200 OK` with a JSON array of `ArtifactMeta` objects.
-/// The array is empty (not `null`) when no artifacts exist or none
-/// match the filter.
-///
-/// # Errors
-///
-/// Returns `AnvilError::Db` if the database query fails, which maps
-/// to HTTP 500 Internal Server Error.
-///
-/// State is injected via `axum::extract::State<AppState>` which provides
-/// access to the `ArtifactStore` through `state.artifact_store`.
+#[utoipa::path(
+    get,
+    path = "/v1/artifacts",
+    tag = "Artifacts",
+    operation_id = "list_artifacts",
+    summary = "List artifacts",
+    description = "Lists artifact metadata, optionally filtered by job ID.",
+    params(ListArtifactsParams),
+    responses(
+        (status = 200, description = "List of artifacts", body = Vec<ArtifactMeta>),
+        (status = 500, description = "Database error")
+    )
+)]
 #[tracing::instrument(skip(state), fields(job_id = ?params.job_id))]
 pub(crate) async fn list_artifacts(
     State(state): State<AppState>,
@@ -67,17 +67,22 @@ pub(crate) async fn list_artifacts(
 /// Delegates to `ArtifactStore::get()` which reads the PNG file from the
 /// content-addressed directory. Returns the raw bytes with `Content-Type:
 /// image/png` on success.
-///
-/// # Response
-///
-/// Returns `200 OK` with the raw PNG bytes and `Content-Type: image/png`
-/// header when the artifact exists.
-///
-/// # Errors
-///
-/// Returns `AnvilError::ArtifactNotFound(hash)` (HTTP 404) when no artifact
-/// exists for the given hash. Returns `AnvilError::Io` (HTTP 500) for
-/// filesystem errors such as permission denied.
+#[utoipa::path(
+    get,
+    path = "/v1/artifacts/{hash}",
+    tag = "Artifacts",
+    operation_id = "get_artifact",
+    summary = "Get artifact",
+    description = "Serves raw PNG bytes for a content-addressed artifact by its SHA-256 hash.",
+    params(
+        ("hash" = String, Path, description = "SHA-256 content hash of the artifact")
+    ),
+    responses(
+        (status = 200, description = "Raw PNG bytes", content_type = "image/png"),
+        (status = 404, description = "Artifact not found"),
+        (status = 500, description = "I/O error")
+    )
+)]
 #[tracing::instrument(skip(state), fields(hash = %hash))]
 pub(crate) async fn get_artifact(
     State(state): State<AppState>,

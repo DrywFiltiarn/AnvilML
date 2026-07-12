@@ -11,7 +11,7 @@ use crate::AppState;
 /// JSON response body for the `/health` liveness probe.
 ///
 /// Per `ANVILML_DESIGN.md §13.4`: `200 { status, version, uptime_s }`.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
 pub(crate) struct HealthResponse {
     /// Always `"ok"` for a healthy server.
     status: String,
@@ -28,6 +28,17 @@ pub(crate) struct HealthResponse {
 ///
 /// State is injected via `axum::extract::State<AppState>` which carries the
 /// process-start instant for uptime calculation.
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "Health",
+    operation_id = "health_check",
+    summary = "Health check",
+    description = "Liveness probe returning server status, version, and elapsed uptime.",
+    responses(
+        (status = 200, description = "Server is healthy", body = HealthResponse)
+    )
+)]
 pub(crate) async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     // Compute elapsed seconds since process start using monotonic clock.
     let uptime_s = (std::time::Instant::now() - state.start_time).as_secs();
