@@ -178,16 +178,17 @@
     "P18-E2",
     "P18-F1",
     "P18-F2",
-    "P18-G1"
+    "P18-G1",
+    "P19-A1"
   ],
-  "in_progress": "P19-A1",
+  "in_progress": "P19-B1",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "1. **Create `worker/pipeline_cache.py`** with the `PipelineCache` class:\n   - Use `collections.OrderedDict` as the underlying storage \u2014 it supports O(1) `move_to_end()` for LRU recency tracking and `popitem(last=False)` for LRU eviction.\n   - `__init__(self, max_entries: int = 4)`: Store `max_entries` as a private attribute. Initialize an empty `OrderedDict` for the cache.\n   - `get_or_load(self, key: str, loader_fn: Callable[[], Any]) -> Any`:\n     a. If `key` exists in the cache, call `move_to_end(key)` to mark it as most-recently-used (this refreshes recency so the entry survives future evictions \u2014 standard LRU access pattern).\n     b. Return the cached value.\n     c. If `key` is not in the cache, call `loader_fn()` exactly once, store the result in the dict with `self._cache[key] = value`, call `move_to_end(key)` to mark it as most-recently-used, then evict if needed.\n     d. After inserting, if `len(self._cache) > self.max_entries`, call `self._cache.popitem(last=False)` to remove the oldest (least-recently-used) entry. The evicted value is discarded \u2014 Python's refcounting handles resource cleanup.\n     e. Return the newly loaded value.\n   - Add a module-level docstring explaining the cache's purpose (per-component caching, not pipeline assembly).\n   - Add a class-level docstring describing the class, constructor parameters, and the `get_or_load` contract.\n\n2. **Create `worker/tests/test_pipeline_cache.py`** with \u22656 tests:\n   - Use plain pytest functions (no fixtures needed \u2014 the cache is self-contained).\n   - Follow the established pattern: docstring on each test describing what it verifies, preconditions, inputs, and expected output.\n   - Import only `PipelineCache` from `worker.pipeline_cache`.\n\nNo external API verification is needed \u2014 only stdlib types are used.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-12T19:39:02+0200",
-  "plan_approval_message_id": "1525915587757473852",
+  "last_updated": "2026-07-12T23:11:50+0200",
+  "plan_approval_message_id": "1525972888497426442",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1525915585622315049",
+  "plan_report_message_id": "1525972886953791609",
   "impl_report_message_id": null
 }

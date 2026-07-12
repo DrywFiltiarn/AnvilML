@@ -6636,3 +6636,75 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `DELETE /v1/jobs/:id` where `:id` is a random UUID never submitted.
 **Expected output:** `StatusCode::NOT_FOUND` (404); no side effects (no DB changes).
 **Acceptance:** `cargo test -p anvilml-server --test jobs_tests test_delete_unknown_id_returns_404` exits 0.
+
+---
+
+## test_get_or_load_cached_returns_without_calling_loader (worker)
+
+**File:** `worker/tests/test_pipeline_cache.py`
+**Context:** The `PipelineCache` class is implemented in `worker/pipeline_cache.py` using `collections.OrderedDict` for LRU tracking. No external dependencies — stdlib only.
+**Tests:** Repeated calls with the same key call `loader_fn` exactly once. Creates a cache, defines a loader_fn that tracks invocation count, calls `get_or_load()` twice with the same key, and asserts both calls return the same value and loader_fn was called exactly once.
+**Mode:** both
+**Inputs:** Empty cache; same key passed to two `get_or_load()` calls.
+**Expected output:** `loader_fn` called once; both calls return `"loaded_value"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_pipeline_cache.py::test_get_or_load_cached_returns_without_calling_loader -v` exits 0.
+
+---
+
+## test_get_or_load_different_keys_each_call_loader (worker)
+
+**File:** `worker/tests/test_pipeline_cache.py`
+**Context:** The `PipelineCache` class is implemented in `worker/pipeline_cache.py` using `collections.OrderedDict` for LRU tracking. No external dependencies — stdlib only.
+**Tests:** Different keys each produce their own independent `loader_fn` call. Creates a cache, calls `get_or_load()` with two distinct keys, and asserts loader_fn was called exactly twice (once per key).
+**Mode:** both
+**Inputs:** Empty cache; two distinct keys.
+**Expected output:** `loader_fn` called twice; each key returns its own value.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_pipeline_cache.py::test_get_or_load_different_keys_each_call_loader -v` exits 0.
+
+---
+
+## test_lru_eviction_removes_least_recently_used (worker)
+
+**File:** `worker/tests/test_pipeline_cache.py`
+**Context:** The `PipelineCache` class is implemented in `worker/pipeline_cache.py` using `collections.OrderedDict` for LRU tracking. No external dependencies — stdlib only.
+**Tests:** When cache exceeds `max_entries`, the oldest entry is evicted. Creates a cache with `max_entries=2`, inserts three distinct keys in order (A, B, C), and asserts that after inserting C, key A has been evicted.
+**Mode:** both
+**Inputs:** Cache with `max_entries=2`; three insertions in order A, B, C.
+**Expected output:** Key C is present; key A was evicted; cache contains exactly B and C.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_pipeline_cache.py::test_lru_eviction_removes_least_recently_used -v` exits 0.
+
+---
+
+## test_access_refreshes_recency (worker)
+
+**File:** `worker/tests/test_pipeline_cache.py`
+**Context:** The `PipelineCache` class is implemented in `worker/pipeline_cache.py` using `collections.OrderedDict` for LRU tracking. No external dependencies — stdlib only.
+**Tests:** Accessing a cached entry moves it to most-recently-used position, protecting it from eviction. Creates a cache with `max_entries=2`, inserts A then B, accesses A (moves to MRU end), then inserts C. Asserts B — not A — is evicted.
+**Mode:** both
+**Inputs:** Cache with `max_entries=2`; insert A, insert B, access A, insert C.
+**Expected output:** B is evicted; A and C remain in cache.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_pipeline_cache.py::test_access_refreshes_recency -v` exits 0.
+
+---
+
+## test_custom_max_entries (worker)
+
+**File:** `worker/tests/test_pipeline_cache.py`
+**Context:** The `PipelineCache` class is implemented in `worker/pipeline_cache.py` using `collections.OrderedDict` for LRU tracking. No external dependencies — stdlib only.
+**Tests:** Cache respects a non-default `max_entries` value. Creates a cache with `max_entries=3`, inserts 3 entries, asserts the cache is full, then inserts a 4th entry and asserts the cache still has exactly 3 entries (oldest evicted).
+**Mode:** both
+**Inputs:** Cache with `max_entries=3`; four insertions.
+**Expected output:** Cache holds exactly 3 entries after 4 insertions.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_pipeline_cache.py::test_custom_max_entries -v` exits 0.
+
+---
+
+## test_evicted_entry_is_truly_removed (worker)
+
+**File:** `worker/tests/test_pipeline_cache.py`
+**Context:** The `PipelineCache` class is implemented in `worker/pipeline_cache.py` using `collections.OrderedDict` for LRU tracking. No external dependencies — stdlib only.
+**Tests:** After eviction, `get_or_load` for the evicted key calls `loader_fn` again. Creates a cache with `max_entries=2`, fills it with A and B, then inserts C (evicting A). Calls `get_or_load("A", ...)` again and asserts that `loader_fn` is called a second time for key A (proving the entry was truly removed, not just overwritten).
+**Mode:** both
+**Inputs:** Cache with `max_entries=2`; insert A, insert B, insert C, re-insert A.
+**Expected output:** `loader_fn` called four times total (A, B, C, re-loaded A).
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_pipeline_cache.py::test_evicted_entry_is_truly_removed -v` exits 0.
