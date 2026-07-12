@@ -6468,3 +6468,27 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** GET request to `/v1/models/{random-uuid}` with a UUID never inserted.
 **Expected output:** `StatusCode::NOT_FOUND`.
 **Acceptance:** `cargo test -p anvilml-server --test models_tests test_get_model_unknown_returns_404` exits 0.
+
+---
+
+## test_rescan_returns_202_immediately (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/models_tests.rs`
+**Context:** `AppState` with a `ModelDirConfig` pointing to an empty temp directory.
+**Tests:** `POST /v1/models/rescan` returns 202 Accepted within 500ms, proving the handler does not block on scan completion.
+**Mode:** both
+**Inputs:** POST request to `/v1/models/rescan` with an empty temp model directory.
+**Expected output:** `StatusCode::ACCEPTED` (202) returned within 500ms.
+**Acceptance:** `cargo test -p anvilml-server --test models_tests test_rescan_returns_202_immediately` exits 0.
+
+---
+
+## test_rescan_populates_model_store (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/models_tests.rs`
+**Context:** `AppState` with a `ModelDirConfig` pointing to a temp directory containing a planted `.safetensors` file.
+**Tests:** After `POST /v1/models/rescan`, a subsequent `GET /v1/models` lists the planted model, proving the background scan writes to the store.
+**Mode:** both
+**Inputs:** POST request to `/v1/models/rescan` with a temp directory containing a small `.safetensors` file, followed by GET `/v1/models`.
+**Expected output:** `StatusCode::OK` (200) with a JSON array containing at least one model whose path ends with `test_model.safetensors`.
+**Acceptance:** `cargo test -p anvilml-server --test models_tests test_rescan_populates_model_store` exits 0.

@@ -1,4 +1,4 @@
-Task: P18-C1
+Task: P18-C2
 Step: IMPLEMENT
 Status: COMPLETE
-Updated: 2026-07-12T09:45:00Z
+Updated: 2026-07-12T09:31:00+0200

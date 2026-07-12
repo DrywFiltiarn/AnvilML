@@ -1,4 +1,5 @@
-//! Integration tests for the `GET /v1/models` and `GET /v1/models/:id` handlers.
+//! Integration tests for the `GET /v1/models`, `GET /v1/models/:id`, and
+//! `POST /v1/models/rescan` handlers.
 //!
 //! Tests use the crate's public API (`build_router()`) to make
 //! in-process HTTP requests without opening a real socket.
@@ -20,9 +21,11 @@ use axum::http::StatusCode;
 use chrono::Utc;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tokio::time::timeout;
 use tower::util::ServiceExt;
 use uuid::Uuid;
 
@@ -304,4 +307,163 @@ async fn test_get_model_unknown_returns_404() {
         .unwrap();
     let res = router.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+/// Verify that POST /v1/models/rescan returns 202 Accepted immediately.
+///
+/// Constructs a `ModelDirConfig` pointing to a temp directory that exists
+/// but contains no model files. Sends a POST to `/v1/models/rescan` and
+/// asserts the response status is 202 within 500ms, proving the handler
+/// does not block on scan completion.
+#[tokio::test]
+async fn test_rescan_returns_202_immediately() {
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let state = make_test_state(node_registry).await;
+
+    // Create a temp directory that exists but contains no model files.
+    // The scanner will walk this directory and find nothing, but the
+    // handler must return 202 before the scan completes.
+    let temp_dir = std::env::temp_dir().join("anvilml-test-rescan-202");
+    let _ = fs::remove_dir_all(&temp_dir);
+    fs::create_dir_all(&temp_dir).expect("temp dir creation must succeed");
+
+    // Ensure cleanup runs even if the test panics.
+    let _guard = temp_cleanup(temp_dir.clone());
+
+    let mut config = state.config.as_ref().clone();
+    config.model_dirs = vec![anvilml_core::ModelDirConfig {
+        path: temp_dir.clone(),
+        recursive: false,
+        max_depth: None,
+    }];
+    let state = AppState {
+        config: Arc::new(config),
+        ..state
+    };
+
+    let router = build_router(state);
+
+    // POST /v1/models/rescan — must return 202 within 500ms.
+    let req = Request::post("/v1/models/rescan")
+        .body(Body::empty())
+        .unwrap();
+
+    // Use a timeout to verify the response returns quickly.
+    // If the handler blocks on the scan, this will time out.
+    let result = timeout(std::time::Duration::from_millis(500), router.oneshot(req)).await;
+
+    let res = result.expect("handler must return within 500ms timeout");
+    let res = res.expect("oneshot must succeed");
+    assert_eq!(res.status(), StatusCode::ACCEPTED);
+}
+
+/// Verify that POST /v1/models/rescan populates the model store.
+///
+/// Creates a temp directory with a planted `.safetensors` file, sends
+/// POST `/v1/models/rescan`, waits briefly for the background scan to
+/// complete, then calls GET `/v1/models` and asserts the planted model
+/// appears in the response.
+#[tokio::test]
+async fn test_rescan_populates_model_store() {
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let state = make_test_state(node_registry).await;
+
+    // Create a temp directory with a planted .safetensors file.
+    // Use a minimal safetensors file that the scanner can hash.
+    // The safetensors format starts with a header; we use a minimal
+    // valid header to ensure the file is recognized as safetensors format.
+    let temp_dir = std::env::temp_dir().join("anvilml-test-rescan-store");
+    let _ = fs::remove_dir_all(&temp_dir);
+    fs::create_dir_all(&temp_dir).expect("temp dir creation must succeed");
+
+    // Ensure cleanup runs even if the test panics.
+    let _guard = temp_cleanup(temp_dir.clone());
+
+    // Write a minimal safetensors file. The scanner hashes the first 1 MiB
+    // and infers format from the .safetensors extension.
+    let model_path = temp_dir.join("test_model.safetensors");
+    // Write a small but non-empty file with the .safetensors extension.
+    // The scanner will hash the first 1 MiB and recognize the extension.
+    fs::write(
+        &model_path,
+        b"minimal safetensors placeholder content for scanning",
+    )
+    .expect("write planted model must succeed");
+
+    let mut config = state.config.as_ref().clone();
+    config.model_dirs = vec![anvilml_core::ModelDirConfig {
+        path: temp_dir.clone(),
+        recursive: false,
+        max_depth: None,
+    }];
+    let state = AppState {
+        config: Arc::new(config),
+        ..state
+    };
+
+    // Clone the router before the rescan request so we can reuse it
+    // for the subsequent GET /v1/models call.
+    let router = build_router(state.clone());
+
+    // POST /v1/models/rescan — clone the router for the first call.
+    let res = router
+        .clone()
+        .oneshot(
+            Request::post("/v1/models/rescan")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("rescan request must succeed");
+    assert_eq!(res.status(), StatusCode::ACCEPTED);
+
+    // Wait briefly for the background scan task to complete.
+    // The scan of a small file in a single directory should finish well
+    // within 500ms, but we use a generous timeout to avoid flakiness.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Call GET /v1/models and assert the planted model appears.
+    let req = Request::get("/v1/models").body(Body::empty()).unwrap();
+    let res = router.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_bytes = to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("body collection must succeed");
+    let body: serde_json::Value =
+        serde_json::from_slice(&body_bytes).expect("response body must be valid JSON");
+
+    let models = body.as_array().expect("response body must be a JSON array");
+    assert!(
+        models.len() >= 1,
+        "rescan should have found at least 1 model, got {}",
+        models.len()
+    );
+
+    // Verify the planted model is in the list.
+    let found = models.iter().any(|m| {
+        m["path"]
+            .as_str()
+            .map_or(false, |p| p.ends_with("test_model.safetensors"))
+    });
+    assert!(
+        found,
+        "planted model 'test_model.safetensors' should appear in scan results"
+    );
+}
+
+/// RAII guard that removes a temp directory on drop.
+///
+/// Used in tests to ensure temp directories are cleaned up
+/// even if the test panics or returns early.
+struct TempCleanup(PathBuf);
+
+impl Drop for TempCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn temp_cleanup(path: PathBuf) -> TempCleanup {
+    TempCleanup(path)
 }

@@ -83,6 +83,11 @@ pub fn build_router(app_state: AppState) -> axum::Router {
             "/v1/models/{id}",
             axum::routing::get(handlers::models::get_model),
         )
+        // POST /v1/models/rescan — trigger a background model-directory rescan
+        .route(
+            "/v1/models/rescan",
+            axum::routing::post(handlers::models::rescan_models),
+        )
         // GET /v1/events — WebSocket upgrade for the live event stream.
         // Per ANVILML_DESIGN.md §13.6: subscribe, send the initial
         // SystemStats frame, then (from P16-C2 on) forward subsequent

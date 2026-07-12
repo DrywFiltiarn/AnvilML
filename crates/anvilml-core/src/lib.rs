@@ -7,7 +7,7 @@ mod error;
 mod node_registry;
 pub mod types;
 
-pub use config::{HardwareOverrideConfig, ServerConfig};
+pub use config::{HardwareOverrideConfig, ModelDirConfig, ServerConfig};
 pub use config_load::CliOverrides;
 pub use config_load::load;
 pub use error::AnvilError;
