@@ -49,6 +49,13 @@ impl ArtifactStore {
         Self { artifact_dir, pool }
     }
 
+    /// Return the artifact directory path.
+    ///
+    /// This is a read-only accessor for use by tests and diagnostics.
+    pub fn artifact_dir(&self) -> &PathBuf {
+        &self.artifact_dir
+    }
+
     /// Save a PNG artifact by content hash.
     ///
     /// Computes the SHA-256 hex digest of `png_bytes`, writes the file to
@@ -229,6 +236,50 @@ impl ArtifactStore {
                 Err(err.into())
             }
         }
+    }
+
+    /// Delete an artifact by its content hash.
+    ///
+    /// Removes the artifact file from disk at `{artifact_dir}/{hash}.png` and
+    /// deletes the corresponding row from the `artifacts` table. If the file
+    /// does not exist on disk, the method treats this as success (idempotent
+    /// delete). If the DB row does not exist, the SQL DELETE is a no-op.
+    ///
+    /// # Arguments
+    ///
+    /// * `hash` — The SHA-256 hex content address of the artifact to delete.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AnvilError::Io` if the filesystem operation fails
+    /// (e.g. permission denied on the artifact directory).
+    /// Returns `AnvilError::Db` if the database operation fails.
+    #[tracing::instrument(fields(hash = %hash), skip(self))]
+    pub async fn delete(&self, hash: &str) -> Result<(), AnvilError> {
+        // Construct the content-addressed file path: {artifact_dir}/{hash}.png
+        let file_path = self.artifact_dir.join(format!("{hash}.png"));
+
+        // Delete the file from disk if it exists. If the file does not exist,
+        // treat as success — this makes the delete idempotent. The caller may
+        // have already removed the file, or the file may never have been
+        // written (partial save). We only error on non-NotFound I/O errors.
+        if file_path.exists() {
+            std::fs::remove_file(&file_path)?;
+            tracing::debug!(hash = %hash, file_path = %file_path.display(), "artifact file deleted from disk");
+        } else {
+            tracing::debug!(hash = %hash, file_path = %file_path.display(), "artifact file not found on disk — skipping");
+        }
+
+        // Delete the DB row keyed by hash. SQL DELETE is a no-op for missing
+        // rows, so we do not need to check existence first. This matches the
+        // idempotent behavior of the file deletion above.
+        sqlx::query("DELETE FROM artifacts WHERE hash = ?")
+            .bind(hash)
+            .execute(&self.pool)
+            .await?;
+
+        tracing::debug!(hash = %hash, "artifact deleted from database");
+        Ok(())
     }
 
     /// List artifact metadata, optionally filtered by job ID.

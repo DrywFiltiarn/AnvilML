@@ -848,3 +848,346 @@ async fn test_cancel_already_cancelled_job_returns_409() {
     let res2 = router.oneshot(cancel_req2).await.unwrap();
     assert_eq!(res2.status(), StatusCode::CONFLICT);
 }
+
+/// Verify that DELETE /v1/jobs/:id on a Completed job returns 204 and removes
+/// the job from the database.
+///
+/// Submits a job, manually sets its status to Completed via direct DB access
+/// (not via submit, so it is not in the in-memory queue), then calls DELETE
+/// and asserts the response status is `StatusCode::NO_CONTENT`. After deletion,
+/// verifies the job is no longer retrievable via `JobStore::get`.
+#[tokio::test]
+async fn test_delete_terminal_job_returns_204() {
+    use anvilml_core::Job;
+    use chrono::Utc;
+
+    let descriptor = NodeTypeDescriptor {
+        type_name: "TestNode".to_string(),
+        display_name: "Test Node".to_string(),
+        category: "test".to_string(),
+        description: "A synthetic test node.".to_string(),
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+    };
+
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    node_registry.register_all(vec![descriptor]);
+
+    let state = make_test_state(node_registry).await;
+
+    // Persist a Completed job directly to the database (not via submit, so
+    // it is NOT in the in-memory queue). This ensures the delete handler
+    // goes straight to the DB where it sees Completed.
+    let job_id = Uuid::new_v4();
+    let completed_job = Job {
+        id: job_id,
+        status: anvilml_core::JobStatus::Completed,
+        graph: json!({
+            "nodes": [
+                { "id": "node1", "type": "TestNode", "inputs": {}, "outputs": {} }
+            ]
+        }),
+        settings: JobSettings {
+            device_preference: None,
+        },
+        created_at: Utc::now(),
+        started_at: Some(Utc::now()),
+        completed_at: Some(Utc::now()),
+        worker_id: Some("0".to_string()),
+        error: None,
+        queue_position: None,
+    };
+
+    let job_store = JobStore::new(state.db.clone());
+    job_store
+        .upsert(&completed_job)
+        .await
+        .expect("persist must succeed");
+
+    // Clone state before passing to build_router so we can still access
+    // state.db after the router consumes the original AppState.
+    let router = build_router(state.clone());
+
+    // DELETE the terminal job — should return 204.
+    let delete_req = Request::delete(&format!("/v1/jobs/{}", job_id))
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(delete_req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+    // Verify the job is no longer in the database.
+    let job_store_after = JobStore::new(state.db.clone());
+    let remaining = job_store_after
+        .get(job_id)
+        .await
+        .expect("query must succeed");
+    assert!(
+        remaining.is_none(),
+        "job should be deleted from the database"
+    );
+}
+
+/// Verify that DELETE /v1/jobs/:id on a Completed job with associated artifacts
+/// also deletes the artifact file and DB row.
+///
+/// Submits a job, manually sets its status to Completed, persists a fake artifact
+/// row and file via `artifact_store.save()`, then calls DELETE and asserts 204.
+/// After deletion, verifies the artifact is no longer in the list for that job.
+#[tokio::test]
+async fn test_delete_terminal_job_removes_artifacts() {
+    use anvilml_core::{ArtifactMeta, Job};
+    use chrono::Utc;
+
+    let descriptor = NodeTypeDescriptor {
+        type_name: "TestNode".to_string(),
+        display_name: "Test Node".to_string(),
+        category: "test".to_string(),
+        description: "A synthetic test node.".to_string(),
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+    };
+
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    node_registry.register_all(vec![descriptor]);
+
+    let state = make_test_state(node_registry).await;
+    let artifact_store = state.artifact_store.clone();
+
+    // Persist a Completed job directly to the database.
+    let job_id = Uuid::new_v4();
+    let completed_job = Job {
+        id: job_id,
+        status: anvilml_core::JobStatus::Completed,
+        graph: json!({
+            "nodes": [
+                { "id": "node1", "type": "TestNode", "inputs": {}, "outputs": {} }
+            ]
+        }),
+        settings: JobSettings {
+            device_preference: None,
+        },
+        created_at: Utc::now(),
+        started_at: Some(Utc::now()),
+        completed_at: Some(Utc::now()),
+        worker_id: Some("0".to_string()),
+        error: None,
+        queue_position: None,
+    };
+
+    let job_store = JobStore::new(state.db.clone());
+    job_store
+        .upsert(&completed_job)
+        .await
+        .expect("persist must succeed");
+
+    // Create a fake PNG file and persist it via artifact_store.save().
+    // A minimal valid PNG is 67 bytes: 8-byte signature + IHDR chunk + IDAT chunk + IEND chunk.
+    // We use a known 4x4 red pixel PNG (the smallest valid PNG).
+    let fake_png: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, // PNG signature
+        0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, // IHDR length + "IHDR"
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04, // 4x4
+        0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, // 8-bit RGB
+        0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, // IDAT
+        0x54, 0x08, 0xd7, 0x63, 0xf8, 0xff, 0xff, 0x3f, // compressed data
+        0x00, 0x05, 0xfe, 0x02, 0xfe, 0xdc, 0xcc, 0x59, // more data
+        0xe7, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, // IEND
+        0x44, 0xae, 0x42, 0x60, 0x82, // IEND chunk
+    ];
+
+    let meta = ArtifactMeta {
+        hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        job_id,
+        width: 4,
+        height: 4,
+        seed: 42,
+        steps: 1,
+        created_at: Utc::now(),
+        file_path: std::path::PathBuf::from("/tmp/fake.png"),
+    };
+
+    // Save the artifact — this writes the PNG file and persists the DB row.
+    artifact_store
+        .save(fake_png, &meta)
+        .await
+        .expect("artifact save must succeed");
+
+    // Verify the artifact was persisted.
+    let before_list = artifact_store
+        .list(Some(job_id))
+        .await
+        .expect("list must succeed");
+    assert_eq!(
+        before_list.len(),
+        1,
+        "should have exactly 1 artifact before deletion"
+    );
+
+    // Clone state before passing to build_router so we can still access
+    // state.artifact_store after the router consumes the original AppState.
+    let router = build_router(state.clone());
+
+    // DELETE the job — should return 204 and remove both file and DB row.
+    let delete_req = Request::delete(&format!("/v1/jobs/{}", job_id))
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(delete_req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+    // Verify the artifact is gone.
+    let after_list = artifact_store
+        .list(Some(job_id))
+        .await
+        .expect("list must succeed");
+    assert!(
+        after_list.is_empty(),
+        "artifact should be deleted from the database"
+    );
+
+    // Also verify the file was removed from disk.
+    // The artifact file path is {artifact_dir}/{hash}.png.
+    // We use the same artifact_dir that was configured in make_test_state.
+    let artifact_dir = state.artifact_store.artifact_dir();
+    let file_path = artifact_dir.join(format!("{}.png", meta.hash));
+    assert!(
+        !file_path.exists(),
+        "artifact file should be removed from disk: {}",
+        file_path.display()
+    );
+}
+
+/// Verify that DELETE /v1/jobs/:id on a Queued job returns 409 Conflict.
+///
+/// Submits a job (it enters Queued state), then calls DELETE and asserts
+/// the response status is `StatusCode::CONFLICT`. The handler rejects
+/// deletion of non-terminal jobs to prevent accidental data loss.
+#[tokio::test]
+async fn test_delete_non_terminal_queued_returns_409() {
+    let descriptor = NodeTypeDescriptor {
+        type_name: "TestNode".to_string(),
+        display_name: "Test Node".to_string(),
+        category: "test".to_string(),
+        description: "A synthetic test node.".to_string(),
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+    };
+
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    node_registry.register_all(vec![descriptor]);
+
+    let state = make_test_state(node_registry).await;
+    let router = build_router(state);
+
+    // Submit a job — it enters Queued state.
+    let body = json!({
+        "graph": {
+            "nodes": [
+                { "id": "node1", "type": "TestNode", "inputs": {}, "outputs": {} }
+            ]
+        },
+        "settings": { "device_preference": null }
+    });
+
+    let post_req = Request::post("/v1/jobs")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap();
+    let post_res = router.clone().oneshot(post_req).await.unwrap();
+    assert_eq!(post_res.status(), StatusCode::ACCEPTED);
+
+    let body_bytes = to_bytes(post_res.into_body(), usize::MAX)
+        .await
+        .expect("body collection must succeed");
+    let post_body: serde_json::Value =
+        serde_json::from_slice(&body_bytes).expect("response body must be valid JSON");
+
+    let job_id = post_body["job_id"]
+        .as_str()
+        .expect("job_id must be a string");
+
+    // DELETE the queued job — should return 409.
+    let delete_req = Request::delete(&format!("/v1/jobs/{}", job_id))
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(delete_req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+}
+
+/// Verify that DELETE /v1/jobs/:id on a Running job returns 409 Conflict.
+///
+/// Submits a job, manually sets its status to Running via direct DB access,
+/// then calls DELETE and asserts the response status is `StatusCode::CONFLICT`.
+#[tokio::test]
+async fn test_delete_non_terminal_running_returns_409() {
+    use anvilml_core::Job;
+    use chrono::Utc;
+
+    let descriptor = NodeTypeDescriptor {
+        type_name: "TestNode".to_string(),
+        display_name: "Test Node".to_string(),
+        category: "test".to_string(),
+        description: "A synthetic test node.".to_string(),
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+    };
+
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    node_registry.register_all(vec![descriptor]);
+
+    let state = make_test_state(node_registry).await;
+
+    // Persist a Running job directly to the database (not via submit).
+    let job_id = Uuid::new_v4();
+    let running_job = Job {
+        id: job_id,
+        status: anvilml_core::JobStatus::Running,
+        graph: json!({
+            "nodes": [
+                { "id": "node1", "type": "TestNode", "inputs": {}, "outputs": {} }
+            ]
+        }),
+        settings: JobSettings {
+            device_preference: None,
+        },
+        created_at: Utc::now(),
+        started_at: Some(Utc::now()),
+        completed_at: None,
+        worker_id: Some("0".to_string()),
+        error: None,
+        queue_position: None,
+    };
+
+    let job_store = JobStore::new(state.db.clone());
+    job_store
+        .upsert(&running_job)
+        .await
+        .expect("persist must succeed");
+
+    let router = build_router(state);
+
+    // DELETE the running job — should return 409.
+    let delete_req = Request::delete(&format!("/v1/jobs/{}", job_id))
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(delete_req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+}
+
+/// Verify that DELETE /v1/jobs/:id on an unknown UUID returns 404 Not Found.
+///
+/// Calls DELETE with a random UUID that was never submitted and asserts the
+/// response status is `StatusCode::NOT_FOUND`. The handler returns
+/// `AnvilError::JobNotFound` which maps to HTTP 404.
+#[tokio::test]
+async fn test_delete_unknown_id_returns_404() {
+    let state = make_test_state(Arc::new(NodeTypeRegistry::new())).await;
+    let router = build_router(state);
+
+    // Use a random UUID that was never submitted.
+    let unknown_id = Uuid::new_v4();
+    let delete_req = Request::delete(&format!("/v1/jobs/{}", unknown_id))
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(delete_req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}

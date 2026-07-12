@@ -9,6 +9,7 @@ use anvilml_core::AnvilError;
 use anvilml_core::Job;
 use anvilml_core::JobSettings;
 use anvilml_core::JobStatus;
+use anvilml_registry::JobStore;
 use anvilml_scheduler::CancelOutcome;
 use axum::Json;
 use axum::extract::Path;
@@ -204,4 +205,92 @@ pub(crate) async fn cancel_job(
             Ok(StatusCode::NOT_FOUND)
         }
     }
+}
+
+/// Delete a job by its ID, along with all associated artifacts.
+///
+/// Accepts a job UUID as a path parameter (`/v1/jobs/{id}`). The handler
+/// looks up the job, verifies it is in a terminal state (Completed, Failed,
+/// or Cancelled), deletes all associated artifacts, then deletes the job row.
+///
+/// # Response
+///
+/// - `204 No Content` — the job was terminal and has been deleted along with
+///   all associated artifacts.
+/// - `409 Conflict` — the job exists but is in a non-terminal state (Queued
+///   or Running). Deleting an active job is not allowed — use cancel first.
+/// - `404 Not Found` — no job with the given ID exists in the database.
+///
+/// # State Access
+///
+/// Reads from `state.db` via `JobStore` and from `state.artifact_store` for
+/// artifact listing and deletion.
+///
+/// # Note
+///
+/// Per `ANVILML_DESIGN.md §13.4`, only terminal-status jobs may be deleted.
+/// Non-terminal jobs must be cancelled first (POST /v1/jobs/{id}/cancel).
+/// Bulk delete is deferred to P18-E2.
+#[tracing::instrument(skip(state), fields(job_id = %id))]
+pub(crate) async fn delete_job(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, AnvilError> {
+    // Look up the job by ID. If it does not exist, return 404.
+    // We create a JobStore from the shared db pool — this is the same
+    // pattern used by all other job-related handlers.
+    let job_store = JobStore::new(state.db.clone());
+    let job = job_store.get(id).await?;
+
+    let job = job.ok_or_else(|| AnvilError::JobNotFound(id.to_string()))?;
+
+    // Check the job status — only terminal jobs (Completed, Failed, Cancelled)
+    // may be deleted. Queued and Running jobs must be cancelled first.
+    // This mirrors the cancel handler's 409 pattern for non-terminal states.
+    if matches!(job.status, JobStatus::Queued | JobStatus::Running) {
+        // Log the status as a string via serde_json serialization — JobStatus
+        // does not implement Display, so we serialize it to its snake_case form.
+        let status_str = serde_json::to_string(&job.status)
+            .map(|s| s.trim_matches('"').to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        tracing::debug!(
+            job_id = %id,
+            status = %status_str,
+            "delete rejected: job is not in a terminal state"
+        );
+        return Ok(StatusCode::CONFLICT);
+    }
+
+    // List all artifacts associated with this job, then delete each one.
+    // Each delete removes both the file from disk and the DB row.
+    // If no artifacts exist, list() returns an empty vec and the loop is
+    // a no-op — this is correct behavior.
+    let artifacts = state.artifact_store.list(Some(id)).await?;
+    let artifact_count = artifacts.len();
+
+    for artifact in &artifacts {
+        // Delete each artifact file and DB row. Errors are logged but do
+        // not abort the deletion — we attempt to remove all artifacts
+        // before deleting the job, so the caller sees partial cleanup
+        // rather than a complete failure.
+        if let Err(e) = state.artifact_store.delete(&artifact.hash).await {
+            tracing::warn!(
+                job_id = %id,
+                artifact_hash = %artifact.hash,
+                error = %e,
+                "failed to delete artifact — continuing with remaining artifacts"
+            );
+        }
+    }
+
+    if artifact_count > 0 {
+        tracing::debug!(job_id = %id, artifact_count, "deleted artifacts");
+    }
+
+    // Delete the job row. This is the final cleanup step — after all
+    // artifacts are removed, the job itself is removed from the database.
+    job_store.delete(id).await?;
+
+    tracing::info!(job_id = %id, "deleted job and artifacts");
+    Ok(StatusCode::NO_CONTENT)
 }

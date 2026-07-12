@@ -264,6 +264,33 @@ impl JobStore {
         Ok(rows.into_iter().map(|r| self.row_to_job(r)).collect())
     }
 
+    /// Delete a `Job` row by its `id` primary key.
+    ///
+    /// Returns `Ok(())` on success. No error if the row did not exist — SQL
+    /// DELETE is a no-op for missing rows.
+    ///
+    /// This method does not delete associated artifacts — callers should
+    /// use `ArtifactStore::list(Some(id))` followed by `ArtifactStore::delete(hash)`
+    /// to clean up artifacts before calling this method.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` — The job UUID to delete.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AnvilError::Db` if the SQL statement fails (e.g. connection error).
+    #[tracing::instrument(fields(id = %id), skip(self))]
+    pub async fn delete(&self, id: Uuid) -> Result<(), AnvilError> {
+        sqlx::query("DELETE FROM jobs WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        tracing::debug!(id = %id, "deleted job");
+        Ok(())
+    }
+
     /// Reset stale "ghost" jobs that were `Queued` or `Running` at server shutdown.
     ///
     /// When the server crashes or is restarted, any job that was `Queued` (waiting

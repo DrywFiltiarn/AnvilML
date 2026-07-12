@@ -6576,3 +6576,63 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `POST /v1/workers/0/restart`, followed by a synthetic `Ready` event for the same `worker_id`.
 **Expected output:** `StatusCode::ACCEPTED` (202) on the restart; the respawned worker's status reaches `WorkerStatus::Idle` within 3s.
 **Acceptance:** `cargo test -p anvilml-server --features mock-hardware --test workers_tests test_restart_respawned_worker_reaches_idle` exits 0.
+
+---
+
+## test_delete_terminal_job_returns_204 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** The `anvilml-server` crate has been compiled with `sqlx` (sqlite), `uuid` (v4, serde), `chrono` (serde), `serde_json`, and `axum` dev-dependencies. The `build_router()` function wires all HTTP routes including the new `DELETE /v1/jobs/{id}` handler.
+**Tests:** DELETE on a Completed job returns 204 No Content and removes the job row from the database. A Completed job is persisted directly to the DB (not via submit) to avoid the in-memory queue.
+**Mode:** both
+**Inputs:** `DELETE /v1/jobs/:id` where `:id` is a UUID of a Completed job persisted via `JobStore::upsert`.
+**Expected output:** `StatusCode::NO_CONTENT` (204); `JobStore::get(id)` returns `None` after deletion.
+**Acceptance:** `cargo test -p anvilml-server --test jobs_tests test_delete_terminal_job_returns_204` exits 0.
+
+---
+
+## test_delete_terminal_job_removes_artifacts (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** Same test setup as `test_delete_terminal_job_returns_204`, plus a fake PNG artifact persisted via `artifact_store.save()` with a known SHA-256 hash. The artifact store's `artifact_dir()` accessor is used to verify file removal from disk.
+**Tests:** DELETE on a Completed job with associated artifacts removes both the artifact file from disk and the metadata row from the database.
+**Mode:** both
+**Inputs:** `DELETE /v1/jobs/:id` where `:id` has one associated artifact (4x4 red pixel PNG) persisted via `ArtifactStore::save()`.
+**Expected output:** `StatusCode::NO_CONTENT` (204); `artifact_store.list(Some(id))` returns empty vec; artifact file removed from disk.
+**Acceptance:** `cargo test -p anvilml-server --test jobs_tests test_delete_terminal_job_removes_artifacts` exits 0.
+
+---
+
+## test_delete_non_terminal_queued_returns_409 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** Same test setup as the existing `test_cancel_queued_job_returns_202` test — a job submitted via POST enters Queued state.
+**Tests:** DELETE on a Queued job returns 409 Conflict. The handler rejects deletion of non-terminal jobs to prevent accidental data loss.
+**Mode:** both
+**Inputs:** `DELETE /v1/jobs/:id` where `:id` is a UUID of a Queued job (submitted via POST /v1/jobs).
+**Expected output:** `StatusCode::CONFLICT` (409); job remains in the database in Queued state.
+**Acceptance:** `cargo test -p anvilml-server --test jobs_tests test_delete_non_terminal_queued_returns_409` exits 0.
+
+---
+
+## test_delete_non_terminal_running_returns_409 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** A Running job is persisted directly to the DB (not via submit) with `worker_id = Some("0")`.
+**Tests:** DELETE on a Running job returns 409 Conflict, same as the Queued case. The handler checks `job.status` and rejects any non-terminal status.
+**Mode:** both
+**Inputs:** `DELETE /v1/jobs/:id` where `:id` is a UUID of a Running job persisted via `JobStore::upsert`.
+**Expected output:** `StatusCode::CONFLICT` (409); job remains in the database in Running state.
+**Acceptance:** `cargo test -p anvilml-server --test jobs_tests test_delete_non_terminal_running_returns_409` exits 0.
+
+---
+
+## test_delete_unknown_id_returns_404 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/jobs_tests.rs`
+**Context:** Same setup as `test_get_job_unknown_returns_404` — an empty `AppState` with no jobs.
+**Tests:** DELETE on an unknown UUID returns 404 Not Found. The handler returns `AnvilError::JobNotFound` which maps to HTTP 404.
+**Mode:** both
+**Inputs:** `DELETE /v1/jobs/:id` where `:id` is a random UUID never submitted.
+**Expected output:** `StatusCode::NOT_FOUND` (404); no side effects (no DB changes).
+**Acceptance:** `cargo test -p anvilml-server --test jobs_tests test_delete_unknown_id_returns_404` exits 0.

@@ -103,7 +103,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-artifacts"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anvilml-core",
  "chrono",
@@ -170,7 +170,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-registry"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anvilml-core",
  "chrono",
@@ -210,7 +210,7 @@ dependencies = [
 
 [[package]]
 name = "anvilml-server"
-version = "0.1.24"
+version = "0.1.25"
 dependencies = [
  "anvilml-artifacts",
  "anvilml-core",
