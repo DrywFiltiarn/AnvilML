@@ -73,6 +73,16 @@ pub fn build_router(app_state: AppState) -> axum::Router {
             "/v1/artifacts/{hash}",
             axum::routing::get(handlers::artifacts::get_artifact),
         )
+        // GET /v1/models — list all models, optionally filtered by kind
+        .route(
+            "/v1/models",
+            axum::routing::get(handlers::models::list_models),
+        )
+        // GET /v1/models/{id} — look up a single model by its ID
+        .route(
+            "/v1/models/{id}",
+            axum::routing::get(handlers::models::get_model),
+        )
         // GET /v1/events — WebSocket upgrade for the live event stream.
         // Per ANVILML_DESIGN.md §13.6: subscribe, send the initial
         // SystemStats frame, then (from P16-C2 on) forward subsequent

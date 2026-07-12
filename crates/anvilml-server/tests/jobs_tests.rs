@@ -9,7 +9,7 @@ use anvilml_core::{
     ServerConfig,
 };
 use anvilml_ipc::EventBroadcaster;
-use anvilml_registry::JobStore;
+use anvilml_registry::{JobStore, ModelStore};
 use anvilml_scheduler::JobScheduler;
 use anvilml_server::{AppState, build_router};
 use anvilml_worker::WorkerPool;
@@ -81,7 +81,7 @@ async fn make_test_state(node_registry: Arc<NodeTypeRegistry>) -> AppState {
         start_time: std::time::Instant::now(),
         scheduler,
         workers,
-        db,
+        db: db.clone(),
         artifact_store,
         broadcaster: Arc::new(EventBroadcaster::new()),
         hardware: Arc::new(RwLock::new(HardwareInfo {
@@ -101,6 +101,7 @@ async fn make_test_state(node_registry: Arc<NodeTypeRegistry>) -> AppState {
             reason: None,
             node_types: Vec::new(),
         })),
+        model_store: Arc::new(ModelStore::new(db)),
     }
 }
 

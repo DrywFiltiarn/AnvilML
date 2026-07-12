@@ -6420,3 +6420,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `GET /v1/system/versions` with empty body; `build_router()` called with `AppState` containing `EnvReport { python_version: None, torch_version: None, ... }` (default from `make_test_state`).
 **Expected output:** `StatusCode::OK`; JSON body has `"python_version": null`, `"torch_version": null`.
 **Acceptance:** `cargo test -p anvilml-server --test system_tests test_get_system_versions_null_when_env_report_unset` exits 0.
+
+---
+
+## test_list_models_no_filter (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/models_tests.rs`
+**Context:** `AppState` with `model_store` backed by an in-memory SQLite pool with migrations applied. Two models of different kinds (diffusion and text_encoder) are inserted via `ModelStore::upsert()`.
+**Tests:** `GET /v1/models` returns all models when no `kind` query parameter is provided.
+**Mode:** both
+**Inputs:** GET request with no query params; 2 models in the store (1 diffusion, 1 text_encoder).
+**Expected output:** `StatusCode::OK`; JSON array of length 2.
+**Acceptance:** `cargo test -p anvilml-server --test models_tests test_list_models_no_filter` exits 0.
+
+---
+
+## test_list_models_kind_filter (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/models_tests.rs`
+**Context:** `AppState` with `model_store` backed by an in-memory SQLite pool. Three models are inserted (2 diffusion, 1 VAE).
+**Tests:** `GET /v1/models?kind=diffusion` returns only models matching the kind filter.
+**Mode:** both
+**Inputs:** GET request with `?kind=diffusion`; 3 models in store (2 diffusion, 1 VAE).
+**Expected output:** `StatusCode::OK`; JSON array of length 2.
+**Acceptance:** `cargo test -p anvilml-server --test models_tests test_list_models_kind_filter` exits 0.
+
+---
+
+## test_get_model_existing_returns_200 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/models_tests.rs`
+**Context:** `AppState` with `model_store` backed by an in-memory SQLite pool. One model is inserted with a known ID.
+**Tests:** `GET /v1/models/:id` returns the correct model for an existing ID with matching `id`, `name`, and `kind` fields.
+**Mode:** both
+**Inputs:** GET request to `/v1/models/{id}` with a known model ID.
+**Expected output:** `StatusCode::OK`; JSON body with matching `id`, `name`, and `kind` fields.
+**Acceptance:** `cargo test -p anvilml-server --test models_tests test_get_model_existing_returns_200` exits 0.
+
+---
+
+## test_get_model_unknown_returns_404 (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/models_tests.rs`
+**Context:** `AppState` with `model_store` backed by an in-memory SQLite pool. No models are inserted.
+**Tests:** `GET /v1/models/:id` returns 404 for a non-existent ID.
+**Mode:** both
+**Inputs:** GET request to `/v1/models/{random-uuid}` with a UUID never inserted.
+**Expected output:** `StatusCode::NOT_FOUND`.
+**Acceptance:** `cargo test -p anvilml-server --test models_tests test_get_model_unknown_returns_404` exits 0.

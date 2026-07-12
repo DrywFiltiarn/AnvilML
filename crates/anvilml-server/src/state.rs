@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anvilml_artifacts::ArtifactStore;
 use anvilml_core::{EnvReport, HardwareInfo, NodeTypeRegistry, ServerConfig};
 use anvilml_ipc::EventBroadcaster;
+use anvilml_registry::ModelStore;
 use anvilml_scheduler::JobScheduler;
 use anvilml_worker::WorkerPool;
 use sqlx::SqlitePool;
@@ -83,4 +84,11 @@ pub struct AppState {
     /// provisioning status. Best-effort initial populate at startup — a full
     /// preflight subsystem is a later concern.
     pub env_report: Arc<RwLock<EnvReport>>,
+
+    /// SQLite-backed model metadata store.
+    ///
+    /// Provides CRUD operations on the `models` table: listing models,
+    /// fetching by ID, inserting/upserting via the scanner, and deleting.
+    /// Shared with `ModelStore` from `anvilml-registry` (Phase 6).
+    pub model_store: Arc<ModelStore>,
 }

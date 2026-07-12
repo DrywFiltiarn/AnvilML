@@ -8,7 +8,7 @@ use anvilml_core::{
     ArtifactMeta, EnvReport, HardwareInfo, NodeTypeRegistry, ProvisioningState, ServerConfig,
 };
 use anvilml_ipc::EventBroadcaster;
-use anvilml_registry::JobStore;
+use anvilml_registry::{JobStore, ModelStore};
 use anvilml_scheduler::JobScheduler;
 use anvilml_server::{AppState, build_router};
 use anvilml_worker::WorkerPool;
@@ -100,6 +100,7 @@ async fn make_test_state() -> AppState {
             reason: None,
             node_types: Vec::new(),
         })),
+        model_store: Arc::new(ModelStore::new(db)),
     }
 }
 

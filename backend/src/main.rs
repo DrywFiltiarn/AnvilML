@@ -12,6 +12,7 @@ use anvilml_core::config_load;
 use anvilml_hardware::detect_all_devices;
 use anvilml_ipc::EventBroadcaster;
 use anvilml_registry::JobStore;
+use anvilml_registry::ModelStore;
 use anvilml_registry::create_pool;
 use anvilml_scheduler::JobScheduler;
 use anvilml_scheduler::spawn_event_loop;
@@ -329,11 +330,15 @@ async fn main() {
         start_time,
         scheduler,
         workers: Arc::clone(&workers),
-        db: pool,
+        db: pool.clone(),
         artifact_store,
         broadcaster: Arc::clone(&broadcaster),
         hardware,
         env_report,
+        // Clone the pool so both JobStore and ModelStore share the same
+        // connection pool — the scheduler and model store operate on
+        // different tables (jobs vs models) but use the same SQLite file.
+        model_store: Arc::new(ModelStore::new(pool)),
     };
 
     // Extract the listen address from the Arc-wrapped config before moving

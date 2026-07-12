@@ -8,7 +8,7 @@ use anvilml_core::{
     EnvReport, HardwareInfo, NodeTypeDescriptor, NodeTypeRegistry, ProvisioningState, ServerConfig,
 };
 use anvilml_ipc::EventBroadcaster;
-use anvilml_registry::JobStore;
+use anvilml_registry::{JobStore, ModelStore};
 use anvilml_scheduler::JobScheduler;
 use anvilml_server::AppState;
 use anvilml_worker::WorkerPool;
@@ -73,7 +73,7 @@ async fn make_full_state(
         start_time: std::time::Instant::now(),
         scheduler,
         workers,
-        db,
+        db: db.clone(),
         artifact_store,
         broadcaster,
         hardware: Arc::new(RwLock::new(HardwareInfo {
@@ -93,6 +93,7 @@ async fn make_full_state(
             reason: None,
             node_types: Vec::new(),
         })),
+        model_store: Arc::new(ModelStore::new(db.clone())),
     }
 }
 
@@ -155,6 +156,7 @@ fn test_app_state_constructs() {
             reason: None,
             node_types: Vec::new(),
         })),
+        model_store: Arc::new(ModelStore::new(create_test_pool_sync())),
     };
 
     // Verify both fields are accessible and the registry starts empty.
