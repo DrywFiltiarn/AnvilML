@@ -247,16 +247,30 @@ impl WorkerSpawner for MockWorkerSpawner {
         Box::pin(async move {
             self.call_count.fetch_add(1, Ordering::SeqCst);
 
+            // Short-lived (2s), not pool_tests.rs's own 999s: the restart
+            // tests below drive a real graceful-shutdown sequence
+            // (`ManagedWorker::graceful_shutdown_child()`), whose first
+            // move is `child.wait()` bounded by the worker's own
+            // (production, 30s) `graceful_shutdown_timeout` — not by
+            // anything a test can inject (unlike `shutdown_all()`, which
+            // takes its bound as a parameter). A process that runs for
+            // 999s would force every restart test to wait out most of
+            // that internal 30s bound before falling back to
+            // force-kill. A process that exits well within a few
+            // seconds on its own lets `child.wait()` resolve naturally
+            // and fast — restart_worker()'s own shutdown-then-respawn
+            // sequence proceeds as soon as the old generation actually
+            // exits, without waiting on any timeout at all.
             #[cfg(unix)]
             let mut cmd = {
                 let mut c = tokio::process::Command::new("sleep");
-                c.arg("999");
+                c.arg("2");
                 c
             };
             #[cfg(windows)]
             let mut cmd = {
                 let mut c = tokio::process::Command::new("cmd");
-                c.args(["/c", "timeout", "999"]);
+                c.args(["/c", "timeout", "2"]);
                 c
             };
 

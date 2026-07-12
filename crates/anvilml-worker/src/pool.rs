@@ -562,17 +562,33 @@ impl WorkerPool {
             Some(force_shutdown_tx),
             join_handle,
         );
-        // Appends to the tail — see this method's own doc comment for why
-        // `&self` (not `&mut self`) works here. `restart_worker()` (P18-D3)
-        // relies specifically on "tail" (not "some unspecified position")
-        // and on `restart_lock` serializing every call into this method
-        // from that path, so the tail entry after this push is
-        // unambiguously the one just constructed here.
+        // Store the ORIGINAL handle — the one carrying live shutdown_tx/
+        // force_shutdown_tx — and return a CLONE to the caller, not the
+        // reverse. WorkerHandle::clone() always sets both to None (see
+        // that impl's own doc comment), so storing a clone here would
+        // leave every handle inside self.handles permanently unable to
+        // request shutdown, while the real, sender-carrying original
+        // would exist only as this method's return value — dropped
+        // almost immediately by spawn_all_impl(), which discards it
+        // (`self.spawn_worker(device.clone()).await?;`, no `let`).
+        // Dropping an oneshot::Sender resolves the paired Receiver
+        // exactly like a real send — ManagedWorker::run()'s
+        // `_ = &mut *shutdown_rx =>` branch can't distinguish "sender
+        // sent ()" from "sender was dropped" (both just resolve the
+        // future), so the worker would flip straight to Dying and exit
+        // within moments of every single spawn, pool-wide, not only
+        // during a restart. Appends to the tail — see this method's own
+        // doc comment for why `&self` (not `&mut self`) works here.
+        // `restart_worker()` (P18-D3) relies specifically on "tail" (not
+        // "some unspecified position") and on `restart_lock` serializing
+        // every call into this method from that path, so the tail entry
+        // after this push is unambiguously the one just constructed here.
+        let handle_for_caller = handle.clone();
         self.handles
             .write()
             .expect("WorkerPool handles lock poisoned")
-            .push(handle.clone());
-        Ok(handle)
+            .push(handle);
+        Ok(handle_for_caller)
     }
 
     /// Restart the worker currently occupying `worker_id`'s slot: request
@@ -695,8 +711,20 @@ impl WorkerPool {
                 .handles
                 .write()
                 .expect("WorkerPool handles lock poisoned");
-            handles.pop();
-            handles[pos] = new_handle.clone();
+            // Move the popped tail entry itself into `pos` — NOT another
+            // clone of `new_handle`. `spawn_worker()` already fixed this
+            // exact mistake once for its own push (see that method's own
+            // doc comment): `new_handle` (this call's return value) is a
+            // clone with no shutdown_tx/force_shutdown_tx, but the tail
+            // entry it just pushed onto self.handles is the real
+            // original carrying both. Splicing in another clone here
+            // would leave the pool's own copy for this slot permanently
+            // unable to request shutdown — the same bug, one call site
+            // later.
+            let spawned = handles
+                .pop()
+                .expect("spawn_worker() must have pushed a handle onto the tail");
+            handles[pos] = spawned;
         }
 
         Ok(RestartOutcome::Accepted(new_handle))
