@@ -169,16 +169,17 @@
     "P18-B1",
     "P18-B2",
     "P18-C1",
-    "P18-C2"
+    "P18-C2",
+    "P18-C3"
   ],
-  "in_progress": "P18-C3",
+  "in_progress": "P18-D1",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "1. **Create `crates/anvilml-server/src/handlers/workers.rs`.** Implement\n   `list_workers` as `pub(crate) async fn list_workers(State(state): State<AppState>)\n   -> Json<Vec<WorkerInfo>>`. The body is a single await on `state.workers.list()`\n   wrapped in `Json()`. Add a module-level doc comment referencing `ANVILML_DESIGN.md\n   \u00a713.4` and a function doc comment describing the route contract. Add an inline\n   comment explaining the delegation.\n\n2. **Add `pub mod workers;` to `crates/anvilml-server/src/handlers/mod.rs`.** Append\n   `pub mod workers;` after the existing module declarations (after `pub mod system;`).\n\n3. **Register the route in `build_router()`.** Add `.route(\"/v1/workers\",\n   axum::routing::get(handlers::workers::list_workers))` to the router chain in\n   `lib.rs`, placed after the existing `/v1/models` routes and before the WebSocket\n   `/v1/events` route, maintaining alphabetical/logical grouping. Add a comment\n   referencing `ANVILML_DESIGN.md \u00a713.4`.\n\n4. **Create `crates/anvilml-server/tests/workers_tests.rs`.** Write \u22653 integration\n   tests following the pattern from `health_tests.rs`:\n   - `test_workers_list_returns_current_pool_state`: Construct a test `AppState` with\n     mock workers (using `WorkerPool::set_up_test_workers()` from the `test-utils`\n     feature), verify `GET /v1/workers` returns 200 with a JSON array whose elements\n     match the injected worker handles' `worker_id`, `status`, `device_index`, and\n     `device_type`.\n   - `test_workers_list_empty_returns_empty_array`: Use a pool with zero workers\n     (just `WorkerPool::new()` without calling `set_up_test_workers()`), verify the\n     response is `200` with `[]` (not `null`, not an error body). This confirms the\n     handler returns an empty array, not a 404 or error.\n   - `test_workers_response_shape_matches_workerinfo`: Assert that the JSON response\n     contains exactly the fields `worker_id` (string), `status` (string matching a\n     `WorkerStatus` variant in snake_case), `device_index` (integer), `device_type`\n     (string matching a `DeviceType` variant in snake_case), `pid` (null), and\n     `current_job_id` (null). This verifies the `WorkerInfo` serde representation is\n     correct.\n\n5. **Bump `anvilml-server` version.** Change `version = \"0.1.22\"` to\n   `version = \"0.1.23\"` in `crates/anvilml-server/Cargo.toml`.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-12T09:50:10+0200",
-  "plan_approval_message_id": "1525770164727971870",
+  "last_updated": "2026-07-12T11:12:28+0200",
+  "plan_approval_message_id": "1525789729755500674",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1525770163037933701",
+  "plan_report_message_id": "1525789727498965134",
   "impl_report_message_id": null
 }

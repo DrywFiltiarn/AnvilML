@@ -88,6 +88,12 @@ pub fn build_router(app_state: AppState) -> axum::Router {
             "/v1/models/rescan",
             axum::routing::post(handlers::models::rescan_models),
         )
+        // GET /v1/workers — list all workers and their current lifecycle states
+        // Per ANVILML_DESIGN.md §13.4: GET /v1/workers → 200 Vec<WorkerInfo>
+        .route(
+            "/v1/workers",
+            axum::routing::get(handlers::workers::list_workers),
+        )
         // GET /v1/events — WebSocket upgrade for the live event stream.
         // Per ANVILML_DESIGN.md §13.6: subscribe, send the initial
         // SystemStats frame, then (from P16-C2 on) forward subsequent

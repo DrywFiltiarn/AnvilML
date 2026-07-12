@@ -10,3 +10,4 @@ pub mod jobs;
 pub mod models;
 pub mod nodes;
 pub mod system;
+pub mod workers;

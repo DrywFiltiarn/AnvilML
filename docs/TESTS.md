@@ -6492,3 +6492,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** POST request to `/v1/models/rescan` with a temp directory containing a small `.safetensors` file, followed by GET `/v1/models`.
 **Expected output:** `StatusCode::OK` (200) with a JSON array containing at least one model whose path ends with `test_model.safetensors`.
 **Acceptance:** `cargo test -p anvilml-server --test models_tests test_rescan_populates_model_store` exits 0.
+
+---
+
+## test_workers_list_returns_current_pool_state (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/workers_tests.rs`
+**Context:** `AppState` with a `WorkerPool` pre-populated via `WorkerPool::set_up_test_workers()` (`test-utils` feature) with two mock `(WorkerHandle, GpuDevice)` pairs — worker "0" with `WorkerStatus::Idle` on `DeviceType::Cuda`, and worker "1" with `WorkerStatus::Busy` on `DeviceType::Cpu`.
+**Tests:** `GET /v1/workers` returns 200 OK with a JSON array whose elements match the injected mock workers' `worker_id`, `status`, `device_index`, and `device_type`.
+**Mode:** both
+**Inputs:** GET request to `/v1/workers` with a pool containing two mock workers (Idle/Cuda and Busy/Cpu).
+**Expected output:** `StatusCode::OK` (200) with a JSON array of length 2, where each element's `worker_id`, `status`, `device_index`, and `device_type` match the injected handles.
+**Acceptance:** `cargo test -p anvilml-server --features mock-hardware --test workers_tests test_workers_list_returns_current_pool_state` exits 0.
+
+---
+
+## test_workers_list_empty_returns_empty_array (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/workers_tests.rs`
+**Context:** `AppState` with an empty `WorkerPool` (no workers injected via `set_up_test_workers()`).
+**Tests:** `GET /v1/workers` returns 200 OK with an empty JSON array `[]` — not `null`, not an error body. This confirms the handler returns an empty array when the pool has zero workers.
+**Mode:** both
+**Inputs:** GET request to `/v1/workers` with an empty pool.
+**Expected output:** `StatusCode::OK` (200) with body `[]`.
+**Acceptance:** `cargo test -p anvilml-server --features mock-hardware --test workers_tests test_workers_list_empty_returns_empty_array` exits 0.
+
+---
+
+## test_workers_response_shape_matches_workerinfo (anvilml-server)
+
+**File:** `crates/anvilml-server/tests/workers_tests.rs`
+**Context:** `AppState` with a `WorkerPool` pre-populated via `set_up_test_workers()` with one mock worker (`WorkerStatus::Idle`, `DeviceType::Cuda`).
+**Tests:** The JSON response contains exactly the six fields `worker_id` (string), `status` (string in snake_case matching `WorkerStatus`), `device_index` (integer), `device_type` (string in snake_case matching `DeviceType`), `pid` (null), and `current_job_id` (null). No extra fields are present. This verifies the `WorkerInfo` serde representation is correct.
+**Mode:** both
+**Inputs:** GET request to `/v1/workers` with a pool containing one mock worker.
+**Expected output:** `StatusCode::OK` (200) with a JSON array of length 1, containing exactly the six `WorkerInfo` fields with correct types and values.
+**Acceptance:** `cargo test -p anvilml-server --features mock-hardware --test workers_tests test_workers_response_shape_matches_workerinfo` exits 0.
