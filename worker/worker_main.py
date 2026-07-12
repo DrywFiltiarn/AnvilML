@@ -194,7 +194,30 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
         # ensures the dispatch loop remains responsive to CancelJob
         # messages while the thread is running, but still sends the
         # terminal event (Completed/Failed/Cancelled) when done.
-        if "thread" in locals() and not thread.is_alive():
+        #
+        # `current_job_id is not None` is a REQUIRED second condition here,
+        # not a redundant belt-and-suspenders check. `thread` is a plain
+        # Python local — once the first `Execute` this worker ever handles
+        # creates it, `thread` stays bound for the rest of this function
+        # call's lifetime; locals don't reset each time around a `while`
+        # loop. After that first job's thread finishes, `thread.is_alive()`
+        # is `False` forever after, so `if "thread" in locals() and not
+        # thread.is_alive():` alone would re-enter this block on EVERY
+        # later message that wakes the loop — every 30s keepalive Ping,
+        # every CancelJob, anything — re-joining the same already-joined
+        # thread (a harmless no-op) but re-sending a STALE terminal event
+        # for a job that already finished, using the same job_id/result and
+        # a `start` timestamp that was never updated (so elapsed_ms grows a
+        # little more each time instead of staying fixed). On the Rust side
+        # that repeats update_job_terminal_status(), wake_dispatch(), and
+        # the JobCompleted WS broadcast once per keepalive cycle,
+        # indefinitely, for an already-terminal job. `current_job_id` is
+        # reset to `None` below immediately after this block runs, so
+        # requiring it be non-`None` here is what makes the block fire
+        # exactly once per job — this is the same guard the `except
+        # Exception` copy of this logic above already uses; this path was
+        # simply missing it.
+        if "thread" in locals() and current_job_id is not None and not thread.is_alive():
             thread.join()
             # Check whether the background thread succeeded, failed, or
             # was cancelled. result is always populated because
@@ -227,7 +250,10 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
                     job_id,
                     result["error"],
                 )
-            # Reset tracking for the next job.
+            # Reset tracking for the next job. This is also what makes the
+            # guard above (`current_job_id is not None`) correctly prevent
+            # this block from re-firing on the next loop iteration for the
+            # same, already-reported thread.
             current_job_id = None
             current_cancel_flag = None
             # Do NOT `continue` here. `ipc.recv_message()` is a fully
