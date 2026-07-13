@@ -6764,3 +6764,123 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Fresh subprocess that imports `worker.nodes.loader` and checks `NODE_REGISTRY`.
 **Expected output:** `NODE_REGISTRY` contains `"LoadModel"` as a key.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_model_in_registry -v` exits 0.
+
+---
+
+## test_load_vae_mock_returns_sentinel (worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `LoadVae` node class is implemented in `worker/nodes/loader.py` and decorated with `@register`. A `NodeContext` with `mock=True` is constructed, and `execute(model_id="test_vae")` is called.
+**Tests:** Mock-mode `LoadVae.execute()` returns the sentinel dict shape `{"vae": {"mock": True, "model_id": "test_vae"}}`. Satisfies the `MOCK_PATH_VERIFIED` marker.
+**Mode:** mock
+**Inputs:** `NodeContext(mock=True)`, `model_id="test_vae"`.
+**Expected output:** `{"vae": {"mock": True, "model_id": "test_vae"}}` is returned.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_vae_mock_returns_sentinel -v` exits 0.
+
+---
+
+## test_load_vae_real_raises_not_implemented (worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `LoadVae` node class is implemented in `worker/nodes/loader.py`. A `PipelineCache` and `NodeContext` with `mock=False` are constructed, and `execute(model_id="test_vae")` is called.
+**Tests:** Real-mode `LoadVae.execute()` raises `NotImplementedError` with the Phase-19 groundwork message ("no diffusion arch module registered yet"). Satisfies the `REAL_PATH_VERIFIED` marker.
+**Mode:** real
+**Inputs:** `NodeContext(mock=False, pipeline_cache=PipelineCache())`, `model_id="test_vae"`.
+**Expected output:** `NotImplementedError` with message containing "no diffusion arch module registered yet" is raised.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_vae_real_raises_not_implemented -v -m real_mode` exits 0.
+
+---
+
+## test_load_vae_in_registry (worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `LoadVae` node class is implemented in `worker/nodes/loader.py` and decorated with `@register`. Importing `worker.nodes.loader` in a subprocess triggers the `@register` side effect which populates `NODE_REGISTRY`.
+**Tests:** `LoadVae` appears in `NODE_REGISTRY` after importing the module. Uses subprocess isolation to avoid cross-test pollution from prior imports.
+**Mode:** both
+**Inputs:** Fresh subprocess that imports `worker.nodes.loader` and checks `NODE_REGISTRY`.
+**Expected output:** `NODE_REGISTRY` contains `"LoadVae"` as a key.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_vae_in_registry -v` exits 0.
+
+---
+
+## test_load_vae_real_cache_key_format (worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `LoadVae` node class is implemented in `worker/nodes/loader.py`. A `PipelineCache` and `NodeContext` with `mock=False` are constructed, and `execute(model_id="test_model")` is called.
+**Tests:** Real-mode `LoadVae.execute()` calls `pipeline_cache.get_or_load` with the correct key format (`"vae:test_model"` — prefixed VAE namespace). The cache remains empty after the exception. Satisfies the `REAL_PATH_VERIFIED` marker.
+**Mode:** real
+**Inputs:** `NodeContext(mock=False, pipeline_cache=PipelineCache())`, `model_id="test_model"`.
+**Expected output:** `NotImplementedError` is raised; cache remains empty.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_vae_real_cache_key_format -v -m real_mode` exits 0.
+
+---
+
+## test_load_vae_real_raises_no_diffusion_arch (worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `LoadVae` node class is implemented in `worker/nodes/loader.py`. A `PipelineCache` and `NodeContext` with `mock=False` are constructed, and `execute(model_id="zit-vae")` is called.
+**Tests:** Canonical real-mode test. Constructs a `NodeContext` with `mock=False`, calls `execute(model_id="zit-vae")`, and asserts `NotImplementedError` is raised with the exact Phase-19 groundwork message. Satisfies the `REAL_PATH_VERIFIED` marker.
+**Mode:** real
+**Inputs:** `NodeContext(mock=False, pipeline_cache=PipelineCache())`, `model_id="zit-vae"`.
+**Expected output:** `NotImplementedError("no diffusion arch module registered yet")` is raised.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_vae_real_raises_no_diffusion_arch -v -m real_mode` exits 0.
+
+---
+
+## test_load_clip_mock_returns_sentinel (worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `LoadClip` node class is implemented in `worker/nodes/loader.py` and decorated with `@register`. A `NodeContext` with `mock=True` is constructed, and `execute(model_id="test_clip")` is called.
+**Tests:** Mock-mode `LoadClip.execute()` returns the sentinel dict shape `{"clip": {"mock": True, "model_id": "test_clip"}}`. Satisfies the `MOCK_PATH_VERIFIED` marker.
+**Mode:** mock
+**Inputs:** `NodeContext(mock=True)`, `model_id="test_clip"`.
+**Expected output:** `{"clip": {"mock": True, "model_id": "test_clip"}}` is returned.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_clip_mock_returns_sentinel -v` exits 0.
+
+---
+
+## test_load_clip_real_raises_not_implemented (worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `LoadClip` node class is implemented in `worker/nodes/loader.py`. A `PipelineCache` and `NodeContext` with `mock=False` are constructed, and `execute(model_id="test_clip")` is called.
+**Tests:** Real-mode `LoadClip.execute()` raises `NotImplementedError` with the Phase-19 groundwork message ("no diffusion arch module registered yet"). Satisfies the `REAL_PATH_VERIFIED` marker.
+**Mode:** real
+**Inputs:** `NodeContext(mock=False, pipeline_cache=PipelineCache())`, `model_id="test_clip"`.
+**Expected output:** `NotImplementedError` with message containing "no diffusion arch module registered yet" is raised.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_clip_real_raises_not_implemented -v -m real_mode` exits 0.
+
+---
+
+## test_load_clip_in_registry (worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `LoadClip` node class is implemented in `worker/nodes/loader.py` and decorated with `@register`. Importing `worker.nodes.loader` in a subprocess triggers the `@register` side effect which populates `NODE_REGISTRY`.
+**Tests:** `LoadClip` appears in `NODE_REGISTRY` after importing the module. Uses subprocess isolation to avoid cross-test pollution from prior imports.
+**Mode:** both
+**Inputs:** Fresh subprocess that imports `worker.nodes.loader` and checks `NODE_REGISTRY`.
+**Expected output:** `NODE_REGISTRY` contains `"LoadClip"` as a key.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_clip_in_registry -v` exits 0.
+
+---
+
+## test_load_clip_real_cache_key_format (worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `LoadClip` node class is implemented in `worker/nodes/loader.py`. A `PipelineCache` and `NodeContext` with `mock=False` are constructed, and `execute(model_id="test_clip")` is called.
+**Tests:** Real-mode `LoadClip.execute()` calls `pipeline_cache.get_or_load` with the correct key format (`"clip:test_clip"` — prefixed CLIP namespace). The cache remains empty after the exception. Satisfies the `REAL_PATH_VERIFIED` marker.
+**Mode:** real
+**Inputs:** `NodeContext(mock=False, pipeline_cache=PipelineCache())`, `model_id="test_clip"`.
+**Expected output:** `NotImplementedError` is raised; cache remains empty.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_clip_real_cache_key_format -v -m real_mode` exits 0.
+
+---
+
+## test_load_clip_real_raises_no_diffusion_arch (worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `LoadClip` node class is implemented in `worker/nodes/loader.py`. A `PipelineCache` and `NodeContext` with `mock=False` are constructed, and `execute(model_id="zit-clip")` is called.
+**Tests:** Canonical real-mode test. Constructs a `NodeContext` with `mock=False`, calls `execute(model_id="zit-clip")`, and asserts `NotImplementedError` is raised with the exact Phase-19 groundwork message. Satisfies the `REAL_PATH_VERIFIED` marker.
+**Mode:** real
+**Inputs:** `NodeContext(mock=False, pipeline_cache=PipelineCache())`, `model_id="zit-clip"`.
+**Expected output:** `NotImplementedError("no diffusion arch module registered yet")` is raised.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_clip_real_raises_no_diffusion_arch -v -m real_mode` exits 0.
