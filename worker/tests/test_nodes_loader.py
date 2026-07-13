@@ -53,27 +53,47 @@ def test_load_model_mock_returns_sentinel() -> None:
 
 
 @pytest.mark.real_mode
-def test_load_model_real_raises_not_implemented() -> None:
-    """Real-mode execute() raises NotImplementedError with Phase-19 message.
+def test_load_model_real_loads_zit_fixture() -> None:
+    """LoadModel.execute() loads the ZiT fixture checkpoint via the real branch.
 
-    Constructs a NodeContext with mock=False, calls execute() with
-    model_id="test_model", and asserts that NotImplementedError is
-    raised with the Phase-19 groundwork message ("no diffusion arch
-    module registered yet"). This is the collectible real-mode test
-    for the REAL_PATH_VERIFIED marker.
+    Calls LoadModel.execute() with mock=False against the P20-A1 fixture
+    path (zit_tiny.safetensors). Verifies the return dict has a "model"
+    key containing a ZiTModel (torch.nn.Module with .arch == "zit"),
+    confirming the full real loading chain works end-to-end.
 
-    Expected outcome: NotImplementedError with message containing
-    "no diffusion arch module registered yet" is raised.
+    This test exercises the real code path and satisfies the
+    REAL_PATH_VERIFIED marker.
+
+    Expected outcome: {"model": ZiTModel(...)} is returned, not an exception.
     """
+    from pathlib import Path
+
+    import torch
+
     from worker.nodes.loader import LoadModel
     from worker.pipeline_cache import PipelineCache
 
+    fixture_path = str(
+        Path(__file__).parent / "fixtures" / "zit_tiny.safetensors"
+    )
+
     node = LoadModel()
     ctx = _make_ctx(mock=False, pipeline_cache=PipelineCache())
-    with pytest.raises(
-        NotImplementedError, match="no diffusion arch module registered yet"
-    ):
-        node.execute(ctx, model_id="test_model")
+    result = node.execute(ctx, model_id=fixture_path)
+
+    # Verify the return dict has the expected MODEL slot.
+    assert "model" in result
+    model = result["model"]
+
+    # Verify the returned object is a torch.nn.Module (loaded model).
+    assert isinstance(model, torch.nn.Module)
+
+    # Verify the architecture identifier is set correctly.
+    assert model.arch == "zit"
+
+    # Verify parameters are on the real device (not meta).
+    for param in model.parameters():
+        assert param.device.type == "cpu"
 
 
 def test_load_model_in_registry() -> None:
@@ -103,59 +123,6 @@ def test_load_model_in_registry() -> None:
     )
     assert result.returncode == 0, f"subprocess failed: {result.stderr}"
     assert "OK" in result.stdout
-
-
-@pytest.mark.real_mode
-def test_load_model_real_cache_key_format() -> None:
-    """Verify LoadModel's real branch calls pipeline_cache.get_or_load with correct key.
-
-    Constructs a real PipelineCache, a NodeContext with mock=False, and a LoadModel
-    node. Calls execute() with model_id="test_model". The call raises NotImplementedError
-    as expected, but the test verifies that get_or_load was called with the correct
-    key format ("test_model" — the raw model_id, not a prefixed namespace).
-
-    This test exercises the real code path (NotImplementedError) and satisfies the
-    REAL_PATH_VERIFIED marker.
-
-    Expected outcome: NotImplementedError is raised; get_or_load was called with
-    key="test_model".
-    """
-    from worker.nodes.loader import LoadModel
-    from worker.pipeline_cache import PipelineCache
-
-    cache = PipelineCache()
-    ctx = _make_ctx(mock=False, pipeline_cache=cache)
-    node = LoadModel()
-    with pytest.raises(
-        NotImplementedError, match="no diffusion arch module registered yet"
-    ):
-        node.execute(ctx, model_id="test_model")
-    # The cache should still be empty because the loader_fn raised
-    # (exception does not populate the cache per PipelineCache contract).
-    assert len(cache._cache) == 0
-
-
-@pytest.mark.real_mode
-def test_load_model_real_raises_no_diffusion_arch() -> None:
-    """Real-mode execute() raises NotImplementedError with the Phase-19 message.
-
-    Constructs a NodeContext with mock=False, calls execute() with model_id="zit-test",
-    and asserts that NotImplementedError is raised with the exact Phase-19 groundwork
-    message. This is the canonical real-mode test for the
-    REAL_PATH_VERIFIED marker.
-
-    Expected outcome: NotImplementedError("no diffusion arch module registered yet")
-    is raised.
-    """
-    from worker.nodes.loader import LoadModel
-    from worker.pipeline_cache import PipelineCache
-
-    node = LoadModel()
-    ctx = _make_ctx(mock=False, pipeline_cache=PipelineCache())
-    with pytest.raises(
-        NotImplementedError, match="no diffusion arch module registered yet"
-    ):
-        node.execute(ctx, model_id="zit-test")
 
 
 # ---------------------------------------------------------------------------

@@ -7174,3 +7174,15 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Non-existent path `/tmp/this_file_does_not_exist_xyz789.safetensors`, default caps dict, device="cpu".
 **Expected output:** `ValueError` raised with message containing "No such file".
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_raises_on_invalid_path -v` exits 0.
+
+---
+
+## test_load_model_real_loads_zit_fixture (worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `LoadModel.execute()` real branch dispatches to `arch.diffusion.get_module("zit").load()` via `pipeline_cache.get_or_load()`. The P20-A1 fixture `zit_tiny.safetensors` is a synthetic checkpoint that exercises the full loading chain: shape inference, meta construction, dtype selection, key remapping, and weight loading.
+**Tests:** `LoadModel.execute()` with `mock=False` against the P20-A1 fixture path returns a dict with a `"model"` key containing a `torch.nn.Module` (ZiTModel) with `.arch == "zit"` and all parameters on `"cpu"` device.
+**Mode:** real
+**Inputs:** `model_id` = path to `worker/tests/fixtures/zit_tiny.safetensors`, `mock=False`.
+**Expected output:** `{"model": ZiTModel}` with `model.arch == "zit"` and all params on cpu.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_model_real_loads_zit_fixture -v` exits 0.

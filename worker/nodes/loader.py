@@ -1,8 +1,9 @@
 """LoadModel node — loads a diffusion model from a safetensors file.
 
 This node is the entry point for model loading in the AnvilML worker.
-The mock branch returns a sentinel dict; the real branch is deferred
-to P19-C2 which implements actual safetensors reading and arch dispatch.
+The mock branch returns a sentinel dict; the real branch dispatches
+to the registered diffusion architecture module (currently "zit")
+via ``arch.diffusion.get_module()`` and ``pipeline_cache.get_or_load()``.
 """
 
 from worker.nodes.base import BaseNode, NodeContext, SlotSpec, register
@@ -13,9 +14,10 @@ class LoadModel(BaseNode):
     """Load a diffusion model from a safetensors file.
 
     This is the first node in the model-loading pipeline. In mock mode
-    it returns a sentinel dict; in real mode it raises NotImplementedError
-    pending P19-C2 which will implement actual safetensors reading and
-    architecture dispatch.
+    it returns a sentinel dict; in real mode it dispatches to the
+    registered diffusion architecture module (currently "zit") via
+    ``arch.diffusion.get_module()`` and caches the result via
+    ``pipeline_cache.get_or_load()``.
 
     Class Attributes:
         NODE_TYPE: The registry key for this node type.
@@ -25,8 +27,6 @@ class LoadModel(BaseNode):
         INPUT_SLOTS: Single input slot named "model_id" with type "STRING".
         OUTPUT_SLOTS: Single output slot named "model" with type "MODEL".
     """
-    # defers_to: P19-C2 — real model loading logic (safetensors reading +
-    # arch dispatch) is implemented in the subsequent task.
     NODE_TYPE = "LoadModel"
     CATEGORY = "Loaders"
     DISPLAY_NAME = "Load Model"
@@ -34,14 +34,16 @@ class LoadModel(BaseNode):
     INPUT_SLOTS = [SlotSpec("model_id", "STRING")]
     OUTPUT_SLOTS = [SlotSpec("model", "MODEL")]
 
-    # REAL_PATH_VERIFIED: worker/tests/test_nodes_loader.py::test_load_model_real_raises_not_implemented
+    # REAL_PATH_VERIFIED: worker/tests/test_nodes_loader.py::test_load_model_real_loads_zit_fixture
     # MOCK_PATH_VERIFIED: worker/tests/test_nodes_loader.py::test_load_model_mock_returns_sentinel
     def execute(self, ctx: NodeContext, **inputs) -> dict:
         """Execute the LoadModel node.
 
         Branches on ctx.mock at the top per §14.6 — the mock branch
         returns a sentinel dict with no real loading; the real branch
-        is a bare placeholder that raises NotImplementedError.
+        dispatches to the registered diffusion architecture module
+        ("zit") via ``arch.diffusion.get_module()`` and caches the
+        loaded model via ``pipeline_cache.get_or_load()``.
 
         Args:
             ctx: Runtime context carrying job_id, device, caps,
@@ -52,11 +54,12 @@ class LoadModel(BaseNode):
         Returns:
             In mock mode: Dict with key "model" containing a sentinel
             dict {"mock": True, "model_id": <model_id>}.
-            In real mode: Raises NotImplementedError (deferred to P19-C2).
+            In real mode: Dict with key "model" containing a
+            ``torch.nn.Module`` (the loaded ZiTModel).
 
         Raises:
-            NotImplementedError: When ctx.mock is False — real model
-                loading logic is deferred to P19-C2.
+            RuntimeError: If no diffusion arch module is registered
+                for key "zit" (should not occur after P20-B2).
         """
         if ctx.mock:
             # Mock branch: return a sentinel dict with no real loading,
@@ -65,21 +68,30 @@ class LoadModel(BaseNode):
             # was propagated through the node system.
             return {"model": {"mock": True, "model_id": inputs["model_id"]}}
         else:
-            # Real branch: delegate to the pipeline cache so the
-            # infrastructure (get_or_load + caching contract) is in
-            # place for Phase 20. The loader_fn itself raises
-            # NotImplementedError because no diffusion arch module
-            # has been registered yet — real loading is deferred to
-            # P20. The cache is not modified on exception per the
-            # PipelineCache contract.
-            return ctx.pipeline_cache.get_or_load(
-                inputs["model_id"],
-                lambda: (_ for _ in ()).throw(
-                    NotImplementedError(
-                        "no diffusion arch module registered yet"
-                    )
-                ),
-            )
+            # Real branch: dispatch to the registered diffusion arch
+            # module. The arch key "zit" matches zit.py's can_handle()
+            # contract. get_or_load provides caching: if the same
+            # model_id is loaded again, the cached ZiTModel is returned
+            # without re-loading. The cache is not modified on exception
+            # per the PipelineCache contract.
+            from worker.nodes.arch.diffusion import get_module
+
+            module = get_module("zit")
+            if module is None:
+                # Defensive guard — zit is imported and appended to
+                # _REGISTERED_MODULES in diffusion/__init__.py (P20-B2),
+                # so this should never trigger in normal operation.
+                raise RuntimeError(
+                    f"no diffusion arch module registered for 'zit'; "
+                    f"cannot load model '{inputs['model_id']}'"
+                )
+
+            return {
+                "model": ctx.pipeline_cache.get_or_load(
+                    inputs["model_id"],
+                    lambda: module.load(inputs["model_id"], ctx.caps),
+                )
+            }
 
 
 @register

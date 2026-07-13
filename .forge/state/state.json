@@ -190,16 +190,17 @@
     "P20-B1",
     "P20-B2",
     "P20-C1",
-    "P20-C2"
+    "P20-C2",
+    "P20-C3"
   ],
-  "in_progress": "P20-C3",
+  "in_progress": "P20-D1",
   "plan_approved": true,
   "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-13T21:37:56+0200",
-  "plan_approval_message_id": "1526300344056021003",
+  "last_updated": "2026-07-13T23:09:49+0200",
+  "plan_approval_message_id": "1526332142592725044",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1526300342210531371",
+  "plan_report_message_id": "1526332140566872127",
   "impl_report_message_id": null
 }
