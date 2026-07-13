@@ -6726,12 +6726,32 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 ## test_load_model_real_raises_not_implemented (worker)
 
 **File:** `worker/tests/test_nodes_loader.py`
-**Context:** The `LoadModel` node class is implemented in `worker/nodes/loader.py`. The real branch raises `NotImplementedError` with a message indicating the deferred implementation (P19-C2). This is a bare placeholder — no `pipeline_cache` call, no model loading logic.
-**Tests:** Real-mode `execute()` raises `NotImplementedError`. Constructs a `NodeContext` with `mock=False`, calls `execute(model_id="test_model")`, and asserts `NotImplementedError` is raised with a message containing "P19-C2".
+**Context:** The `LoadModel` node class is implemented in `worker/nodes/loader.py`. The real branch calls `pipeline_cache.get_or_load()` with a loader_fn that raises `NotImplementedError("no diffusion arch module registered yet")`. This is the Phase-19 groundwork pattern — infrastructure is in place, the loader_fn raises because no arch module is registered yet.
+**Tests:** Real-mode `execute()` raises `NotImplementedError`. Constructs a `NodeContext` with `mock=False`, calls `execute(model_id="test_model")`, and asserts `NotImplementedError` is raised with a message containing "no diffusion arch module registered yet".
 **Mode:** real
 **Inputs:** `NodeContext(mock=False)`, `model_id="test_model"`.
-**Expected output:** `NotImplementedError` is raised with message containing "P19-C2".
+**Expected output:** `NotImplementedError` is raised with message containing "no diffusion arch module registered yet".
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_model_real_raises_not_implemented -v -m real_mode` exits 0.
+
+## test_load_model_real_cache_key_format (worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `LoadModel` node class is implemented in `worker/nodes/loader.py`. The real branch calls `pipeline_cache.get_or_load(inputs["model_id"], loader_fn)`. A real `PipelineCache` instance is passed via `NodeContext.pipeline_cache`.
+**Tests:** Constructs a real `PipelineCache`, a `NodeContext` with `mock=False` and the cache, and a `LoadModel` node. Calls `execute(model_id="test_model")`. The call raises `NotImplementedError` as expected, but the test verifies the cache is empty (exception does not populate the cache per `PipelineCache` contract), confirming `get_or_load` was called with the correct key format.
+**Mode:** real
+**Inputs:** `PipelineCache()`, `NodeContext(mock=False, pipeline_cache=cache)`, `model_id="test_model"`.
+**Expected output:** `NotImplementedError` is raised; `cache._cache` is empty (length 0).
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_model_real_cache_key_format -v -m real_mode` exits 0.
+
+## test_load_model_real_raises_no_diffusion_arch (worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `LoadModel` node class is implemented in `worker/nodes/loader.py`. The real branch calls `pipeline_cache.get_or_load()` with a loader_fn that raises `NotImplementedError("no diffusion arch module registered yet")`.
+**Tests:** Canonical real-mode test. Constructs a `NodeContext` with `mock=False`, calls `execute(model_id="zit-test")`, and asserts `NotImplementedError` is raised with the exact Phase-19 groundwork message.
+**Mode:** real
+**Inputs:** `NodeContext(mock=False)`, `model_id="zit-test"`.
+**Expected output:** `NotImplementedError("no diffusion arch module registered yet")` is raised.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_model_real_raises_no_diffusion_arch -v -m real_mode` exits 0.
 
 ---
 

@@ -65,10 +65,18 @@ class LoadModel(BaseNode):
             # was propagated through the node system.
             return {"model": {"mock": True, "model_id": inputs["model_id"]}}
         else:
-            # Real branch: placeholder — actual safetensors reading and
-            # architecture dispatch is deferred to P19-C2. A bare
-            # NotImplementedError surfaces the missing implementation
-            # immediately rather than silently passing through.
-            raise NotImplementedError(
-                "LoadModel real loading deferred to P19-C2"
+            # Real branch: delegate to the pipeline cache so the
+            # infrastructure (get_or_load + caching contract) is in
+            # place for Phase 20. The loader_fn itself raises
+            # NotImplementedError because no diffusion arch module
+            # has been registered yet — real loading is deferred to
+            # P20. The cache is not modified on exception per the
+            # PipelineCache contract.
+            return ctx.pipeline_cache.get_or_load(
+                inputs["model_id"],
+                lambda: (_ for _ in ()).throw(
+                    NotImplementedError(
+                        "no diffusion arch module registered yet"
+                    )
+                ),
             )
