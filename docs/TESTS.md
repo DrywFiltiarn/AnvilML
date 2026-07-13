@@ -6884,3 +6884,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `NodeContext(mock=False, pipeline_cache=PipelineCache())`, `model_id="zit-clip"`.
 **Expected output:** `NotImplementedError("no diffusion arch module registered yet")` is raised.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_clip_real_raises_no_diffusion_arch -v -m real_mode` exits 0.
+
+---
+
+## test_infer_hyperparams_regular_fixture (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `_infer_hyperparams()` function is implemented in `worker/nodes/arch/diffusion/zit.py`. The fixture `worker/tests/fixtures/zit_tiny.safetensors` contains a ZiT-shaped checkpoint with `arch="zit"` metadata and recognizable ZiT key prefixes (`input_proj.weight`, `double_blocks.0.*`, `single_blocks.0.*`, `latents`, etc.).
+**Tests:** `_infer_hyperparams()` against `zit_tiny.safetensors` returns a dict with all expected keys and correct values: hidden_dim=64, double_block_count=1, single_block_count=1, latent_channels=4, latent_height=8, latent_width=8, patch_size=16, arch="zit".
+**Mode:** both
+**Inputs:** Path to `worker/tests/fixtures/zit_tiny.safetensors`.
+**Expected output:** Dict with all 8 keys; hidden_dim=64, double_block_count=1, single_block_count=1, latent_channels=4, latent_height=8, latent_width=8, patch_size=16, arch="zit".
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_infer_hyperparams_regular_fixture -v` exits 0.
+
+---
+
+## test_infer_hyperparams_no_metadata_fixture (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `_infer_hyperparams()` function is implemented in `worker/nodes/arch/diffusion/zit.py`. The fixture `worker/tests/fixtures/zit_tiny_no_metadata.safetensors` contains a ZiT-shaped checkpoint with no `arch` metadata key and xyz-prefixed keys (`xyz_double_block_*`, `xyz_single_block_*`, `xyz_output_proj`, `xyz_latents`).
+**Tests:** `_infer_hyperparams()` against `zit_tiny_no_metadata.safetensors` succeeds via the metadata-fallback path, deriving arch="zit" from key naming patterns (double_block, single_block, output_proj), and returns the same shape-based hyperparameters as the regular fixture.
+**Mode:** both
+**Inputs:** Path to `worker/tests/fixtures/zit_tiny_no_metadata.safetensors`.
+**Expected output:** Dict with arch="zit" (derived from key patterns); hidden_dim=64, double_block_count=1, single_block_count=1, latent_channels=4, latent_height=8, latent_width=8, patch_size=16.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_infer_hyperparams_no_metadata_fixture -v` exits 0.
+
+---
+
+## test_infer_hyperparams_nonexistent_path_raises (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `_infer_hyperparams()` function is implemented in `worker/nodes/arch/diffusion/zit.py`.
+**Tests:** `_infer_hyperparams()` raises `ValueError` for a non-existent file path, with a message containing "No such file".
+**Mode:** both
+**Inputs:** Path `/tmp/this_file_does_not_exist_abc123.safetensors` (does not exist).
+**Expected output:** `ValueError` raised with message containing "No such file".
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_infer_hyperparams_nonexistent_path_raises -v` exits 0.
+
+---
+
+## test_infer_hyperparams_truncated_header_raises (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `_infer_hyperparams()` function is implemented in `worker/nodes/arch/diffusion/zit.py`.
+**Tests:** `_infer_hyperparams()` raises `ValueError` for a truncated/corrupted safetensors file (a small binary blob that is not a valid safetensors header).
+**Mode:** both
+**Inputs:** Temporary file containing 8 random bytes (not a valid safetensors file).
+**Expected output:** `ValueError` raised.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_infer_hyperparams_truncated_header_raises -v` exits 0.
