@@ -5,11 +5,12 @@ for the ZiT diffusion transformer architecture. It implements steps 1–2 of
 the four-step loading contract defined in ANVILML_DESIGN.md §11.3:
 
     1. _infer_hyperparams(path) — open header-only, read all key shapes, return
-        a dict of inferred hyperparameters (hidden_dim, block counts, latent
-        dimensions, patch_size, arch string).
+         a dict of inferred hyperparameters (hidden_dim, block counts, latent
+         dimensions, patch_size, arch string, native_dtype).
     2. can_handle(key) — implemented; returns True for "zit".
-    3. load(path) — step 2: construct nn.Module on torch.device("meta").
-        dtype selection deferred to P20-C2; materialization deferred to P20-C3.
+    3. load(path, caps) — step 2: construct nn.Module on torch.device("meta")
+         with dtype selection per InferenceCaps.
+         Materialization deferred to P20-C3.
     4. sample(z, prompt, **kwargs) — deferred to P20-C3.
 
 The ZiT architecture is a diffusion transformer that uses zero-initialized
@@ -139,36 +140,57 @@ class ZiTModel(nn.Module):
         self.arch: str = "zit"
 
 
-# REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_load_meta_construction_real
-# MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_load_meta_construction_mock
-def load(path: str) -> ZiTModel:
-    """Construct the ZiT model on meta-device (step 2 of the loading contract).
+# REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_dtype_selection_bf16_real
+# MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_dtype_selection_bf16_mock
+def load(path: str, caps: dict) -> ZiTModel:
+    """Construct the ZiT model on meta-device with dtype selection (step 2 of the loading contract).
 
     Opens the checkpoint header, infers hyperparameters from tensor shapes,
-    constructs the target ``nn.Module`` on ``torch.device("meta")``, and returns it
-    with ``.arch`` set to ``"zit"``. No real memory is allocated.
+    selects the compute dtype based on the worker's capability dict (caps) and
+    the checkpoint's native dtype, constructs the target ``nn.Module`` on
+    ``torch.device("meta")``, and returns it with ``.arch`` set to ``"zit"``.
+    No real memory is allocated.
 
     Args:
         path: Filesystem path to a ZiT-format safetensors checkpoint file.
+        caps: Worker capability dict from ``probe_capabilities()`` with keys
+            ``fp32``, ``fp16``, ``bf16``, ``fp8``, ``fp4``, ``flash_attention``
+            (all bool). The dtype selection follows the fixed precedence in
+            ANVILML_DESIGN.md §11.5: fp8 (if caps.fp8 AND native is fp8)
+            → bf16 → fp16 → fp32.
 
     Returns:
         A ``ZiTModel`` instance constructed on ``torch.device("meta")`` with
-        ``.arch == "zit"``.
+        ``.arch == "zit"`` and meta-parameters carrying the selected dtype.
 
     Raises:
         ValueError: If the checkpoint cannot be opened or hyperparameters
             cannot be inferred (delegated to ``_infer_hyperparams``).
     """
-    # Step 1 (from P20-B1): infer hyperparameters from checkpoint header.
-    # This reads only the ~100KB metadata header — no tensor data is loaded.
+    # Step 1 (from P20-B1): infer hyperparameters from checkpoint header,
+    # including the native dtype of the first weight tensor. This reads only
+    # the ~100KB metadata header — no tensor data is loaded.
     hyperparams = _infer_hyperparams(path)
 
-    # Step 2 (this task): construct on meta-device.
+    # Step 2 (this task): select the compute dtype per the fixed precedence
+    # in ANVILML_DESIGN.md §11.5. The native dtype is read from the checkpoint
+    # header; the capability flags come from the worker's own torch-level probe.
+    # This ensures the dtype decision is driven by both what the checkpoint
+    # actually uses and what the worker hardware can execute.
+    target_dtype = _select_dtype(caps, hyperparams["native_dtype"])
+
+    # Step 3 (this task): construct on meta-device with selected dtype.
     # Using torch.device("meta") means no real memory is allocated for
     # parameters — the module structure exists but tensors have shape
     # metadata only. This prevents the ~15GB crash from P904.
     with torch.device("meta"):
         model = ZiTModel(hyperparams)
+
+    # Apply the selected dtype to the meta-constructed module.
+    # model.to(dtype) on a module with meta-device parameters changes their
+    # dtype metadata without allocating real memory — this is the standard
+    # PyTorch idiom for dtype selection before weight loading (P20-C3).
+    model.to(target_dtype)
 
     # Set architecture identifier using the module-level ARCH constant
     # (not a bare string) to keep it in sync with can_handle() and the
@@ -220,6 +242,9 @@ def _infer_hyperparams(path: str) -> dict[str, Any]:
         - ``latent_width`` (int): Latent width dimension.
         - ``patch_size`` (int): Patch size derived from hidden_dim / latent_channels.
         - ``arch`` (str): Architecture string (e.g. ``"zit"``).
+        - ``native_dtype`` (str): Canonical native dtype string (e.g. ``"fp32"``,
+            ``"fp16"``, ``"bf16"``, ``"fp8"``) inferred from the first weight
+            tensor in the checkpoint header.
 
     Raises:
         ValueError: If the file is not a valid safetensors file, is truncated,
@@ -256,7 +281,7 @@ def _infer_hyperparams_inner(
         path: Original filesystem path (for error messages).
 
     Returns:
-        A dict of inferred hyperparameters.
+        A dict of inferred hyperparameters including ``native_dtype``.
 
     Raises:
         ValueError: If the checkpoint does not contain the expected ZiT
@@ -267,6 +292,29 @@ def _infer_hyperparams_inner(
     # beyond index 30, causing incorrect block counts for models with
     # 12+ double/single blocks. We read every key, unconditionally.
     keys = f.keys()
+
+    # ------------------------------------------------------------------
+    # 0. Detect native dtype from the first weight tensor.
+    # ------------------------------------------------------------------
+    # The safetensors header stores each tensor's dtype as a string
+    # (e.g. "F32", "F16", "BF16", "F8_E4M3", "I32"). We iterate over
+    # all keys and collect the dtype from the first weight tensor
+    # (identified by the ".weight" suffix) to determine the checkpoint's
+    # native precision. This is needed by _select_dtype() to decide
+    # whether FP8 is viable (caps.fp8 AND native_dtype == fp8).
+    # If no weight tensor is found (e.g. no-metadata fixtures with
+    # xyz_ prefixed keys), default to fp32 — the conservative safe
+    # choice that prevents fp8 selection on unknown checkpoints.
+    native_dtype: str = "fp32"
+    for key in keys:
+        if key.endswith(".weight"):
+            # get_dtype() returns the safetensors dtype string
+            # (e.g. "F32", "BF16", "F8_E4M3") for the first weight tensor.
+            safetensors_dtype: str = f.get_slice(key).get_dtype()
+            # Map the safetensors dtype string to a canonical lowercase
+            # form that _select_dtype() uses for comparison.
+            native_dtype = _safetensors_dtype_to_canonical(safetensors_dtype)
+            break
 
     # ------------------------------------------------------------------
     # 1. Infer hidden_dim from projection keys.
@@ -407,7 +455,8 @@ def _infer_hyperparams_inner(
                 "and no recognizable key patterns found"
             )
 
-    # Return all inferred hyperparameters as a single dict.
+    # Return all inferred hyperparameters as a single dict, including
+    # the native_dtype so _select_dtype() can make an informed decision.
     return {
         "hidden_dim": hidden_dim,
         "double_block_count": double_block_count,
@@ -417,4 +466,79 @@ def _infer_hyperparams_inner(
         "latent_width": latent_width,
         "patch_size": patch_size,
         "arch": arch,
+        "native_dtype": native_dtype,
     }
+
+
+def _safetensors_dtype_to_canonical(safetensors_dtype: str) -> str:
+    """Map a safetensors dtype string to a canonical lowercase form.
+
+    Safetensors stores dtypes as uppercase abbreviations in the header
+    (e.g. "F32", "BF16", "F8_E4M3"). This function normalizes them to
+    lowercase canonical strings for comparison in _select_dtype().
+
+    Args:
+        safetensors_dtype: A dtype string from safetensors tensor info,
+            e.g. "F32", "F16", "BF16", "F8_E4M3", "F8_E5M2", "I32".
+
+    Returns:
+        A canonical lowercase string: "fp32", "fp16", "bf16", "fp8", etc.
+    """
+    # Map known safetensors dtype strings to their canonical forms.
+    # The mapping covers all dtypes that ZiT checkpoints may use:
+    # F32/F16/BF16 for standard precision, F8_E4M3/F8_E5M2 for FP8,
+    # and I32 for integer metadata (falls through to fp32).
+    mapping: dict[str, str] = {
+        "F32": "fp32",
+        "F16": "fp16",
+        "BF16": "bf16",
+        "F8_E4M3": "fp8",
+        "F8_E5M2": "fp8",
+    }
+    # Unknown dtypes (e.g. "I32" for integer metadata) fall back to fp32,
+    # which is the safe default — integer tensors are never compute tensors.
+    return mapping.get(safetensors_dtype, "fp32")
+
+
+def _select_dtype(caps: dict, native_dtype: str) -> torch.dtype:
+    """Select the compute dtype per the fixed precedence in ANVILML_DESIGN.md §11.5.
+
+    Implements the precedence chain: fp8 (if caps.fp8 AND native is fp8)
+    → bf16 → fp16 → fp32. The native dtype is compared against known
+    FP8 formats to determine whether the checkpoint was originally
+    trained in FP8 — a checkpoint in F32 does not benefit from fp8
+    caps because the weights would need to be converted first.
+
+    Args:
+        caps: Worker capability dict from ``probe_capabilities()`` with keys
+            ``fp32``, ``fp16``, ``bf16``, ``fp8``, ``fp4``, ``flash_attention``.
+        native_dtype: Canonical native dtype string from the checkpoint
+            header (e.g. "fp32", "fp16", "bf16", "fp8").
+
+    Returns:
+        A ``torch.dtype`` constant for the selected compute precision.
+    """
+    # Branch 1: FP8 — only selected when the worker supports fp8 AND the
+    # checkpoint was originally saved in an FP8 format. Both conditions
+    # must hold because loading an F32 checkpoint at fp8 would require
+    # a weight conversion step that is not implemented yet (deferred to
+    # the materialization step in P20-C3).
+    if caps.get("fp8", False) and native_dtype == "fp8":
+        return torch.float8_e4m3fn
+
+    # Branch 2: BF16 — the next-highest precision when FP8 is not viable.
+    # bfloat16 is widely supported on modern GPUs and provides dynamic
+    # range close to fp32 with half the memory footprint.
+    if caps.get("bf16", False):
+        return torch.bfloat16
+
+    # Branch 3: FP16 — the next fallback when bf16 is not available.
+    # float16 has a narrower dynamic range than bf16 but is still
+    # significantly more memory-efficient than fp32.
+    if caps.get("fp16", False):
+        return torch.float16
+
+    # Branch 4: FP32 — the universal fallback. Every device supports fp32,
+    # so this path is always reachable. It is the most numerically stable
+    # but also the most memory-intensive option.
+    return torch.float32

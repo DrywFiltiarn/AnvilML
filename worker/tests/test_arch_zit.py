@@ -3,12 +3,24 @@
 from pathlib import Path
 
 import pytest
+import torch
 
 from worker.nodes.arch.diffusion import get_module
 from worker.nodes.arch.diffusion import zit
-from worker.nodes.arch.diffusion.zit import _infer_hyperparams, can_handle, load
+from worker.nodes.arch.diffusion.zit import _infer_hyperparams, _select_dtype, can_handle, load
 
 _FIXTURE_DIR = Path(__file__).parent / "fixtures"
+
+# Default caps dict — all precision flags False except fp32 (always True).
+# Used by tests that need a minimal caps dict but don't care about dtype selection.
+_DEFAULT_CAPS: dict = {
+    "fp32": True,
+    "fp16": False,
+    "bf16": False,
+    "fp8": False,
+    "fp4": False,
+    "flash_attention": False,
+}
 
 
 def test_infer_hyperparams_regular_fixture() -> None:
@@ -24,7 +36,7 @@ def test_infer_hyperparams_regular_fixture() -> None:
     fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
     result = _infer_hyperparams(str(fixture_path))
 
-    # Assert all expected keys are present.
+    # Assert all expected keys are present (including native_dtype added in P20-C2).
     expected_keys: list[str] = [
         "hidden_dim",
         "double_block_count",
@@ -34,6 +46,7 @@ def test_infer_hyperparams_regular_fixture() -> None:
         "latent_width",
         "patch_size",
         "arch",
+        "native_dtype",
     ]
     for key in expected_keys:
         assert key in result, f"missing key '{key}' in hyperparameter dict"
@@ -157,77 +170,213 @@ def test_get_module_returns_zit_for_matching_key() -> None:
     assert result is zit
 
 
-def test_load_meta_construction_real() -> None:
-    """load() constructs a ZiTModel on meta-device from the regular fixture.
+# ---------------------------------------------------------------------------
+# New dtype selection tests (P20-C2)
+# ---------------------------------------------------------------------------
 
-    Calls load() against ``zit_tiny.safetensors`` (which has arch="zit"
-    metadata and all ZiT key prefixes) and asserts:
-    - The returned object is an instance of ``ZiTModel``.
-    - The ``.arch`` attribute equals ``"zit"``.
-    - All parameters are on ``torch.device("meta")``.
 
-    This is the primary real-mode test for the load() function.
+def test_dtype_selection_fp8_caps_and_native() -> None:
+    """_select_dtype() returns float8_e4m3fn when caps.fp8=True AND native_dtype is fp8.
+
+    Tests the _select_dtype() pure function with controlled inputs:
+    caps.fp8=True and native_dtype="fp8". This verifies the first branch
+    of the §11.5 precedence chain without relying on fixture properties.
+
+    The fixture checkpoint is F32, so the full load() path cannot exercise
+    the fp8 branch — this unit test covers that gap.
     """
-    import torch
+    caps = {
+        "fp32": True,
+        "fp16": False,
+        "bf16": False,
+        "fp8": True,
+        "fp4": False,
+        "flash_attention": False,
+    }
+    result = _select_dtype(caps, "fp8")
+    assert result == torch.float8_e4m3fn
 
+
+def test_dtype_selection_fp8_native_non_fp8_caps_fp8() -> None:
+    """_select_dtype() falls through to bf16 when native_dtype is NOT fp8, even with caps.fp8=True.
+
+    Tests that caps.fp8=True alone is insufficient — the native dtype must
+    also be fp8. With native_dtype="fp32" and caps.fp8=True, bf16 should
+    NOT be selected (bf16=False too), so fp32 is the result.
+
+    This verifies the AND condition in the first precedence branch.
+    """
+    caps = {
+        "fp32": True,
+        "fp16": False,
+        "bf16": False,
+        "fp8": True,
+        "fp4": False,
+        "flash_attention": False,
+    }
+    result = _select_dtype(caps, "fp32")
+    assert result == torch.float32
+
+
+def test_dtype_selection_bf16_real() -> None:
+    """load() selects bfloat16 when caps.bf16=True and checkpoint native is F32.
+
+    Calls load() against ``zit_tiny.safetensors`` (native dtype = F32) with
+    caps.bf16=True, fp16=True, fp8=False. The precedence chain selects bf16
+    (branch 2 of §11.5) since fp8 requires native_dtype == fp8.
+
+    This is the primary real-mode test for the load() function with dtype
+    selection. All parameters should have dtype torch.bfloat16.
+
+    # REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_dtype_selection_bf16_real
+    """
     fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
-    model = load(str(fixture_path))
+    caps = {
+        "fp32": True,
+        "fp16": True,
+        "bf16": True,
+        "fp8": False,
+        "fp4": False,
+        "flash_attention": False,
+    }
+    model = load(str(fixture_path), caps)
 
     # Verify the returned object is the correct model class.
     assert isinstance(model, torch.nn.Module)
     # Verify the architecture identifier is set.
     assert model.arch == "zit"
-
-    # Verify all parameters are on the meta device — no real memory allocated.
-    for param in model.parameters():
-        assert param.device.type == "meta", (
-            f"expected parameter on meta device, got {param.device}"
-        )
-
-
-def test_load_meta_construction_mock() -> None:
-    """load() constructs a ZiTModel on meta-device under mock-mode conditions.
-
-    Calls load() against ``zit_tiny.safetensors`` and asserts the same
-    invariants as ``test_load_meta_construction_real`` — this is the
-    mock-mode counterpart required by the dual-mode parity marker
-    convention (ANVILML_DESIGN.md §10.6). The load() function itself
-    has no mock/real path divergence, but the marker convention requires
-    a distinct test name for each mode.
-    """
-    import torch
-
-    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
-    model = load(str(fixture_path))
-
-    # Verify the returned object is the correct model class.
-    assert isinstance(model, torch.nn.Module)
-    # Verify the architecture identifier is set.
-    assert model.arch == "zit"
-
     # Verify all parameters are on the meta device.
     for param in model.parameters():
         assert param.device.type == "meta", (
             f"expected parameter on meta device, got {param.device}"
         )
+    # Verify the selected dtype is bfloat16 — bf16 takes precedence
+    # over fp16 in the §11.5 chain, and fp8 is not viable since the
+    # fixture native dtype is F32.
+    assert next(model.parameters()).dtype == torch.bfloat16
+
+
+def test_dtype_selection_bf16_mock() -> None:
+    """load() selects bfloat16 under mock-mode conditions.
+
+    Calls load() against ``zit_tiny.safetensors`` with caps.bf16=True,
+    fp16=True, fp8=False. This is the mock-mode counterpart required by
+    the dual-mode parity marker convention (ANVILML_DESIGN.md §10.6).
+    The load() function itself has no mock/real path divergence, but the
+    marker convention requires a distinct test name for each mode.
+
+    # MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_dtype_selection_bf16_mock
+    """
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    caps = {
+        "fp32": True,
+        "fp16": True,
+        "bf16": True,
+        "fp8": False,
+        "fp4": False,
+        "flash_attention": False,
+    }
+    model = load(str(fixture_path), caps)
+
+    # Verify the returned object is the correct model class.
+    assert isinstance(model, torch.nn.Module)
+    # Verify the architecture identifier is set.
+    assert model.arch == "zit"
+    # Verify all parameters are on the meta device.
+    for param in model.parameters():
+        assert param.device.type == "meta", (
+            f"expected parameter on meta device, got {param.device}"
+        )
+    # Verify the selected dtype is bfloat16.
+    assert next(model.parameters()).dtype == torch.bfloat16
+
+
+def test_dtype_selection_fp16_only() -> None:
+    """load() selects float16 when only caps.fp16=True (bf16=False, fp8=False).
+
+    Calls load() against ``zit_tiny.safetensors`` with caps.fp16=True,
+    bf16=False, fp8=False. The precedence chain selects fp16 (branch 3)
+    since bf16 is not available.
+
+    This verifies the fp16 fallback branch of the §11.5 precedence chain.
+    """
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    caps = {
+        "fp32": True,
+        "fp16": True,
+        "bf16": False,
+        "fp8": False,
+        "fp4": False,
+        "flash_attention": False,
+    }
+    model = load(str(fixture_path), caps)
+
+    # Verify the selected dtype is float16 — fp16 is the highest
+    # available precision when bf16 and fp8 are not supported.
+    assert next(model.parameters()).dtype == torch.float16
+
+
+def test_dtype_selection_fp32_fallback() -> None:
+    """load() selects float32 when all precision caps are False (universal fallback).
+
+    Calls load() against ``zit_tiny.safetensors`` with all precision flags
+    False. The precedence chain falls through to fp32 (branch 4), which
+    is always supported on every device.
+
+    This verifies the universal fallback branch of the §11.5 precedence chain.
+    """
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    caps = {
+        "fp32": True,
+        "fp16": False,
+        "bf16": False,
+        "fp8": False,
+        "fp4": False,
+        "flash_attention": False,
+    }
+    model = load(str(fixture_path), caps)
+
+    # Verify the selected dtype is float32 — the universal fallback
+    # when no higher-precision capability is available.
+    assert next(model.parameters()).dtype == torch.float32
+
+
+def test_dtype_selection_fp8_beats_bf16() -> None:
+    """_select_dtype() selects fp8 over bf16 when both caps are True and native is fp8.
+
+    Tests the _select_dtype() pure function with caps.fp8=True, bf16=True,
+    and native_dtype="fp8". This verifies that fp8 takes precedence over
+    bf16 when both the capability and the checkpoint native dtype are fp8.
+
+    This is the priority test — it confirms the precedence ordering is
+    correct: fp8 > bf16 > fp16 > fp32.
+    """
+    caps = {
+        "fp32": True,
+        "fp16": False,
+        "bf16": True,
+        "fp8": True,
+        "fp4": False,
+        "flash_attention": False,
+    }
+    result = _select_dtype(caps, "fp8")
+    assert result == torch.float8_e4m3fn
 
 
 def test_load_meta_device_zero_real_memory() -> None:
     """load() allocates zero real memory — all parameters reside on meta device.
 
-    Calls load() and verifies that every parameter's ``.device.type`` is
-    ``"meta"``. Meta tensors have shape metadata only — no actual GPU/CPU
-    memory buffer is allocated. This is the zero-memory guarantee that
-    prevents the ~15 GB construction crash that P904 experienced.
+    Calls load() with the default caps dict and verifies that every
+    parameter's ``.device.type`` is ``"meta"``. Meta tensors have shape
+    metadata only — no actual GPU/CPU memory buffer is allocated. This
+    is the zero-memory guarantee that prevents the ~15 GB construction
+    crash that P904 experienced.
 
-    Unlike ``test_load_meta_construction_real`` which also checks the model
-    class and ``.arch`` attribute, this test focuses exclusively on the
-    zero-memory property.
+    This test exercises the full load() path (with caps parameter) while
+    focusing exclusively on the zero-memory property.
     """
-    import torch
-
     fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
-    model = load(str(fixture_path))
+    model = load(str(fixture_path), _DEFAULT_CAPS)
 
     # Every parameter must be on the meta device — this is the zero-memory
     # guarantee. Meta tensors carry shape metadata but allocate no real
@@ -243,13 +392,16 @@ def test_load_meta_construction_no_metadata_variant() -> None:
 
     Calls load() against ``zit_tiny_no_metadata.safetensors`` (which has
     no "arch" key in its safetensors header and uses xyz_ prefixed keys)
-    and asserts it succeeds via the metadata-fallback path in
-    ``_infer_hyperparams()`` and returns a valid ``ZiTModel``.
-    """
-    import torch
+    with the default caps dict, and asserts it succeeds via the
+    metadata-fallback path in ``_infer_hyperparams()`` and returns a
+    valid ``ZiTModel``.
 
+    This exercises the full load() path (with caps parameter) against the
+    no-metadata fixture, confirming the metadata-fallback and dtype
+    selection work together correctly.
+    """
     fixture_path = _FIXTURE_DIR / "zit_tiny_no_metadata.safetensors"
-    model = load(str(fixture_path))
+    model = load(str(fixture_path), _DEFAULT_CAPS)
 
     assert isinstance(model, torch.nn.Module)
     assert model.arch == "zit"
@@ -268,4 +420,4 @@ def test_load_raises_invalid_hyperparams() -> None:
     """
     nonexistent = "/tmp/this_file_does_not_exist_abc123.safetensors"
     with pytest.raises(ValueError, match="No such file"):
-        load(nonexistent)
+        load(nonexistent, _DEFAULT_CAPS)

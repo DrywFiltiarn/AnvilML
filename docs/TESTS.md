@@ -6891,10 +6891,10 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 **File:** `worker/tests/test_arch_zit.py`
 **Context:** The `_infer_hyperparams()` function is implemented in `worker/nodes/arch/diffusion/zit.py`. The fixture `worker/tests/fixtures/zit_tiny.safetensors` contains a ZiT-shaped checkpoint with `arch="zit"` metadata and recognizable ZiT key prefixes (`input_proj.weight`, `double_blocks.0.*`, `single_blocks.0.*`, `latents`, etc.).
-**Tests:** `_infer_hyperparams()` against `zit_tiny.safetensors` returns a dict with all expected keys and correct values: hidden_dim=64, double_block_count=1, single_block_count=1, latent_channels=4, latent_height=8, latent_width=8, patch_size=16, arch="zit".
+**Tests:** `_infer_hyperparams()` against `zit_tiny.safetensors` returns a dict with all expected keys and correct values: hidden_dim=64, double_block_count=1, single_block_count=1, latent_channels=4, latent_height=8, latent_width=8, patch_size=16, arch="zit", native_dtype="fp32".
 **Mode:** both
 **Inputs:** Path to `worker/tests/fixtures/zit_tiny.safetensors`.
-**Expected output:** Dict with all 8 keys; hidden_dim=64, double_block_count=1, single_block_count=1, latent_channels=4, latent_height=8, latent_width=8, patch_size=16, arch="zit".
+**Expected output:** Dict with all 9 keys; hidden_dim=64, double_block_count=1, single_block_count=1, latent_channels=4, latent_height=8, latent_width=8, patch_size=16, arch="zit", native_dtype="fp32".
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_infer_hyperparams_regular_fixture -v` exits 0.
 
 ---
@@ -6971,26 +6971,14 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 ---
 
-## test_load_meta_construction_real (worker)
-
-**File:** `worker/tests/test_arch_zit.py`
-**Context:** The `load()` function is implemented in `worker/nodes/arch/diffusion/zit.py` and calls `_infer_hyperparams()` to build a `ZiTModel` on `torch.device("meta")`.
-**Tests:** `load()` against `zit_tiny.safetensors` returns a `ZiTModel` instance with `.arch == "zit"` and all parameters on `torch.device("meta")`.
-**Mode:** both
-**Inputs:** Path to `zit_tiny.safetensors` fixture (arch="zit" metadata, all ZiT key prefixes).
-**Expected output:** `ZiTModel` with `.arch == "zit"`, all parameters on meta device.
-**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_meta_construction_real -v` exits 0.
-
----
-
 ## test_load_meta_device_zero_real_memory (worker)
 
 **File:** `worker/tests/test_arch_zit.py`
-**Context:** The `load()` function constructs the model inside `torch.device("meta")` context, so no real memory is allocated.
-**Tests:** `load()` returns a model where `sum(p.numel() for p in model.parameters())` equals zero — confirming zero real memory allocation.
+**Context:** The `load()` function constructs the model inside `torch.device("meta")` context with dtype selection per `caps`, so no real memory is allocated.
+**Tests:** `load()` with the default caps dict (all precision flags False except fp32) returns a model where every parameter is on `torch.device("meta")` — confirming zero real memory allocation.
 **Mode:** both
-**Inputs:** Path to `zit_tiny.safetensors` fixture.
-**Expected output:** `sum(p.numel()) == 0` — zero real memory.
+**Inputs:** Path to `zit_tiny.safetensors` fixture, default caps dict.
+**Expected output:** All parameters on meta device — zero real memory.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_meta_device_zero_real_memory -v` exits 0.
 
 ---
@@ -6998,10 +6986,10 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 ## test_load_meta_construction_no_metadata_variant (worker)
 
 **File:** `worker/tests/test_arch_zit.py`
-**Context:** The `load()` function delegates hyperparameter inference to `_infer_hyperparams()`, which has a metadata-fallback path that detects ZiT from key patterns when the "arch" metadata key is absent.
-**Tests:** `load()` against `zit_tiny_no_metadata.safetensors` succeeds via the fallback path and returns a valid `ZiTModel`.
+**Context:** The `load()` function delegates hyperparameter inference to `_infer_hyperparams()`, which has a metadata-fallback path that detects ZiT from key patterns when the "arch" metadata key is absent. The `load()` function now requires a `caps` parameter for dtype selection.
+**Tests:** `load()` against `zit_tiny_no_metadata.safetensors` with the default caps dict succeeds via the fallback path and returns a valid `ZiTModel` with all parameters on meta device.
 **Mode:** both
-**Inputs:** Path to `zit_tiny_no_metadata.safetensors` fixture (no "arch" metadata, xyz_ prefixed keys).
+**Inputs:** Path to `zit_tiny_no_metadata.safetensors` fixture (no "arch" metadata, xyz_ prefixed keys), default caps dict.
 **Expected output:** `ZiTModel` with `.arch == "zit"`, all parameters on meta device.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_meta_construction_no_metadata_variant -v` exits 0.
 
@@ -7010,21 +6998,95 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 ## test_load_raises_invalid_hyperparams (worker)
 
 **File:** `worker/tests/test_arch_zit.py`
-**Context:** The `load()` function delegates to `_infer_hyperparams()` which raises `ValueError` for invalid inputs; this error propagates through `load()`.
-**Tests:** `load()` with a non-existent file path raises `ValueError` — confirming error propagation from `_infer_hyperparams()`.
+**Context:** The `load()` function delegates to `_infer_hyperparams()` which raises `ValueError` for invalid inputs; this error propagates through `load()`. The `load()` function now requires a `caps` parameter.
+**Tests:** `load()` with a non-existent file path and a default caps dict raises `ValueError` — confirming error propagation from `_infer_hyperparams()`.
 **Mode:** both
-**Inputs:** Non-existent path `"/tmp/this_file_does_not_exist_abc123.safetensors"`.
+**Inputs:** Non-existent path `"/tmp/this_file_does_not_exist_abc123.safetensors"`, default caps dict.
 **Expected output:** `ValueError` with "No such file" in the message.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_raises_invalid_hyperparams -v` exits 0.
 
 ---
 
-## test_load_meta_construction_mock (worker)
+
+
+## test_dtype_selection_fp8_caps_and_native (worker)
 
 **File:** `worker/tests/test_arch_zit.py`
-**Context:** The `load()` function is implemented in `worker/nodes/arch/diffusion/zit.py` and calls `_infer_hyperparams()` to build a `ZiTModel` on `torch.device("meta")`. This is the mock-mode counterpart required by the dual-mode parity marker convention (ANVILML_DESIGN.md §10.6).
-**Tests:** `load()` against `zit_tiny.safetensors` returns a `ZiTModel` instance with `.arch == "zit"` and all parameters on `torch.device("meta")`.
+**Context:** The `_select_dtype()` function is implemented in `worker/nodes/arch/diffusion/zit.py` and encodes the fixed precedence chain from ANVILML_DESIGN.md §11.5. The fixture checkpoint is F32, so the full `load()` path cannot exercise the fp8 branch — this unit test covers that gap with controlled inputs.
+**Tests:** `_select_dtype()` with caps.fp8=True and native_dtype="fp8" returns `torch.float8_e4m3fn` — the first branch of the §11.5 precedence.
 **Mode:** both
-**Inputs:** Path to `zit_tiny.safetensors` fixture (arch="zit" metadata, all ZiT key prefixes).
-**Expected output:** `ZiTModel` with `.arch == "zit"`, all parameters on meta device.
-**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_meta_construction_mock -v` exits 0.
+**Inputs:** caps dict with fp8=True, native_dtype string "fp8".
+**Expected output:** `torch.float8_e4m3fn`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_dtype_selection_fp8_caps_and_native -v` exits 0.
+
+---
+
+## test_dtype_selection_fp8_native_non_fp8_caps_fp8 (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `_select_dtype()` function requires BOTH caps.fp8=True AND native_dtype=="fp8" to select fp8. This test verifies the AND condition by passing caps.fp8=True with native_dtype="fp32".
+**Tests:** `_select_dtype()` with caps.fp8=True but native_dtype="fp32" falls through to fp32 (the universal fallback, since bf16=False and fp16=False in this caps dict).
+**Mode:** both
+**Inputs:** caps dict with fp8=True, bf16=False, fp16=False, native_dtype string "fp32".
+**Expected output:** `torch.float32`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_dtype_selection_fp8_native_non_fp8_caps_fp8 -v` exits 0.
+
+---
+
+## test_dtype_selection_bf16_real (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `load()` function is implemented in `worker/nodes/arch/diffusion/zit.py` and calls `_select_dtype()` to pick the compute dtype from the worker's capability dict and the checkpoint's native dtype. The fixture is F32, so fp8 is not viable even with caps.fp8=True.
+**Tests:** `load()` against `zit_tiny.safetensors` with caps.bf16=True, fp16=True, fp8=False returns a `ZiTModel` with all parameters at `torch.bfloat16`. This is the primary real-mode test for the load() function with dtype selection and serves as the `REAL_PATH_VERIFIED` parity marker.
+**Mode:** real
+**Inputs:** Path to `zit_tiny.safetensors` fixture, caps dict with bf16=True, fp16=True, fp8=False.
+**Expected output:** `ZiTModel` with `.arch == "zit"`, all parameters on meta device, dtype `torch.bfloat16`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_dtype_selection_bf16_real -v -m real_mode` exits 0.
+
+---
+
+## test_dtype_selection_bf16_mock (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `load()` function is implemented in `worker/nodes/arch/diffusion/zit.py` and calls `_select_dtype()` to pick the compute dtype. This is the mock-mode counterpart required by the dual-mode parity marker convention (ANVILML_DESIGN.md §10.6).
+**Tests:** `load()` against `zit_tiny.safetensors` with caps.bf16=True, fp16=True, fp8=False returns a `ZiTModel` with all parameters at `torch.bfloat16`. This serves as the `MOCK_PATH_VERIFIED` parity marker.
+**Mode:** mock
+**Inputs:** Path to `zit_tiny.safetensors` fixture, caps dict with bf16=True, fp16=True, fp8=False.
+**Expected output:** `ZiTModel` with `.arch == "zit"`, all parameters on meta device, dtype `torch.bfloat16`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_dtype_selection_bf16_mock -v -m "not real_mode"` exits 0.
+
+---
+
+## test_dtype_selection_fp16_only (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `load()` function calls `_select_dtype()` which follows the precedence: fp8 → bf16 → fp16 → fp32. This test verifies the fp16 branch when bf16 is not available.
+**Tests:** `load()` against `zit_tiny.safetensors` with caps.fp16=True, bf16=False, fp8=False returns a `ZiTModel` with all parameters at `torch.float16`.
+**Mode:** both
+**Inputs:** Path to `zit_tiny.safetensors` fixture, caps dict with fp16=True, bf16=False, fp8=False.
+**Expected output:** `ZiTModel` with all parameters at `torch.float16` on meta device.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_dtype_selection_fp16_only -v` exits 0.
+
+---
+
+## test_dtype_selection_fp32_fallback (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `load()` function calls `_select_dtype()` which falls through to fp32 as the universal fallback when no higher-precision capability is available.
+**Tests:** `load()` against `zit_tiny.safetensors` with all precision flags False returns a `ZiTModel` with all parameters at `torch.float32`.
+**Mode:** both
+**Inputs:** Path to `zit_tiny.safetensors` fixture, caps dict with all precision flags False.
+**Expected output:** `ZiTModel` with all parameters at `torch.float32` on meta device.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_dtype_selection_fp32_fallback -v` exits 0.
+
+---
+
+## test_dtype_selection_fp8_beats_bf16 (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `_select_dtype()` function implements the fixed precedence from ANVILML_DESIGN.md §11.5 where fp8 takes priority over bf16. This test verifies the ordering by passing both caps.fp8=True and caps.bf16=True with native_dtype="fp8".
+**Tests:** `_select_dtype()` with caps.fp8=True, bf16=True, native_dtype="fp8" returns `torch.float8_e4m3fn` — confirming fp8 takes precedence over bf16.
+**Mode:** both
+**Inputs:** caps dict with fp8=True, bf16=True, native_dtype string "fp8".
+**Expected output:** `torch.float8_e4m3fn`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_dtype_selection_fp8_beats_bf16 -v` exits 0.
