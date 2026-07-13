@@ -27,6 +27,29 @@ from typing import Any
 
 from safetensors import safe_open
 
+# Canonical architecture identifier — the string that the dispatcher
+# passes to can_handle() when routing diffusion model requests.
+# Mirrors the "arch": "zit" value returned by _infer_hyperparams()
+# when it reads metadata or falls back to key-pattern inference.
+ARCH: str = "zit"
+
+
+def can_handle(key: str) -> bool:
+    """Confirm this module handles the given architecture key.
+
+    The dispatcher passes the architecture string (from safetensors
+    metadata or path fallback) as *key*. This function returns True
+    only when the key matches this module's canonical identifier.
+
+    Args:
+        key: Architecture string to check, e.g. ``"zit"`` or
+            ``"flux2klein"``.
+
+    Returns:
+        ``True`` if *key* equals ``"zit"``, ``False`` otherwise.
+    """
+    return key == ARCH
+
 
 def _infer_hyperparams(path: str) -> dict[str, Any]:
     """Infer architecture hyperparameters from a ZiT safetensors checkpoint header.

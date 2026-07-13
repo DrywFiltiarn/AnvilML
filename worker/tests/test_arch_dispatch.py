@@ -3,17 +3,34 @@
 from types import ModuleType
 from unittest.mock import Mock
 
+import pytest
+
 from worker.nodes.arch import clip
 from worker.nodes.arch import diffusion
 from worker.nodes.arch import vae
 
 
+@pytest.fixture(autouse=True)
+def _clear_diffusion_registry() -> None:
+    """Clear the diffusion registry before each test.
+
+    The zit module is registered at import time (P20-B2), so tests that
+    assert "empty registry" behaviour must temporarily remove it.
+    """
+    # Save the zit module so we can restore it after the test.
+    _zit = diffusion.zit  # type: ignore[attr-defined]
+    diffusion._REGISTERED_MODULES.clear()
+    yield
+    # Restore zit so other tests see the correct initial state.
+    diffusion._REGISTERED_MODULES.append(_zit)
+
+
 def test_get_module_returns_none_when_empty() -> None:
     """get_module returns None when _REGISTERED_MODULES is empty.
 
-    With zero registered modules, get_module("zit") must return None
-    without raising — the empty registry is the default state before
-    concrete arch modules are wired in later phases.
+    With zero registered modules (after clearing zit), get_module("zit")
+    must return None without raising — the empty registry is the default
+    state before concrete arch modules are wired in later phases.
     """
     result = diffusion.get_module("zit")
     assert result is None

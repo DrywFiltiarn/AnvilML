@@ -1,10 +1,12 @@
-"""Tests for worker.nodes.arch.diffusion.zit — _infer_hyperparams()."""
+"""Tests for worker.nodes.arch.diffusion.zit — _infer_hyperparams(), can_handle(), and dispatch registration."""
 
 from pathlib import Path
 
 import pytest
 
-from worker.nodes.arch.diffusion.zit import _infer_hyperparams
+from worker.nodes.arch.diffusion import get_module
+from worker.nodes.arch.diffusion import zit
+from worker.nodes.arch.diffusion.zit import _infer_hyperparams, can_handle
 
 _FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
@@ -119,3 +121,37 @@ def test_infer_hyperparams_truncated_header_raises() -> None:
             os.unlink(tmp_path)
         except OSError:
             pass
+
+
+def test_can_handle_matches_zit() -> None:
+    """can_handle(\"zit\") returns True — the primary match path for the ZiT architecture.
+
+    Calls can_handle() with the canonical ZiT architecture string and
+    asserts it returns True, proving the dispatcher will route a
+    ``\"zit\"`` key to this module.
+    """
+    assert can_handle("zit") is True
+
+
+def test_can_handle_rejects_unrelated_key() -> None:
+    """can_handle(\"flux2klein\") returns False — the module rejects unrelated keys.
+
+    Calls can_handle() with an unrelated architecture string and asserts
+    it returns False, proving the dispatcher will skip this module for
+    non-ZiT keys.
+    """
+    assert can_handle("flux2klein") is False
+
+
+def test_get_module_returns_zit_for_matching_key() -> None:
+    """get_module(\"zit\") returns the zit module — end-to-end dispatch integration.
+
+    Calls get_module() with ``"zit"`` and asserts the result is not None
+    and is the zit module, proving that importing zit in __init__.py and
+    appending it to _REGISTERED_MODULES makes the dispatcher find it.
+    """
+    result = get_module("zit")
+    assert result is not None
+    # Identity comparison — the zit module imported in __init__.py
+    # is the same object returned by get_module().
+    assert result is zit

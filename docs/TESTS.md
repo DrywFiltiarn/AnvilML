@@ -6932,3 +6932,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Temporary file containing 8 random bytes (not a valid safetensors file).
 **Expected output:** `ValueError` raised.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_infer_hyperparams_truncated_header_raises -v` exits 0.
+
+---
+
+## test_can_handle_matches_zit (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `can_handle()` function is implemented in `worker/nodes/arch/diffusion/zit.py` with a module-level `ARCH = "zit"` constant.
+**Tests:** `can_handle("zit")` returns `True` — the primary match path for the ZiT architecture string.
+**Mode:** both
+**Inputs:** Key string `"zit"`.
+**Expected output:** `True`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_can_handle_matches_zit -v` exits 0.
+
+---
+
+## test_can_handle_rejects_unrelated_key (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `can_handle()` function is implemented in `worker/nodes/arch/diffusion/zit.py` with a module-level `ARCH = "zit"` constant.
+**Tests:** `can_handle("flux2klein")` returns `False` — the module correctly rejects unrelated architecture keys.
+**Mode:** both
+**Inputs:** Key string `"flux2klein"`.
+**Expected output:** `False`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_can_handle_rejects_unrelated_key -v` exits 0.
+
+---
+
+## test_get_module_returns_zit_for_matching_key (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `zit` module is imported and appended to `_REGISTERED_MODULES` in `worker/nodes/arch/diffusion/__init__.py`, enabling the dispatcher to find it.
+**Tests:** `get_module("zit")` returns the `zit` module (not `None`) — end-to-end dispatch through the registered module.
+**Mode:** both
+**Inputs:** Key string `"zit"`.
+**Expected output:** A `ModuleType` instance with `__name__ == "zit"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_get_module_returns_zit_for_matching_key -v` exits 0.
