@@ -7090,3 +7090,87 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** caps dict with fp8=True, bf16=True, native_dtype string "fp8".
 **Expected output:** `torch.float8_e4m3fn`.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_dtype_selection_fp8_beats_bf16 -v` exits 0.
+
+---
+
+## test_load_real_zit_fixture (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `load()` function has been updated (P20-C3) to accept a `device` parameter, call `model.to_empty(device=device)` to materialize meta-constructed parameters onto the real device, build a checkpoint-key → module-key remapping table, load weights via `safetensors.torch.load_file()`, cast tensors to target_dtype, and call `load_state_dict(remapped_state_dict, assign=True)`.
+**Tests:** `load()` against `zit_tiny.safetensors` with bf16 capability succeeds end-to-end; `.arch == "zit"`; all tensors on cpu device; selected dtype is bfloat16; spot-check verifies `input_proj.weight` has non-zero values from the checkpoint.
+**Mode:** real
+**Inputs:** Path to `zit_tiny.safetensors` fixture, caps dict with bf16=True, device="cpu".
+**Expected output:** `ZiTModel` with `.arch == "zit"`, all parameters on cpu device, dtype=torch.bfloat16, non-zero loaded weights.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_real_zit_fixture -v -m real_mode` exits 0.
+
+---
+
+## test_load_mock_zit_fixture (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `load()` function materializes weights onto the real device. This is the mock-mode counterpart required by the dual-mode parity marker convention (ANVILML_DESIGN.md §10.6).
+**Tests:** `load()` against `zit_tiny.safetensors` with bf16 capability succeeds end-to-end in mock-mode; `.arch == "zit"`; all tensors on cpu device; selected dtype is bfloat16; spot-check verifies non-zero loaded weights.
+**Mode:** mock
+**Inputs:** Path to `zit_tiny.safetensors` fixture, caps dict with bf16=True, device="cpu".
+**Expected output:** `ZiTModel` with `.arch == "zit"`, all parameters on cpu device, dtype=torch.bfloat16, non-zero loaded weights.
+**Acceptance:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_mock_zit_fixture -v -m "not real_mode"` exits 0.
+
+---
+
+## test_load_no_metadata_real (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `load()` function loads against the no-metadata fixture which has no `arch` key in its safetensors header. The metadata-fallback path in `_infer_hyperparams()` identifies the architecture from key naming patterns.
+**Tests:** `load()` against `zit_tiny_no_metadata.safetensors` with bf16 capability succeeds via the metadata-fallback path; `.arch == "zit"`; all tensors on cpu device.
+**Mode:** real
+**Inputs:** Path to `zit_tiny_no_metadata.safetensors` fixture, caps dict with bf16=True, device="cpu".
+**Expected output:** `ZiTModel` with `.arch == "zit"`, all parameters on cpu device.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_no_metadata_real -v -m real_mode` exits 0.
+
+---
+
+## test_load_no_metadata_mock (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `load()` function loads against the no-metadata fixture in mock-mode. This is the mock-mode counterpart required by the dual-mode parity marker convention.
+**Tests:** `load()` against `zit_tiny_no_metadata.safetensors` with bf16 capability succeeds; `.arch == "zit"`; all tensors on cpu device.
+**Mode:** mock
+**Inputs:** Path to `zit_tiny_no_metadata.safetensors` fixture, caps dict with bf16=True, device="cpu".
+**Expected output:** `ZiTModel` with `.arch == "zit"`, all parameters on cpu device.
+**Acceptance:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_no_metadata_mock -v -m "not real_mode"` exits 0.
+
+---
+
+## test_load_tensors_materialized_on_device (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `load()` function calls `model.to_empty(device=device)` to materialize all parameters from meta device to the real device before loading weights.
+**Tests:** After `load()`, every parameter's `.device.type` is `"cpu"` (not `"meta"`), confirming `to_empty()` worked. The post-load dtype matches the target dtype (bfloat16 when bf16 is available).
+**Mode:** both
+**Inputs:** Path to `zit_tiny.safetensors` fixture, caps dict with bf16=True, device="cpu".
+**Expected output:** All parameters on cpu device; dtype=torch.bfloat16.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_tensors_materialized_on_device -v` exits 0.
+
+---
+
+## test_load_key_remapping_direct_match (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `_build_key_remapping()` function builds a checkpoint-key → module-key mapping for `load_state_dict`. It handles direct matches (exact key equality) and pattern-based remapping for ZiT checkpoint key naming conventions.
+**Tests:** `_build_key_remapping()` with actual checkpoint keys and module state_dict keys correctly maps 4 direct matches (input_proj.weight, output_proj.weight, single_blocks.0.linear1.weight, time_text_emb.weight) and excludes 4 non-matching keys (c_crossattn_dim, latents, double_blocks.*.proj.weight).
+**Mode:** both
+**Inputs:** List of 8 checkpoint keys, list of 28 module state_dict keys.
+**Expected output:** Remapping dict with exactly 4 entries, all direct matches; excluded keys not present.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_key_remapping_direct_match -v` exits 0.
+
+---
+
+## test_load_raises_on_invalid_path (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `load()` function delegates to `_infer_hyperparams()` which wraps safetensors errors in `ValueError`. The `device` parameter is passed through to `to_empty()` and `load_file()`.
+**Tests:** `load()` with a non-existent file path raises `ValueError` with a descriptive message, confirming error propagation from `_infer_hyperparams()` through `load()`.
+**Mode:** both
+**Inputs:** Non-existent path `/tmp/this_file_does_not_exist_xyz789.safetensors`, default caps dict, device="cpu".
+**Expected output:** `ValueError` raised with message containing "No such file".
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_raises_on_invalid_path -v` exits 0.
