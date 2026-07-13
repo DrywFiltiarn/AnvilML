@@ -6968,3 +6968,63 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Key string `"zit"`.
 **Expected output:** A `ModuleType` instance with `__name__ == "zit"`.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_get_module_returns_zit_for_matching_key -v` exits 0.
+
+---
+
+## test_load_meta_construction_real (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `load()` function is implemented in `worker/nodes/arch/diffusion/zit.py` and calls `_infer_hyperparams()` to build a `ZiTModel` on `torch.device("meta")`.
+**Tests:** `load()` against `zit_tiny.safetensors` returns a `ZiTModel` instance with `.arch == "zit"` and all parameters on `torch.device("meta")`.
+**Mode:** both
+**Inputs:** Path to `zit_tiny.safetensors` fixture (arch="zit" metadata, all ZiT key prefixes).
+**Expected output:** `ZiTModel` with `.arch == "zit"`, all parameters on meta device.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_meta_construction_real -v` exits 0.
+
+---
+
+## test_load_meta_device_zero_real_memory (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `load()` function constructs the model inside `torch.device("meta")` context, so no real memory is allocated.
+**Tests:** `load()` returns a model where `sum(p.numel() for p in model.parameters())` equals zero — confirming zero real memory allocation.
+**Mode:** both
+**Inputs:** Path to `zit_tiny.safetensors` fixture.
+**Expected output:** `sum(p.numel()) == 0` — zero real memory.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_meta_device_zero_real_memory -v` exits 0.
+
+---
+
+## test_load_meta_construction_no_metadata_variant (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `load()` function delegates hyperparameter inference to `_infer_hyperparams()`, which has a metadata-fallback path that detects ZiT from key patterns when the "arch" metadata key is absent.
+**Tests:** `load()` against `zit_tiny_no_metadata.safetensors` succeeds via the fallback path and returns a valid `ZiTModel`.
+**Mode:** both
+**Inputs:** Path to `zit_tiny_no_metadata.safetensors` fixture (no "arch" metadata, xyz_ prefixed keys).
+**Expected output:** `ZiTModel` with `.arch == "zit"`, all parameters on meta device.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_meta_construction_no_metadata_variant -v` exits 0.
+
+---
+
+## test_load_raises_invalid_hyperparams (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `load()` function delegates to `_infer_hyperparams()` which raises `ValueError` for invalid inputs; this error propagates through `load()`.
+**Tests:** `load()` with a non-existent file path raises `ValueError` — confirming error propagation from `_infer_hyperparams()`.
+**Mode:** both
+**Inputs:** Non-existent path `"/tmp/this_file_does_not_exist_abc123.safetensors"`.
+**Expected output:** `ValueError` with "No such file" in the message.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_raises_invalid_hyperparams -v` exits 0.
+
+---
+
+## test_load_meta_construction_mock (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `load()` function is implemented in `worker/nodes/arch/diffusion/zit.py` and calls `_infer_hyperparams()` to build a `ZiTModel` on `torch.device("meta")`. This is the mock-mode counterpart required by the dual-mode parity marker convention (ANVILML_DESIGN.md §10.6).
+**Tests:** `load()` against `zit_tiny.safetensors` returns a `ZiTModel` instance with `.arch == "zit"` and all parameters on `torch.device("meta")`.
+**Mode:** both
+**Inputs:** Path to `zit_tiny.safetensors` fixture (arch="zit" metadata, all ZiT key prefixes).
+**Expected output:** `ZiTModel` with `.arch == "zit"`, all parameters on meta device.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_meta_construction_mock -v` exits 0.

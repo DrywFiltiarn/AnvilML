@@ -1,14 +1,15 @@
 """ZiT (Zero-initialized Transformer) diffusion architecture module.
 
-This module provides shape-inference utilities for the ZiT diffusion transformer
-architecture. It implements step 1 of the four-step loading contract defined in
-ANVILML_DESIGN.md §11.3:
+This module provides shape-inference utilities and meta-device construction
+for the ZiT diffusion transformer architecture. It implements steps 1–2 of
+the four-step loading contract defined in ANVILML_DESIGN.md §11.3:
 
     1. _infer_hyperparams(path) — open header-only, read all key shapes, return
-       a dict of inferred hyperparameters (hidden_dim, block counts, latent
-       dimensions, patch_size, arch string).
-    2. can_handle(key) — deferred to P20-B2.
-    3. load(path, caps, ctx) — deferred to P20-C1.
+        a dict of inferred hyperparameters (hidden_dim, block counts, latent
+        dimensions, patch_size, arch string).
+    2. can_handle(key) — implemented; returns True for "zit".
+    3. load(path) — step 2: construct nn.Module on torch.device("meta").
+        dtype selection deferred to P20-C2; materialization deferred to P20-C3.
     4. sample(z, prompt, **kwargs) — deferred to P20-C3.
 
 The ZiT architecture is a diffusion transformer that uses zero-initialized
@@ -25,6 +26,9 @@ import re
 from pathlib import Path
 from typing import Any
 
+import torch
+import torch.nn as nn
+
 from safetensors import safe_open
 
 # Canonical architecture identifier — the string that the dispatcher
@@ -32,6 +36,146 @@ from safetensors import safe_open
 # Mirrors the "arch": "zit" value returned by _infer_hyperparams()
 # when it reads metadata or falls back to key-pattern inference.
 ARCH: str = "zit"
+
+
+class ZiTModel(nn.Module):
+    """ZiT diffusion transformer model constructed from layer-level building blocks.
+
+    This class assembles the ZiT architecture using ``torch.nn`` primitives
+    (Linear, LayerNorm, MultiheadAttention) that mirror the tensor shapes found in
+    the checkpoint. It is constructed on ``torch.device("meta")`` so that
+    no real GPU/CPU memory is allocated during construction — this prevents
+    the ~15 GB construction crash that P904 experienced.
+
+    The architecture consists of:
+    - input_proj: latent space → hidden dimension projection
+    - time_text_emb: time-step + text embedding projection
+    - double_blocks: list of cross-attention blocks (image + text attention)
+    - single_blocks: list of linear transformation blocks
+    - output_proj: hidden dimension → latent space projection
+
+    The ``.arch`` attribute is set to ``"zit"`` after construction so that
+    downstream code (Sampler, VaeDecode) can identify the model family.
+
+    Args:
+        hyperparams: Dict from ``_infer_hyperparams()`` containing
+            hidden_dim, double_block_count, single_block_count,
+            latent_channels, latent_height, latent_width, patch_size.
+    """
+
+    def __init__(self, hyperparams: dict[str, Any]) -> None:
+        """Construct the ZiT model on the meta device.
+
+        Args:
+            hyperparams: Dict from ``_infer_hyperparams()`` containing
+                hidden_dim, double_block_count, single_block_count,
+                latent_channels, latent_height, latent_width, patch_size.
+        """
+        super().__init__()
+
+        # Extract hyperparameters — all derived from the checkpoint header,
+        # never hardcoded. This ensures the model structure always matches
+        # the actual checkpoint it was built from.
+        hidden_dim = hyperparams["hidden_dim"]
+        double_block_count = hyperparams["double_block_count"]
+        single_block_count = hyperparams["single_block_count"]
+        latent_channels = hyperparams["latent_channels"]
+        latent_height = hyperparams["latent_height"]
+        latent_width = hyperparams["latent_width"]
+        patch_size = hyperparams["patch_size"]
+
+        # Input projection: (latent_channels * patch_size^2) → hidden_dim
+        # The latent tensor is reshaped to (batch, latent_channels*patch_size^2,
+        # height*width) before projection into the hidden dimension.
+        latent_dim = latent_channels * patch_size * patch_size
+        self.input_proj = nn.Linear(latent_dim, hidden_dim)
+
+        # Time-step + text embedding projection (fixed-size embedding).
+        # The time token and text embedding are combined in a single linear
+        # layer before being added to the hidden representation.
+        self.time_text_emb = nn.Linear(hidden_dim, hidden_dim)
+
+        # Double blocks with cross-attention sub-layers.
+        # Each double block has: image attention (self-attention on image tokens),
+        # text attention (cross-attention conditioned on text tokens),
+        # two LayerNorm layers, and a feed-forward block.
+        self.double_blocks = nn.ModuleList([
+            nn.ModuleDict({
+                "img_attn": nn.MultiheadAttention(
+                    embed_dim=hidden_dim, num_heads=hidden_dim // 64, batch_first=True
+                ),
+                "txt_attn": nn.MultiheadAttention(
+                    embed_dim=hidden_dim, num_heads=hidden_dim // 64, batch_first=True
+                ),
+                "norm1": nn.LayerNorm(hidden_dim),
+                "norm2": nn.LayerNorm(hidden_dim),
+                "ff": nn.Sequential(
+                    nn.Linear(hidden_dim, hidden_dim * 4),
+                    nn.GELU(),
+                    nn.Linear(hidden_dim * 4, hidden_dim),
+                ),
+            })
+            for _ in range(double_block_count)
+        ])
+
+        # Single blocks with linear transformation.
+        # Each single block is a simplified linear transformation block
+        # used in ZiT's architecture after the double blocks.
+        self.single_blocks = nn.ModuleList([
+            nn.ModuleDict({
+                "linear1": nn.Linear(hidden_dim, hidden_dim * 4),
+                "linear2": nn.Linear(hidden_dim * 4, hidden_dim),
+                "norm": nn.LayerNorm(hidden_dim),
+            })
+            for _ in range(single_block_count)
+        ])
+
+        # Output projection: hidden_dim → (latent_channels * patch_size^2)
+        # Reverses the input projection to produce the final latent tensor.
+        self.output_proj = nn.Linear(hidden_dim, latent_dim)
+
+        # Architecture identifier — set after construction so downstream
+        # code can identify this model's family.
+        self.arch: str = "zit"
+
+
+# REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_load_meta_construction_real
+# MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_load_meta_construction_mock
+def load(path: str) -> ZiTModel:
+    """Construct the ZiT model on meta-device (step 2 of the loading contract).
+
+    Opens the checkpoint header, infers hyperparameters from tensor shapes,
+    constructs the target ``nn.Module`` on ``torch.device("meta")``, and returns it
+    with ``.arch`` set to ``"zit"``. No real memory is allocated.
+
+    Args:
+        path: Filesystem path to a ZiT-format safetensors checkpoint file.
+
+    Returns:
+        A ``ZiTModel`` instance constructed on ``torch.device("meta")`` with
+        ``.arch == "zit"``.
+
+    Raises:
+        ValueError: If the checkpoint cannot be opened or hyperparameters
+            cannot be inferred (delegated to ``_infer_hyperparams``).
+    """
+    # Step 1 (from P20-B1): infer hyperparameters from checkpoint header.
+    # This reads only the ~100KB metadata header — no tensor data is loaded.
+    hyperparams = _infer_hyperparams(path)
+
+    # Step 2 (this task): construct on meta-device.
+    # Using torch.device("meta") means no real memory is allocated for
+    # parameters — the module structure exists but tensors have shape
+    # metadata only. This prevents the ~15GB crash from P904.
+    with torch.device("meta"):
+        model = ZiTModel(hyperparams)
+
+    # Set architecture identifier using the module-level ARCH constant
+    # (not a bare string) to keep it in sync with can_handle() and the
+    # dispatch mechanism in diffusion/__init__.py.
+    model.arch = ARCH
+
+    return model
 
 
 def can_handle(key: str) -> bool:

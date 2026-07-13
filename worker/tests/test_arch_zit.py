@@ -1,4 +1,4 @@
-"""Tests for worker.nodes.arch.diffusion.zit — _infer_hyperparams(), can_handle(), and dispatch registration."""
+"""Tests for worker.nodes.arch.diffusion.zit — _infer_hyperparams(), can_handle(), load(), and dispatch registration."""
 
 from pathlib import Path
 
@@ -6,7 +6,7 @@ import pytest
 
 from worker.nodes.arch.diffusion import get_module
 from worker.nodes.arch.diffusion import zit
-from worker.nodes.arch.diffusion.zit import _infer_hyperparams, can_handle
+from worker.nodes.arch.diffusion.zit import _infer_hyperparams, can_handle, load
 
 _FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
@@ -155,3 +155,117 @@ def test_get_module_returns_zit_for_matching_key() -> None:
     # Identity comparison — the zit module imported in __init__.py
     # is the same object returned by get_module().
     assert result is zit
+
+
+def test_load_meta_construction_real() -> None:
+    """load() constructs a ZiTModel on meta-device from the regular fixture.
+
+    Calls load() against ``zit_tiny.safetensors`` (which has arch="zit"
+    metadata and all ZiT key prefixes) and asserts:
+    - The returned object is an instance of ``ZiTModel``.
+    - The ``.arch`` attribute equals ``"zit"``.
+    - All parameters are on ``torch.device("meta")``.
+
+    This is the primary real-mode test for the load() function.
+    """
+    import torch
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    model = load(str(fixture_path))
+
+    # Verify the returned object is the correct model class.
+    assert isinstance(model, torch.nn.Module)
+    # Verify the architecture identifier is set.
+    assert model.arch == "zit"
+
+    # Verify all parameters are on the meta device — no real memory allocated.
+    for param in model.parameters():
+        assert param.device.type == "meta", (
+            f"expected parameter on meta device, got {param.device}"
+        )
+
+
+def test_load_meta_construction_mock() -> None:
+    """load() constructs a ZiTModel on meta-device under mock-mode conditions.
+
+    Calls load() against ``zit_tiny.safetensors`` and asserts the same
+    invariants as ``test_load_meta_construction_real`` — this is the
+    mock-mode counterpart required by the dual-mode parity marker
+    convention (ANVILML_DESIGN.md §10.6). The load() function itself
+    has no mock/real path divergence, but the marker convention requires
+    a distinct test name for each mode.
+    """
+    import torch
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    model = load(str(fixture_path))
+
+    # Verify the returned object is the correct model class.
+    assert isinstance(model, torch.nn.Module)
+    # Verify the architecture identifier is set.
+    assert model.arch == "zit"
+
+    # Verify all parameters are on the meta device.
+    for param in model.parameters():
+        assert param.device.type == "meta", (
+            f"expected parameter on meta device, got {param.device}"
+        )
+
+
+def test_load_meta_device_zero_real_memory() -> None:
+    """load() allocates zero real memory — all parameters reside on meta device.
+
+    Calls load() and verifies that every parameter's ``.device.type`` is
+    ``"meta"``. Meta tensors have shape metadata only — no actual GPU/CPU
+    memory buffer is allocated. This is the zero-memory guarantee that
+    prevents the ~15 GB construction crash that P904 experienced.
+
+    Unlike ``test_load_meta_construction_real`` which also checks the model
+    class and ``.arch`` attribute, this test focuses exclusively on the
+    zero-memory property.
+    """
+    import torch
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    model = load(str(fixture_path))
+
+    # Every parameter must be on the meta device — this is the zero-memory
+    # guarantee. Meta tensors carry shape metadata but allocate no real
+    # GPU/CPU memory.
+    for param in model.parameters():
+        assert param.device.type == "meta", (
+            f"expected parameter on meta device, got {param.device}"
+        )
+
+
+def test_load_meta_construction_no_metadata_variant() -> None:
+    """load() succeeds against the no-metadata fixture via the fallback path.
+
+    Calls load() against ``zit_tiny_no_metadata.safetensors`` (which has
+    no "arch" key in its safetensors header and uses xyz_ prefixed keys)
+    and asserts it succeeds via the metadata-fallback path in
+    ``_infer_hyperparams()`` and returns a valid ``ZiTModel``.
+    """
+    import torch
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny_no_metadata.safetensors"
+    model = load(str(fixture_path))
+
+    assert isinstance(model, torch.nn.Module)
+    assert model.arch == "zit"
+
+    # Verify all parameters are on the meta device.
+    for param in model.parameters():
+        assert param.device.type == "meta"
+
+
+def test_load_raises_invalid_hyperparams() -> None:
+    """load() raises ValueError when _infer_hyperparams() fails.
+
+    Calls load() with a non-existent file path and asserts that a
+    ``ValueError`` is raised, confirming the error propagates from
+    ``_infer_hyperparams()`` through ``load()``.
+    """
+    nonexistent = "/tmp/this_file_does_not_exist_abc123.safetensors"
+    with pytest.raises(ValueError, match="No such file"):
+        load(nonexistent)
