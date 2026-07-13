@@ -218,6 +218,7 @@ def test_dtype_selection_fp8_native_non_fp8_caps_fp8() -> None:
     assert result == torch.float32
 
 
+@pytest.mark.real_mode
 def test_dtype_selection_bf16_real() -> None:
     """load() selects bfloat16 when caps.bf16=True and checkpoint native is F32.
 
@@ -430,6 +431,7 @@ def test_load_raises_invalid_hyperparams() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.real_mode
 def test_load_real_zit_fixture() -> None:
     """load() loads weights end-to-end against the regular ZiT fixture.
 
@@ -496,6 +498,7 @@ def test_load_mock_zit_fixture() -> None:
     assert next(model.parameters()).dtype == torch.bfloat16
 
 
+@pytest.mark.real_mode
 def test_load_no_metadata_real() -> None:
     """load() succeeds against the no-metadata fixture via the fallback path.
 

@@ -191,16 +191,17 @@
     "P20-B2",
     "P20-C1",
     "P20-C2",
-    "P20-C3"
+    "P20-C3",
+    "P20-D1"
   ],
-  "in_progress": "P20-D1",
+  "in_progress": "P20-E1",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "**Step 1 \u2014 Prerequisite verification.** Confirm that all prerequisite tasks (P20-A1 through P20-D1) have been completed by verifying the existence and correctness of the source files this task exercises:\n- `worker/tests/fixtures/zit_tiny.safetensors` exists (P20-A1)\n- `worker/nodes/arch/diffusion/zit.py` contains `_infer_hyperparams`, `can_handle`, `load`, `_select_dtype`, `_build_key_remapping` (P20-B1, B2, C1, C2, C3)\n- `worker/nodes/loader.py` LoadModel's real branch calls `get_module(\"zit\")` \u2192 `module.load()` (P20-D1)\n- `worker/nodes/arch/diffusion/__init__.py` registers `zit` in `_REGISTERED_MODULES` (P20-B2)\n\n**Step 2 \u2014 Syntax/compile check.** Run `python -m py_compile` on all `.py` files under `worker/` to rule out syntax errors before running pytest (per ENVIRONMENT.md \u00a77 / FORGE_AGENT_RULES.md \u00a75.11):\n```bash\nworker/.venv/bin/python -m py_compile $(git ls-files 'worker/*.py')\n```\n\n**Step 3 \u2014 Runnable Proof execution.** Run the acceptance criterion command:\n```bash\npython -m pytest worker/tests/test_arch_zit.py worker/tests/test_nodes_loader.py -v -m real_mode\n```\n\nThis invokes pytest with the `-m real_mode` marker, which selects only tests decorated with `@pytest.mark.real_mode`. The tests exercised are:\n\nFrom `test_arch_zit.py` (real-mode subset):\n- `test_dtype_selection_bf16_real` \u2014 load() with bf16 caps, verifies ZiTModel on cpu at bfloat16\n- `test_load_real_zit_fixture` \u2014 full end-to-end load against regular fixture\n- `test_load_no_metadata_real` \u2014 full load against no-metadata fixture via fallback path\n\nFrom `test_nodes_loader.py` (real-mode subset):\n- `test_load_model_real_loads_zit_fixture` \u2014 LoadModel.execute() \u2192 real branch \u2192 zit.load() \u2192 PipelineCache\n- `test_load_vae_real_raises_not_implemented` \u2014 LoadVae real branch (expected NotImplementedError, this is correct \u2014 VAE loading is genuinely deferred)\n- `test_load_vae_real_cache_key_format` \u2014 LoadVae real branch cache key verification\n- `test_load_vae_real_raises_no_diffusion_arch` \u2014 LoadVae real branch error message\n- `test_load_clip_real_raises_not_implemented` \u2014 LoadClip real branch (expected NotImplementedError, correctly deferred)\n- `test_load_clip_real_cache_key_format` \u2014 LoadClip real branch cache key verification\n- `test_load_clip_real_raises_no_diffusion_arch` \u2014 LoadClip real branch error message\n\n**Step 4 \u2014 Verify zero skips and zero xfails.** Parse the pytest output to confirm:\n- All selected tests show `PASSED` (not `SKIPPED` or `XFAIL`)\n- The summary line shows `0 skipped, 0 xfailed`\n\n**Step 5 \u2014 Record output.** Paste the verbatim pytest output into the implementation report's `## Runnable Proof Transcript` section (per FORGE_AGENT_RULES.md \u00a75.14).",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-13T23:09:49+0200",
-  "plan_approval_message_id": "1526332142592725044",
+  "last_updated": "2026-07-14T00:35:01+0200",
+  "plan_approval_message_id": "1526353559317381261",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1526332140566872127",
+  "plan_report_message_id": "1526353557077360833",
   "impl_report_message_id": null
 }
