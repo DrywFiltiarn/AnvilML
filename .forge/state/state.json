@@ -194,16 +194,17 @@
     "P20-C3",
     "P20-D1",
     "P20-E1",
-    "P21-A1"
+    "P21-A1",
+    "P21-B1"
   ],
-  "in_progress": "P21-B1",
+  "in_progress": "P21-B2",
   "plan_approved": true,
-  "current_plan": "**Step 1 \u2014 Add PipelineCache import and module-level cache to zit.py.**\n\nImport `PipelineCache` from `pipeline_cache` at the top of `zit.py` alongside the existing imports. Create a module-level cache instance: `pipeline_cache = PipelineCache()`. This provides the per-process LRU cache for pipeline objects, keyed by `f\"{model_id}:pipeline\"`.\n\n**Step 2 \u2014 Implement _assemble_pipeline(model) internal helper.**\n\nAdd `_assemble_pipeline(model: ZiTModel) -> Any` at module level (after `ZiTModel` class, before `compute_latent_shape()`). This function:\n- Accepts a `ZiTModel` instance.\n- Creates a minimal `ZiTPipeline` wrapper class instance that holds the model and a scheduler.\n- The `ZiTPipeline` class is defined inside or alongside `_assemble_pipeline` \u2014 it stores the `ZiTModel` instance and a `diffusers` scheduler (e.g., `EulerDiscreteScheduler` or a simple no-op scheduler since the actual denoising loop isn't implemented yet).\n- Returns the `ZiTPipeline` instance.\n\nThe wrapper class stores: `self.model = model`, `self.scheduler = scheduler`. This provides the interface that the denoising loop (P21-B2) will call. The scheduler is a simple placeholder since the full denoising step function isn't wired yet.\n\n**Step 3 \u2014 Implement sample() function with cache-assembly.**\n\nAdd `sample(model, model_id, conditioning, latent, steps, cfg, seed)` after `load()` in `zit.py`. The function:\n1. Constructs the cache key: `key = f\"{model_id}:pipeline\"`.\n2. Calls `pipeline_cache.get_or_load(key, lambda: _assemble_pipeline(model))` to get or assemble the pipeline.\n3. Logs at DEBUG level: `\"assembled pipeline for model_id=%s\"`.\n4. Returns the pipeline object.\n\nThe function does NOT run denoising. It returns the cached/just-assembled pipeline so P21-B2 can extend it to also run the denoising loop.\n\nAdd Google-style docstring describing: what it does, parameters, return value, and noting that denoising is deferred to a later task.\n\n**Step 4 \u2014 Add dual-mode parity markers.**\n\nAdd `# REAL_PATH_VERIFIED:` and `# MOCK_PATH_VERIFIED:` comment markers next to `sample()`, naming the test functions defined in Step 5.\n\n**Step 5 \u2014 Write tests in test_arch_zit.py.**\n\nAdd >=4 tests:\n1. `test_sample_first_call_assembles_pipeline` \u2014 spy on `pipeline_cache.get_or_load` call count; first call for `model_id=\"test1\"` invokes the loader once; verifies a `ZiTPipeline` is returned.\n2. `test_sample_second_call_reuses_cached_pipeline` \u2014 call `sample()` twice with same `model_id`; verify the second call returns the same pipeline object without re-assembly (spy on call count stays at 1).\n3. `test_sample_different_model_id_gets_separate_pipeline` \u2014 call `sample()` with two different `model_id` values; verify two separate pipeline objects are cached and returned.\n4. `test_sample_pipeline_is_zit_wrapper` \u2014 verify the returned pipeline object has a `.model` attribute that is the same `ZiTModel` instance passed in.\n\nAll tests use a mock `ZiTModel` (or the fixture-loaded model) and a spy on the cache's `get_or_load` method. The spy tracks how many times the loader function is invoked.\n\nMock-mode test: `test_sample_first_call_assembles_pipeline_mock` and `test_sample_second_call_reuses_cached_pipeline_mock` (with `MOCK_PATH_VERIFIED` marker).\nReal-mode test: `test_sample_pipeline_assembled_from_loaded_model` (with `REAL_PATH_VERIFIED` marker, using fixture-loaded model).",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-14T10:02:11+0200",
-  "plan_approval_message_id": "1526488816435855472",
+  "last_updated": "2026-07-14T14:32:26+0200",
+  "plan_approval_message_id": "1526547031496065125",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1526488814342901790",
+  "plan_report_message_id": "1526547029873131632",
   "impl_report_message_id": null
 }

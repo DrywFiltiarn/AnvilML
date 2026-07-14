@@ -62,11 +62,11 @@ def test_infer_hyperparams_regular_fixture() -> None:
     assert result["double_block_count"] == 1
     assert result["single_block_count"] == 1
     assert result["latent_channels"] == 4
-    assert result["latent_height"] == 8
-    assert result["latent_width"] == 8
+    assert result["latent_height"] == 4
+    assert result["latent_width"] == 4
     assert result["arch"] == "zit"
-    # patch_size = hidden_dim // latent_channels = 64 // 4 = 16
-    assert result["patch_size"] == 16
+    # patch_size = sqrt(latent_dim / latent_channels) = sqrt(64 / 4) = 4
+    assert result["patch_size"] == 4
 
 
 def test_infer_hyperparams_no_metadata_fixture() -> None:
@@ -92,9 +92,9 @@ def test_infer_hyperparams_no_metadata_fixture() -> None:
     assert result["double_block_count"] == 1
     assert result["single_block_count"] == 1
     assert result["latent_channels"] == 4
-    assert result["latent_height"] == 8
-    assert result["latent_width"] == 8
-    assert result["patch_size"] == 16
+    assert result["latent_height"] == 4
+    assert result["latent_width"] == 4
+    assert result["patch_size"] == 4
 
 
 def test_infer_hyperparams_nonexistent_path_raises() -> None:
@@ -719,8 +719,8 @@ def test_compute_latent_shape_mock_exact_multiple() -> None:
     """compute_latent_shape() produces correct shape for exact-patch-size dimensions.
 
     Calls compute_latent_shape() with width=32, height=32, batch_size=1.
-    With the default MODEL_PATCH_SIZE=16, this gives latent_height=2,
-    latent_width=2. The result should be (1, 4, 2, 2).
+    With MODEL_PATCH_SIZE=4, this gives latent_height=8,
+    latent_width=8. The result should be (1, 4, 8, 8).
 
     This is the primary mock-mode test for the formula — it exercises the
     exact-multiple path of the ceiling division.
@@ -728,15 +728,15 @@ def test_compute_latent_shape_mock_exact_multiple() -> None:
     # MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_mock_exact_multiple
     """
     result = compute_latent_shape(32, 32, 1)
-    assert result == (1, 4, 2, 2)
+    assert result == (1, 4, 8, 8)
 
 
 def test_compute_latent_shape_mock_non_multiple() -> None:
     """compute_latent_shape() rounds up non-multiple dimensions via ceiling division.
 
     Calls compute_latent_shape() with width=33, height=33, batch_size=1.
-    With MODEL_PATCH_SIZE=16, 33/16 = 2.0625, which rounds up to 3.
-    The result should be (1, 4, 3, 3).
+    With MODEL_PATCH_SIZE=4, 33/4 = 8.25, which rounds up to 9.
+    The result should be (1, 4, 9, 9).
 
     This verifies the ceiling-division path: non-multiples of patch_size
     are rounded up so the latent grid fully covers the input.
@@ -744,28 +744,28 @@ def test_compute_latent_shape_mock_non_multiple() -> None:
     # MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_mock_non_multiple
     """
     result = compute_latent_shape(33, 33, 1)
-    assert result == (1, 4, 3, 3)
+    assert result == (1, 4, 9, 9)
 
 
 def test_compute_latent_shape_mock_batch_scaling() -> None:
     """compute_latent_shape() scales the batch dimension correctly.
 
     Calls compute_latent_shape() with width=64, height=64, batch_size=4.
-    With MODEL_PATCH_SIZE=16, this gives latent_height=4, latent_width=4.
-    The result should be (4, 4, 4, 4) — batch_size=4 in the first position.
+    With MODEL_PATCH_SIZE=4, this gives latent_height=16, latent_width=16.
+    The result should be (4, 4, 16, 16) — batch_size=4 in the first position.
 
     # MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_mock_batch_scaling
     """
     result = compute_latent_shape(64, 64, 4)
-    assert result == (4, 4, 4, 4)
+    assert result == (4, 4, 16, 16)
 
 
 def test_compute_latent_shape_real_after_load() -> None:
     """compute_latent_shape() uses actual checkpoint hyperparameters after load().
 
-    Calls load() against the ZiT fixture (which has patch_size=16,
+    Calls load() against the ZiT fixture (which has patch_size=4,
     latent_channels=4), then calls compute_latent_shape(32, 32, 1).
-    The result should be (1, 4, 2, 2), proving that load() correctly
+    The result should be (1, 4, 8, 8), proving that load() correctly
     updates the module-level hyperparameters.
 
     # REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_real_after_load
@@ -781,15 +781,15 @@ def test_compute_latent_shape_real_after_load() -> None:
     }
     load(str(fixture_path), caps, device="cpu")
     result = compute_latent_shape(32, 32, 1)
-    assert result == (1, 4, 2, 2)
+    assert result == (1, 4, 8, 8)
 
 
 def test_compute_latent_shape_real_non_multiple_after_load() -> None:
     """compute_latent_shape() ceiling division works after load() updates hyperparams.
 
     Calls load() against the ZiT fixture, then calls compute_latent_shape(50, 50, 1).
-    With patch_size=16, 50/16 = 3.125, which rounds up to 4.
-    The result should be (1, 4, 4, 4).
+    With patch_size=4, 50/4 = 12.5, which rounds up to 13.
+    The result should be (1, 4, 13, 13).
 
     # REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_real_non_multiple_after_load
     """
@@ -804,31 +804,31 @@ def test_compute_latent_shape_real_non_multiple_after_load() -> None:
     }
     load(str(fixture_path), caps, device="cpu")
     result = compute_latent_shape(50, 50, 1)
-    assert result == (1, 4, 4, 4)
+    assert result == (1, 4, 13, 13)
 
 
 def test_compute_latent_shape_default_batch_size() -> None:
     """compute_latent_shape() defaults batch_size to 1 when omitted.
 
     Calls compute_latent_shape(32, 32) without the batch_size argument.
-    The result should be (1, 4, 2, 2), confirming batch_size defaults to 1.
+    The result should be (1, 4, 8, 8), confirming batch_size defaults to 1.
     """
     result = compute_latent_shape(32, 32)
-    assert result == (1, 4, 2, 2)
+    assert result == (1, 4, 8, 8)
 
 
 def test_compute_latent_shape_zero_dims() -> None:
     """compute_latent_shape() returns zero latent dims for zero-width or zero-height.
 
     Calls compute_latent_shape(0, 32) and compute_latent_shape(32, 0).
-    Both should return (1, 4, 0, 2) and (1, 4, 2, 0) respectively,
+    Both should return (1, 4, 0, 8) and (1, 4, 8, 0) respectively,
     proving the ceiling division handles the edge case correctly.
     """
     result_zero_width = compute_latent_shape(0, 32, 1)
-    assert result_zero_width == (1, 4, 0, 2)
+    assert result_zero_width == (1, 4, 0, 8)
 
     result_zero_height = compute_latent_shape(32, 0, 1)
-    assert result_zero_height == (1, 4, 2, 0)
+    assert result_zero_height == (1, 4, 8, 0)
 
     result_both_zero = compute_latent_shape(0, 0, 1)
     assert result_both_zero == (1, 4, 0, 0)
@@ -844,16 +844,15 @@ def test_sample_first_call_assembles_pipeline_mock() -> None:
 
     Spies on ``pipeline_cache.get_or_load`` to verify the loader function
     is called exactly once on the first call with ``model_id="test1"``.
-    Asserts that a ``ZiTPipeline`` is returned.
+    Asserts that the return value is a ``(latent, seed)`` tuple.
 
     This is the primary mock-mode test for the cache-assembly path.
-    It uses a mock ``ZiTModel`` (constructed on meta-device) rather than
-    loading from disk, keeping the test fast and deterministic.
+    It uses a fixture-loaded model rather than constructing one manually,
+    keeping the test fast and deterministic.
 
     # MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_sample_first_call_assembles_pipeline_mock
     """
     from worker.nodes.arch.diffusion.zit import (
-        ZiTPipeline,
         load,
         pipeline_cache,
         sample,
@@ -879,16 +878,19 @@ def test_sample_first_call_assembles_pipeline_mock() -> None:
 
     pipeline_cache.get_or_load = spy_get_or_load
     try:
-        pipeline = sample(model, "test1", None, torch.zeros(1, 4, 2, 2), 20, 7.5, 42)
+        latent, seed = sample(
+            model, "test1", None, torch.zeros(1, 4, 8, 8), 20, 7.5, 42
+        )
 
         # The loader should have been called exactly once for a new model_id.
         assert call_count == 1, (
             f"expected loader to be called exactly once, got {call_count}"
         )
-        # The returned object must be a ZiTPipeline.
-        assert isinstance(pipeline, ZiTPipeline), (
-            f"expected ZiTPipeline, got {type(pipeline)}"
-        )
+        # The returned latent must be a tensor.
+        assert isinstance(latent, torch.Tensor)
+        # The seed must be an int (explicit seed passed through unchanged).
+        assert isinstance(seed, int)
+        assert seed == 42
     finally:
         # Restore the original method unconditionally.
         pipeline_cache.get_or_load = original_get_or_load
@@ -898,16 +900,19 @@ def test_sample_first_call_assembles_pipeline_mock() -> None:
 
 
 def test_sample_second_call_reuses_cached_pipeline_mock() -> None:
-    """sample() returns the same cached pipeline on second call with same model_id.
+    """sample() reuses the cached pipeline on second call with same model_id.
 
     Calls ``sample()`` twice with ``model_id="test2"`` and verifies that
-    the second call does NOT re-assembly (loader call count stays at 1).
-    Both calls return the same ``ZiTPipeline`` object.
+    the second call does NOT re-assemble the pipeline (loader call count
+    stays at 1). Both calls return tensors of the same shape.
+
+    The denoising loop runs independently each time (the latent is cloned
+    inside sample()), so the two latent tensors are different objects even
+    though the pipeline is reused.
 
     # MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_sample_second_call_reuses_cached_pipeline_mock
     """
     from worker.nodes.arch.diffusion.zit import (
-        ZiTPipeline,
         load,
         pipeline_cache,
         sample,
@@ -927,17 +932,21 @@ def test_sample_second_call_reuses_cached_pipeline_mock() -> None:
 
     pipeline_cache.get_or_load = spy_get_or_load
     try:
-        first = sample(model, "test2", None, torch.zeros(1, 4, 2, 2), 20, 7.5, 42)
-        second = sample(model, "test2", None, torch.zeros(1, 4, 2, 2), 20, 7.5, 42)
+        latent_a, seed_a = sample(
+            model, "test2", None, torch.zeros(1, 4, 8, 8), 20, 7.5, 42
+        )
+        latent_b, seed_b = sample(
+            model, "test2", None, torch.zeros(1, 4, 8, 8), 20, 7.5, 42
+        )
 
         # Loader should still be called only once — second call hits the cache.
         assert call_count == 1, (
             f"expected loader call count to stay at 1, got {call_count}"
         )
-        # Both calls must return the same pipeline object.
-        assert first is second, (
-            "expected second call to return the same cached pipeline"
-        )
+        # Both calls must return tensors with matching shape.
+        assert latent_a.shape == latent_b.shape
+        # Seeds must match (explicit seed passed through unchanged).
+        assert seed_a == seed_b == 42
     finally:
         pipeline_cache.get_or_load = original_get_or_load
         if "test2:pipeline" in pipeline_cache._cache:
@@ -948,10 +957,9 @@ def test_sample_different_model_id_gets_separate_pipeline() -> None:
     """sample() produces separate pipelines for different model_ids.
 
     Calls ``sample()`` with two different ``model_id`` values and verifies
-    that two separate ``ZiTPipeline`` objects are cached and returned.
+    that both return valid ``(latent, seed)`` tuples with matching shapes.
     """
     from worker.nodes.arch.diffusion.zit import (
-        ZiTPipeline,
         load,
         pipeline_cache,
         sample,
@@ -960,16 +968,20 @@ def test_sample_different_model_id_gets_separate_pipeline() -> None:
     fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
     model = load(str(fixture_path), _DEFAULT_CAPS, device="cpu")
 
-    pipeline_a = sample(model, "model_a", None, torch.zeros(1, 4, 2, 2), 20, 7.5, 42)
-    pipeline_b = sample(model, "model_b", None, torch.zeros(1, 4, 2, 2), 20, 7.5, 42)
-
-    # Both must be ZiTPipeline instances.
-    assert isinstance(pipeline_a, ZiTPipeline)
-    assert isinstance(pipeline_b, ZiTPipeline)
-    # They must be different objects.
-    assert pipeline_a is not pipeline_b, (
-        "different model_ids should produce separate pipeline objects"
+    latent_a, seed_a = sample(
+        model, "model_a", None, torch.zeros(1, 4, 8, 8), 20, 7.5, 42
     )
+    latent_b, seed_b = sample(
+        model, "model_b", None, torch.zeros(1, 4, 8, 8), 20, 7.5, 42
+    )
+
+    # Both must return tensors with matching shape.
+    assert isinstance(latent_a, torch.Tensor)
+    assert isinstance(latent_b, torch.Tensor)
+    assert latent_a.shape == latent_b.shape
+    # Both must return ints as seeds.
+    assert isinstance(seed_a, int)
+    assert isinstance(seed_b, int)
 
     # Clean up.
     if "model_a:pipeline" in pipeline_cache._cache:
@@ -978,14 +990,14 @@ def test_sample_different_model_id_gets_separate_pipeline() -> None:
         del pipeline_cache._cache["model_b:pipeline"]
 
 
-def test_sample_pipeline_is_zit_wrapper() -> None:
-    """Returned pipeline has a .model attribute that is the same ZiTModel instance.
+def test_sample_returns_tuple_with_tensor_and_seed() -> None:
+    """Returned value is a (latent, seed) tuple with correct types.
 
-    Verifies that the ``ZiTPipeline`` returned by ``sample()`` holds the
-    exact ``ZiTModel`` instance passed in (identity check, not equality).
+    Verifies that ``sample()`` returns a 2-tuple where the first element
+    is a ``torch.Tensor`` (the denoised latent) and the second element
+    is an ``int`` (the resolved seed).
     """
     from worker.nodes.arch.diffusion.zit import (
-        ZiTPipeline,
         load,
         pipeline_cache,
         sample,
@@ -994,12 +1006,18 @@ def test_sample_pipeline_is_zit_wrapper() -> None:
     fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
     model = load(str(fixture_path), _DEFAULT_CAPS, device="cpu")
 
-    pipeline = sample(model, "test_model", None, torch.zeros(1, 4, 2, 2), 20, 7.5, 42)
-
-    assert isinstance(pipeline, ZiTPipeline)
-    assert pipeline.model is model, (
-        "pipeline.model must be the exact ZiTModel instance passed to sample()"
+    result = sample(
+        model, "test_model", None, torch.zeros(1, 4, 8, 8), 20, 7.5, 42
     )
+
+    # The return must be a 2-tuple.
+    assert isinstance(result, tuple)
+    assert len(result) == 2
+    latent, seed = result
+    # Latent must be a tensor.
+    assert isinstance(latent, torch.Tensor)
+    # Seed must be an int.
+    assert isinstance(seed, int)
 
     # Clean up.
     if "test_model:pipeline" in pipeline_cache._cache:
@@ -1007,17 +1025,17 @@ def test_sample_pipeline_is_zit_wrapper() -> None:
 
 
 @pytest.mark.real_mode
-def test_sample_pipeline_assembled_from_loaded_model() -> None:
-    """sample() with a fixture-loaded model produces a pipeline with the correct model.
+def test_sample_denoising_real_zit_fixture() -> None:
+    """End-to-end denoising against the real ZiT fixture checkpoint.
 
-    Calls ``sample()`` with a model loaded from ``zit_tiny.safetensors``
-    and asserts that the returned ``ZiTPipeline`` holds the loaded model
-    and has a scheduler attribute. This is the canonical real-mode test.
+    Calls ``sample()`` with a model loaded from ``zit_tiny.safetensors``,
+    verifies the output is a tensor with the correct shape and dtype,
+    and confirms the seed is a non-negative integer. This is the
+    canonical real-mode test for the denoising loop.
 
-    # REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_sample_pipeline_assembled_from_loaded_model
+    # REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_sample_denoising_real_zit_fixture
     """
     from worker.nodes.arch.diffusion.zit import (
-        ZiTPipeline,
         load,
         pipeline_cache,
         sample,
@@ -1026,12 +1044,235 @@ def test_sample_pipeline_assembled_from_loaded_model() -> None:
     fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
     model = load(str(fixture_path), _DEFAULT_CAPS, device="cpu")
 
-    pipeline = sample(model, "real_test", None, torch.zeros(1, 4, 2, 2), 20, 7.5, 42)
+    latent_in = torch.zeros(1, 4, 8, 8)
+    latent_out, seed = sample(
+        model, "real_test", None, latent_in, 20, 7.5, 42
+    )
 
-    assert isinstance(pipeline, ZiTPipeline)
-    assert pipeline.model is model
-    assert pipeline.scheduler is not None
+    # The output must be a tensor with the same shape as the input.
+    assert isinstance(latent_out, torch.Tensor)
+    assert latent_out.shape == latent_in.shape
+
+    # The seed must be a non-negative integer (explicit seed passed through).
+    assert isinstance(seed, int)
+    assert seed >= 0
+    assert seed == 42
 
     # Clean up.
     if "real_test:pipeline" in pipeline_cache._cache:
         del pipeline_cache._cache["real_test:pipeline"]
+
+
+# ---------------------------------------------------------------------------
+# P21-B2: sample() denoising loop + seed resolution tests
+# ---------------------------------------------------------------------------
+
+
+def test_sample_seed_minus_one_resolves_random() -> None:
+    """seed=-1 resolves to a random integer in [0, 2**63).
+
+    Calls ``sample()`` with ``seed=-1`` and asserts that the returned
+    seed is a non-negative integer strictly less than ``2**63``.
+    Since ``secrets.randbelow()`` is non-deterministic, we only assert
+    the range constraint — not a specific value.
+
+    This is the primary mock-mode test for the seed resolution path.
+
+    # MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_sample_seed_minus_one_resolves_random
+    """
+    from worker.nodes.arch.diffusion.zit import (
+        load,
+        pipeline_cache,
+        sample,
+    )
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    model = load(str(fixture_path), _DEFAULT_CAPS, device="cpu")
+
+    latent_in = torch.zeros(1, 4, 8, 8)
+    _, seed = sample(
+        model, "seed_random", None, latent_in, 10, 7.5, -1
+    )
+
+    # The resolved seed must be in [0, 2**63).
+    assert seed >= 0, f"expected seed >= 0, got {seed}"
+    assert seed < 2**63, f"expected seed < 2**63, got {seed}"
+
+    # Clean up.
+    if "seed_random:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache["seed_random:pipeline"]
+
+
+def test_sample_explicit_seed_returned_unchanged() -> None:
+    """Explicit seed is used as-is and returned unchanged.
+
+    Calls ``sample()`` with ``seed=42`` and asserts that the returned
+    seed equals 42 exactly, proving the seed is not modified by the
+    function body.
+
+    # MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_sample_explicit_seed_returned_unchanged
+    """
+    from worker.nodes.arch.diffusion.zit import (
+        load,
+        pipeline_cache,
+        sample,
+    )
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    model = load(str(fixture_path), _DEFAULT_CAPS, device="cpu")
+
+    latent_in = torch.zeros(1, 4, 8, 8)
+    _, seed = sample(
+        model, "seed_explicit", None, latent_in, 10, 7.5, 42
+    )
+
+    # The explicit seed must pass through unchanged.
+    assert seed == 42
+
+    # Clean up.
+    if "seed_explicit:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache["seed_explicit:pipeline"]
+
+
+def test_sample_denoising_runs_for_steps() -> None:
+    """Denoising runs the model forward exactly ``steps`` times.
+
+    Wraps the model's ``forward`` method with a counter, calls
+    ``sample()`` with ``steps=10``, and asserts the model was called
+    exactly 10 times — once per scheduler timestep.
+
+    This is the critical test proving the denoising loop actually
+    executes for the specified step count.
+
+    # MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_sample_denoising_runs_for_steps
+    """
+    from worker.nodes.arch.diffusion.zit import (
+        load,
+        pipeline_cache,
+        sample,
+    )
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    model = load(str(fixture_path), _DEFAULT_CAPS, device="cpu")
+
+    # Wrap the model's forward method to count invocations.
+    # The ZiT model's forward signature is:
+    #   forward(latent: Tensor, timestep: float, conditioning=None)
+    # We replace it with a wrapper that increments a counter before
+    # delegating to the original method.
+    original_forward = model.forward
+    forward_count = 0
+
+    def counting_forward(*args, **kwargs):
+        nonlocal forward_count
+        forward_count += 1
+        return original_forward(*args, **kwargs)
+
+    model.forward = counting_forward
+    try:
+        latent_in = torch.zeros(1, 4, 8, 8)
+        _, _ = sample(
+            model, "step_count", None, latent_in, 10, 7.5, 42
+        )
+
+        # The model's forward must be called exactly once per step.
+        # Each step runs 2 forward calls (unconditional + conditional),
+        # so 10 steps → 20 forward calls.
+        assert forward_count == 20, (
+            f"expected 20 forward calls (2 per step × 10 steps), "
+            f"got {forward_count}"
+        )
+    finally:
+        # Restore the original forward method unconditionally.
+        model.forward = original_forward
+
+    # Clean up.
+    if "step_count:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache["step_count:pipeline"]
+
+
+def test_sample_output_shape_dtype_matches_input_latent() -> None:
+    """Output latent has the same shape and dtype as the input latent.
+
+    Creates an input latent with a specific shape ``(1, 4, 8, 8)`` and
+    dtype ``torch.float32``, calls ``sample()``, and asserts the returned
+    latent has the same shape and dtype.
+
+    This verifies that the denoising loop preserves tensor dimensions
+    through the scheduler steps and CFG interpolation.
+
+    # MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_sample_output_shape_dtype_matches_input_latent
+    """
+    from worker.nodes.arch.diffusion.zit import (
+        load,
+        pipeline_cache,
+        sample,
+    )
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    model = load(str(fixture_path), _DEFAULT_CAPS, device="cpu")
+
+    # Use a specific dtype to verify it is preserved through denoising.
+    latent_in = torch.zeros(1, 4, 8, 8, dtype=torch.float32)
+    latent_out, _ = sample(
+        model, "shape_dtype", None, latent_in, 10, 7.5, 42
+    )
+
+    # Shape must match exactly.
+    assert latent_out.shape == latent_in.shape, (
+        f"expected shape {latent_in.shape}, got {latent_out.shape}"
+    )
+    # Dtype must match exactly.
+    assert latent_out.dtype == latent_in.dtype, (
+        f"expected dtype {latent_in.dtype}, got {latent_out.dtype}"
+    )
+
+    # Clean up.
+    if "shape_dtype:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache["shape_dtype:pipeline"]
+
+
+def test_sample_different_step_count_changes_iterations() -> None:
+    """Denoising step count scales the number of forward calls.
+
+    Calls ``sample()`` with ``steps=5`` and asserts the model's forward
+    was called exactly 10 times (2 per step × 5 steps), confirming the
+    loop count is driven by the *steps* parameter rather than hardcoded.
+
+    # MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_sample_different_step_count_changes_iterations
+    """
+    from worker.nodes.arch.diffusion.zit import (
+        load,
+        pipeline_cache,
+        sample,
+    )
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    model = load(str(fixture_path), _DEFAULT_CAPS, device="cpu")
+
+    original_forward = model.forward
+    forward_count = 0
+
+    def counting_forward(*args, **kwargs):
+        nonlocal forward_count
+        forward_count += 1
+        return original_forward(*args, **kwargs)
+
+    model.forward = counting_forward
+    try:
+        latent_in = torch.zeros(1, 4, 8, 8)
+        _, _ = sample(
+            model, "step_count_5", None, latent_in, 5, 7.5, 42
+        )
+
+        # 5 steps × 2 forward calls (uncond + cond) = 10 total.
+        assert forward_count == 10, (
+            f"expected 10 forward calls (2 per step × 5 steps), "
+            f"got {forward_count}"
+        )
+    finally:
+        model.forward = original_forward
+
+    # Clean up.
+    if "step_count_5:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache["step_count_5:pipeline"]

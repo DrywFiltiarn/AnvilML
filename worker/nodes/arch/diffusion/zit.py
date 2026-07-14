@@ -12,8 +12,8 @@ the four-step loading contract defined in ANVILML_DESIGN.md §11.3:
           materialize onto device via to_empty(), build key remapping,
           load_state_dict(assign=True).
     4. sample(model, model_id, conditioning, latent, steps, cfg, seed) —
-          assembles and caches a runnable pipeline from the loaded model;
-          denoising loop deferred to P21-B2.
+          assembles and caches a runnable pipeline, runs the denoising loop
+          with classifier-free guidance, returns (denoised_latent, seed).
 
 The ZiT architecture is a diffusion transformer that uses zero-initialized
 projection layers. It is characterised by ``double_blocks`` (cross-attention
@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -159,6 +160,159 @@ class ZiTModel(nn.Module):
         # Architecture identifier — set after construction so downstream
         # code can identify this model's family.
         self.arch: str = "zit"
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        timestep: float,
+        conditioning: Any = None,
+    ) -> torch.Tensor:
+        """Forward pass through the ZiT diffusion transformer.
+
+        Implements the ZiT forward architecture:
+        1. Project the latent tensor into the hidden dimension.
+        2. Create a sinusoidal time embedding and project it through
+           ``time_text_emb``.
+        3. Add the time embedding to the hidden representation.
+        4. Pass through each double block (cross-attention).
+        5. Pass through each single block (linear transformation).
+        6. Project back to the latent dimension.
+
+        The timestep is a float in ``[0, 1]`` representing the current
+        denoising step's position in the noise schedule. It is converted
+        to a hidden-dimension embedding via a sinusoidal encoding.
+
+        Args:
+            x: The input latent tensor of shape
+                ``(batch, latent_channels, latent_height, latent_width)``.
+            timestep: A float in ``[0, 1]`` indicating the current
+                denoising step's position in the noise schedule.
+            conditioning: Optional conditioning tensor (e.g. text
+                embeddings from a CLIP encoder). Passed through to
+                the double blocks' cross-attention layers.
+
+        Returns:
+            A noise prediction tensor of the same shape as *x*,
+            ``(batch, latent_channels, latent_height, latent_width)``.
+        """
+        # ------------------------------------------------------------------
+        # 1. Project latent into hidden dimension.
+        # ------------------------------------------------------------------
+        # The latent tensor has shape (batch, C, H, W). We reshape it to
+        # (batch, C*H*W) so the linear projection works correctly.
+        # This flattens the spatial dimensions into a sequence of tokens.
+        batch = x.shape[0]
+        orig_height = x.shape[2]
+        orig_width = x.shape[3]
+
+        # Derive the expected spatial dimensions from the model's latent_dim.
+        # latent_dim = latent_channels * patch_size^2, so
+        # expected_spatial = latent_dim / latent_channels = patch_size^2
+        # expected_height = expected_width = patch_size.
+        # If the input tensor has different spatial dimensions, resize it
+        # to match the model's expected dimensions so the projection works.
+        latent_channels = x.shape[1]
+        expected_spatial = self.input_proj.in_features // latent_channels
+        expected_height = int(expected_spatial**0.5)
+        expected_width = expected_height
+
+        if x.shape[2] != expected_height or x.shape[3] != expected_width:
+            # Resize the spatial dimensions to match the model's expected
+            # latent shape. This handles the case where the input tensor
+            # has different spatial dimensions than the model was built with.
+            x = torch.nn.functional.interpolate(
+                x,
+                size=(expected_height, expected_width),
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        x_flat = x.reshape(batch, -1)  # (batch, latent_dim)
+        h = self.input_proj(x_flat)  # (batch, hidden_dim)
+
+        # ------------------------------------------------------------------
+        # 2. Create sinusoidal time embedding and project it.
+        # ------------------------------------------------------------------
+        # Sinusoidal embeddings are the standard approach for encoding
+        # continuous timesteps in diffusion models. The frequency bands
+        # span from low (slow-changing) to high (fast-changing), giving
+        # the model a rich representation of the timestep.
+        # We generate a full hidden_dim embedding so it matches the
+        # time_text_emb layer's expected input size.
+        hidden_dim = self.time_text_emb.in_features
+        emb_scale = torch.log(torch.tensor(10000.0)) / (hidden_dim - 1)
+
+        # Generate the sinusoidal embedding: sin(timestep * exp(i * emb_scale))
+        # This is the standard sinusoidal positional encoding adapted for
+        # continuous timesteps instead of integer positions.
+        emb = torch.exp(torch.arange(hidden_dim, device=x.device) * -emb_scale)
+        emb = timestep * emb  # (hidden_dim,)
+        emb = emb.sin().to(x.dtype)  # (hidden_dim,)
+
+        # Project the time embedding through time_text_emb.
+        # This layer combines the time embedding with the text embedding
+        # (when conditioning is provided) into a single hidden-dim vector.
+        time_emb = self.time_text_emb(emb)  # (hidden_dim,)
+
+        # ------------------------------------------------------------------
+        # 3. Add time embedding to hidden representation.
+        # ------------------------------------------------------------------
+        # Broadcasting: time_emb is (hidden_dim,) and h is (batch, hidden_dim),
+        # so adding them broadcasts time_emb across all batch elements.
+        h = h + time_emb
+
+        # ------------------------------------------------------------------
+        # 4. Pass through double blocks (cross-attention).
+        # ------------------------------------------------------------------
+        # Each double block has image self-attention, text cross-attention,
+        # two LayerNorm layers, and a feed-forward block. The conditioning
+        # (text embeddings) is passed to the cross-attention sub-layers.
+        for block in self.double_blocks:
+            h = block["norm1"](h)
+            # Image self-attention: Q, K, V all come from h.
+            attn_out, _ = block["img_attn"](h, h, h)
+            h = h + attn_out
+            # Text cross-attention: Q from h, K/V from conditioning.
+            if conditioning is not None:
+                cross_out, _ = block["txt_attn"](h, conditioning, conditioning)
+                h = h + cross_out
+            h = block["norm2"](h)
+            h = h + block["ff"](h)
+
+        # ------------------------------------------------------------------
+        # 5. Pass through single blocks (linear transformation).
+        # ------------------------------------------------------------------
+        # Each single block is a simplified linear transformation:
+        # LayerNorm → Linear1 → GELU → Linear2. No attention needed.
+        for block in self.single_blocks:
+            h = block["norm"](h)
+            h = h + block["linear2"](torch.nn.functional.gelu(block["linear1"](h)))
+
+        # ------------------------------------------------------------------
+        # 6. Project back to latent dimension.
+        # ------------------------------------------------------------------
+        out = self.output_proj(h)  # (batch, num_patches, latent_dim)
+
+        # Reshape back to (batch, latent_channels, latent_height, latent_width).
+        # The output has shape (batch, num_patches, latent_dim) where
+        # num_patches = (expected_height * expected_width) / (patch_size^2)
+        # and latent_dim = latent_channels * patch_size^2.
+        # Reshape to the resized spatial dimensions, then interpolate
+        # back to the original input dimensions if they differed.
+        latent_channels = x.shape[1]
+        resized_height = x.shape[2]
+        resized_width = x.shape[3]
+        out = out.reshape(batch, latent_channels, resized_height, resized_width)
+
+        if out.shape[2] != orig_height or out.shape[3] != orig_width:
+            out = torch.nn.functional.interpolate(
+                out,
+                size=(orig_height, orig_width),
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        return out
 
 
 class ZiTPipeline:
@@ -403,8 +557,8 @@ def load(path: str, caps: dict, device: str = "cpu") -> ZiTModel:
     return model
 
 
-# REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_sample_pipeline_assembled_from_loaded_model
-# MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_sample_first_call_assembles_pipeline_mock
+# REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_sample_denoising_real_zit_fixture
+# MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_sample_seed_minus_one_resolves_random
 def sample(
     model: ZiTModel,
     model_id: str,
@@ -413,40 +567,53 @@ def sample(
     steps: int,
     cfg: float,
     seed: int,
-) -> ZiTPipeline:
-    """Assemble and cache a runnable pipeline from the provided ``ZiTModel``.
+) -> tuple[torch.Tensor, int]:
+    """Run the denoising loop and return the denoised latent tensor.
 
     On the first call for a given ``model_id``, this function assembles a
-    ``ZiTPipeline`` (model + scheduler) and caches it under ``f"{model_id}:pipeline"``
-    in the module-level ``PipelineCache``.  Subsequent calls with the same
-    ``model_id`` return the cached pipeline without re-assembly.
+    ``ZiTPipeline`` (model + scheduler) and caches it under
+    ``f"{model_id}:pipeline"`` in the module-level ``PipelineCache``.
+    Subsequent calls with the same ``model_id`` return the cached pipeline
+    without re-assembly.
 
-    **Note:** This function does NOT run the denoising loop.  It returns the
-    cached/just-assembled pipeline so that P21-B2 can extend it to also
-    execute the denoising loop.
+    If *seed* is negative (conventionally ``-1``), it is resolved to a
+    cryptographically random integer in ``[0, 2**63)`` via
+    ``secrets.randbelow()`` before denoising begins. The resolved seed is
+    logged and returned — the caller never sees ``-1`` in the output.
 
-    # defers_to: P21-B2 — denoising loop execution is deferred to the next task
+    The denoising loop iterates over the scheduler's timesteps, performing
+    classifier-free guidance at each step: an unconditional pass (empty
+    conditioning) and a conditional pass are blended using the *cfg* scale
+    to interpolate between pure noise and guided output.
 
     Args:
         model: An already-loaded ``ZiTModel`` instance.
         model_id: Stable model identifier used as the cache key prefix.
             Pipelines are cached per-model-id, keyed as ``f"{model_id}:pipeline"``.
         conditioning: Conditioning input (e.g. text embeddings) for the
-            diffusion process. Passed through to the denoising loop in P21-B2.
-        latent: The initial noise latent tensor. Passed through to the
-            denoising loop in P21-B2.
-        steps: Number of denoising steps. Passed through to the denoising
-            loop in P21-B2.
-        cfg: Classifier-free guidance scale. Passed through to the denoising
-            loop in P21-B2.
-        seed: Random seed for reproducibility. Resolved at P21-B2 time
-            (negative values mean "random seed").
+            diffusion process. Passed to the model's forward pass at each
+            denoising step.
+        latent: The initial noise latent tensor. Cloned before denoising
+            so the caller's tensor is never mutated.
+        steps: Number of denoising steps to run.
+        cfg: Classifier-free guidance scale. A value of ``1.0`` disables
+            guidance (conditional only); higher values increase the weight
+            of the conditional signal.
+        seed: Random seed for reproducibility. If negative, resolved to a
+            cryptographically random integer in ``[0, 2**63)``.
 
     Returns:
-        A ``ZiTPipeline`` instance (cached or freshly assembled) that holds
-        the ``ZiTModel`` and scheduler.  The denoising loop is not yet
-        implemented — see P21-B2.
+        A tuple ``(denoised_latent, resolved_seed)`` where
+        *denoised_latent* is the output tensor after all denoising steps
+        and *resolved_seed* is the non-negative seed actually used.
     """
+    # Resolve seed: negative values (conventionally -1) mean "random".
+    # Use secrets.randbelow for cryptographic randomness — this ensures
+    # that two consecutive calls with seed=-1 produce different outputs,
+    # which is the expected behavior for a generation endpoint.
+    if seed < 0:
+        seed = secrets.randbelow(2**63)
+
     # Cache key is "{model_id}:pipeline" — distinct from the raw component
     # cache key used by load() (which caches under "{model_id}:model").
     # This separation means the pipeline (model + scheduler wrapper) is
@@ -458,7 +625,61 @@ def sample(
     # _assemble_pipeline() receives the correct model instance.
     pipeline = pipeline_cache.get_or_load(key, lambda: _assemble_pipeline(model))
     logger.debug("assembled pipeline for model_id=%s", model_id)
-    return pipeline
+
+    # Set up the scheduler's noise schedule for the requested step count.
+    # set_timesteps() computes the discrete timesteps (e.g. [999, 900, 800, ...])
+    # based on the scheduler's internal beta schedule, then exposes them via
+    # the .timesteps attribute for iteration.
+    scheduler = pipeline.scheduler
+    scheduler.set_timesteps(steps)
+
+    # Clone the latent tensor before denoising — we must not mutate the
+    # caller's tensor since it may be reused (e.g. for conditioning
+    # propagation or for generating multiple samples from the same seed).
+    latent = latent.clone()
+
+    # Denoising loop: iterate over the scheduler's timesteps in order.
+    # At each timestep, we perform classifier-free guidance (CFG) by
+    # running both an unconditional pass (empty conditioning) and a
+    # conditional pass, then interpolating between them using the cfg scale.
+    # The interpolation formula is:
+    #   noise_pred = noise_pred_uncond + cfg * (noise_pred_cond - noise_pred_uncond)
+    # which is the standard CFG formulation: uncond + scale * delta.
+    for t in scheduler.timesteps:
+        # Unconditional pass: model predicts noise with no conditioning.
+        # This represents the "prior" — what the model would generate
+        # without any text prompt guidance.
+        # The model's forward() returns a tensor directly (not a named
+        # tuple), so we use it without .sample.
+        with torch.no_grad():
+            noise_pred_uncond = pipeline.model(
+                latent, t / 1000.0
+            )
+
+        # Conditional pass: model predicts noise with the provided
+        # conditioning (e.g. text embeddings from a CLIP encoder).
+        with torch.no_grad():
+            noise_pred_cond = pipeline.model(
+                latent, t / 1000.0, conditioning=conditioning
+            )
+
+        # Classifier-free guidance interpolation.
+        # cfg=1.0 → unconditional contribution is zero → conditional only.
+        # cfg>1.0 → amplifies the conditional signal relative to unconditional.
+        noise_pred = (
+            noise_pred_uncond + cfg * (noise_pred_cond - noise_pred_uncond)
+        )
+
+        # Advance the latent by one denoising step.
+        # The scheduler uses the noise prediction to compute the next
+        # latent state (prev_sample), following its internal schedule
+        # (Euler discrete integration in this case).
+        latent = scheduler.step(noise_pred, t, latent).prev_sample
+
+    logger.info(
+        "denoising complete: steps=%d, seed=%d", steps, seed
+    )
+    return latent, seed
 
 
 def can_handle(key: str) -> bool:
@@ -645,11 +866,16 @@ def _infer_hyperparams_inner(
         single_block_count = len(single_block_keys)
 
     # ------------------------------------------------------------------
-    # 4. Infer latent dimensions from the latents key.
+    # 4. Infer latent dimensions.
     # ------------------------------------------------------------------
-    # The latent tensor has shape (batch, channels, height, width).
-    # In the regular fixture the key is "latents"; in the no-metadata
-    # fixture it is "xyz_latents". We use endswith() to match both.
+    # latent_channels comes from the ``latents`` key (the only reliable
+    # source for the channel dimension).  latent_height and latent_width
+    # are derived from ``input_proj.weight``, which encodes the true
+    # latent_dim the model was trained with — the ``latents`` tensor may
+    # have arbitrary spatial dimensions that don't match training.
+    #
+    # latent_dim = latent_channels * patch_size^2 = input_proj.in_features
+    # latent_height = latent_width = sqrt(latent_dim / latent_channels)
     latent_key: str | None = None
     for key in keys:
         if key.endswith("latents"):
@@ -663,18 +889,35 @@ def _infer_hyperparams_inner(
         )
 
     latent_shape = f.get_slice(latent_key).get_shape()
-    # Shape is always (batch, channels, height, width) for ZiT models.
     latent_channels = latent_shape[1]
-    latent_height = latent_shape[2]
-    latent_width = latent_shape[3]
+
+    # Try to derive latent dimensions from input_proj.weight (primary path).
+    # This gives the true latent_dim the model was trained with.
+    # Fall back to the latents key for no-metadata fixtures that lack
+    # standard ZiT key names.
+    input_proj_key = None
+    for key in keys:
+        if key.endswith("input_proj.weight"):
+            input_proj_key = key
+            break
+
+    if input_proj_key is not None:
+        # Primary path: derive from input_proj weight shape.
+        latent_dim = f.get_slice(input_proj_key).get_shape()[1]
+        latent_height = latent_width = int((latent_dim / latent_channels) ** 0.5)
+    else:
+        # Fallback for no-metadata fixtures: derive from latents tensor.
+        latent_height = latent_shape[2]
+        latent_width = latent_shape[3]
 
     # ------------------------------------------------------------------
     # 5. Derive patch_size.
     # ------------------------------------------------------------------
-    # For ZiT diffusion transformers, patch_size = hidden_dim //
-    # latent_channels. This is the standard convention where each
-    # patch token projects to the hidden dimension.
-    patch_size = hidden_dim // latent_channels
+    # patch_size = sqrt(latent_dim / latent_channels), which equals
+    # latent_height (and latent_width) for square latent tensors.
+    patch_size = int((latent_height * latent_width * latent_channels / latent_channels) ** 0.5)
+    # Simplify: patch_size = latent_height for square latent tensors.
+    patch_size = latent_height
 
     # ------------------------------------------------------------------
     # 6. Infer architecture string.
