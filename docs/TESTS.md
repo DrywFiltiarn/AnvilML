@@ -7272,3 +7272,66 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_compute_latent_shape_zero_dims -v` exits 0.
 
 ---
+
+---
+
+## test_sample_first_call_assembles_pipeline_mock (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `sample()` function in `zit.py` assembles a `ZiTPipeline` from a loaded `ZiTModel` and caches it under `f"{model_id}:pipeline"` in the module-level `PipelineCache`. This test uses a spy on `pipeline_cache.get_or_load` to verify the loader is called exactly once on first access.
+**Tests:** First call to `sample()` with `model_id="test1"` assembles and caches a pipeline; `get_or_load` loader is invoked exactly once.
+**Mode:** mock
+**Inputs:** `model_id="test1"`, fixture-loaded `ZiTModel`, `conditioning=None`, `latent=torch.zeros(1,4,2,2)`, `steps=20`, `cfg=7.5`, `seed=42`.
+**Expected output:** `ZiTPipeline` instance with `.model` set to the input model; loader call count = 1.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_sample_first_call_assembles_pipeline_mock -v` exits 0.
+**Parity marker:** `MOCK_PATH_VERIFIED` on `sample()` in `zit.py`.
+
+---
+
+## test_sample_second_call_reuses_cached_pipeline_mock (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `sample()` function caches assembled pipelines per `model_id`. A second call with the same `model_id` should return the cached pipeline without re-assembly.
+**Tests:** Second call to `sample()` with same `model_id="test2"` returns the same `ZiTPipeline` object; loader call count remains at 1.
+**Mode:** mock
+**Inputs:** `model_id="test2"`, fixture-loaded `ZiTModel`, same args as first call.
+**Expected output:** Same `ZiTPipeline` object returned; loader call count = 1.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_sample_second_call_reuses_cached_pipeline_mock -v` exits 0.
+**Parity marker:** `MOCK_PATH_VERIFIED` on `sample()` in `zit.py`.
+
+---
+
+## test_sample_different_model_id_gets_separate_pipeline (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `sample()` function keys pipelines by `f"{model_id}:pipeline"`, so different model IDs should produce separate cached pipelines.
+**Tests:** Two calls to `sample()` with different `model_id` values (`"model_a"` and `"model_b"`) produce separate `ZiTPipeline` objects.
+**Mode:** both
+**Inputs:** `model_id="model_a"` and `model_id="model_b"`, same fixture-loaded model.
+**Expected output:** Two distinct `ZiTPipeline` instances, each with `.model` set to the input model.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_sample_different_model_id_gets_separate_pipeline -v` exits 0.
+
+---
+
+## test_sample_pipeline_is_zit_wrapper (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `ZiTPipeline` wrapper returned by `sample()` must hold the exact `ZiTModel` instance passed in (identity check).
+**Tests:** The returned `ZiTPipeline` has a `.model` attribute that is the same `ZiTModel` instance passed to `sample()`.
+**Mode:** both
+**Inputs:** Fixture-loaded `ZiTModel`, `model_id="test_model"`.
+**Expected output:** `pipeline.model is model` (identity check passes).
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_sample_pipeline_is_zit_wrapper -v` exits 0.
+
+---
+
+## test_sample_pipeline_assembled_from_loaded_model (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** Real-mode test for `sample()` — verifies the full pipeline assembly path with a real fixture-loaded model. The `sample()` function constructs a `ZiTPipeline` wrapping the loaded model and an `EulerDiscreteScheduler`.
+**Tests:** `sample()` with a fixture-loaded model produces a `ZiTPipeline` with the correct model and a non-None scheduler.
+**Mode:** real
+**Inputs:** `model_id="real_test"`, `zit_tiny.safetensors` loaded with bf16 capability.
+**Expected output:** `ZiTPipeline` with `.model` pointing to the loaded model and `.scheduler` being an `EulerDiscreteScheduler` instance.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_sample_pipeline_assembled_from_loaded_model -v -m real_mode` exits 0.
+**Parity marker:** `REAL_PATH_VERIFIED` on `sample()` in `zit.py`.

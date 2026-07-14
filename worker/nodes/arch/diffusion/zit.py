@@ -1,7 +1,7 @@
 """ZiT (Zero-initialized Transformer) diffusion architecture module.
 
 This module provides shape-inference utilities and meta-device construction
-for the ZiT diffusion transformer architecture. It implements steps 1–3 of
+for the ZiT diffusion transformer architecture. It implements steps 1–4 of
 the four-step loading contract defined in ANVILML_DESIGN.md §11.3:
 
     1. _infer_hyperparams(path) — open header-only, read all key shapes, return
@@ -11,7 +11,9 @@ the four-step loading contract defined in ANVILML_DESIGN.md §11.3:
     3. load(path, caps, device) — steps 2–3: construct nn.Module on meta,
           materialize onto device via to_empty(), build key remapping,
           load_state_dict(assign=True).
-    4. sample(z, prompt, **kwargs) — deferred to P20-C3.
+    4. sample(model, model_id, conditioning, latent, steps, cfg, seed) —
+          assembles and caches a runnable pipeline from the loaded model;
+          denoising loop deferred to P21-B2.
 
 The ZiT architecture is a diffusion transformer that uses zero-initialized
 projection layers. It is characterised by ``double_blocks`` (cross-attention
@@ -34,6 +36,9 @@ import torch.nn as nn
 from safetensors import safe_open
 from safetensors.torch import load_file
 
+from diffusers import EulerDiscreteScheduler
+from worker.pipeline_cache import PipelineCache
+
 # Canonical architecture identifier — the string that the dispatcher
 # passes to can_handle() when routing diffusion model requests.
 # Mirrors the "arch": "zit" value returned by _infer_hyperparams()
@@ -48,6 +53,11 @@ MODEL_PATCH_SIZE: int = 16
 MODEL_LATENT_CHANNELS: int = 4
 
 logger = logging.getLogger(__name__)
+
+# Per-process LRU cache for pipeline objects.
+# Each model_id gets its own cached pipeline, keyed as "{model_id}:pipeline".
+# This avoids re-assembling the scheduler + model wrapper on every sample() call.
+pipeline_cache = PipelineCache()
 
 
 class ZiTModel(nn.Module):
@@ -149,6 +159,57 @@ class ZiTModel(nn.Module):
         # Architecture identifier — set after construction so downstream
         # code can identify this model's family.
         self.arch: str = "zit"
+
+
+class ZiTPipeline:
+    """Minimal pipeline wrapper that holds a ``ZiTModel`` and a ``diffusers`` scheduler.
+
+    This class is a thin container — it does not implement a denoising loop itself.
+    The denoising loop is deferred to P21-B2.  This wrapper provides the interface
+    that the denoising loop will call: ``.model`` for the neural network and
+    ``.scheduler`` for the noise schedule.
+
+    Attributes:
+        model: The ``ZiTModel`` instance (an ``nn.Module``) to run inference with.
+        scheduler: A ``diffusers`` scheduler instance that generates the noise
+            schedule and provides the step function interface.
+    """
+
+    def __init__(self, model: ZiTModel, scheduler: Any) -> None:
+        """Construct a ``ZiTPipeline`` wrapper.
+
+        Args:
+            model: An already-loaded ``ZiTModel`` instance with parameters
+                materialized on the target device.
+            scheduler: A ``diffusers`` scheduler instance (e.g.
+                ``EulerDiscreteScheduler``) that defines the noise schedule.
+        """
+        self.model = model
+        self.scheduler = scheduler
+
+
+def _assemble_pipeline(model: ZiTModel) -> ZiTPipeline:
+    """Assemble a ``ZiTPipeline`` from a loaded ``ZiTModel``.
+
+    Creates a ``ZiTPipeline`` wrapper that holds the model and a default
+    ``EulerDiscreteScheduler``.  The scheduler is a simple placeholder —
+    the full denoising step function is wired in P21-B2.
+
+    The function is called via ``PipelineCache.get_or_load()`` so that
+    pipeline assembly happens at most once per ``model_id``.
+
+    Args:
+        model: An already-loaded ``ZiTModel`` instance with parameters
+            materialized on the target device.
+
+    Returns:
+        A ``ZiTPipeline`` instance wrapping *model* and a default scheduler.
+    """
+    # Use EulerDiscreteScheduler as the default scheduler — it is a widely
+    # used, stable scheduler in diffusers that provides a simple step
+    # interface. The actual denoising loop is deferred to P21-B2.
+    scheduler = EulerDiscreteScheduler()
+    return ZiTPipeline(model, scheduler)
 
 
 # REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_real_formula
@@ -340,6 +401,64 @@ def load(path: str, caps: dict, device: str = "cpu") -> ZiTModel:
     )
 
     return model
+
+
+# REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_sample_pipeline_assembled_from_loaded_model
+# MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_sample_first_call_assembles_pipeline_mock
+def sample(
+    model: ZiTModel,
+    model_id: str,
+    conditioning: Any,
+    latent: torch.Tensor,
+    steps: int,
+    cfg: float,
+    seed: int,
+) -> ZiTPipeline:
+    """Assemble and cache a runnable pipeline from the provided ``ZiTModel``.
+
+    On the first call for a given ``model_id``, this function assembles a
+    ``ZiTPipeline`` (model + scheduler) and caches it under ``f"{model_id}:pipeline"``
+    in the module-level ``PipelineCache``.  Subsequent calls with the same
+    ``model_id`` return the cached pipeline without re-assembly.
+
+    **Note:** This function does NOT run the denoising loop.  It returns the
+    cached/just-assembled pipeline so that P21-B2 can extend it to also
+    execute the denoising loop.
+
+    # defers_to: P21-B2 — denoising loop execution is deferred to the next task
+
+    Args:
+        model: An already-loaded ``ZiTModel`` instance.
+        model_id: Stable model identifier used as the cache key prefix.
+            Pipelines are cached per-model-id, keyed as ``f"{model_id}:pipeline"``.
+        conditioning: Conditioning input (e.g. text embeddings) for the
+            diffusion process. Passed through to the denoising loop in P21-B2.
+        latent: The initial noise latent tensor. Passed through to the
+            denoising loop in P21-B2.
+        steps: Number of denoising steps. Passed through to the denoising
+            loop in P21-B2.
+        cfg: Classifier-free guidance scale. Passed through to the denoising
+            loop in P21-B2.
+        seed: Random seed for reproducibility. Resolved at P21-B2 time
+            (negative values mean "random seed").
+
+    Returns:
+        A ``ZiTPipeline`` instance (cached or freshly assembled) that holds
+        the ``ZiTModel`` and scheduler.  The denoising loop is not yet
+        implemented — see P21-B2.
+    """
+    # Cache key is "{model_id}:pipeline" — distinct from the raw component
+    # cache key used by load() (which caches under "{model_id}:model").
+    # This separation means the pipeline (model + scheduler wrapper) is
+    # cached independently from the raw model weights.
+    key = f"{model_id}:pipeline"
+
+    # get_or_load returns cached pipeline if present, or calls the loader
+    # exactly once on cache miss. The lambda captures *model* so that
+    # _assemble_pipeline() receives the correct model instance.
+    pipeline = pipeline_cache.get_or_load(key, lambda: _assemble_pipeline(model))
+    logger.debug("assembled pipeline for model_id=%s", model_id)
+    return pipeline
 
 
 def can_handle(key: str) -> bool:

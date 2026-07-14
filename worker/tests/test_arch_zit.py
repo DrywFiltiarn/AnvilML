@@ -832,3 +832,206 @@ def test_compute_latent_shape_zero_dims() -> None:
 
     result_both_zero = compute_latent_shape(0, 0, 1)
     assert result_both_zero == (1, 4, 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# P21-B1: sample() pipeline assembly + caching tests
+# ---------------------------------------------------------------------------
+
+
+def test_sample_first_call_assembles_pipeline_mock() -> None:
+    """sample() assembles and caches a pipeline on first call for a model_id.
+
+    Spies on ``pipeline_cache.get_or_load`` to verify the loader function
+    is called exactly once on the first call with ``model_id="test1"``.
+    Asserts that a ``ZiTPipeline`` is returned.
+
+    This is the primary mock-mode test for the cache-assembly path.
+    It uses a mock ``ZiTModel`` (constructed on meta-device) rather than
+    loading from disk, keeping the test fast and deterministic.
+
+    # MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_sample_first_call_assembles_pipeline_mock
+    """
+    from worker.nodes.arch.diffusion.zit import (
+        ZiTPipeline,
+        load,
+        pipeline_cache,
+        sample,
+    )
+
+    # Load a real ZiTModel from the fixture — this is the simplest way to
+    # get a valid model instance without constructing it manually.
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    model = load(str(fixture_path), _DEFAULT_CAPS, device="cpu")
+
+    # Spy on the cache's get_or_load method to count loader invocations.
+    # We use a manual spy pattern — capture the original method, wrap it,
+    # and restore afterward. The cache is module-level and process-global,
+    # so we must be careful not to leak state between tests.
+    original_get_or_load = pipeline_cache.get_or_load
+    call_count = 0
+
+    def spy_get_or_load(key: str, loader_fn) -> object:
+        nonlocal call_count
+        if key not in pipeline_cache._cache:
+            call_count += 1
+        return original_get_or_load(key, loader_fn)
+
+    pipeline_cache.get_or_load = spy_get_or_load
+    try:
+        pipeline = sample(model, "test1", None, torch.zeros(1, 4, 2, 2), 20, 7.5, 42)
+
+        # The loader should have been called exactly once for a new model_id.
+        assert call_count == 1, (
+            f"expected loader to be called exactly once, got {call_count}"
+        )
+        # The returned object must be a ZiTPipeline.
+        assert isinstance(pipeline, ZiTPipeline), (
+            f"expected ZiTPipeline, got {type(pipeline)}"
+        )
+    finally:
+        # Restore the original method unconditionally.
+        pipeline_cache.get_or_load = original_get_or_load
+        # Clean up the cache entry so subsequent tests start fresh.
+        if "test1:pipeline" in pipeline_cache._cache:
+            del pipeline_cache._cache["test1:pipeline"]
+
+
+def test_sample_second_call_reuses_cached_pipeline_mock() -> None:
+    """sample() returns the same cached pipeline on second call with same model_id.
+
+    Calls ``sample()`` twice with ``model_id="test2"`` and verifies that
+    the second call does NOT re-assembly (loader call count stays at 1).
+    Both calls return the same ``ZiTPipeline`` object.
+
+    # MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_sample_second_call_reuses_cached_pipeline_mock
+    """
+    from worker.nodes.arch.diffusion.zit import (
+        ZiTPipeline,
+        load,
+        pipeline_cache,
+        sample,
+    )
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    model = load(str(fixture_path), _DEFAULT_CAPS, device="cpu")
+
+    original_get_or_load = pipeline_cache.get_or_load
+    call_count = 0
+
+    def spy_get_or_load(key: str, loader_fn) -> object:
+        nonlocal call_count
+        if key not in pipeline_cache._cache:
+            call_count += 1
+        return original_get_or_load(key, loader_fn)
+
+    pipeline_cache.get_or_load = spy_get_or_load
+    try:
+        first = sample(model, "test2", None, torch.zeros(1, 4, 2, 2), 20, 7.5, 42)
+        second = sample(model, "test2", None, torch.zeros(1, 4, 2, 2), 20, 7.5, 42)
+
+        # Loader should still be called only once — second call hits the cache.
+        assert call_count == 1, (
+            f"expected loader call count to stay at 1, got {call_count}"
+        )
+        # Both calls must return the same pipeline object.
+        assert first is second, (
+            "expected second call to return the same cached pipeline"
+        )
+    finally:
+        pipeline_cache.get_or_load = original_get_or_load
+        if "test2:pipeline" in pipeline_cache._cache:
+            del pipeline_cache._cache["test2:pipeline"]
+
+
+def test_sample_different_model_id_gets_separate_pipeline() -> None:
+    """sample() produces separate pipelines for different model_ids.
+
+    Calls ``sample()`` with two different ``model_id`` values and verifies
+    that two separate ``ZiTPipeline`` objects are cached and returned.
+    """
+    from worker.nodes.arch.diffusion.zit import (
+        ZiTPipeline,
+        load,
+        pipeline_cache,
+        sample,
+    )
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    model = load(str(fixture_path), _DEFAULT_CAPS, device="cpu")
+
+    pipeline_a = sample(model, "model_a", None, torch.zeros(1, 4, 2, 2), 20, 7.5, 42)
+    pipeline_b = sample(model, "model_b", None, torch.zeros(1, 4, 2, 2), 20, 7.5, 42)
+
+    # Both must be ZiTPipeline instances.
+    assert isinstance(pipeline_a, ZiTPipeline)
+    assert isinstance(pipeline_b, ZiTPipeline)
+    # They must be different objects.
+    assert pipeline_a is not pipeline_b, (
+        "different model_ids should produce separate pipeline objects"
+    )
+
+    # Clean up.
+    if "model_a:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache["model_a:pipeline"]
+    if "model_b:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache["model_b:pipeline"]
+
+
+def test_sample_pipeline_is_zit_wrapper() -> None:
+    """Returned pipeline has a .model attribute that is the same ZiTModel instance.
+
+    Verifies that the ``ZiTPipeline`` returned by ``sample()`` holds the
+    exact ``ZiTModel`` instance passed in (identity check, not equality).
+    """
+    from worker.nodes.arch.diffusion.zit import (
+        ZiTPipeline,
+        load,
+        pipeline_cache,
+        sample,
+    )
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    model = load(str(fixture_path), _DEFAULT_CAPS, device="cpu")
+
+    pipeline = sample(model, "test_model", None, torch.zeros(1, 4, 2, 2), 20, 7.5, 42)
+
+    assert isinstance(pipeline, ZiTPipeline)
+    assert pipeline.model is model, (
+        "pipeline.model must be the exact ZiTModel instance passed to sample()"
+    )
+
+    # Clean up.
+    if "test_model:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache["test_model:pipeline"]
+
+
+@pytest.mark.real_mode
+def test_sample_pipeline_assembled_from_loaded_model() -> None:
+    """sample() with a fixture-loaded model produces a pipeline with the correct model.
+
+    Calls ``sample()`` with a model loaded from ``zit_tiny.safetensors``
+    and asserts that the returned ``ZiTPipeline`` holds the loaded model
+    and has a scheduler attribute. This is the canonical real-mode test.
+
+    # REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_sample_pipeline_assembled_from_loaded_model
+    """
+    from worker.nodes.arch.diffusion.zit import (
+        ZiTPipeline,
+        load,
+        pipeline_cache,
+        sample,
+    )
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    model = load(str(fixture_path), _DEFAULT_CAPS, device="cpu")
+
+    pipeline = sample(model, "real_test", None, torch.zeros(1, 4, 2, 2), 20, 7.5, 42)
+
+    assert isinstance(pipeline, ZiTPipeline)
+    assert pipeline.model is model
+    assert pipeline.scheduler is not None
+
+    # Clean up.
+    if "real_test:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache["real_test:pipeline"]
