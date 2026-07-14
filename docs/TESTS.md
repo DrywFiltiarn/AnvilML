@@ -7335,3 +7335,63 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Expected output:** `ZiTPipeline` with `.model` pointing to the loaded model and `.scheduler` being an `EulerDiscreteScheduler` instance.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_sample_pipeline_assembled_from_loaded_model -v -m real_mode` exits 0.
 **Parity marker:** `REAL_PATH_VERIFIED` on `sample()` in `zit.py`.
+
+---
+
+## test_sampler_class_attributes (worker.nodes.sampler)
+
+**File:** `worker/tests/test_nodes_sampler.py`
+**Context:** The Sampler node module has been created with all six required class attributes and the `@register` decorator.
+**Tests:** All six class attributes (`NODE_TYPE`, `CATEGORY`, `DISPLAY_NAME`, `DESCRIPTION`, `INPUT_SLOTS`, `OUTPUT_SLOTS`) match expected values exactly. INPUT_SLOTS has 7 SlotSpecs, OUTPUT_SLOTS has 2.
+**Mode:** mock
+**Inputs:** None — class-level attribute inspection.
+**Expected output:** All six attributes match their expected values.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py::test_sampler_class_attributes -v` exits 0.
+
+---
+
+## test_sampler_mock_returns_expected_shape (worker.nodes.sampler)
+
+**File:** `worker/tests/test_nodes_sampler.py`
+**Context:** The Sampler node's mock branch returns a sentinel dict with the input latent's shape and the seed passed through.
+**Tests:** Mock-mode `execute()` returns `{"latent": {"mock": True, "shape": (1, 4, 64, 64)}, "seed": 42}` with shape propagated from `inputs["latent"]`. Satisfies the `MOCK_PATH_VERIFIED` marker.
+**Mode:** mock
+**Inputs:** `model={}`, `conditioning={}`, `clip={}`, `latent={"shape": (1, 4, 64, 64)}`, `steps=20`, `cfg=7.5`, `seed=42`.
+**Expected output:** `{"latent": {"mock": True, "shape": (1, 4, 64, 64)}, "seed": 42}`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py::test_sampler_mock_returns_expected_shape -v -m "not real_mode"` exits 0.
+
+---
+
+## test_sampler_mock_seed_zero (worker.nodes.sampler)
+
+**File:** `worker/tests/test_nodes_sampler.py`
+**Context:** The Sampler node's mock branch resolves seed=-1 to 0 deterministically for reproducible output.
+**Tests:** When `seed=-1`, mock returns `{"seed": 0}`. When `seed=42`, returns `{"seed": 42}`.
+**Mode:** mock
+**Inputs:** Same as above with `seed=-1` and `seed=42` respectively.
+**Expected output:** seed=-1 → 0, seed=42 → 42.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py::test_sampler_mock_seed_zero -v -m "not real_mode"` exits 0.
+
+---
+
+## test_sampler_real_raises_not_implemented (worker.nodes.sampler)
+
+**File:** `worker/tests/test_nodes_sampler.py`
+**Context:** The Sampler node's real branch raises `NotImplementedError` with a message referencing P21-C2.
+**Tests:** Real-mode `execute()` raises `NotImplementedError` with message containing "deferred to P21-C2". Satisfies the `REAL_PATH_VERIFIED` marker.
+**Mode:** real
+**Inputs:** `model={}`, `conditioning={}`, `clip={}`, `latent={"shape": (1, 4, 64, 64)}`, `steps=20`, `cfg=7.5`, `seed=42`, `mock=False`.
+**Expected output:** `NotImplementedError` with message containing "deferred to P21-C2" is raised.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py::test_sampler_real_raises_not_implemented -v -m real_mode` exits 0.
+
+---
+
+## test_sampler_in_registry (worker.nodes.sampler)
+
+**File:** `worker/tests/test_nodes_sampler.py`
+**Context:** The Sampler node module is auto-imported by `worker.nodes.__init__` and registered via `@register` at module load time.
+**Tests:** Subprocess isolation test: fresh Python process imports `worker.nodes.sampler`, confirms `NODE_REGISTRY["Sampler"]` exists and is the `Sampler` class.
+**Mode:** mock
+**Inputs:** Fresh subprocess with `sys.executable -c` code.
+**Expected output:** `NODE_REGISTRY` contains "Sampler" as a key pointing to the `Sampler` class.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py::test_sampler_in_registry -v -m "not real_mode"` exits 0.
