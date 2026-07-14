@@ -40,6 +40,13 @@ from safetensors.torch import load_file
 # when it reads metadata or falls back to key-pattern inference.
 ARCH: str = "zit"
 
+# Default patch size and latent channel count used by compute_latent_shape()
+# when called before load() has cached the actual checkpoint hyperparameters.
+# These are updated in-place by load() after _infer_hyperparams() extracts
+# the real values from the checkpoint header.
+MODEL_PATCH_SIZE: int = 16
+MODEL_LATENT_CHANNELS: int = 4
+
 logger = logging.getLogger(__name__)
 
 
@@ -144,6 +151,45 @@ class ZiTModel(nn.Module):
         self.arch: str = "zit"
 
 
+# REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_real_formula
+# MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_mock_formula
+def compute_latent_shape(
+    width: int, height: int, batch_size: int = 1
+) -> tuple[int, int, int, int]:
+    """Compute the latent tensor shape for a given input resolution.
+
+    Uses ZiT's patch-packing formula: latent_height = ceil(width / patch_size),
+    latent_width = ceil(height / patch_size). Returns (batch_size, latent_channels,
+    latent_height, latent_width).
+
+    Non-multiple-of-patch-size dimensions are rounded up via ceiling division
+    so the latent grid fully covers the input — any partial patch at the edge
+    still needs a full column/row of latent tokens.
+
+    The formula uses the module-level constants MODEL_PATCH_SIZE and
+    MODEL_LATENT_CHANNELS, which are set to the checkpoint's actual values
+    when load() is called. Before load(), the defaults (16, 4) apply.
+
+    Args:
+        width: Input image width in pixels.
+        height: Input image height in pixels.
+        batch_size: Number of samples in the batch. Defaults to 1.
+
+    Returns:
+        A 4-tuple (batch_size, latent_channels, latent_height, latent_width)
+        representing the shape of the noise latent tensor that EmptyLatent
+        should produce before passing it to the Sampler.
+    """
+    # Ceiling division: (x + patch_size - 1) // patch_size computes ceil(x /
+    # patch_size) using only integer arithmetic. This correctly handles exact
+    # multiples (e.g. 32 / 16 = 2), non-multiples (e.g. 33 / 16 = ceil(2.0625)
+    # = 3), and the edge case width=0 (returns 0).
+    latent_height = (width + MODEL_PATCH_SIZE - 1) // MODEL_PATCH_SIZE
+    latent_width = (height + MODEL_PATCH_SIZE - 1) // MODEL_PATCH_SIZE
+
+    return (batch_size, MODEL_LATENT_CHANNELS, latent_height, latent_width)
+
+
 # REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_load_real_zit_fixture
 # MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_load_mock_zit_fixture
 def load(path: str, caps: dict, device: str = "cpu") -> ZiTModel:
@@ -184,6 +230,19 @@ def load(path: str, caps: dict, device: str = "cpu") -> ZiTModel:
     # including the native dtype of the first weight tensor. This reads only
     # the ~100KB metadata header — no tensor data is loaded.
     hyperparams = _infer_hyperparams(path)
+
+    # Cache the checkpoint's patch_size and latent_channels as module-level
+    # state so compute_latent_shape() can use them without a model argument.
+    # This is the simplest approach that matches the fixed signature
+    # compute_latent_shape(width, height, batch_size).
+    global MODEL_PATCH_SIZE, MODEL_LATENT_CHANNELS
+    MODEL_PATCH_SIZE = hyperparams["patch_size"]
+    MODEL_LATENT_CHANNELS = hyperparams["latent_channels"]
+    logger.debug(
+        "cached hyperparams: patch_size=%d, latent_channels=%d",
+        MODEL_PATCH_SIZE,
+        MODEL_LATENT_CHANNELS,
+    )
 
     # Step 2 (this task): select the compute dtype per the fixed precedence
     # in ANVILML_DESIGN.md §11.5. The native dtype is read from the checkpoint

@@ -7186,3 +7186,89 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `model_id` = path to `worker/tests/fixtures/zit_tiny.safetensors`, `mock=False`.
 **Expected output:** `{"model": ZiTModel}` with `model.arch == "zit"` and all params on cpu.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_model_real_loads_zit_fixture -v` exits 0.
+
+---
+
+## test_compute_latent_shape_mock_exact_multiple (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** `compute_latent_shape()` uses module-level `MODEL_PATCH_SIZE=16` and `MODEL_LATENT_CHANNELS=4` defaults. The ceiling division formula `(x + 15) // 16` computes `ceil(x / 16)` for exact multiples.
+**Tests:** `compute_latent_shape(32, 32, 1)` returns `(1, 4, 2, 2)` — exact multiple of patch size (32/16=2), latent channels=4, batch_size=1.
+**Mode:** mock
+**Inputs:** width=32, height=32, batch_size=1.
+**Expected output:** `(1, 4, 2, 2)`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_compute_latent_shape_mock_exact_multiple -v` exits 0.
+
+---
+
+## test_compute_latent_shape_mock_non_multiple (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** `compute_latent_shape()` uses module-level defaults. The ceiling division `(33 + 15) // 16 = 3` rounds up non-multiples so the latent grid fully covers the input.
+**Tests:** `compute_latent_shape(33, 33, 1)` returns `(1, 4, 3, 3)` — ceiling division for non-multiple dimensions (33/16=2.0625→3).
+**Mode:** mock
+**Inputs:** width=33, height=33, batch_size=1.
+**Expected output:** `(1, 4, 3, 3)`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_compute_latent_shape_mock_non_multiple -v` exits 0.
+
+---
+
+## test_compute_latent_shape_mock_batch_scaling (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** `compute_latent_shape()` uses module-level defaults. The batch_size parameter is returned as the first element of the shape tuple.
+**Tests:** `compute_latent_shape(64, 64, 4)` returns `(4, 4, 4, 4)` — batch_size=4 scales the first dimension, latent_height=4, latent_width=4.
+**Mode:** mock
+**Inputs:** width=64, height=64, batch_size=4.
+**Expected output:** `(4, 4, 4, 4)`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_compute_latent_shape_mock_batch_scaling -v` exits 0.
+
+---
+
+## test_compute_latent_shape_real_after_load (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** `load()` calls `_infer_hyperparams()` which extracts `patch_size=16` and `latent_channels=4` from the fixture checkpoint, then sets the module-level constants. After `load()`, `compute_latent_shape()` uses these actual values.
+**Tests:** After `load()` against the fixture, `compute_latent_shape(32, 32, 1)` returns `(1, 4, 2, 2)` using the checkpoint's actual hyperparameters.
+**Mode:** real
+**Inputs:** Fixture path `worker/tests/fixtures/zit_tiny.safetensors`, then `width=32, height=32, batch_size=1`.
+**Expected output:** `(1, 4, 2, 2)`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_compute_latent_shape_real_after_load -v` exits 0.
+
+---
+
+## test_compute_latent_shape_real_non_multiple_after_load (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** After `load()` updates the module-level hyperparameters, `compute_latent_shape()` uses ceiling division for non-multiple dimensions. With patch_size=16, 50/16=3.125→4.
+**Tests:** After `load()` against the fixture, `compute_latent_shape(50, 50, 1)` returns `(1, 4, 4, 4)` — ceiling division for non-multiple dimensions.
+**Mode:** real
+**Inputs:** Fixture path `worker/tests/fixtures/zit_tiny.safetensors`, then `width=50, height=50, batch_size=1`.
+**Expected output:** `(1, 4, 4, 4)`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_compute_latent_shape_real_non_multiple_after_load -v` exits 0.
+
+---
+
+## test_compute_latent_shape_default_batch_size (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** `compute_latent_shape()` has `batch_size: int = 1` as a default parameter. Calling without the third argument should use batch_size=1.
+**Tests:** `compute_latent_shape(32, 32)` (no batch_size) returns `(1, 4, 2, 2)`, confirming the default.
+**Mode:** mock
+**Inputs:** width=32, height=32 (batch_size omitted).
+**Expected output:** `(1, 4, 2, 2)`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_compute_latent_shape_default_batch_size -v` exits 0.
+
+---
+
+## test_compute_latent_shape_zero_dims (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** Edge case test for the ceiling division formula. `(0 + 15) // 16 = 0`, so zero dimensions produce zero latent dimensions.
+**Tests:** `compute_latent_shape(0, 32, 1)` returns `(1, 4, 0, 2)`, `compute_latent_shape(32, 0, 1)` returns `(1, 4, 2, 0)`, and `compute_latent_shape(0, 0, 1)` returns `(1, 4, 0, 0)`.
+**Mode:** mock
+**Inputs:** width=0/height=32, width=32/height=0, width=0/height=0.
+**Expected output:** `(1, 4, 0, 2)`, `(1, 4, 2, 0)`, `(1, 4, 0, 0)`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_compute_latent_shape_zero_dims -v` exits 0.
+
+---

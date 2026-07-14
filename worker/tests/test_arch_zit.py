@@ -7,7 +7,13 @@ import torch
 
 from worker.nodes.arch.diffusion import get_module
 from worker.nodes.arch.diffusion import zit
-from worker.nodes.arch.diffusion.zit import _infer_hyperparams, _select_dtype, can_handle, load
+from worker.nodes.arch.diffusion.zit import (
+    _infer_hyperparams,
+    _select_dtype,
+    can_handle,
+    compute_latent_shape,
+    load,
+)
 
 _FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
@@ -702,3 +708,127 @@ def test_load_raises_on_invalid_path() -> None:
     nonexistent = "/tmp/this_file_does_not_exist_xyz789.safetensors"
     with pytest.raises(ValueError, match="No such file"):
         load(nonexistent, _DEFAULT_CAPS, device="cpu")
+
+
+# ---------------------------------------------------------------------------
+# P21-A1: compute_latent_shape() tests
+# ---------------------------------------------------------------------------
+
+
+def test_compute_latent_shape_mock_exact_multiple() -> None:
+    """compute_latent_shape() produces correct shape for exact-patch-size dimensions.
+
+    Calls compute_latent_shape() with width=32, height=32, batch_size=1.
+    With the default MODEL_PATCH_SIZE=16, this gives latent_height=2,
+    latent_width=2. The result should be (1, 4, 2, 2).
+
+    This is the primary mock-mode test for the formula — it exercises the
+    exact-multiple path of the ceiling division.
+
+    # MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_mock_exact_multiple
+    """
+    result = compute_latent_shape(32, 32, 1)
+    assert result == (1, 4, 2, 2)
+
+
+def test_compute_latent_shape_mock_non_multiple() -> None:
+    """compute_latent_shape() rounds up non-multiple dimensions via ceiling division.
+
+    Calls compute_latent_shape() with width=33, height=33, batch_size=1.
+    With MODEL_PATCH_SIZE=16, 33/16 = 2.0625, which rounds up to 3.
+    The result should be (1, 4, 3, 3).
+
+    This verifies the ceiling-division path: non-multiples of patch_size
+    are rounded up so the latent grid fully covers the input.
+
+    # MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_mock_non_multiple
+    """
+    result = compute_latent_shape(33, 33, 1)
+    assert result == (1, 4, 3, 3)
+
+
+def test_compute_latent_shape_mock_batch_scaling() -> None:
+    """compute_latent_shape() scales the batch dimension correctly.
+
+    Calls compute_latent_shape() with width=64, height=64, batch_size=4.
+    With MODEL_PATCH_SIZE=16, this gives latent_height=4, latent_width=4.
+    The result should be (4, 4, 4, 4) — batch_size=4 in the first position.
+
+    # MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_mock_batch_scaling
+    """
+    result = compute_latent_shape(64, 64, 4)
+    assert result == (4, 4, 4, 4)
+
+
+def test_compute_latent_shape_real_after_load() -> None:
+    """compute_latent_shape() uses actual checkpoint hyperparameters after load().
+
+    Calls load() against the ZiT fixture (which has patch_size=16,
+    latent_channels=4), then calls compute_latent_shape(32, 32, 1).
+    The result should be (1, 4, 2, 2), proving that load() correctly
+    updates the module-level hyperparameters.
+
+    # REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_real_after_load
+    """
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    caps = {
+        "fp32": True,
+        "fp16": True,
+        "bf16": True,
+        "fp8": False,
+        "fp4": False,
+        "flash_attention": False,
+    }
+    load(str(fixture_path), caps, device="cpu")
+    result = compute_latent_shape(32, 32, 1)
+    assert result == (1, 4, 2, 2)
+
+
+def test_compute_latent_shape_real_non_multiple_after_load() -> None:
+    """compute_latent_shape() ceiling division works after load() updates hyperparams.
+
+    Calls load() against the ZiT fixture, then calls compute_latent_shape(50, 50, 1).
+    With patch_size=16, 50/16 = 3.125, which rounds up to 4.
+    The result should be (1, 4, 4, 4).
+
+    # REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_real_non_multiple_after_load
+    """
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    caps = {
+        "fp32": True,
+        "fp16": True,
+        "bf16": True,
+        "fp8": False,
+        "fp4": False,
+        "flash_attention": False,
+    }
+    load(str(fixture_path), caps, device="cpu")
+    result = compute_latent_shape(50, 50, 1)
+    assert result == (1, 4, 4, 4)
+
+
+def test_compute_latent_shape_default_batch_size() -> None:
+    """compute_latent_shape() defaults batch_size to 1 when omitted.
+
+    Calls compute_latent_shape(32, 32) without the batch_size argument.
+    The result should be (1, 4, 2, 2), confirming batch_size defaults to 1.
+    """
+    result = compute_latent_shape(32, 32)
+    assert result == (1, 4, 2, 2)
+
+
+def test_compute_latent_shape_zero_dims() -> None:
+    """compute_latent_shape() returns zero latent dims for zero-width or zero-height.
+
+    Calls compute_latent_shape(0, 32) and compute_latent_shape(32, 0).
+    Both should return (1, 4, 0, 2) and (1, 4, 2, 0) respectively,
+    proving the ceiling division handles the edge case correctly.
+    """
+    result_zero_width = compute_latent_shape(0, 32, 1)
+    assert result_zero_width == (1, 4, 0, 2)
+
+    result_zero_height = compute_latent_shape(32, 0, 1)
+    assert result_zero_height == (1, 4, 2, 0)
+
+    result_both_zero = compute_latent_shape(0, 0, 1)
+    assert result_both_zero == (1, 4, 0, 0)
