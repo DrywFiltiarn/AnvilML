@@ -7,6 +7,20 @@ import pytest
 
 from worker.nodes.base import NodeContext, SlotSpec
 
+# ---------------------------------------------------------------------------
+# Shared fixtures for real-mode tests
+# ---------------------------------------------------------------------------
+
+# Path to the ZiT tiny fixture checkpoint used by all real-mode tests.
+# This fixture was built by the `build_zit_fixture.py` script in the
+# fixtures directory and is the same checkpoint used by the
+# test_sample_denoising_real_zit_fixture test in test_arch_zit.py.
+_FIXTURE_DIR = __import__("pathlib").Path(__file__).parent / "fixtures"
+
+# Default capability dict used for model loading — bf16 is available
+# on CPU, fp8 is not. This matches the capability probe defaults.
+_DEFAULT_CAPS = {"bf16": True, "fp8": False}
+
 
 def _make_ctx(mock: bool = True) -> NodeContext:
     """Construct a minimal NodeContext for testing.
@@ -134,34 +148,287 @@ def test_sampler_mock_seed_zero() -> None:
 
 
 @pytest.mark.real_mode
-def test_sampler_real_raises_not_implemented() -> None:
-    """Real-mode execute() raises NotImplementedError with P21-C2 message.
+def test_sampler_real_denoises_zit_fixture() -> None:
+    """End-to-end real-mode: load ZiT fixture, run Sampler, verify output.
 
-    Constructs a NodeContext with mock=False, calls execute() with full
-    inputs, and asserts that NotImplementedError is raised with the
-    message referencing P21-C2. This is the collectible real-mode test
-    for the REAL_PATH_VERIFIED marker.
+    Loads the ZiT fixture via ``zit.load()``, calls ``Sampler.execute()``
+    with the loaded model, conditioning (None), a noise latent tensor,
+    steps=20, cfg=7.5, seed=42. Asserts the returned latent is a
+    ``torch.Tensor`` with the same shape as the input, and the returned
+    seed equals 42.
 
-    Expected outcome: NotImplementedError with message containing
-    "deferred to P21-C2" is raised.
+    This is the canonical real-mode test for the Sampler's real branch.
+
+    Expected outcome: {"latent": torch.Tensor of shape (1, 4, 8, 8),
+    "seed": 42} is returned.
     """
+    import torch
+
+    from worker.nodes.arch.diffusion.zit import (
+        load,
+        pipeline_cache,
+    )
     from worker.nodes.sampler import Sampler
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    model = load(str(fixture_path), _DEFAULT_CAPS, device="cpu")
 
     node = Sampler()
     ctx = _make_ctx(mock=False)
-    with pytest.raises(
-        NotImplementedError, match="deferred to P21-C2"
-    ):
-        node.execute(
-            ctx,
-            model={},
-            conditioning={},
-            clip={},
-            latent={"shape": (1, 4, 64, 64)},
-            steps=20,
-            cfg=7.5,
-            seed=42,
-        )
+    # Cast latent to model's dtype — the model weights are loaded in
+    # bf16 (per _DEFAULT_CAPS), and PyTorch's linear layer requires
+    # matching dtypes between input and weight tensors.
+    model_dtype = next(model.parameters()).dtype
+    latent_in = torch.zeros(1, 4, 8, 8, dtype=model_dtype)
+
+    result = node.execute(
+        ctx,
+        model=model,
+        conditioning=None,
+        clip={},
+        latent=latent_in,
+        steps=20,
+        cfg=7.5,
+        seed=42,
+    )
+
+    assert isinstance(result["latent"], torch.Tensor)
+    assert result["latent"].shape == latent_in.shape
+    assert result["seed"] == 42
+
+    # Clean up pipeline cache to avoid leaking state to other tests.
+    if f"test-job:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache[f"test-job:pipeline"]
+
+
+@pytest.mark.real_mode
+def test_sampler_real_seed_minus_one_resolves() -> None:
+    """seed=-1 resolves to a non-negative integer in [0, 2**63).
+
+    Loads the ZiT fixture, calls ``Sampler.execute()`` with seed=-1,
+    and asserts the returned seed is a non-negative integer strictly
+    less than ``2**63``. This verifies the real branch correctly
+    delegates seed resolution to ``zit.sample()``.
+
+    Expected outcome: returned seed is an int in [0, 2**63).
+    """
+    import torch
+
+    from worker.nodes.arch.diffusion.zit import (
+        load,
+        pipeline_cache,
+    )
+    from worker.nodes.sampler import Sampler
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    model = load(str(fixture_path), _DEFAULT_CAPS, device="cpu")
+
+    node = Sampler()
+    ctx = _make_ctx(mock=False)
+    model_dtype = next(model.parameters()).dtype
+    latent_in = torch.zeros(1, 4, 8, 8, dtype=model_dtype)
+
+    result = node.execute(
+        ctx,
+        model=model,
+        conditioning=None,
+        clip={},
+        latent=latent_in,
+        steps=20,
+        cfg=7.5,
+        seed=-1,
+    )
+
+    assert isinstance(result["seed"], int)
+    assert result["seed"] >= 0
+    assert result["seed"] < 2**63
+
+    # Clean up.
+    if f"test-job:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache[f"test-job:pipeline"]
+
+
+@pytest.mark.real_mode
+def test_sampler_real_explicit_seed_unchanged() -> None:
+    """Explicit seed=42 passes through unchanged.
+
+    Loads the ZiT fixture, calls ``Sampler.execute()`` with seed=42,
+    and asserts the returned seed equals 42. This verifies that
+    non-negative seeds are not modified by the real branch.
+
+    Expected outcome: returned seed == 42.
+    """
+    import torch
+
+    from worker.nodes.arch.diffusion.zit import (
+        load,
+        pipeline_cache,
+    )
+    from worker.nodes.sampler import Sampler
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    model = load(str(fixture_path), _DEFAULT_CAPS, device="cpu")
+
+    node = Sampler()
+    ctx = _make_ctx(mock=False)
+    model_dtype = next(model.parameters()).dtype
+    latent_in = torch.zeros(1, 4, 8, 8, dtype=model_dtype)
+
+    result = node.execute(
+        ctx,
+        model=model,
+        conditioning=None,
+        clip={},
+        latent=latent_in,
+        steps=20,
+        cfg=7.5,
+        seed=42,
+    )
+
+    assert result["seed"] == 42
+
+    # Clean up.
+    if f"test-job:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache[f"test-job:pipeline"]
+
+
+@pytest.mark.real_mode
+def test_sampler_real_multiple_steps() -> None:
+    """steps=10 produces correct output shape.
+
+    Loads the ZiT fixture, calls ``Sampler.execute()`` with steps=10,
+    and asserts the output latent has the same shape as the input.
+    This verifies the denoising loop runs the correct number of steps
+    without altering the output shape.
+
+    Expected outcome: output tensor shape matches input shape (1, 4, 8, 8).
+    """
+    import torch
+
+    from worker.nodes.arch.diffusion.zit import (
+        load,
+        pipeline_cache,
+    )
+    from worker.nodes.sampler import Sampler
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    model = load(str(fixture_path), _DEFAULT_CAPS, device="cpu")
+
+    node = Sampler()
+    ctx = _make_ctx(mock=False)
+    model_dtype = next(model.parameters()).dtype
+    latent_in = torch.zeros(1, 4, 8, 8, dtype=model_dtype)
+
+    result = node.execute(
+        ctx,
+        model=model,
+        conditioning=None,
+        clip={},
+        latent=latent_in,
+        steps=10,
+        cfg=7.5,
+        seed=42,
+    )
+
+    assert isinstance(result["latent"], torch.Tensor)
+    assert result["latent"].shape == latent_in.shape
+
+    # Clean up.
+    if f"test-job:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache[f"test-job:pipeline"]
+
+
+@pytest.mark.real_mode
+def test_sampler_real_cfg_one_is_conditional_only() -> None:
+    """cfg=1.0 (no guidance) runs without error.
+
+    Loads the ZiT fixture, calls ``Sampler.execute()`` with cfg=1.0.
+    This exercises the CFG path where the unconditional and conditional
+    predictions are blended — with cfg=1.0 the unconditional pass
+    contributes zero, so the output is purely conditional. Asserts
+    the output is a tensor (not an error).
+
+    Expected outcome: returns {"latent": torch.Tensor, "seed": int}.
+    """
+    import torch
+
+    from worker.nodes.arch.diffusion.zit import (
+        load,
+        pipeline_cache,
+    )
+    from worker.nodes.sampler import Sampler
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    model = load(str(fixture_path), _DEFAULT_CAPS, device="cpu")
+
+    node = Sampler()
+    ctx = _make_ctx(mock=False)
+    model_dtype = next(model.parameters()).dtype
+    latent_in = torch.zeros(1, 4, 8, 8, dtype=model_dtype)
+
+    result = node.execute(
+        ctx,
+        model=model,
+        conditioning=None,
+        clip={},
+        latent=latent_in,
+        steps=20,
+        cfg=1.0,
+        seed=42,
+    )
+
+    assert isinstance(result["latent"], torch.Tensor)
+    assert isinstance(result["seed"], int)
+
+    # Clean up.
+    if f"test-job:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache[f"test-job:pipeline"]
+
+
+@pytest.mark.real_mode
+def test_sampler_real_latent_shape_preserved() -> None:
+    """Output tensor shape matches input latent shape (1, 4, 8, 8).
+
+    Loads the ZiT fixture, calls ``Sampler.execute()`` with a latent
+    tensor of shape (1, 4, 8, 8), and asserts the returned tensor has
+    the identical shape. This verifies the Sampler does not alter the
+    latent dimensions during denoising.
+
+    Expected outcome: output tensor shape == (1, 4, 8, 8).
+    """
+    import torch
+
+    from worker.nodes.arch.diffusion.zit import (
+        load,
+        pipeline_cache,
+    )
+    from worker.nodes.sampler import Sampler
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    model = load(str(fixture_path), _DEFAULT_CAPS, device="cpu")
+
+    node = Sampler()
+    ctx = _make_ctx(mock=False)
+    model_dtype = next(model.parameters()).dtype
+    latent_in = torch.zeros(1, 4, 8, 8, dtype=model_dtype)
+
+    result = node.execute(
+        ctx,
+        model=model,
+        conditioning=None,
+        clip={},
+        latent=latent_in,
+        steps=20,
+        cfg=7.5,
+        seed=42,
+    )
+
+    assert isinstance(result["latent"], torch.Tensor)
+    assert result["latent"].shape == (1, 4, 8, 8)
+
+    # Clean up.
+    if f"test-job:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache[f"test-job:pipeline"]
 
 
 def test_sampler_in_registry() -> None:

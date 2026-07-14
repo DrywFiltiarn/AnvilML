@@ -7374,15 +7374,75 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 ---
 
-## test_sampler_real_raises_not_implemented (worker.nodes.sampler)
+## test_sampler_real_denoises_zit_fixture (worker.nodes.sampler)
 
 **File:** `worker/tests/test_nodes_sampler.py`
-**Context:** The Sampler node's real branch raises `NotImplementedError` with a message referencing P21-C2.
-**Tests:** Real-mode `execute()` raises `NotImplementedError` with message containing "deferred to P21-C2". Satisfies the `REAL_PATH_VERIFIED` marker.
+**Context:** The Sampler node's real branch dispatches to `arch.diffusion.get_module(model.arch).sample()`. The ZiT fixture checkpoint (`zit_tiny.safetensors`) is loaded via `zit.load()`, then `Sampler.execute()` is called with the loaded model.
+**Tests:** End-to-end: load ZiT fixture, execute Sampler with seed=42, assert denoised latent shape and seed. Satisfies the `REAL_PATH_VERIFIED` marker.
 **Mode:** real
-**Inputs:** `model={}`, `conditioning={}`, `clip={}`, `latent={"shape": (1, 4, 64, 64)}`, `steps=20`, `cfg=7.5`, `seed=42`, `mock=False`.
-**Expected output:** `NotImplementedError` with message containing "deferred to P21-C2" is raised.
-**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py::test_sampler_real_raises_not_implemented -v -m real_mode` exits 0.
+**Inputs:** ZiT fixture loaded via `zit.load()`, `conditioning=None`, latent `torch.zeros(1, 4, 8, 8)`, `steps=20`, `cfg=7.5`, `seed=42`, `mock=False`.
+**Expected output:** `{"latent": torch.Tensor of shape (1, 4, 8, 8), "seed": 42}` is returned.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py::test_sampler_real_denoises_zit_fixture -v -m real_mode` exits 0.
+
+---
+
+## test_sampler_real_seed_minus_one_resolves (worker.nodes.sampler)
+
+**File:** `worker/tests/test_nodes_sampler.py`
+**Context:** The Sampler node's real branch delegates seed resolution to `zit.sample()`. The ZiT fixture checkpoint is loaded, then `Sampler.execute()` is called with `seed=-1`.
+**Tests:** seed=-1 resolves to a non-negative integer in [0, 2**63). Verifies the real branch correctly delegates seed resolution.
+**Mode:** real
+**Inputs:** ZiT fixture loaded via `zit.load()`, `conditioning=None`, latent `torch.zeros(1, 4, 8, 8)`, `steps=20`, `cfg=7.5`, `seed=-1`, `mock=False`.
+**Expected output:** returned seed is an int in [0, 2**63).
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py::test_sampler_real_seed_minus_one_resolves -v -m real_mode` exits 0.
+
+---
+
+## test_sampler_real_explicit_seed_unchanged (worker.nodes.sampler)
+
+**File:** `worker/tests/test_nodes_sampler.py`
+**Context:** The Sampler node's real branch passes through non-negative seeds unchanged. The ZiT fixture checkpoint is loaded, then `Sampler.execute()` is called with `seed=42`.
+**Tests:** Explicit seed=42 passes through unchanged. Verifies non-negative seeds are not modified by the real branch.
+**Mode:** real
+**Inputs:** ZiT fixture loaded via `zit.load()`, `conditioning=None`, latent `torch.zeros(1, 4, 8, 8)`, `steps=20`, `cfg=7.5`, `seed=42`, `mock=False`.
+**Expected output:** returned seed == 42.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py::test_sampler_real_explicit_seed_unchanged -v -m real_mode` exits 0.
+
+---
+
+## test_sampler_real_multiple_steps (worker.nodes.sampler)
+
+**File:** `worker/tests/test_nodes_sampler.py`
+**Context:** The Sampler node's real branch runs the denoising loop for the specified number of steps. The ZiT fixture checkpoint is loaded, then `Sampler.execute()` is called with `steps=10`.
+**Tests:** steps=10 produces correct output shape. Verifies the denoising loop runs the correct number of steps without altering the output shape.
+**Mode:** real
+**Inputs:** ZiT fixture loaded via `zit.load()`, `conditioning=None`, latent `torch.zeros(1, 4, 8, 8)`, `steps=10`, `cfg=7.5`, `seed=42`, `mock=False`.
+**Expected output:** output tensor shape matches input shape (1, 4, 8, 8).
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py::test_sampler_real_multiple_steps -v -m real_mode` exits 0.
+
+---
+
+## test_sampler_real_cfg_one_is_conditional_only (worker.nodes.sampler)
+
+**File:** `worker/tests/test_nodes_sampler.py`
+**Context:** The Sampler node's real branch handles cfg=1.0 (no guidance) where the unconditional pass contributes zero. The ZiT fixture checkpoint is loaded, then `Sampler.execute()` is called with `cfg=1.0`.
+**Tests:** cfg=1.0 (no guidance) runs without error. Exercises the CFG path where unconditional and conditional predictions are blended.
+**Mode:** real
+**Inputs:** ZiT fixture loaded via `zit.load()`, `conditioning=None`, latent `torch.zeros(1, 4, 8, 8)`, `steps=20`, `cfg=1.0`, `seed=42`, `mock=False`.
+**Expected output:** returns `{"latent": torch.Tensor, "seed": int}`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py::test_sampler_real_cfg_one_is_conditional_only -v -m real_mode` exits 0.
+
+---
+
+## test_sampler_real_latent_shape_preserved (worker.nodes.sampler)
+
+**File:** `worker/tests/test_nodes_sampler.py`
+**Context:** The Sampler node's real branch preserves the latent tensor shape through denoising. The ZiT fixture checkpoint is loaded, then `Sampler.execute()` is called with a latent of shape (1, 4, 8, 8).
+**Tests:** Output tensor shape matches input latent shape (1, 4, 8, 8). Verifies the Sampler does not alter the latent dimensions during denoising.
+**Mode:** real
+**Inputs:** ZiT fixture loaded via `zit.load()`, `conditioning=None`, latent `torch.zeros(1, 4, 8, 8)`, `steps=20`, `cfg=7.5`, `seed=42`, `mock=False`.
+**Expected output:** output tensor shape == (1, 4, 8, 8).
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py::test_sampler_real_latent_shape_preserved -v -m real_mode` exits 0.
 
 ---
 

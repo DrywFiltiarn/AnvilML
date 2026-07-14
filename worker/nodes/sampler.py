@@ -2,9 +2,9 @@
 
 The Sampler node takes a model, conditioning, CLIP, latent, steps, cfg, and seed
 as inputs and produces a latent and seed as outputs. In mock mode it returns a
-sentinel dict with the input latent's shape and the resolved seed. The real
-branch is deferred to P21-C2 which will dispatch to the arch.diffusion
-get_module(model.arch).sample() call.
+sentinel dict with the input latent's shape and the resolved seed. In real mode
+it dispatches to the registered diffusion architecture module (currently "zit")
+via ``arch.diffusion.get_module()`` and ``module.sample()``.
 """
 
 from worker.nodes.base import BaseNode, NodeContext, SlotSpec, register
@@ -49,14 +49,16 @@ class Sampler(BaseNode):
         SlotSpec("seed", "INT"),
     ]
 
-    # REAL_PATH_VERIFIED: worker/tests/test_nodes_sampler.py::test_sampler_real_raises_not_implemented
+    # REAL_PATH_VERIFIED: worker/tests/test_nodes_sampler.py::test_sampler_real_denoises_zit_fixture
     # MOCK_PATH_VERIFIED: worker/tests/test_nodes_sampler.py::test_sampler_mock_returns_expected_shape
     def execute(self, ctx: NodeContext, **inputs) -> dict:
         """Execute the sampler node.
 
         Branches on the mock flag at the top: mock mode returns a sentinel
         dict with the input latent's shape and a deterministically resolved
-        seed (-1 maps to 0), while the real branch is deferred to P21-C2.
+        seed (-1 maps to 0), while the real branch dispatches to the
+        registered diffusion architecture module via
+        ``arch.diffusion.get_module()`` and ``module.sample()``.
 
         Args:
             ctx: Runtime context carrying job_id, device, caps,
@@ -66,12 +68,13 @@ class Sampler(BaseNode):
                 and "seed".
 
         Returns:
-            Dict with keys "latent" (dict with mock sentinel and shape)
-            and "seed" (int, resolved from input).
+            Dict with keys "latent" (a ``torch.Tensor`` in real mode,
+            or a dict with mock sentinel and shape in mock mode) and
+            "seed" (int, resolved from input).
 
         Raises:
-            NotImplementedError: When ctx.mock is False — the real branch
-                is deferred to P21-C2 which will dispatch to the arch module.
+            RuntimeError: When ctx.mock is False and no diffusion arch
+                module is registered for the model's architecture.
         """
         if ctx.mock:
             # Mock branch: return a sentinel dict with the input latent's
@@ -84,10 +87,27 @@ class Sampler(BaseNode):
                 "seed": seed,
             }
         else:
-            # Real branch: deferred to P21-C2 — dispatches to
-            # arch.diffusion.get_module(model.arch).sample().
-            # defers_to: P21-C2
-            raise NotImplementedError(
-                "Sampler real branch deferred to P21-C2 — "
-                "dispatches to arch.diffusion.get_module(model.arch).sample()"
+            # Real branch: dispatch to the registered diffusion arch module.
+            # model.arch is "zit" (set by ZiTModel.__init__), which routes
+            # get_module() to zit.py. The sample() function handles pipeline
+            # assembly, denoising, and seed resolution internally.
+            from worker.nodes.arch.diffusion import get_module
+
+            module = get_module(inputs["model"].arch)
+            if module is None:
+                raise RuntimeError(
+                    f"no diffusion arch module registered for "
+                    f"'{inputs['model'].arch}'; cannot sample"
+                )
+
+            denoised_latent, resolved_seed = module.sample(
+                inputs["model"],
+                f"job_{ctx.job_id}",
+                inputs["conditioning"],
+                inputs["latent"],
+                inputs["steps"],
+                inputs["cfg"],
+                inputs["seed"],
             )
+
+            return {"latent": denoised_latent, "seed": resolved_seed}
