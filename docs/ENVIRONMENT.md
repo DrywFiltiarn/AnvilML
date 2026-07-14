@@ -839,6 +839,17 @@ A test with no marker is assumed mock-compatible and runs in both the mock and r
 CI jobs (`ANVILML_DESIGN.md §18.3`) unless it imports `torch` unconditionally at
 module level — only `real_mode`-marked tests may do that.
 
+**A test needs the `real_mode` marker if it touches torch at all** — whether
+directly (`torch.zeros(...)`, `isinstance(x, torch.nn.Module)`, a `torch.dtype`
+constant) or indirectly, by calling a real-mode-only function such as an arch
+module's `load()` or `sample()` (§11.2). The test's own name is not a reliable
+signal: several `zit.py` tests named `..._mock_...` (e.g.
+`test_load_mock_zit_fixture`) call `load()` directly and therefore require torch
+regardless of what "mock" refers to in the test's own fixture setup — "mock" there
+described the fixture checkpoint, not the marker. When in doubt, check whether the
+test body references `torch` or calls `load`/`sample`/any arch module function that
+itself requires torch; if so, mark it `real_mode`.
+
 ### 11.3 Test isolation rules
 
 These rules are mandatory. A task that introduces an isolation defect must fix it before

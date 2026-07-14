@@ -3,7 +3,19 @@
 from pathlib import Path
 
 import pytest
-import torch
+
+# torch is guarded, not imported unconditionally: most tests in this file are
+# real-mode-only (marked @pytest.mark.real_mode below) and only ever execute
+# in the worker-*-real CI job, which installs torch. The worker-*-mock job
+# installs requirements/base.txt only (no torch) and only *collects* this
+# file - it never runs the real_mode-marked tests - so an unconditional
+# `import torch` here would break collection for the whole file, including
+# the handful of genuinely mock-compatible tests (can_handle,
+# _infer_hyperparams, compute_latent_shape) per ANVILML_DESIGN.md §18.3.
+try:
+    import torch
+except ImportError:
+    torch = None  # type: ignore[assignment]
 
 from worker.nodes.arch.diffusion import get_module
 from worker.nodes.arch.diffusion import zit
@@ -181,6 +193,7 @@ def test_get_module_returns_zit_for_matching_key() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.real_mode
 def test_dtype_selection_fp8_caps_and_native() -> None:
     """_select_dtype() returns float8_e4m3fn when caps.fp8=True AND native_dtype is fp8.
 
@@ -203,6 +216,7 @@ def test_dtype_selection_fp8_caps_and_native() -> None:
     assert result == torch.float8_e4m3fn
 
 
+@pytest.mark.real_mode
 def test_dtype_selection_fp8_native_non_fp8_caps_fp8() -> None:
     """_select_dtype() falls through to bf16 when native_dtype is NOT fp8, even with caps.fp8=True.
 
@@ -265,6 +279,7 @@ def test_dtype_selection_bf16_real() -> None:
     assert next(model.parameters()).dtype == torch.bfloat16
 
 
+@pytest.mark.real_mode
 def test_dtype_selection_bf16_mock() -> None:
     """load() selects bfloat16 under mock-mode conditions.
 
@@ -301,6 +316,7 @@ def test_dtype_selection_bf16_mock() -> None:
     assert next(model.parameters()).dtype == torch.bfloat16
 
 
+@pytest.mark.real_mode
 def test_dtype_selection_fp16_only() -> None:
     """load() selects float16 when only caps.fp16=True (bf16=False, fp8=False).
 
@@ -326,6 +342,7 @@ def test_dtype_selection_fp16_only() -> None:
     assert next(model.parameters()).dtype == torch.float16
 
 
+@pytest.mark.real_mode
 def test_dtype_selection_fp32_fallback() -> None:
     """load() selects float32 when all precision caps are False (universal fallback).
 
@@ -351,6 +368,7 @@ def test_dtype_selection_fp32_fallback() -> None:
     assert next(model.parameters()).dtype == torch.float32
 
 
+@pytest.mark.real_mode
 def test_dtype_selection_fp8_beats_bf16() -> None:
     """_select_dtype() selects fp8 over bf16 when both caps are True and native is fp8.
 
@@ -373,6 +391,7 @@ def test_dtype_selection_fp8_beats_bf16() -> None:
     assert result == torch.float8_e4m3fn
 
 
+@pytest.mark.real_mode
 def test_load_meta_construction_then_materialize() -> None:
     """load() constructs on meta then materializes to real device.
 
@@ -396,6 +415,7 @@ def test_load_meta_construction_then_materialize() -> None:
         )
 
 
+@pytest.mark.real_mode
 def test_load_no_metadata_construction_then_materialize() -> None:
     """load() succeeds against the no-metadata fixture and materializes.
 
@@ -420,6 +440,7 @@ def test_load_no_metadata_construction_then_materialize() -> None:
         assert param.device.type == "cpu"
 
 
+@pytest.mark.real_mode
 def test_load_raises_invalid_hyperparams() -> None:
     """load() raises ValueError when _infer_hyperparams() fails.
 
@@ -476,6 +497,7 @@ def test_load_real_zit_fixture() -> None:
     assert model.arch == "zit"
 
 
+@pytest.mark.real_mode
 def test_load_mock_zit_fixture() -> None:
     """load() loads weights end-to-end against the regular ZiT fixture in mock-mode.
 
@@ -532,6 +554,7 @@ def test_load_no_metadata_real() -> None:
         assert param.device.type == "cpu"
 
 
+@pytest.mark.real_mode
 def test_load_no_metadata_mock() -> None:
     """load() succeeds against the no-metadata fixture in mock-mode.
 
@@ -558,6 +581,7 @@ def test_load_no_metadata_mock() -> None:
         assert param.device.type == "cpu"
 
 
+@pytest.mark.real_mode
 def test_load_tensors_materialized_on_device() -> None:
     """load() materializes tensors onto the real device via to_empty().
 
@@ -698,6 +722,7 @@ def test_load_key_remapping_direct_match() -> None:
     )
 
 
+@pytest.mark.real_mode
 def test_load_raises_on_invalid_path() -> None:
     """load() raises ValueError for a non-existent path.
 
@@ -760,6 +785,7 @@ def test_compute_latent_shape_mock_batch_scaling() -> None:
     assert result == (4, 4, 16, 16)
 
 
+@pytest.mark.real_mode
 def test_compute_latent_shape_real_after_load() -> None:
     """compute_latent_shape() uses actual checkpoint hyperparameters after load().
 
@@ -784,6 +810,7 @@ def test_compute_latent_shape_real_after_load() -> None:
     assert result == (1, 4, 8, 8)
 
 
+@pytest.mark.real_mode
 def test_compute_latent_shape_real_non_multiple_after_load() -> None:
     """compute_latent_shape() ceiling division works after load() updates hyperparams.
 
@@ -839,6 +866,7 @@ def test_compute_latent_shape_zero_dims() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.real_mode
 def test_sample_first_call_assembles_pipeline_mock() -> None:
     """sample() assembles and caches a pipeline on first call for a model_id.
 
@@ -899,6 +927,7 @@ def test_sample_first_call_assembles_pipeline_mock() -> None:
             del pipeline_cache._cache["test1:pipeline"]
 
 
+@pytest.mark.real_mode
 def test_sample_second_call_reuses_cached_pipeline_mock() -> None:
     """sample() reuses the cached pipeline on second call with same model_id.
 
@@ -953,6 +982,7 @@ def test_sample_second_call_reuses_cached_pipeline_mock() -> None:
             del pipeline_cache._cache["test2:pipeline"]
 
 
+@pytest.mark.real_mode
 def test_sample_different_model_id_gets_separate_pipeline() -> None:
     """sample() produces separate pipelines for different model_ids.
 
@@ -990,6 +1020,7 @@ def test_sample_different_model_id_gets_separate_pipeline() -> None:
         del pipeline_cache._cache["model_b:pipeline"]
 
 
+@pytest.mark.real_mode
 def test_sample_returns_tuple_with_tensor_and_seed() -> None:
     """Returned value is a (latent, seed) tuple with correct types.
 
@@ -1068,6 +1099,7 @@ def test_sample_denoising_real_zit_fixture() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.real_mode
 def test_sample_seed_minus_one_resolves_random() -> None:
     """seed=-1 resolves to a random integer in [0, 2**63).
 
@@ -1103,6 +1135,7 @@ def test_sample_seed_minus_one_resolves_random() -> None:
         del pipeline_cache._cache["seed_random:pipeline"]
 
 
+@pytest.mark.real_mode
 def test_sample_explicit_seed_returned_unchanged() -> None:
     """Explicit seed is used as-is and returned unchanged.
 
@@ -1134,6 +1167,7 @@ def test_sample_explicit_seed_returned_unchanged() -> None:
         del pipeline_cache._cache["seed_explicit:pipeline"]
 
 
+@pytest.mark.real_mode
 def test_sample_denoising_runs_for_steps() -> None:
     """Denoising runs the model forward exactly ``steps`` times.
 
@@ -1191,6 +1225,7 @@ def test_sample_denoising_runs_for_steps() -> None:
         del pipeline_cache._cache["step_count:pipeline"]
 
 
+@pytest.mark.real_mode
 def test_sample_output_shape_dtype_matches_input_latent() -> None:
     """Output latent has the same shape and dtype as the input latent.
 
@@ -1232,6 +1267,7 @@ def test_sample_output_shape_dtype_matches_input_latent() -> None:
         del pipeline_cache._cache["shape_dtype:pipeline"]
 
 
+@pytest.mark.real_mode
 def test_sample_different_step_count_changes_iterations() -> None:
     """Denoising step count scales the number of forward calls.
 

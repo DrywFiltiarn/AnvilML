@@ -1787,6 +1787,42 @@ reimplement the **loading mechanism** — deciding what shape the model is and g
 weights into it — which is the part that conflicts with offline-only operation and
 the part that drove every loading bug in P904.
 
+**Import guard requirement (added after the `zit.py` mock-collection incident,
+P900-series retrofit following P20-B1/P20-B2).** Every arch module's `torch`,
+`torch.nn`, `safetensors.torch`, and any torch-dependent `diffusers` class access
+must be wrapped in a top-level `try/except ImportError`, falling back to `None` on
+failure — never an unconditional top-level import. This is not optional even though
+the module's own real-mode tests always have torch installed: each family's
+dispatcher (`arch/diffusion/__init__.py`, `arch/clip/__init__.py`,
+`arch/vae/__init__.py`) imports every registered module **eagerly** at
+package-import time to populate `_REGISTERED_MODULES` (§10.4), and that package is
+itself imported by mock-mode test collection (`worker-linux-mock` /
+`worker-windows-mock`, §18.3, which install `requirements/base.txt` only — no
+torch). An unconditional `import torch` inside any one arch module therefore breaks
+collection for the **entire family's** test suite, not just that module's own tests
+— this exact defect shipped in `zit.py` and was only caught after Phase 21 shipped,
+because the local acceptance command (`pytest worker/tests/test_arch_zit.py -v`, run
+in an environment where torch was always installed) never exercised the no-torch
+path the actual CI job runs.
+
+Concretely, every arch module must:
+- Guard `import torch` / `import torch.nn as nn` / `from safetensors.torch import
+  load_file` / any torch-dependent `diffusers` import behind a single
+  `try/except ImportError`, setting each name to `None` on failure.
+- Give any `nn.Module` subclass defined at module scope a conditional base class
+  (e.g. `_ModuleBase = nn.Module if nn is not None else object`, then
+  `class FooModel(_ModuleBase):`) rather than referencing `nn.Module` directly in
+  the class statement, so the class still defines successfully with torch absent —
+  its `__init__`/`forward` bodies are never evaluated at import time regardless.
+- Raise a clear `RuntimeError` at the very top of `load()`/`sample()` (or any other
+  torch-requiring entry point) if `torch is None`, rather than letting a bare
+  `AttributeError` on `None` surface deep inside construction.
+
+Only `can_handle()`, `_infer_hyperparams()`, and `compute_latent_shape()` — the
+parts of the four-step contract exercised by dispatch and shape math (§11.3) — are
+required to work with torch absent. `load()` and `sample()` are real-mode-only by
+nature and may assume torch is present once past the guard.
+
 ### 11.3 The Loading Contract, Per Arch Module
 
 Every diffusion (`arch/diffusion/*.py`), CLIP (`arch/clip/*.py`), and VAE

@@ -31,13 +31,30 @@ import secrets
 from pathlib import Path
 from typing import Any
 
-import torch
-import torch.nn as nn
-
 from safetensors import safe_open
-from safetensors.torch import load_file
 
-from diffusers import EulerDiscreteScheduler
+# torch — and everything that transitively needs it (torch.nn, safetensors.torch,
+# diffusers' scheduler classes) — is guarded here rather than imported
+# unconditionally. This module is imported eagerly by
+# arch/diffusion/__init__.py's dispatcher (P20-B2's _REGISTERED_MODULES), which
+# is in turn reachable from mock-mode test collection: the worker-linux-mock /
+# worker-windows-mock CI jobs install requirements/base.txt only and never
+# install torch (ANVILML_DESIGN.md §18.3). can_handle(), _infer_hyperparams(),
+# and compute_latent_shape() must stay importable and callable with torch
+# absent; only load()/sample() actually need it, and those raise a clear
+# RuntimeError below (rather than a cryptic AttributeError on None) if somehow
+# reached without torch installed.
+try:
+    import torch
+    import torch.nn as nn
+    from safetensors.torch import load_file
+    from diffusers import EulerDiscreteScheduler
+except ImportError:
+    torch = None  # type: ignore[assignment]
+    nn = None  # type: ignore[assignment]
+    load_file = None  # type: ignore[assignment]
+    EulerDiscreteScheduler = None  # type: ignore[assignment]
+
 from worker.pipeline_cache import PipelineCache
 
 # Canonical architecture identifier — the string that the dispatcher
@@ -61,7 +78,16 @@ logger = logging.getLogger(__name__)
 pipeline_cache = PipelineCache()
 
 
-class ZiTModel(nn.Module):
+# nn.Module is unavailable when torch failed to import (see the guard above).
+# ZiTModel falls back to plain `object` as its base in that case — the class
+# still defines successfully (only __init__/forward bodies touch torch, and
+# those are never invoked without going through the guarded load()/sample()
+# entry points below), which is what keeps this module importable in mock-mode
+# collection.
+_ModuleBase = nn.Module if nn is not None else object
+
+
+class ZiTModel(_ModuleBase):
     """ZiT diffusion transformer model constructed from layer-level building blocks.
 
     This class assembles the ZiT architecture using ``torch.nn`` primitives
@@ -441,6 +467,17 @@ def load(path: str, caps: dict, device: str = "cpu") -> ZiTModel:
         ValueError: If the checkpoint cannot be opened or hyperparameters
             cannot be inferred (delegated to ``_infer_hyperparams``).
     """
+    # torch is optional at module-import time (see the guard at the top of
+    # this file); load() is a real-mode-only entry point and must never be
+    # reached from mock-mode code. Fail clearly here instead of surfacing a
+    # confusing AttributeError on a None torch/nn deep inside construction.
+    if torch is None:
+        raise RuntimeError(
+            "zit.py: torch is not installed - load() is a real-mode-only "
+            "entry point (ANVILML_DESIGN.md §18.3) and must not be reached "
+            "from mock-mode code paths."
+        )
+
     # Step 1 (from P20-B1): infer hyperparameters from checkpoint header,
     # including the native dtype of the first weight tensor. This reads only
     # the ~100KB metadata header — no tensor data is loaded.
@@ -607,6 +644,17 @@ def sample(
         *denoised_latent* is the output tensor after all denoising steps
         and *resolved_seed* is the non-negative seed actually used.
     """
+    # torch is optional at module-import time (see the guard at the top of
+    # this file); sample() is a real-mode-only entry point and must never be
+    # reached from mock-mode code. Fail clearly here rather than surfacing a
+    # confusing AttributeError on a None torch deep inside the denoising loop.
+    if torch is None:
+        raise RuntimeError(
+            "zit.py: torch is not installed - sample() is a real-mode-only "
+            "entry point (ANVILML_DESIGN.md §18.3) and must not be reached "
+            "from mock-mode code paths."
+        )
+
     # Resolve seed: negative values (conventionally -1) mean "random".
     # Use secrets.randbelow for cryptographic randomness — this ensures
     # that two consecutive calls with seed=-1 produce different outputs,
