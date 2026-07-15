@@ -202,16 +202,17 @@
     "P21-D1",
     "P22-A1",
     "P22-B1",
-    "P22-B2"
+    "P22-B2",
+    "P22-B3"
   ],
-  "in_progress": "P22-B3",
+  "in_progress": "P22-C1",
   "plan_approved": true,
-  "current_plan": "1. **Add `can_handle()` to `qwen3.py`.** Append the following function to the end of `worker/nodes/arch/clip/qwen3.py` (after `_safetensors_dtype_to_canonical()`):\n\n   ```python\n   def can_handle(key: str) -> bool:\n       \"\"\"Confirm this module handles the given dispatch key.\n\n       The dispatcher passes the ``clip_type`` string as *key*. This\n       function returns ``True`` only when the key matches this module's\n       canonical architecture identifier.\n\n       Args:\n           key: The clip_type string to check, e.g. ``\"qwen3\"``.\n\n       Returns:\n           ``True`` if *key* equals ``\"qwen3\"``, ``False`` otherwise.\n       \"\"\"\n       return key == ARCH\n   ```\n\n   This follows the exact same pattern as `zit.py`'s `can_handle()` (line 755-769). The function is a pure, deterministic string comparison \u2014 no I/O, no torch dependency, importable in mock-mode without torch.\n\n2. **Register qwen3 in `arch/clip/__init__.py`.** Modify the clip dispatcher to import and register qwen3, following the exact pattern from `arch/diffusion/__init__.py`:\n\n   After the `_REGISTERED_MODULES: list[ModuleType] = []` line (line 21), add:\n   ```python\n   from worker.nodes.arch.clip import qwen3\n\n   _REGISTERED_MODULES.append(qwen3)\n   ```\n\n   This is a module-level side effect executed at import time, identical to how `diffusion/__init__.py` registers zit.\n\n3. **Add tests to `test_arch_clip_qwen3.py`.** Append three new test functions:\n\n   a. `test_can_handle_matches_qwen3()` \u2014 imports `can_handle` from `qwen3`, calls `can_handle(\"qwen3\")`, asserts `True`.\n\n   b. `test_can_handle_rejects_other_keys()` \u2014 imports `can_handle`, calls it with `\"zit\"`, `\"flux2klein\"`, `\"unknown\"`, asserts all return `False`.\n\n   c. `test_get_module_returns_qwen3_for_matching_key()` \u2014 imports `clip` dispatcher and `qwen3`, calls `clip.get_module(\"qwen3\")`, asserts the returned module is the same as `qwen3` (identity check with `is`).\n\n   These tests follow the style of existing tests in the file (Google-style docstrings, direct assertions, no fixtures needed).\n\n4. **Update `docs/TESTS.md`.** Add entries for the three new tests using the format defined in ANVILML_DESIGN.md \u00a717.1, with `Mode: mock` for all three (since `can_handle` and `get_module` with a registered module don't require torch).",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-15T13:59:47+0200",
-  "plan_approval_message_id": "1526894637740986368",
+  "last_updated": "2026-07-15T16:31:49+0200",
+  "plan_approval_message_id": "1526946884273311774",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1526894635316805714",
+  "plan_report_message_id": "1526946880653627493",
   "impl_report_message_id": null
 }
