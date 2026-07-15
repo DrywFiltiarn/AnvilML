@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import re
 import secrets
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -683,8 +684,24 @@ def sample(
     # set_timesteps() computes the discrete timesteps (e.g. [999, 900, 800, ...])
     # based on the scheduler's internal beta schedule, then exposes them via
     # the .timesteps attribute for iteration.
+    #
+    # diffusers==0.39.0's set_timesteps() (the latest release available;
+    # there is nothing newer to upgrade to) internally converts
+    # alphas_cumprod to sigmas via `np.array(tensor, ...)`, and the
+    # tensor's `__array__` predates numpy>=2.0's requirement that
+    # __array__ implementations accept `dtype`/`copy` keywords — a
+    # compatibility gap inside diffusers itself, not our code, and not
+    # something we can fix by bumping either dependency. Suppressed right
+    # here, scoped to this one call and this exact message, so it can
+    # never mask a real DeprecationWarning raised anywhere else.
     scheduler = pipeline.scheduler
-    scheduler.set_timesteps(steps)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"__array__ implementation doesn't accept a copy keyword",
+            category=DeprecationWarning,
+        )
+        scheduler.set_timesteps(steps)
 
     # Clone the latent tensor before denoising — we must not mutate the
     # caller's tensor since it may be reused (e.g. for conditioning
