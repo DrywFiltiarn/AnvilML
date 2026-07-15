@@ -397,8 +397,8 @@ def _assemble_pipeline(model: ZiTModel) -> ZiTPipeline:
     return ZiTPipeline(model, scheduler)
 
 
-# REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_real_formula
-# MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_mock_formula
+# REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_real_after_load
+# MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_mock_exact_multiple
 def compute_latent_shape(
     width: int, height: int, batch_size: int = 1
 ) -> tuple[int, int, int, int]:

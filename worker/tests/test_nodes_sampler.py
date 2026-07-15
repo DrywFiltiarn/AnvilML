@@ -3,6 +3,8 @@
 import subprocess
 import sys
 import threading
+import uuid
+
 import pytest
 
 from worker.nodes.base import NodeContext, SlotSpec
@@ -32,8 +34,11 @@ def _make_ctx(mock: bool = True) -> NodeContext:
         A NodeContext with all required attributes populated with
         minimal placeholder values.
     """
+    # job_id must be raw 16-byte UUID bytes — NodeContext.job_id_str
+    # constructs a UUID from self.job_id via uuid.UUID(bytes=self.job_id).
+    # A string like "test-job" would raise ValueError at that call site.
     return NodeContext(
-        job_id="test-job",
+        job_id=uuid.uuid4().bytes,
         device="cpu",
         caps={"bf16": True, "fp8": False},
         cancel_flag=threading.Event(),
