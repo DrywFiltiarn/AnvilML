@@ -42,6 +42,37 @@ use crate::respawn::RespawnPolicy;
 use crate::spawn::WorkerSpawner;
 use anvilml_ipc::RouterTransport;
 
+/// Best-effort parse of the Python `LEVELNAME` token from a line this
+/// worker printed to its own stdout/stderr.
+///
+/// `worker_main.py`'s `if __name__ == "__main__":` block configures
+/// `logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s")`,
+/// so every line that actually went through Python's `logging` module (as
+/// opposed to a bare `print()`, or an uncaught traceback dumped straight to
+/// stderr by the interpreter) has the shape:
+///
+/// ```text
+/// 2026-07-15 10:24:17,145 INFO __main__: worker: starting in real mode
+/// ^---- token 0 --------^ ^-2-^
+///           ^--- token 1 (date+time) ---^
+/// ```
+///
+/// i.e. the third whitespace-separated token (index 2) is the level name.
+/// Returns `None` for anything that doesn't match — most notably an
+/// uncaught Python traceback, which is exactly the case the caller's
+/// stderr-forwarding logic exists to make impossible to miss, so callers
+/// should keep a `WARN`-or-higher fallback for the unparseable case rather
+/// than silently defaulting to something quieter.
+fn parse_python_log_level(line: &str) -> Option<tracing::Level> {
+    match line.split_whitespace().nth(2)? {
+        "DEBUG" => Some(tracing::Level::DEBUG),
+        "INFO" => Some(tracing::Level::INFO),
+        "WARNING" => Some(tracing::Level::WARN),
+        "ERROR" | "CRITICAL" => Some(tracing::Level::ERROR),
+        _ => None,
+    }
+}
+
 /// Production default for the Initializing→Idle grace period.
 ///
 /// Per `ANVILML_DESIGN.md §9.2`: "A worker that fails to reach `Idle` within
@@ -968,7 +999,41 @@ impl ManagedWorker {
                 loop {
                     match lines.next_line().await {
                         Ok(Some(line)) => {
-                            tracing::debug!(worker_id = %worker_id, stream = "stdout", %line, "worker_output");
+                            // Use the worker's own logging.* level when the
+                            // line is one — otherwise (raw print(), etc.)
+                            // fall back to the previous unconditional debug.
+                            //
+                            // This can't be `tracing::event!(level, ...)`
+                            // with `level` as a runtime variable: tracing's
+                            // callsite mechanism bakes the level into a
+                            // `static` Metadata for each callsite (that's
+                            // what makes its enabled-checks cheap), so the
+                            // level must be a compile-time constant —
+                            // dispatching to the matching literal-level
+                            // macro per match arm is the standard pattern
+                            // for a level that's only known at runtime.
+                            match parse_python_log_level(&line) {
+                                Some(tracing::Level::DEBUG) => {
+                                    tracing::debug!(worker_id = %worker_id, stream = "stdout", %line, "worker_output");
+                                }
+                                Some(tracing::Level::INFO) => {
+                                    tracing::info!(worker_id = %worker_id, stream = "stdout", %line, "worker_output");
+                                }
+                                Some(tracing::Level::WARN) => {
+                                    tracing::warn!(worker_id = %worker_id, stream = "stdout", %line, "worker_output");
+                                }
+                                Some(tracing::Level::ERROR) => {
+                                    tracing::error!(worker_id = %worker_id, stream = "stdout", %line, "worker_output");
+                                }
+                                // `None` (unparseable) and the unreachable
+                                // `Some(Level::TRACE)` (parse_python_log_level
+                                // never produces it — needed only so this
+                                // match stays exhaustive over all 5 Level
+                                // variants) share the previous default.
+                                _ => {
+                                    tracing::debug!(worker_id = %worker_id, stream = "stdout", %line, "worker_output");
+                                }
+                            }
                         }
                         Ok(None) => break, // EOF — child closed stdout or exited.
                         Err(e) => {
@@ -992,13 +1057,38 @@ impl ManagedWorker {
                 loop {
                     match lines.next_line().await {
                         Ok(Some(line)) => {
-                            // warn, not debug: stderr is where an uncaught
-                            // Python traceback (the exact thing this task
-                            // exists to surface) lands. A healthy worker's
-                            // stderr should be silent, so this level makes
-                            // real output impossible to miss even without
-                            // debug logging enabled.
-                            tracing::warn!(worker_id = %worker_id, stream = "stderr", %line, "worker_output");
+                            // Use the worker's own logging.* level when the
+                            // line is one, so a routine INFO line no longer
+                            // renders as WARN. Lines that don't parse — most
+                            // notably an uncaught Python traceback, printed
+                            // straight to stderr by the interpreter rather
+                            // than going through logging.* — keep the WARN
+                            // fallback below unchanged: stderr is where
+                            // that lands, a healthy worker's stderr should
+                            // otherwise be silent, so this level makes real
+                            // unstructured output impossible to miss even
+                            // without debug logging enabled.
+                            //
+                            // See the stdout arm above for why this is a
+                            // match dispatching to literal-level macros
+                            // rather than `tracing::event!(level, ...)`.
+                            match parse_python_log_level(&line) {
+                                Some(tracing::Level::DEBUG) => {
+                                    tracing::debug!(worker_id = %worker_id, stream = "stderr", %line, "worker_output");
+                                }
+                                Some(tracing::Level::INFO) => {
+                                    tracing::info!(worker_id = %worker_id, stream = "stderr", %line, "worker_output");
+                                }
+                                Some(tracing::Level::WARN) => {
+                                    tracing::warn!(worker_id = %worker_id, stream = "stderr", %line, "worker_output");
+                                }
+                                Some(tracing::Level::ERROR) => {
+                                    tracing::error!(worker_id = %worker_id, stream = "stderr", %line, "worker_output");
+                                }
+                                _ => {
+                                    tracing::warn!(worker_id = %worker_id, stream = "stderr", %line, "worker_output");
+                                }
+                            }
                         }
                         Ok(None) => break,
                         Err(e) => {
