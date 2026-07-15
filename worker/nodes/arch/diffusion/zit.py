@@ -66,8 +66,13 @@ ARCH: str = "zit"
 # Default patch size and latent channel count used by compute_latent_shape()
 # when called before load() has cached the actual checkpoint hyperparameters.
 # These are updated in-place by load() after _infer_hyperparams() extracts
-# the real values from the checkpoint header.
-MODEL_PATCH_SIZE: int = 16
+# the real values from the checkpoint header, so this default only matters
+# for a compute_latent_shape() call made before any model has been loaded.
+# patch_size=2 matches Z-Image Turbo's actual patchify default (the upstream
+# Tongyi-MAI/Z-Image reference implementation patchifies at 2x2); the prior
+# value of 16 here was an unvalidated placeholder that didn't match any real
+# checkpoint or the P21-A1 tests written against it (P900-series retrofit).
+MODEL_PATCH_SIZE: int = 2
 MODEL_LATENT_CHANNELS: int = 4
 
 logger = logging.getLogger(__name__)
@@ -783,11 +788,20 @@ def _infer_hyperparams(path: str) -> dict[str, Any]:
     # Open the file header-only — no tensor data is loaded into memory.
     # This is the critical safety guarantee: even multi-GB checkpoints
     # only load the ~100KB metadata header.
+    # framework="np" (not "pt"): _infer_hyperparams_inner() only ever reads
+    # .keys(), .get_slice(key).get_shape(), and .get_slice(key).get_dtype() —
+    # it never calls .get_tensor() and never touches actual tensor data, so
+    # there is no reason to request the torch framework here. Requesting
+    # framework="pt" made safetensors require torch to even open the header,
+    # which broke this function in mock-mode (no torch installed) despite it
+    # being documented as one of the torch-free contract functions
+    # (ANVILML_DESIGN.md §11.2) — this was a genuine defect, not a mock-mode
+    # workaround (P900-series retrofit).
     # Wrap in try/except to convert platform-specific errors (FileNotFoundError,
     # SafetensorError for corrupted headers) into ValueError with a descriptive
     # message, providing a uniform error interface for callers.
     try:
-        with safe_open(path, framework="pt") as f:
+        with safe_open(path, framework="np") as f:
             return _infer_hyperparams_inner(f, path)
     except (FileNotFoundError, OSError) as exc:
         raise ValueError(f"cannot open safetensors file: {exc}") from exc
