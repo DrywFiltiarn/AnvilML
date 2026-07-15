@@ -198,16 +198,17 @@
     "P21-B1",
     "P21-B2",
     "P21-C1",
-    "P21-C2"
+    "P21-C2",
+    "P21-D1"
   ],
-  "in_progress": "P21-D1",
+  "in_progress": "P22-A1",
   "plan_approved": true,
-  "current_plan": "",
+  "current_plan": "1. **Resolve the canonical upstream source (ACT time).** The ACT agent determines which Qwen3 model to use as the tokenizer source. The canonical choice is `Qwen/Qwen3-4B` on HuggingFace \u2014 it is the smallest Qwen3 variant, the tokenizer is shared across all Qwen3 variants (4B, 8B, 32B, 235B all use the same tokenizer vocabulary), and it is the first Qwen3 release. The ACT agent confirms the tokenizer files exist on this repo at the latest release tag. Record this choice in the script's provenance comment.\n\n2. **Create `worker/assets/qwen3_tokenizer/` directory.** Create the directory with at least the core tokenizer files:\n   - `tokenizer.json` \u2014 the main sentencepiece/BPE model file (contains vocab and merges combined)\n   - `tokenizer_config.json` \u2014 configuration for the tokenizer (model class, special tokens, etc.)\n   - `special_tokens_map.json` \u2014 special token mappings\n   - `added_tokens.json` \u2014 any added tokens\n   - `vocab.json` and `merges.txt` \u2014 if the tokenizer uses BPE with separate vocab/merge files (Qwen3's `Qwen2TokenizerFast` typically uses `tokenizer.json` as the primary file, but having the individual files is useful for inspection)\n   \n   The ACT agent copies these files from the resolved upstream repo. If the upstream repo does not contain all of these files individually, include only what is present.\n\n3. **Create `worker/tools/seed_tokenizers.sh`.** Bash script following the established patterns from `scripts/install_worker_deps.sh`:\n   - Header comment block: purpose, usage, environment variables, provenance reasoning.\n   - `set -euo pipefail` at the top.\n   - Parse `--dry-run` flag (and `--source=URL` flag for override).\n   - If `--dry-run`: print what would be downloaded and exit 0 without network calls.\n   - If not `--dry-run`: use `huggingface-cli download` to fetch the tokenizer files from the canonical source (`Qwen/Qwen3-4B`), placing them into `worker/assets/qwen3_tokenizer/`.\n   - The provenance reasoning comment must explain: why `Qwen/Qwen3-4B` is the canonical source (tokenizer is shared across all Qwen3 variants; 4B is the smallest and most widely referenced variant; it is the official release from the Qwen team at Alibaba Group), and that this is not just a URL but the authoritative upstream.\n   - Idempotent: if files already exist, overwrite them (or skip with a message \u2014 both approaches are acceptable; overwriting is simpler and guarantees freshness).\n\n4. **Create `worker/tools/seed_tokenizers.ps1`.** PowerShell equivalent:\n   - `param()` block for `--dry-run` and `--source` flags.\n   - `$ErrorActionPreference = 'Stop'`.\n   - Same structure as the Bash script: header comment, provenance reasoning, argument parsing, dry-run path, download path.\n   - Use `huggingface-cli` (same tool as Bash, since it is a Python package available on both platforms).\n   - CRLF line endings (enforced by `.gitattributes`).\n\n5. **Verify acceptance criteria.** Run:\n   - `test -d worker/assets/qwen3_tokenizer && ls worker/assets/qwen3_tokenizer | wc -l` \u2014 must show >=1.\n   - `bash worker/tools/seed_tokenizers.sh --dry-run` \u2014 must exit 0 without network calls.",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-15T08:48:49+0200",
-  "plan_approval_message_id": "1526839375323857029",
+  "last_updated": "2026-07-15T10:25:55+0200",
+  "plan_approval_message_id": "1526862455131738207",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1526839373302202421",
+  "plan_report_message_id": "1526862452782792764",
   "impl_report_message_id": null
 }
