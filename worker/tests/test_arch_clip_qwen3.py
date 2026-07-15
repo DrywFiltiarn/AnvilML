@@ -17,7 +17,7 @@ try:
 except ImportError:
     torch = None  # type: ignore[assignment]
 
-from worker.nodes.arch.clip.qwen3 import ARCH, _infer_hyperparams, can_handle
+from worker.nodes.arch.clip.qwen3 import ARCH, _build_key_remapping, _infer_hyperparams, can_handle
 import worker.nodes.arch.clip.qwen3 as qwen3_mod
 
 from worker.nodes.arch.clip import get_module
@@ -196,8 +196,8 @@ def test_dtype_selection_bf16_real() -> None:
     fixture_path = _FIXTURE_DIR / "qwen3_tiny.safetensors"
     model = qwen3_mod.load(str(fixture_path), caps)
     assert model.arch == "qwen3"
-    # All parameters should be at bfloat16 (meta device, but dtype metadata
-    # is set via model.to(target_dtype) before materialization).
+    # All parameters should be at bfloat16 (loaded onto CPU, dtype set via
+    # model.to(target_dtype) before materialization and tensor casting).
     for p in model.parameters():
         assert p.dtype == torch.bfloat16
 
@@ -262,17 +262,17 @@ def test_dtype_selection_fp32_fallback() -> None:
 
 @pytest.mark.real_mode
 def test_load_real_qwen3_fixture() -> None:
-    """load() constructs Qwen3TextEncoder on meta-device with bf16 dtype.
+    """load() constructs Qwen3TextEncoder with bf16 dtype and loads weights.
 
     Calls load() against qwen3_tiny.safetensors with bf16 capability and
     asserts the returned model has all expected attributes:
     - .arch == "qwen3"
-    - All parameters on meta device (no real memory allocated)
+    - All parameters on CPU device (weights are loaded, not meta)
     - Correct dtype metadata (bfloat16)
     - Attached tokenizer
 
-    This is the primary real-mode test for load().
-    Satisfies the REAL_PATH_VERIFIED parity marker.
+    Additional coverage test — superseded by test_load_real_qwen3_fixture_with_weights
+    as the REAL_PATH_VERIFIED target (which now verifies weight loading).
     """
     caps: dict = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}
     fixture_path = _FIXTURE_DIR / "qwen3_tiny.safetensors"
@@ -281,9 +281,9 @@ def test_load_real_qwen3_fixture() -> None:
     # Verify .arch attribute.
     assert model.arch == "qwen3"
 
-    # Verify all parameters are on meta device (zero real memory).
+    # Verify all parameters are on CPU device (weights loaded, not meta).
     for p in model.parameters():
-        assert p.device.type == "meta"
+        assert p.device.type == "cpu", f"parameter {p.shape} is on {p.device}, expected cpu"
 
     # Verify dtype metadata is bfloat16.
     for p in model.parameters():
@@ -296,14 +296,15 @@ def test_load_real_qwen3_fixture() -> None:
 
 @pytest.mark.real_mode
 def test_load_mock_qwen3_fixture() -> None:
-    """load() constructs Qwen3TextEncoder on meta-device in mock-mode.
+    """load() constructs Qwen3TextEncoder with bf16 dtype in mock-mode.
 
     This is the mock-mode counterpart required by the dual-mode parity
     marker convention (ANVILML_DESIGN.md §10.6). It exercises the same
     load() path with bf16 capability as the real-mode test but in
     mock-mode (ANVILML_WORKER_MOCK=1).
 
-    Satisfies the MOCK_PATH_VERIFIED parity marker for load().
+    Additional coverage test — superseded by test_load_mock_qwen3_fixture_with_weights
+    as the MOCK_PATH_VERIFIED target (which now verifies weight loading).
     """
     caps: dict = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}
     fixture_path = _FIXTURE_DIR / "qwen3_tiny.safetensors"
@@ -312,9 +313,9 @@ def test_load_mock_qwen3_fixture() -> None:
     # Verify .arch attribute.
     assert model.arch == "qwen3"
 
-    # Verify all parameters are on meta device (zero real memory).
+    # Verify all parameters are on CPU device (weights loaded, not meta).
     for p in model.parameters():
-        assert p.device.type == "meta"
+        assert p.device.type == "cpu", f"parameter {p.shape} is on {p.device}, expected cpu"
 
     # Verify dtype metadata is bfloat16.
     for p in model.parameters():
@@ -408,3 +409,195 @@ def test_tokenizer_loads_from_vendored_path_no_network() -> None:
         assert call_path == expected_path, (
             f"tokenizer path was {call_path!r}, expected {expected_path!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests for _build_key_remapping() — unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_build_key_remapping_direct_match() -> None:
+    """_build_key_remapping() returns identity mappings for keys in both checkpoint and module.
+
+    Calls _build_key_remapping() with two identical key lists and asserts
+    that every key maps to itself (identity mapping). This verifies the
+    direct-match code path in the remapping function.
+
+    The checkpoint keys and module keys are the same, so every checkpoint
+    key should be found as a direct match and mapped to itself.
+    """
+    keys = [
+        "model.embed_tokens.weight",
+        "model.layers.0.mlp.gate_proj.weight",
+        "model.layers.0.mlp.up_proj.weight",
+        "model.layers.0.mlp.down_proj.weight",
+        "model.layers.0.input_layernorm.weight",
+        "model.layers.0.post_attention_layernorm.weight",
+        "model.norm.weight",
+    ]
+    result = _build_key_remapping(keys, keys)
+    for key in keys:
+        assert key in result, f"key '{key}' not found in remapping result"
+        assert result[key] == key, f"key '{key}' should map to itself, got {result[key]}"
+
+
+def test_build_key_remapping_attention_remap() -> None:
+    """_build_key_remapping() remaps q/k/v/o_proj → in_proj/out_proj for MultiheadAttention.
+
+    Calls _build_key_remapping() with Qwen3-style checkpoint keys (separate
+    q_proj/k_proj/v_proj/o_proj) and module keys (concatenated in_proj/out_proj)
+    and asserts the remapping is correct.
+
+    This verifies the pattern-based remapping code path that handles the
+    structural difference between Qwen3 checkpoint key naming and PyTorch's
+    MultiheadAttention parameter naming.
+    """
+    # Checkpoint keys: Qwen3 uses separate q/k/v/o attention projections.
+    checkpoint_keys = [
+        "model.layers.0.self_attn.q_proj.weight",
+        "model.layers.0.self_attn.k_proj.weight",
+        "model.layers.0.self_attn.v_proj.weight",
+        "model.layers.0.self_attn.o_proj.weight",
+        "model.layers.1.self_attn.q_proj.weight",
+        "model.layers.1.self_attn.k_proj.weight",
+        "model.layers.1.self_attn.v_proj.weight",
+        "model.layers.1.self_attn.o_proj.weight",
+    ]
+
+    # Module keys: PyTorch's MultiheadAttention uses concatenated projections.
+    module_keys = [
+        "model.layers.0.self_attn.in_proj.weight",
+        "model.layers.0.self_attn.out_proj.weight",
+        "model.layers.1.self_attn.in_proj.weight",
+        "model.layers.1.self_attn.out_proj.weight",
+    ]
+
+    result = _build_key_remapping(checkpoint_keys, module_keys)
+
+    # Verify q/k/v → in_proj.weight remapping for layer 0.
+    assert result["model.layers.0.self_attn.q_proj.weight"] == "model.layers.0.self_attn.in_proj.weight"
+    assert result["model.layers.0.self_attn.k_proj.weight"] == "model.layers.0.self_attn.in_proj.weight"
+    assert result["model.layers.0.self_attn.v_proj.weight"] == "model.layers.0.self_attn.in_proj.weight"
+
+    # Verify o_proj → out_proj.weight remapping for layer 0.
+    assert result["model.layers.0.self_attn.o_proj.weight"] == "model.layers.0.self_attn.out_proj.weight"
+
+    # Verify the same pattern for layer 1.
+    assert result["model.layers.1.self_attn.q_proj.weight"] == "model.layers.1.self_attn.in_proj.weight"
+    assert result["model.layers.1.self_attn.k_proj.weight"] == "model.layers.1.self_attn.in_proj.weight"
+    assert result["model.layers.1.self_attn.v_proj.weight"] == "model.layers.1.self_attn.in_proj.weight"
+    assert result["model.layers.1.self_attn.o_proj.weight"] == "model.layers.1.self_attn.out_proj.weight"
+
+
+# ---------------------------------------------------------------------------
+# Tests for load() — weight loading verification
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.real_mode
+def test_load_real_qwen3_fixture_with_weights() -> None:
+    """load() loads weights from the Qwen3 fixture checkpoint with bf16 dtype.
+
+    Calls load() against qwen3_tiny.safetensors with bf16 capability and
+    asserts the returned model has all expected attributes:
+    - .arch == "qwen3"
+    - All parameters on CPU device (not meta — weights are loaded)
+    - Correct dtype metadata (bfloat16)
+    - Attached tokenizer
+
+    This is the primary real-mode test for weight loading.
+    Satisfies the REAL_PATH_VERIFIED parity marker for load().
+    """
+    caps: dict = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}
+    fixture_path = _FIXTURE_DIR / "qwen3_tiny.safetensors"
+    model = qwen3_mod.load(str(fixture_path), caps)
+
+    # Verify .arch attribute.
+    assert model.arch == "qwen3"
+
+    # Verify all parameters are on CPU device (not meta — weights loaded).
+    for p in model.parameters():
+        assert p.device.type == "cpu", f"parameter {p.shape} is on {p.device}, expected cpu"
+
+    # Verify dtype metadata is bfloat16.
+    for p in model.parameters():
+        assert p.dtype == torch.bfloat16, f"parameter {p.shape} has dtype {p.dtype}, expected bf16"
+
+    # Verify tokenizer is attached.
+    assert hasattr(model, "tokenizer")
+    assert model.tokenizer is not None
+
+
+@pytest.mark.real_mode
+def test_load_mock_qwen3_fixture_with_weights() -> None:
+    """load() loads weights from the Qwen3 fixture checkpoint in mock-mode.
+
+    This is the mock-mode counterpart required by the dual-mode parity
+    marker convention (ANVILML_DESIGN.md §10.6). It exercises the same
+    load() path with bf16 capability as the real-mode test but in
+    mock-mode (ANVILML_WORKER_MOCK=1).
+
+    Satisfies the MOCK_PATH_VERIFIED parity marker for load().
+    """
+    caps: dict = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}
+    fixture_path = _FIXTURE_DIR / "qwen3_tiny.safetensors"
+    model = qwen3_mod.load(str(fixture_path), caps)
+
+    # Verify .arch attribute.
+    assert model.arch == "qwen3"
+
+    # Verify all parameters are on CPU device (not meta — weights loaded).
+    for p in model.parameters():
+        assert p.device.type == "cpu", f"parameter {p.shape} is on {p.device}, expected cpu"
+
+    # Verify dtype metadata is bfloat16.
+    for p in model.parameters():
+        assert p.dtype == torch.bfloat16, f"parameter {p.shape} has dtype {p.dtype}, expected bf16"
+
+    # Verify tokenizer is attached.
+    assert hasattr(model, "tokenizer")
+    assert model.tokenizer is not None
+
+
+@pytest.mark.real_mode
+def test_load_weights_dtype_matches_target() -> None:
+    """load() casts tensors to target dtype BEFORE load_state_dict(assign=True).
+
+    Calls load() with fp16-only capability caps and asserts every parameter
+    has dtype torch.float16. This confirms the cast-before-assign ordering
+    works correctly: tensors are cast to target_dtype before load_state_dict
+    is called with assign=True (which bypasses dtype coercion).
+
+    This test exercises the fp16 branch of the §11.5 precedence chain,
+    ensuring the dtype selection and weight casting work together correctly.
+    """
+    caps: dict = {"fp16": True, "bf16": False, "fp8": False, "fp32": True}
+    fixture_path = _FIXTURE_DIR / "qwen3_tiny.safetensors"
+    model = qwen3_mod.load(str(fixture_path), caps)
+
+    # Verify all parameters are float16.
+    for p in model.parameters():
+        assert p.dtype == torch.float16, f"parameter {p.shape} has dtype {p.dtype}, expected fp16"
+
+    # Verify .arch attribute.
+    assert model.arch == "qwen3"
+
+
+@pytest.mark.real_mode
+def test_load_arch_attribute_persists_after_materialization() -> None:
+    """.arch == "qwen3" persists after to_empty() materialization.
+
+    Calls load() and asserts that the model's .arch attribute equals "qwen3"
+    after materialization. This confirms the safety net in load() — which
+    re-sets .arch if to_empty() fails to preserve it — is working correctly.
+
+    The safety net is a defensive measure: to_empty() should return the same
+    module object (not a copy), so .arch should be preserved. This test
+    verifies that invariant.
+    """
+    caps: dict = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}
+    fixture_path = _FIXTURE_DIR / "qwen3_tiny.safetensors"
+    model = qwen3_mod.load(str(fixture_path), caps)
+
+    # Verify .arch attribute persists after materialization.
+    assert model.arch == "qwen3"

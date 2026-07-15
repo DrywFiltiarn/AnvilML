@@ -7668,3 +7668,73 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Path to `qwen3_tiny.safetensors` fixture, caps dict with bf16=True, fp16=True, fp8=False.
 **Expected output:** `Qwen3TextEncoder` with `.arch == "qwen3"`, all parameters on meta device, dtype=torch.bfloat16, tokenizer attached.
 **Acceptance:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_qwen3.py::test_load_mock_qwen3_fixture -v -m "not real_mode"` exits 0.
+
+## test_build_key_remapping_direct_match (anvilml-worker)
+
+**File:** `worker/tests/test_arch_clip_qwen3.py`
+**Context:** The `qwen3` module is importable with safetensors but without torch (mock-mode collection). `_build_key_remapping()` is a pure function that operates on string lists — it does not require torch.
+**Tests:** `_build_key_remapping()` with identical checkpoint and module key lists returns an identity mapping: every key maps to itself. This verifies the direct-match code path.
+**Mode:** mock
+**Inputs:** 7 identical keys (embed_tokens, mlp projections, layer norm, norm).
+**Expected output:** Every key maps to itself in the returned dict.
+**Acceptance:** `python -m pytest worker/tests/test_arch_clip_qwen3.py::test_build_key_remapping_direct_match -v` exits 0.
+
+---
+
+## test_build_key_remapping_attention_remap (anvilml-worker)
+
+**File:** `worker/tests/test_arch_clip_qwen3.py`
+**Context:** The `qwen3` module is importable with safetensors but without torch. `_build_key_remapping()` handles pattern-based remapping for Qwen3 attention projection keys.
+**Tests:** `_build_key_remapping()` with Qwen3-style separate q/k/v/o projection keys and PyTorch-style concatenated in_proj/out_proj module keys correctly remaps q/k/v → in_proj.weight and o_proj → out_proj.weight for each layer.
+**Mode:** mock
+**Inputs:** 8 checkpoint keys (q/k/v/o for 2 layers), 4 module keys (in_proj/out_proj for 2 layers).
+**Expected output:** Each q/k/v maps to its layer's in_proj.weight; each o_proj maps to its layer's out_proj.weight.
+**Acceptance:** `python -m pytest worker/tests/test_arch_clip_qwen3.py::test_build_key_remapping_attention_remap -v` exits 0.
+
+---
+
+## test_load_real_qwen3_fixture_with_weights (anvilml-worker)
+
+**File:** `worker/tests/test_arch_clip_qwen3.py`
+**Context:** The `qwen3` module is imported with torch available (real-mode). The fixture checkpoint `qwen3_tiny.safetensors` has bf16 capability and loads weights via `load_file()` + `load_state_dict(assign=True)`.
+**Tests:** `load()` against the fixture with bf16 capability returns a model with `.arch == "qwen3"`, all params on CPU (not meta), dtype bf16, and an attached tokenizer. This is the primary real-mode test for weight loading.
+**Mode:** real
+**Inputs:** `qwen3_tiny.safetensors` fixture, `caps = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}`.
+**Expected output:** Model with `.arch == "qwen3"`, params on CPU with bf16 dtype, tokenizer attached.
+**Acceptance:** `python -m pytest worker/tests/test_arch_clip_qwen3.py::test_load_real_qwen3_fixture_with_weights -v -m real_mode` exits 0.
+
+---
+
+## test_load_mock_qwen3_fixture_with_weights (anvilml-worker)
+
+**File:** `worker/tests/test_arch_clip_qwen3.py`
+**Context:** The `qwen3` module is imported with torch available (real-mode, but `ANVILML_WORKER_MOCK=1` set). The fixture checkpoint loads weights in mock-mode.
+**Tests:** `load()` against the fixture with bf16 capability in mock-mode returns a model with `.arch == "qwen3"`, all params on CPU, dtype bf16, and an attached tokenizer. This is the mock-mode counterpart to the real-mode weight loading test.
+**Mode:** real
+**Inputs:** `qwen3_tiny.safetensors` fixture, `caps = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}`, `ANVILML_WORKER_MOCK=1`.
+**Expected output:** Model with `.arch == "qwen3"`, params on CPU with bf16 dtype, tokenizer attached.
+**Acceptance:** `ANVILML_WORKER_MOCK=1 python -m pytest worker/tests/test_arch_clip_qwen3.py::test_load_mock_qwen3_fixture_with_weights -v` exits 0.
+
+---
+
+## test_load_weights_dtype_matches_target (anvilml-worker)
+
+**File:** `worker/tests/test_arch_clip_qwen3.py`
+**Context:** The `qwen3` module is imported with torch available. `load()` casts tensors to target_dtype BEFORE `load_state_dict(assign=True)`.
+**Tests:** `load()` with fp16-only capability caps asserts every parameter has dtype `torch.float16`. This confirms the cast-before-assign ordering works correctly.
+**Mode:** real
+**Inputs:** `qwen3_tiny.safetensors` fixture, `caps = {"fp16": True, "bf16": False, "fp8": False, "fp32": True}`.
+**Expected output:** All parameters have dtype `torch.float16`.
+**Acceptance:** `python -m pytest worker/tests/test_arch_clip_qwen3.py::test_load_weights_dtype_matches_target -v -m real_mode` exits 0.
+
+---
+
+## test_load_arch_attribute_persists_after_materialization (anvilml-worker)
+
+**File:** `worker/tests/test_arch_clip_qwen3.py`
+**Context:** The `qwen3` module is imported with torch available. `load()` verifies `.arch` persists after `to_empty()` materialization.
+**Tests:** `load()` returns a model with `.arch == "qwen3"` after materialization. This confirms the safety net in `load()` is working correctly.
+**Mode:** real
+**Inputs:** `qwen3_tiny.safetensors` fixture, `caps = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}`.
+**Expected output:** `model.arch == "qwen3"` after materialization.
+**Acceptance:** `python -m pytest worker/tests/test_arch_clip_qwen3.py::test_load_arch_attribute_persists_after_materialization -v -m real_mode` exits 0.
