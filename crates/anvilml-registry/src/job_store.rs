@@ -99,7 +99,12 @@ impl JobStore {
     /// constraint violation).
     /// Returns `AnvilError::Serde` if any serialization step fails (should never
     /// happen with known struct types).
-    #[tracing::instrument(fields(id = %job.id), skip(self))]
+    /// `job` is skipped from the span (see `#[instrument]` below) — the full
+    /// `Job` struct, including the entire `graph` JSON, would otherwise be
+    /// Debug-dumped into every span on every call (this fires ~2-3x per
+    /// job: once per status transition). The explicit `id` field above
+    /// already carries the useful, cheap identifier.
+    #[tracing::instrument(fields(id = %job.id), skip(self, job))]
     pub async fn upsert(&self, job: &Job) -> Result<(), AnvilError> {
         // Serialize graph and settings to JSON TEXT — these are stored as raw
         // JSON strings in the database, not parsed into individual columns.

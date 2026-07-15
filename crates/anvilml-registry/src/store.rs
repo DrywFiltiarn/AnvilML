@@ -86,7 +86,12 @@ impl ModelStore {
     /// constraint violation).
     /// Returns `AnvilError::Serde` if enum serialization fails (should never happen
     /// with known enum variants).
-    #[tracing::instrument(fields(id = %meta.id), skip(self))]
+    /// `meta` is skipped from the span (see `#[instrument]` below) — this
+    /// call fires once per scanned model file, potentially thousands of
+    /// times per scan, and the full `ModelMeta` struct would otherwise be
+    /// Debug-dumped every time. The explicit `id` field above already
+    /// carries the useful, cheap identifier.
+    #[tracing::instrument(fields(id = %meta.id), skip(self, meta))]
     pub async fn upsert(&self, meta: &ModelMeta) -> Result<(), AnvilError> {
         // Serialize enum fields to snake_case text via serde_json — matches the
         // #[serde(rename_all = "snake_case")] attribute on the enum derives.

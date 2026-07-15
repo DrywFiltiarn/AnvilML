@@ -4,6 +4,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 from dataclasses import dataclass
+import uuid
 
 NODE_REGISTRY: dict[str, type["BaseNode"]] = {}
 
@@ -38,7 +39,16 @@ class NodeContext:
     """Runtime context passed to every node's execute() method.
 
     Attributes:
-        job_id: The UUID string of the currently executing job.
+        job_id: The raw msgpack-decoded bytes of the currently executing
+            job's UUID — NOT a string. Rust's `Uuid` serializes as raw
+            16 bytes over msgpack (a non-human-readable wire format), so
+            this is exactly what arrives over IPC. Passing this directly
+            to `ctx.emit(...)` payloads (or anything else that must
+            round-trip back to Rust) is correct and required. For a
+            human-readable form — log messages, cache-key labels, or
+            anything else meant to be read by a person — use
+            `job_id_str` instead; `str(job_id)`/f-string interpolation
+            of the raw bytes renders unreadably (e.g. `b'\\x1d9...'`).
         device: The torch device string (e.g. "cuda:0", "cpu"). Unused in mock mode.
         caps: The worker's own InferenceCaps dict from capability.probe_capabilities()
             (or the mock equivalent). Arch modules read dtype decisions from this —
@@ -57,6 +67,19 @@ class NodeContext:
         self.emit = emit
         self.pipeline_cache = pipeline_cache
         self.mock = mock
+
+    @property
+    def job_id_str(self) -> str:
+        """Readable UUID string form of job_id, for logs/labels only.
+
+        See the `job_id` attribute docstring above — `job_id` itself must
+        stay raw bytes everywhere it's used as data (e.g. ctx.emit(...)
+        payloads); this property exists so nodes never need to
+        reimplement `uuid.UUID(bytes=...)` themselves, and never
+        accidentally interpolate the raw bytes into a log message or
+        cache-key label.
+        """
+        return str(uuid.UUID(bytes=self.job_id))
 
 
 class BaseNode(ABC):

@@ -12,8 +12,32 @@ import logging
 import os
 import sys
 import traceback
+import uuid
 
 logger = logging.getLogger(__name__)
+
+
+def _job_id_str(job_id: bytes) -> str:
+    """Format a raw msgpack-decoded ``job_id`` as a readable UUID string,
+    for log messages only.
+
+    Rust's ``Uuid`` serializes as raw 16 bytes over msgpack (a
+    non-human-readable format — serde's `Uuid` impl only uses a string
+    when the format itself is human-readable, e.g. JSON), so every
+    ``job_id`` this module receives from `ipc.recv_message()` — and every
+    ``job_id`` it sends back out via `ipc.send_event(...)` — is correctly
+    a raw ``bytes`` object, not a string. That is the correct wire form
+    and must not change.
+
+    But logging that raw ``bytes`` object directly renders as
+    ``b'\\x1d9\\x95\\x07...'`` — unreadable, and inconsistent with the
+    Rust side's own logs, which always show the canonical hyphenated
+    form (e.g. ``1d399507-7c43-43bf-b058-17819a11448f``) via `Display`.
+    This helper is for formatting inside `logger.*()` calls exclusively —
+    callers must keep passing the raw ``bytes`` value, unconverted, to
+    `ipc.send_event(...)`.
+    """
+    return str(uuid.UUID(bytes=job_id))
 
 
 def _import_nodes() -> list[dict]:
@@ -159,7 +183,7 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
                 thread.join()
                 if result.get("cancelled"):
                     ipc.send_event({"_type": "Cancelled", "job_id": job_id})
-                    logger.info("dispatch_loop: job cancelled job_id=%s", job_id)
+                    logger.info("dispatch_loop: job cancelled job_id=%s", _job_id_str(job_id))
                 elif result.get("success"):
                     elapsed_ms = int((time.monotonic() - start) * 1000)
                     ipc.send_event(
@@ -167,7 +191,7 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
                     )
                     logger.info(
                         "dispatch_loop: job completed job_id=%s elapsed_ms=%d",
-                        job_id,
+                        _job_id_str(job_id),
                         elapsed_ms,
                     )
                 else:
@@ -179,7 +203,7 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
                     })
                     logger.error(
                         "dispatch_loop: execute failed job_id=%s error=%s",
-                        job_id,
+                        _job_id_str(job_id),
                         result["error"],
                     )
                 current_job_id = None
@@ -224,7 +248,7 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
             # run_execute writes it before returning.
             if result.get("cancelled"):
                 ipc.send_event({"_type": "Cancelled", "job_id": job_id})
-                logger.info("dispatch_loop: job cancelled job_id=%s", job_id)
+                logger.info("dispatch_loop: job cancelled job_id=%s", _job_id_str(job_id))
             elif result.get("success"):
                 elapsed_ms = int((time.monotonic() - start) * 1000)
                 ipc.send_event(
@@ -232,7 +256,7 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
                 )
                 logger.info(
                     "dispatch_loop: job completed job_id=%s elapsed_ms=%d",
-                    job_id,
+                    _job_id_str(job_id),
                     elapsed_ms,
                 )
             else:
@@ -247,7 +271,7 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
                 })
                 logger.error(
                     "dispatch_loop: execute failed job_id=%s error=%s",
-                    job_id,
+                    _job_id_str(job_id),
                     result["error"],
                 )
             # Reset tracking for the next job. This is also what makes the
@@ -299,7 +323,7 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
             # observes it before the next node's execute() call.
             cancel_job_id = msg["job_id"]
             if current_job_id == cancel_job_id and current_cancel_flag is not None:
-                logger.info("dispatch_loop: cancelling job_id=%s", cancel_job_id)
+                logger.info("dispatch_loop: cancelling job_id=%s", _job_id_str(cancel_job_id))
                 current_cancel_flag.set()
             else:
                 # The cancel was for a job that already completed, or a
@@ -308,7 +332,7 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
                 # not error.
                 logger.debug(
                     "dispatch_loop: CancelJob for non-current job_id=%s, ignoring",
-                    cancel_job_id,
+                    _job_id_str(cancel_job_id),
                 )
         elif msg_type == "Execute":
             # Build a ctx_factory for this job — creates a NodeContext with
@@ -322,7 +346,7 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
 
             job_id = msg["job_id"]
             graph = msg["graph"]
-            logger.info("dispatch_loop: executing job_id=%s", job_id)
+            logger.info("dispatch_loop: executing job_id=%s", _job_id_str(job_id))
 
             # Track this job so CancelJob messages can target it.
             current_job_id = job_id

@@ -8,6 +8,10 @@ via ``arch.diffusion.get_module()`` and ``pipeline_cache.get_or_load()``.
 
 from worker.nodes.base import BaseNode, NodeContext, SlotSpec, register
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 @register
 class LoadModel(BaseNode):
@@ -86,6 +90,7 @@ class LoadModel(BaseNode):
                     f"cannot load model '{inputs['model_id']}'"
                 )
 
+            logger.debug("LoadModel: requesting model_id=%s", inputs["model_id"])
             return {
                 "model": ctx.pipeline_cache.get_or_load(
                     inputs["model_id"],

@@ -15,8 +15,11 @@ all cache mutations.
 
 from __future__ import annotations
 
+import logging
 from collections import OrderedDict
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 
 class PipelineCache:
@@ -83,20 +86,29 @@ class PipelineCache:
             # recency so the entry survives future evictions. Standard LRU
             # access pattern for OrderedDict.
             self._cache.move_to_end(key)
+            logger.debug("pipeline_cache: hit key=%s", key)
             return self._cache[key]
 
         # Key not in cache — call the loader exactly once. The result is
         # stored and the key is moved to the end (most-recently-used).
         # If loader_fn raises, the cache is untouched and the exception
         # propagates — transient failures are retried, not cached.
+        logger.debug("pipeline_cache: miss key=%s, loading", key)
         value = loader_fn()
         self._cache[key] = value
         self._cache.move_to_end(key)
+        logger.info("pipeline_cache: loaded key=%s", key)
 
         # Evict the least-recently-used entry if we exceeded capacity.
         # popitem(last=False) removes from the front (oldest) end.
         # Python's refcounting handles cleanup of the evicted value.
         if len(self._cache) > self.max_entries:
-            self._cache.popitem(last=False)
+            evicted_key, _ = self._cache.popitem(last=False)
+            logger.info(
+                "pipeline_cache: evicted key=%s (max_entries=%d exceeded) — "
+                "next access will reload it",
+                evicted_key,
+                self.max_entries,
+            )
 
         return value

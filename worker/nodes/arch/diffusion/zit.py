@@ -590,7 +590,7 @@ def load(path: str, caps: dict, device: str = "cpu") -> ZiTModel:
     info = model.load_state_dict(remapped_state_dict, assign=True, strict=False)
     logger.info(
         "loaded ZiT weights: loaded=%d, missing=%d, unexpected=%d, device=%s",
-        len(info.missing_keys),
+        len(remapped_state_dict),
         len(info.missing_keys),
         len(info.unexpected_keys),
         device,

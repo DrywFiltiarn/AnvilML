@@ -58,7 +58,11 @@ use uuid::Uuid;
 /// Returns `AnvilError::Serde` if the base64 decoding fails.
 /// Returns `AnvilError::Io` if the filesystem write fails.
 /// Returns `AnvilError::Db` if the metadata persistence fails.
-#[tracing::instrument(fields(job_id), skip(artifact_store))]
+///
+/// `event` is skipped from the span (see `#[instrument]` below) — the
+/// `ImageReady` variant carries `image_b64`, the full base64-encoded image,
+/// which would otherwise be Debug-dumped into every span on this hot path.
+#[tracing::instrument(fields(job_id), skip(artifact_store, event))]
 pub async fn handle_image_ready(
     artifact_store: Arc<ArtifactStore>,
     event: WorkerEvent,

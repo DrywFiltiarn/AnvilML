@@ -9,6 +9,10 @@ via ``arch.diffusion.get_module()`` and ``module.sample()``.
 
 from worker.nodes.base import BaseNode, NodeContext, SlotSpec, register
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 @register
 class Sampler(BaseNode):
@@ -100,9 +104,17 @@ class Sampler(BaseNode):
                     f"'{inputs['model'].arch}'; cannot sample"
                 )
 
+            logger.info(
+                "Sampler: dispatching arch=%s job_id=%s steps=%s cfg=%s seed=%s",
+                inputs["model"].arch,
+                ctx.job_id_str,
+                inputs["steps"],
+                inputs["cfg"],
+                inputs["seed"],
+            )
             denoised_latent, resolved_seed = module.sample(
                 inputs["model"],
-                f"job_{ctx.job_id}",
+                f"job_{ctx.job_id_str}",
                 inputs["conditioning"],
                 inputs["latent"],
                 inputs["steps"],

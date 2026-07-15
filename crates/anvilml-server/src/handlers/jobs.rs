@@ -211,7 +211,7 @@ pub(crate) struct ListJobsParams {
         (status = 500, description = "Database error")
     )
 )]
-#[tracing::instrument(skip(state), fields(status, limit))]
+#[tracing::instrument(skip(state), fields(status = ?params.status, limit = ?params.limit))]
 pub(crate) async fn list_jobs(
     State(state): State<AppState>,
     Query(params): Query<ListJobsParams>,
@@ -387,7 +387,7 @@ pub(crate) async fn delete_job(
         (status = 400, description = "Bad request — invalid status parameter")
     )
 )]
-#[tracing::instrument(skip(state), fields(status))]
+#[tracing::instrument(skip(state), fields(status = %params.status))]
 pub(crate) async fn bulk_clear_jobs(
     State(state): State<AppState>,
     Query(params): Query<BulkClearParams>,

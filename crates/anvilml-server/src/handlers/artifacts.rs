@@ -51,7 +51,7 @@ pub(crate) struct ListArtifactsParams {
         (status = 500, description = "Database error")
     )
 )]
-#[tracing::instrument(skip(state), fields(job_id = ?params.job_id))]
+#[tracing::instrument(skip(state, params), fields(job_id = ?params.job_id))]
 pub(crate) async fn list_artifacts(
     State(state): State<AppState>,
     Query(params): Query<ListArtifactsParams>,

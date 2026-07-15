@@ -276,6 +276,12 @@ impl JobScheduler {
         // are None. queue_position is set to 1 (first in line; updated by
         // the dispatch loop as jobs are popped).
         let job_id = Uuid::new_v4();
+        // `fields(job_id)` on this function's #[instrument] declares an
+        // Empty field — `job_id` isn't a parameter, it's generated here, so
+        // nothing populates it automatically. Record it explicitly now that
+        // it exists; without this, job creation was untraceable by ID in
+        // the span (the field would just never appear in output).
+        tracing::Span::current().record("job_id", tracing::field::display(job_id));
         let job = Job {
             id: job_id,
             status: JobStatus::Queued,
@@ -666,7 +672,13 @@ impl JobScheduler {
     /// any IPC send.
     ///
     /// Operates in-place on `graph` (mutating the Value tree).
-    #[tracing::instrument(skip(self, graph), fields(job_id))]
+    ///
+    /// No `job_id` field on this span: the only caller (`dispatch_one`)
+    /// already runs this inside a span carrying `job_id`, which nested
+    /// spans inherit in the log output — a separate declaration here would
+    /// only ever be `Empty` (no `job_id` parameter exists to auto-bind, and
+    /// nothing records one).
+    #[tracing::instrument(skip(self, graph))]
     async fn resolve_model_ids(&self, graph: &mut serde_json::Value) -> Result<(), AnvilError> {
         // Access the "nodes" array. If missing or not an array, skip —
         // this shouldn't happen for a validated graph, but we handle it
