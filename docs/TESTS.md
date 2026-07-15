@@ -7514,3 +7514,37 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Expected output:** `ValueError` raised.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_qwen3.py::test_infer_hyperparams_truncated_header_raises -v` exits 0.
 
+
+## test_can_handle_matches_qwen3 (worker.nodes.arch.clip.qwen3)
+
+**File:** `worker/tests/test_arch_clip_qwen3.py`
+**Context:** The `can_handle()` function is a pure string comparison that checks whether a given dispatch key matches the module's canonical architecture identifier (`ARCH = "qwen3"`). It has no I/O, no torch dependency, and is importable in mock-mode.
+**Tests:** `can_handle("qwen3")` returns `True` — confirms the dispatch key "qwen3" is recognised by the qwen3 module's can_handle().
+**Mode:** mock
+**Inputs:** The string `"qwen3"`.
+**Expected output:** `True`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_qwen3.py::test_can_handle_matches_qwen3 -v` exits 0.
+
+---
+
+## test_can_handle_rejects_other_keys (worker.nodes.arch.clip.qwen3)
+
+**File:** `worker/tests/test_arch_clip_qwen3.py`
+**Context:** The `can_handle()` function performs an exact string comparison against `ARCH`. It must return `False` for any key that does not match `"qwen3"`.
+**Tests:** `can_handle("zit")`, `can_handle("flux2klein")`, and `can_handle("unknown")` all return `False` — confirms the function does not match unrelated architecture names.
+**Mode:** mock
+**Inputs:** The strings `"zit"`, `"flux2klein"`, `"unknown"`.
+**Expected output:** All three calls return `False`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_qwen3.py::test_can_handle_rejects_other_keys -v` exits 0.
+
+---
+
+## test_get_module_returns_qwen3_for_matching_key (worker.nodes.arch.clip.qwen3)
+
+**File:** `worker/tests/test_arch_clip_qwen3.py`
+**Context:** The clip dispatcher's `_REGISTERED_MODULES` list now includes the qwen3 module (registered at import time via `__init__.py`). `get_module("qwen3")` iterates over registered modules calling `can_handle()` on each and returns the first match.
+**Tests:** `clip.get_module("qwen3")` returns the qwen3 module (identity check with `is`) — confirms the qwen3 module was correctly registered and `get_module()` finds it via dispatch.
+**Mode:** mock
+**Inputs:** The string `"qwen3"`.
+**Expected output:** The returned module is identical to the qwen3 module (`result is qwen3`).
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_qwen3.py::test_get_module_returns_qwen3_for_matching_key -v` exits 0.

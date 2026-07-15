@@ -86,25 +86,25 @@ def test_get_module_skips_module_with_can_handle_false() -> None:
 
 
 def test_clip_get_module_returns_none_when_empty() -> None:
-    """clip.get_module returns None when _REGISTERED_MODULES is empty.
+    """clip.get_module returns None for a key no registered module handles.
 
-    With zero registered modules, clip.get_module("qwen3") must return None
-    without raising — the empty registry is the default state before
-    concrete arch modules are wired in later phases.
+    With qwen3 registered, clip.get_module("unknown") must return None
+    without raising — the dispatcher returns None when no module's
+    can_handle() matches the key.
     """
-    result = clip.get_module("qwen3")
+    result = clip.get_module("unknown")
     assert result is None
 
 
 def test_clip_get_module_does_not_raise_for_various_key_types() -> None:
     """clip.get_module does not raise for str, None, or arbitrary object keys.
 
-    With an empty registry, clip.get_module must handle any key type without
-    raising — the dispatch loop should never throw, even for edge-case
-    keys that no module would ever match.
+    clip.get_module must handle any key type without raising — the dispatch
+    loop should never throw, even for edge-case keys that no module would
+    ever match.
     """
     # String key — the normal case.
-    assert clip.get_module("qwen3") is None
+    assert clip.get_module("unknown") is None
 
     # None key — some callers may pass None as a fallback.
     assert clip.get_module(None) is None
@@ -118,9 +118,10 @@ def test_clip_get_module_skips_module_with_can_handle_false() -> None:
     """clip dispatcher skips a module whose can_handle returns False.
 
     Registers a test double whose can_handle(key) returns False, then
-    calls clip.get_module("qwen3") and asserts it returns None — proving the
+    calls clip.get_module("unknown") and asserts it returns None — proving the
     dispatcher continues scanning rather than returning a non-matching
-    module.
+    module. Uses "unknown" because qwen3 already handles "qwen3", so
+    the fake module would never be reached with that key.
     """
     # Create a module-like object with a can_handle that always returns False.
     fake_module = Mock(spec=ModuleType)
@@ -129,14 +130,14 @@ def test_clip_get_module_skips_module_with_can_handle_false() -> None:
     # Register the fake module.
     clip._REGISTERED_MODULES.append(fake_module)
     try:
-        result = clip.get_module("qwen3")
+        result = clip.get_module("unknown")
         # can_handle must have been called at least once.
-        fake_module.can_handle.assert_called_once_with("qwen3")
+        fake_module.can_handle.assert_called_once_with("unknown")
         # Since can_handle returned False, the dispatcher should return None.
         assert result is None
     finally:
         # Always clean up: remove the fake module so subsequent tests see
-        # an empty registry.
+        # the original registry state.
         clip._REGISTERED_MODULES.remove(fake_module)
 
 

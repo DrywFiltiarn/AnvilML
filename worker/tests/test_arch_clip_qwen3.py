@@ -1,4 +1,4 @@
-"""Tests for worker.nodes.arch.clip.qwen3 — _infer_hyperparams()."""
+"""Tests for worker.nodes.arch.clip.qwen3 — _infer_hyperparams() and can_handle()."""
 
 from pathlib import Path
 import tempfile
@@ -17,7 +17,10 @@ try:
 except ImportError:
     torch = None  # type: ignore[assignment]
 
-from worker.nodes.arch.clip.qwen3 import _infer_hyperparams
+from worker.nodes.arch.clip.qwen3 import ARCH, _infer_hyperparams, can_handle
+import worker.nodes.arch.clip.qwen3 as qwen3_mod
+
+from worker.nodes.arch.clip import get_module
 
 _FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
@@ -108,3 +111,45 @@ def test_infer_hyperparams_truncated_header_raises() -> None:
             os.unlink(tmp_path)
         except OSError:
             pass
+
+
+def test_can_handle_matches_qwen3() -> None:
+    """can_handle("qwen3") returns True for the matching architecture key.
+
+    Imports can_handle from qwen3 and calls it with the canonical
+    architecture identifier "qwen3", asserting that it returns True.
+
+    This is the happy-path test — it confirms the dispatch key
+    "qwen3" is recognised by the qwen3 module's can_handle().
+    """
+    assert can_handle("qwen3") is True
+
+
+def test_can_handle_rejects_other_keys() -> None:
+    """can_handle() returns False for non-matching architecture keys.
+
+    Calls can_handle() with three different strings that are NOT
+    "qwen3" — "zit", "flux2klein", and "unknown" — and asserts
+    that each returns False.
+
+    This confirms the function performs an exact string comparison
+    against ARCH and does not match unrelated architecture names.
+    """
+    assert can_handle("zit") is False
+    assert can_handle("flux2klein") is False
+    assert can_handle("unknown") is False
+
+
+def test_get_module_returns_qwen3_for_matching_key() -> None:
+    """clip.get_module("qwen3") returns the qwen3 module (identity match).
+
+    Imports the clip dispatcher and the qwen3 module, calls
+    get_module("qwen3"), and asserts the returned module is
+    identical to qwen3 (identity check with `is`).
+
+    This confirms that the qwen3 module was correctly registered
+    in _REGISTERED_MODULES and that get_module() finds it via
+    can_handle() dispatch.
+    """
+    result = get_module("qwen3")
+    assert result is qwen3_mod

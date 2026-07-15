@@ -14,11 +14,13 @@ dispatcher per family, never reimplemented per module.
 
 from __future__ import annotations
 
-from typing import Any
 from types import ModuleType
+from typing import Any
 
+from worker.nodes.arch.clip import qwen3
 
 _REGISTERED_MODULES: list[ModuleType] = []
+_REGISTERED_MODULES.append(qwen3)
 
 
 def get_module(key: Any) -> ModuleType | None:

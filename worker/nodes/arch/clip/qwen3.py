@@ -301,3 +301,19 @@ def _safetensors_dtype_to_canonical(safetensors_dtype: str) -> str:
     }
     # Unknown dtype strings fall through to fp32 as a safe default.
     return mapping.get(safetensors_dtype, "fp32")
+
+
+def can_handle(key: str) -> bool:
+    """Confirm this module handles the given dispatch key.
+
+    The dispatcher passes the ``clip_type`` string as *key*. This
+    function returns ``True`` only when the key matches this module's
+    canonical architecture identifier.
+
+    Args:
+        key: The clip_type string to check, e.g. ``"qwen3"``.
+
+    Returns:
+        ``True`` if *key* equals ``"qwen3"``, ``False`` otherwise.
+    """
+    return key == ARCH
