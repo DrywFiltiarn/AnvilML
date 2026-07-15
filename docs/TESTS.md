@@ -2528,10 +2528,10 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 **File:** `crates/anvilml-ipc/tests/roundtrip_tests.rs`
 **Context:** The `anvilml-ipc` crate has been compiled with `rmp-serde` and `uuid` (v4, serde) dev-dependencies, and the `messages` module providing `WorkerMessage` and `WorkerEvent`. The `anvilml-core` crate provides `NodeTypeDescriptor`.
-**Tests:** `WorkerEvent::Ready` with all 13 fields roundtrips via `rmp_serde::to_vec_named()`. Constructs a realistic Ready event with worker_id="gpu:0", device_index=0, device_name="NVIDIA RTX 4090", device_type="cuda", vram_total_mib=24576, vram_free_mib=20480, torch_version="2.5.1+cu124", fp16=true, bf16=true, fp8=true, flash_attention=true, capabilities_source="pytorch", and two `NodeTypeDescriptor` entries (LoadModel, KSampler). Verifies the deserialised event equals the original.
+**Tests:** `WorkerEvent::Ready` with all 15 fields roundtrips via `rmp_serde::to_vec_named()`. Constructs a realistic Ready event with worker_id="gpu:0", device_index=0, device_name="NVIDIA RTX 4090", device_type="cuda", vram_total_mib=24576, vram_free_mib=20480, torch_version="2.5.1+cu124", fp32=true, fp16=true, bf16=true, fp8=true, fp4=false, flash_attention=true, capabilities_source="pytorch", and two `NodeTypeDescriptor` entries (LoadModel, KSampler). Verifies the deserialised event equals the original.
 **Mode:** both
-**Inputs:** Full `WorkerEvent::Ready` with all 13 fields at representative values.
-**Expected output:** Roundtripped `WorkerEvent::Ready` equals original; all 13 fields preserved including `node_types` vec with two entries.
+**Inputs:** Full `WorkerEvent::Ready` with all 15 fields at representative values.
+**Expected output:** Roundtripped `WorkerEvent::Ready` equals original; all 15 fields preserved including `node_types` vec with two entries.
 **Acceptance:** `cargo test -p anvilml-ipc --test roundtrip_tests test_ready_roundtrip` exits 0.
 
 ---
@@ -5630,6 +5630,30 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `WorkerEvent::Completed { job_id, elapsed_ms: 10000 }` routed via `Demux::route("test-worker-1", ...)`.
 **Expected output:** `WsEvent::JobCompleted` received on the broadcaster with `elapsed_ms == 10000`.
 **Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_spawn_event_loop_receives_and_publishes` exits 0.
+
+---
+
+## test_ready_event_updates_hardware_caps (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** The `anvilml-scheduler` crate has been compiled with `anvilml-ipc` (for `WorkerEvent`, `EventBroadcaster`), `anvilml-registry` (for `JobStore`), `anvilml-core` (for `HardwareInfo`, `GpuDevice`, `InferenceCaps`, `CapabilitySource`), `anvilml-artifacts` (for `ArtifactStore`), and `zeromq` dev-dependencies. `event_loop.rs`'s `spawn_event_loop()` now takes a fifth `hardware: Arc<RwLock<HardwareInfo>>` argument and applies `Ready` events to it via the private `apply_ready_capabilities()`.
+**Tests:** End-to-end, closing the coverage gap flagged after Phase 16 (`Ready` events reaching the live `spawn_event_loop()` `Demux` subscription had no test at all): a `HardwareInfo` fixture with one `GpuDevice` at `index: 0` (`caps: InferenceCaps::default()`, `capabilities_source: Fallback`) is constructed, the event loop is spawned against it, and a `WorkerEvent::Ready { device_index: 0, fp32: true, fp16: true, bf16: true, fp8: true, fp4: true, flash_attention: true, .. }` is routed via `demux.route()`. The test polls (bounded, 2s) until `hardware.gpus[0].capabilities_source == PyTorch`, then asserts every `caps` field was applied, `capabilities_source` was overwritten to `PyTorch`, and the top-level `inference_caps` union reflects the update — including `fp32`/`fp4`, the two fields `WorkerEvent::Ready` previously omitted entirely.
+**Mode:** both
+**Inputs:** `WorkerEvent::Ready { worker_id: "0", device_index: 0, fp32: true, fp16: true, bf16: true, fp8: true, fp4: true, flash_attention: true, capabilities_source: "pytorch", node_types: vec![], .. }` routed via `Demux::route("0", ...)`.
+**Expected output:** `hardware.gpus[0].caps` has all six fields `true`; `capabilities_source == CapabilitySource::PyTorch`; `hardware.inference_caps.fp32 == true` and `hardware.inference_caps.fp4 == true`.
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_ready_event_updates_hardware_caps` exits 0.
+
+---
+
+## test_ready_event_unknown_device_index_does_not_panic (anvilml-scheduler)
+
+**File:** `crates/anvilml-scheduler/tests/event_loop_tests.rs`
+**Context:** Same fixture setup as `test_ready_event_updates_hardware_caps`. Exercises `apply_ready_capabilities()`'s "no matching `GpuDevice`" branch, described in its own doc comment as a defensive no-op rather than a panic.
+**Tests:** Routes a `WorkerEvent::Ready` with `device_index: 99` against a `HardwareInfo` fixture whose only device is `index: 0`. Asserts the event loop's `JoinHandle` is still running (`!handle.is_finished()`) after a short delay, and that the existing device's `caps`/`capabilities_source` are untouched and no `GpuDevice` was added or removed.
+**Mode:** both
+**Inputs:** `WorkerEvent::Ready { device_index: 99, .. }` routed via `Demux::route("99", ...)` against a one-device `HardwareInfo` fixture (`index: 0`).
+**Expected output:** Event loop task still running; `hardware.gpus.len() == 1`; `hardware.gpus[0].capabilities_source` unchanged (`Fallback`).
+**Acceptance:** `cargo test -p anvilml-scheduler --test event_loop_tests test_ready_event_unknown_device_index_does_not_panic` exits 0.
 
 ---
 

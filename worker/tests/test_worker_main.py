@@ -467,6 +467,11 @@ class TestNoMockGate:
                             event = captured_events[0]
                             assert event["_type"] == "Ready"
                             assert event["capabilities_source"] == "pytorch"
+                            # fp32/fp4 must be forwarded into the Ready event,
+                            # not only probed and discarded — matches the
+                            # mocked probe_capabilities() return value above.
+                            assert event["fp32"] is True
+                            assert event["fp4"] is False
                             # PassThrough is registered via auto-import.
                             # Check presence anywhere in the list (not at
                             # index 0) because the order of node types
@@ -701,6 +706,10 @@ class TestNoMockGate:
                         event = captured_events[0]
                         assert event["_type"] == "Ready"
                         assert event["capabilities_source"] == "mock"
+                        # fp32/fp4 must be forwarded into the Ready event —
+                        # matches _mock_probe_capabilities()'s fixed values.
+                        assert event["fp32"] is True
+                        assert event["fp4"] is False
                         # PassThrough is registered via auto-import.
                         # Check presence anywhere in the list (not at
                         # index 0) because the order of node types

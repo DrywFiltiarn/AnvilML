@@ -887,7 +887,7 @@ while the actually-installed torch build cannot use it.
 
 **Where this plugs in:**
 - `worker_main()` calls `probe_capabilities()` once at startup (real mode only).
-- The result populates the `fp16`/`bf16`/`fp8`/`fp4`/`flash_attention` fields of the
+- The result populates the `fp32`/`fp16`/`bf16`/`fp8`/`fp4`/`flash_attention` fields of the
   `Ready` event (§8.5) with `capabilities_source = PyTorch`.
 - Every arch module's `load()` (§11.3; the name is identical across diffusion, CLIP,
   and VAE arch modules — see §11.8) makes its dtype decision (§11.5) from the
@@ -1202,9 +1202,11 @@ pub enum WorkerEvent {
         vram_total_mib: u32,
         vram_free_mib: u32,
         torch_version: String,
+        fp32: bool,
         fp16: bool,
         bf16: bool,
         fp8: bool,
+        fp4: bool,
         flash_attention: bool,
         capabilities_source: String,  // "pytorch" (real mode) | "mock" (mock mode)
         node_types: Vec<NodeTypeDescriptor>,

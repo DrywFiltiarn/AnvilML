@@ -73,9 +73,16 @@ pub struct AppState {
 
     /// Snapshot of the host machine's hardware (GPU/CPU devices and capabilities).
     ///
-    /// Populated once at server startup via `detect_all_devices()`. The `RwLock`
-    /// allows the scheduler to read the snapshot during dispatch while a future
-    /// VRAM-refresh path can update it without reconstructing the entire struct.
+    /// Populated once at server startup via `detect_all_devices()` with
+    /// pre-spawn hint capabilities (`capabilities_source: DeviceTable` or
+    /// `Fallback`). From then on, `anvilml_scheduler::event_loop::spawn_event_loop()`
+    /// is the sole writer: on every worker `Ready` event it overwrites the
+    /// matching `GpuDevice.caps`/`capabilities_source` with that worker's own
+    /// runtime torch probe (`capabilities_source: PyTorch`) and recomputes the
+    /// aggregate `inference_caps`, per `ANVILML_DESIGN.md §6.6`. The `RwLock`
+    /// allows the scheduler and `GET /v1/system` to read the snapshot
+    /// concurrently with that update; a future VRAM-refresh path can extend
+    /// the same field without reconstructing the whole struct.
     pub hardware: Arc<RwLock<HardwareInfo>>,
 
     /// Python environment health report collected at startup preflight.

@@ -183,12 +183,12 @@ fn test_memory_query_roundtrip() {
 use anvilml_core::NodeTypeDescriptor;
 use anvilml_ipc::messages::WorkerEvent;
 
-/// `WorkerEvent::Ready` with all 13 fields roundtrips via rmp-serde.
+/// `WorkerEvent::Ready` with all 15 fields roundtrips via rmp-serde.
 ///
 /// Constructs a realistic Ready event with representative GPU capability
 /// values, two registered node types, and verifies the deserialised event
 /// is byte-for-byte equal to the original. The msgpack dict contains
-/// `"_type": "Ready"` plus all 13 field keys.
+/// `"_type": "Ready"` plus all 15 field keys.
 #[test]
 fn test_ready_roundtrip() {
     let event = WorkerEvent::Ready {
@@ -199,9 +199,11 @@ fn test_ready_roundtrip() {
         vram_total_mib: 24576,
         vram_free_mib: 20480,
         torch_version: "2.5.1+cu124".to_string(),
+        fp32: true,
         fp16: true,
         bf16: true,
         fp8: true,
+        fp4: false,
         flash_attention: true,
         capabilities_source: "pytorch".to_string(),
         node_types: vec![
@@ -229,7 +231,7 @@ fn test_ready_roundtrip() {
 
     assert_eq!(
         event, decoded,
-        "Ready roundtrip must preserve all 13 fields"
+        "Ready roundtrip must preserve all 15 fields"
     );
 }
 

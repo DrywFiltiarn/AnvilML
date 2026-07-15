@@ -305,7 +305,13 @@ pub async fn detect_all_devices(cfg: &ServerConfig) -> Result<HardwareInfo, Anvi
 ///
 /// This is a simple sequential fold — no external crate needed for such a small
 /// struct with only 6 boolean fields.
-fn compute_caps_union(devices: &[GpuDevice]) -> InferenceCaps {
+///
+/// `pub`, not private: reused by `anvilml-scheduler`'s event loop (per
+/// `ANVILML_DESIGN.md §6.6`/§16.3) to recompute `HardwareInfo.inference_caps`
+/// whenever a worker's `Ready` event updates one device's `caps` in place —
+/// keeping exactly one implementation of "what union means here" rather than
+/// letting a second, potentially-divergent copy grow in another crate.
+pub fn compute_caps_union(devices: &[GpuDevice]) -> InferenceCaps {
     let mut caps = InferenceCaps::default();
     for device in devices {
         caps.fp32 |= device.caps.fp32;

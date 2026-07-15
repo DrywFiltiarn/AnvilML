@@ -291,6 +291,7 @@ async fn main() {
         Arc::clone(workers.demux()),
         Arc::clone(&broadcaster),
         Arc::clone(&workers),
+        Arc::clone(&hardware),
     );
 
     // Construct the periodic SystemStats heartbeat task (P16-D1). Interval

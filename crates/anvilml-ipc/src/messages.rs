@@ -78,12 +78,17 @@ pub enum WorkerMessage {
 pub enum WorkerEvent {
     /// Worker startup report — sent once when the worker first connects.
     ///
-    /// Carries the four variable capability fields (`fp16`/`bf16`/`fp8`/
-    /// `flash_attention`) and the registered node type catalogue, per
-    /// `ANVILML_DESIGN.md §8.6`. Deliberately narrower than `InferenceCaps`
-    /// (6 fields) — `fp32` and `fp4` are omitted here because they don't vary
-    /// across current torch builds (fp32 universally supported, fp4
-    /// universally unsupported), so they carry no diagnostic signal over IPC.
+    /// Carries all six `InferenceCaps` fields (`fp32`/`fp16`/`bf16`/`fp8`/
+    /// `fp4`/`flash_attention`) and the registered node type catalogue, per
+    /// `ANVILML_DESIGN.md §8.6`. `fp32` and `fp4` were previously omitted
+    /// from this variant on the (mistaken) assumption that they never vary
+    /// across torch builds and so carry no diagnostic signal — that
+    /// assumption doesn't hold: `torch.float8_e4m3fn` silently emulates on
+    /// CPU rather than raising, which can make a CPU worker's real probe
+    /// report `fp8=true`/`fp4=true` when it shouldn't (see
+    /// `worker/capability.py`'s own probe contract). Both fields are
+    /// restored here so the supervisor can observe and flag exactly that
+    /// class of bug instead of silently discarding the evidence.
     Ready {
         /// Stable worker identity (e.g. `"gpu:0"`).
         worker_id: String,
@@ -99,12 +104,16 @@ pub enum WorkerEvent {
         vram_free_mib: u32,
         /// PyTorch version string (e.g. `"2.5.1+cu124"`).
         torch_version: String,
+        /// Whether FP32 (via TF32 tensor cores) compute is supported.
+        fp32: bool,
         /// Whether FP16 (half-precision) is supported.
         fp16: bool,
         /// Whether BF16 (bfloat16) is supported.
         bf16: bool,
         /// Whether FP8 is supported.
         fp8: bool,
+        /// Whether FP4 is supported.
+        fp4: bool,
         /// Whether Flash Attention is available.
         flash_attention: bool,
         /// Capability source: `"pytorch"` (real hardware probe) or `"mock"`

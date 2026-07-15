@@ -516,6 +516,7 @@ async fn test_spawn_event_loop_receives_and_publishes() {
         Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
+        test_hardware_info(),
     );
 
     // Serialize the Completed event as msgpack.
@@ -636,6 +637,7 @@ async fn test_spawn_event_loop_handles_recv_error() {
         Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
+        test_hardware_info(),
     );
 
     // Abort the task directly — see this test's own doc comment for why
@@ -739,6 +741,7 @@ async fn test_completed_persists_status_and_releases_ledger() {
         Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
+        test_hardware_info(),
     );
 
     let completed_event = WorkerEvent::Completed {
@@ -899,6 +902,7 @@ async fn test_failed_persists_status_error_and_releases_ledger() {
         Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
+        test_hardware_info(),
     );
 
     let failed_event = WorkerEvent::Failed {
@@ -1063,6 +1067,7 @@ async fn test_cancelled_persists_status_and_releases_ledger() {
         Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
+        test_hardware_info(),
     );
 
     let cancelled_event = WorkerEvent::Cancelled { job_id };
@@ -1188,6 +1193,7 @@ async fn test_terminal_events_publish_ws_event() {
         Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
+        test_hardware_info(),
     );
 
     // Send Completed and verify JobCompleted.
@@ -1356,6 +1362,7 @@ async fn test_terminal_event_unknown_job_logs_warning() {
         Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
+        test_hardware_info(),
     );
 
     // Connect a DEALER and send a Completed event for a non-existent job.
@@ -1468,6 +1475,7 @@ async fn test_progress_still_published_via_map_worker_event() {
         Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
+        test_hardware_info(),
     );
 
     // Connect a DEALER and send a Progress event.
@@ -1561,6 +1569,283 @@ async fn create_test_pool(initial_status: WorkerStatus) -> (Arc<WorkerPool>, Wor
     (Arc::new(pool), handle)
 }
 
+/// Helper to create a `HardwareInfo` snapshot matching `create_test_pool()`'s
+/// single mock device: one `GpuDevice` at `index: 0`, `device_type: Cpu`,
+/// `caps` and `capabilities_source` both defaulted (pre-spawn hint state).
+///
+/// `spawn_event_loop()`'s `apply_ready_capabilities()` call matches a `Ready`
+/// event's `device_index` against `HardwareInfo.gpus[i].index` — this fixture
+/// exists so tests can send a `Ready { device_index: 0, .. }` event and assert
+/// on the resulting write-back.
+fn test_hardware_info() -> Arc<tokio::sync::RwLock<anvilml_core::HardwareInfo>> {
+    Arc::new(tokio::sync::RwLock::new(anvilml_core::HardwareInfo {
+        host: anvilml_core::HostInfo {
+            hostname: "test-host".to_string(),
+            os: "linux".to_string(),
+        },
+        gpus: vec![anvilml_core::GpuDevice {
+            index: 0,
+            name: "test".into(),
+            device_type: anvilml_core::DeviceType::Cpu,
+            vram_total_mib: 8192,
+            vram_free_mib: 8192,
+            driver_version: String::new(),
+            pci_vendor_id: 0,
+            pci_device_id: 0,
+            arch: None,
+            caps: anvilml_core::InferenceCaps::default(),
+            enumeration_source: anvilml_core::EnumerationSource::Mock,
+            capabilities_source: anvilml_core::CapabilitySource::Fallback,
+        }],
+        inference_caps: anvilml_core::InferenceCaps::default(),
+    }))
+}
+
+/// Test that a `WorkerEvent::Ready` event, delivered through the same live
+/// `Demux::subscribe()` fan-out `spawn_event_loop()` itself uses, updates the
+/// shared `HardwareInfo` snapshot — the exact path `GET /v1/system` reads
+/// from.
+///
+/// This closes a real coverage gap: `spawn_event_loop()`'s main loop has
+/// handled `Ready` specially since Phase 16 (skipped from the generic
+/// `map_worker_event()` broadcast path), but no test ever routed a live
+/// `Ready` event through the loop's own subscription to confirm what, if
+/// anything, that special-casing actually did. Before
+/// `apply_ready_capabilities()` existed, the answer was "nothing" — the
+/// event was received and silently discarded, which is the root cause this
+/// test guards against regressing.
+///
+/// Routes a `Ready` event with `device_index: 0` (matching
+/// `test_hardware_info()`'s single fixture device) and `fp32: true, fp4:
+/// true` alongside the pre-existing fields — deliberately the "CPU
+/// incorrectly reports fp8/fp4" shape `worker/capability.py`'s probe
+/// contract warns about — so this test also proves the previously-unsent
+/// `fp32`/`fp4` fields survive the full wire → apply path, not just the
+/// four fields that were already present on `WorkerEvent::Ready`.
+#[tokio::test]
+async fn test_ready_event_updates_hardware_caps() {
+    let demux = Arc::new(Demux::new());
+    // Register a dummy primary consumer for "0" so demux.route() below
+    // succeeds — mirrors production, where bridge.rs's reader_task only
+    // routes successfully to a worker_id with a registered ManagedWorker.
+    let (_dummy_primary_tx, _dummy_primary_rx) = tokio::sync::mpsc::channel::<WorkerEvent>(16);
+    demux.register("0".to_string(), _dummy_primary_tx);
+
+    let broadcaster = EventBroadcaster::new();
+    let artifact_store = create_test_artifact_store().await;
+
+    let db_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .expect("in-memory SQLite pool must connect");
+    let migrator = sqlx::migrate!("../../database/migrations");
+    migrator
+        .run(&db_pool)
+        .await
+        .expect("migrations must apply to in-memory pool");
+
+    let job_store = JobStore::new(db_pool);
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let pool = create_test_pool(WorkerStatus::Idle).await.0;
+
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        node_registry,
+        artifact_store,
+        Arc::clone(&pool).transport().clone(),
+    ));
+
+    let hardware = test_hardware_info();
+
+    // Sanity-check the pre-update state: the fixture starts with
+    // InferenceCaps::default() (all false) and CapabilitySource::Fallback —
+    // matching what a real server's pre-spawn hint looks like for a device
+    // absent from the seed table, the exact symptom this fix addresses.
+    {
+        let hw = hardware.read().await;
+        assert!(!hw.gpus[0].caps.fp32, "fixture must start with fp32=false");
+        assert_eq!(
+            hw.gpus[0].capabilities_source,
+            anvilml_core::CapabilitySource::Fallback,
+            "fixture must start with capabilities_source=Fallback"
+        );
+    }
+
+    let _handle = spawn_event_loop(
+        Arc::clone(&scheduler),
+        Arc::clone(&demux),
+        Arc::new(broadcaster),
+        pool,
+        Arc::clone(&hardware),
+    );
+
+    let ready_event = WorkerEvent::Ready {
+        worker_id: "0".to_string(),
+        device_index: 0,
+        device_name: "Mock GPU".to_string(),
+        device_type: "cpu".to_string(),
+        vram_total_mib: 0,
+        vram_free_mib: 0,
+        torch_version: "2.5.0".to_string(),
+        fp32: true,
+        fp16: true,
+        bf16: true,
+        fp8: true,
+        fp4: true,
+        flash_attention: true,
+        capabilities_source: "pytorch".to_string(),
+        node_types: vec![],
+    };
+
+    demux
+        .route("0", ready_event)
+        .await
+        .expect("route must succeed");
+
+    // The event loop task is a separate tokio task — poll with a short
+    // bounded retry rather than assuming the write has landed the instant
+    // route() returns.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        {
+            let hw = hardware.read().await;
+            if hw.gpus[0].capabilities_source == anvilml_core::CapabilitySource::PyTorch {
+                break;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("hardware snapshot was not updated within 2s of routing Ready");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let hw = hardware.read().await;
+    let gpu = &hw.gpus[0];
+    assert!(gpu.caps.fp32, "fp32 must be applied from the Ready event");
+    assert!(gpu.caps.fp16, "fp16 must be applied from the Ready event");
+    assert!(gpu.caps.bf16, "bf16 must be applied from the Ready event");
+    assert!(gpu.caps.fp8, "fp8 must be applied from the Ready event");
+    assert!(gpu.caps.fp4, "fp4 must be applied from the Ready event");
+    assert!(
+        gpu.caps.flash_attention,
+        "flash_attention must be applied from the Ready event"
+    );
+    assert_eq!(
+        gpu.capabilities_source,
+        anvilml_core::CapabilitySource::PyTorch,
+        "capabilities_source must be overwritten to PyTorch"
+    );
+
+    // The aggregate inference_caps must reflect the union across all
+    // devices — with one device, the union equals that device's caps.
+    assert!(
+        hw.inference_caps.fp32,
+        "top-level inference_caps union must include the updated device's fp32"
+    );
+    assert!(
+        hw.inference_caps.fp4,
+        "top-level inference_caps union must include the updated device's fp4"
+    );
+}
+
+/// Test that a `WorkerEvent::Ready` event for a `device_index` absent from
+/// the hardware snapshot is logged and ignored rather than panicking the
+/// event loop — the malformed/out-of-band case `apply_ready_capabilities()`'s
+/// own doc comment describes.
+#[tokio::test]
+async fn test_ready_event_unknown_device_index_does_not_panic() {
+    let demux = Arc::new(Demux::new());
+    let (_dummy_primary_tx, _dummy_primary_rx) = tokio::sync::mpsc::channel::<WorkerEvent>(16);
+    demux.register("99".to_string(), _dummy_primary_tx);
+
+    let broadcaster = EventBroadcaster::new();
+    let artifact_store = create_test_artifact_store().await;
+
+    let db_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .expect("in-memory SQLite pool must connect");
+    let migrator = sqlx::migrate!("../../database/migrations");
+    migrator
+        .run(&db_pool)
+        .await
+        .expect("migrations must apply to in-memory pool");
+
+    let job_store = JobStore::new(db_pool);
+    let node_registry = Arc::new(NodeTypeRegistry::new());
+    let pool = create_test_pool(WorkerStatus::Idle).await.0;
+
+    let scheduler = Arc::new(JobScheduler::new(
+        job_store,
+        node_registry,
+        artifact_store,
+        Arc::clone(&pool).transport().clone(),
+    ));
+
+    let hardware = test_hardware_info();
+
+    let handle = spawn_event_loop(
+        Arc::clone(&scheduler),
+        Arc::clone(&demux),
+        Arc::new(broadcaster),
+        pool,
+        Arc::clone(&hardware),
+    );
+
+    let ready_event = WorkerEvent::Ready {
+        worker_id: "99".to_string(),
+        device_index: 99, // no matching GpuDevice in the fixture
+        device_name: "Ghost GPU".to_string(),
+        device_type: "cuda".to_string(),
+        vram_total_mib: 0,
+        vram_free_mib: 0,
+        torch_version: "2.5.0".to_string(),
+        fp32: true,
+        fp16: true,
+        bf16: true,
+        fp8: true,
+        fp4: true,
+        flash_attention: true,
+        capabilities_source: "pytorch".to_string(),
+        node_types: vec![],
+    };
+
+    demux
+        .route("99", ready_event)
+        .await
+        .expect("route must succeed");
+
+    // Give the event loop a moment to process, then confirm the task is
+    // still alive — proving the unknown-device Ready did not panic it.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        !handle.is_finished(),
+        "event loop task must still be running"
+    );
+
+    let hw = hardware.read().await;
+    assert_eq!(
+        hw.gpus.len(),
+        1,
+        "unknown device_index must not add or remove any GpuDevice entries"
+    );
+    assert_eq!(
+        hw.gpus[0].capabilities_source,
+        anvilml_core::CapabilitySource::Fallback,
+        "the existing device's capabilities_source must be untouched"
+    );
+}
+
 /// Test that `WorkerEvent::Completed` restores the worker to `Idle` and increments
 /// the dispatch wake count.
 ///
@@ -1643,6 +1928,7 @@ async fn test_completed_restores_worker_idle_wakes_dispatch() {
         Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
+        test_hardware_info(),
     );
 
     let completed_event = WorkerEvent::Completed {
@@ -1778,6 +2064,7 @@ async fn test_failed_restores_worker_idle_wakes_dispatch() {
         Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
+        test_hardware_info(),
     );
 
     let failed_event = WorkerEvent::Failed {
@@ -1902,6 +2189,7 @@ async fn test_cancelled_restores_worker_idle_wakes_dispatch() {
         Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
+        test_hardware_info(),
     );
 
     let cancelled_event = WorkerEvent::Cancelled { job_id };
@@ -2007,6 +2295,7 @@ async fn test_progress_does_not_wake_dispatch() {
         Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
+        test_hardware_info(),
     );
 
     let job_id = Uuid::new_v4();
@@ -2173,6 +2462,7 @@ async fn test_queued_job_dispatched_after_first_completes() {
         Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
+        test_hardware_info(),
     );
 
     let completed_event = WorkerEvent::Completed {
@@ -2297,6 +2587,7 @@ async fn test_spawn_event_loop_subscription_exists_before_return() {
         Arc::clone(&demux),
         Arc::new(broadcaster),
         pool,
+        test_hardware_info(),
     );
 
     // No sleep here — this is the whole point of the test. If the

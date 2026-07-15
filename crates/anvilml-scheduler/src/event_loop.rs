@@ -14,6 +14,11 @@
 ///   `docs/ADDENDUM_DEMUX_FANOUT.md` for the full background.
 /// - `map_worker_event()` — performs the one-to-one mapping between `WorkerEvent`
 ///   and `WsEvent` variants.
+/// - `apply_ready_capabilities()` — writes a worker's runtime-probed `Ready`
+///   capabilities into the shared `HardwareInfo` snapshot (`AppState.hardware`,
+///   the source `GET /v1/system` serves), per `ANVILML_DESIGN.md §6.6`. This is
+///   the only writer of a `GpuDevice`'s `caps`/`capabilities_source` fields
+///   after server startup.
 ///
 /// The design separates the event variant matching from the handler function so that
 /// callers (the interim job completion listener, or the event loop) can pattern-match
@@ -27,11 +32,15 @@ use anvilml_worker::{Demux, WorkerPool};
 
 use crate::JobScheduler;
 use anvilml_artifacts::ArtifactStore;
-use anvilml_core::{AnvilError, ArtifactMeta, JobStatus, WsEvent};
+use anvilml_core::{
+    AnvilError, ArtifactMeta, CapabilitySource, HardwareInfo, InferenceCaps, JobStatus, WsEvent,
+};
+use anvilml_hardware::compute_caps_union;
 use anvilml_ipc::{EventBroadcaster, WorkerEvent};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use chrono::Utc;
+use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -218,7 +227,10 @@ pub fn map_worker_event(event: WorkerEvent) -> WsEvent {
         // this mapping function. The panic arms force a compile-time update
         // if new WorkerEvent variants are added without updating this code.
         WorkerEvent::Ready { .. } => {
-            panic!("Ready events are handled by the node registry, not the event loop")
+            panic!(
+                "Ready events are handled by the node registry and the hardware \
+                 snapshot update in spawn_event_loop(), not map_worker_event()"
+            )
         }
         WorkerEvent::Pong { .. } => {
             panic!("Pong events are handled by the keepalive watchdog, not the event loop")
@@ -228,6 +240,76 @@ pub fn map_worker_event(event: WorkerEvent) -> WsEvent {
         }
         WorkerEvent::MemoryReport { .. } => {
             panic!("MemoryReport events are handled by the worker pool, not the event loop")
+        }
+    }
+}
+
+/// Apply a `WorkerEvent::Ready` event's runtime-probed capabilities to the
+/// shared `HardwareInfo` snapshot that `GET /v1/system` serves.
+///
+/// # Why this exists
+///
+/// `AppState.hardware` is populated exactly once, at server startup, by
+/// `detect_all_devices()` (`anvilml-hardware`) — a pre-spawn hint sourced
+/// from either the PCI-ID device table or a CPU/fallback default. Per
+/// `ANVILML_DESIGN.md §6.6`, that hint is never authoritative: the Python
+/// worker's own runtime torch probe, delivered in its `Ready` event, is the
+/// only source permitted to make a compute-dtype decision. Before this
+/// function existed, nothing ever consumed that authoritative data — the
+/// `Ready` event's capability fields were received, then discarded, leaving
+/// `/v1/system` reporting stale pre-spawn hints (frequently all-`false` for
+/// any device absent from the seed table) for the server's entire uptime.
+///
+/// # Behavior
+///
+/// Finds the `GpuDevice` in `hardware.gpus` whose `index` matches the
+/// event's `device_index` (the same convention `WorkerPool::spawn_worker()`
+/// uses to derive `worker_id` from `device.index` — see that method's own
+/// doc comment), overwrites its `caps` with the probed values and its
+/// `capabilities_source` with `CapabilitySource::PyTorch`, then recomputes
+/// the top-level `inference_caps` field as the OR-union of every device's
+/// caps via `anvilml_hardware::compute_caps_union()` — the same function
+/// `detect_all_devices()` itself uses, so the aggregate is computed
+/// identically whether it comes from the initial startup snapshot or a
+/// later `Ready`-driven update.
+///
+/// No matching device (`device_index` outside `hardware.gpus`) is logged at
+/// WARN and otherwise ignored — this should not happen given the
+/// `worker_id`/`device.index` convention above, but a malformed or
+/// out-of-band event must not panic the event loop.
+async fn apply_ready_capabilities(
+    hardware: &RwLock<HardwareInfo>,
+    device_index: u32,
+    caps: InferenceCaps,
+) {
+    let mut hw = hardware.write().await;
+    match hw.gpus.iter_mut().find(|gpu| gpu.index == device_index) {
+        Some(gpu) => {
+            // Log before moving `caps` into `gpu.caps` below — InferenceCaps
+            // isn't Copy, and logging the bool fields here borrows them
+            // rather than consuming the value.
+            tracing::info!(
+                device_index,
+                fp32 = caps.fp32,
+                fp16 = caps.fp16,
+                bf16 = caps.bf16,
+                fp8 = caps.fp8,
+                fp4 = caps.fp4,
+                flash_attention = caps.flash_attention,
+                "hardware_caps_updated_from_ready"
+            );
+
+            gpu.caps = caps;
+            gpu.capabilities_source = CapabilitySource::PyTorch;
+
+            hw.inference_caps = compute_caps_union(&hw.gpus);
+        }
+        None => {
+            tracing::warn!(
+                device_index,
+                "event_loop: Ready event's device_index has no matching \
+                 GpuDevice in the hardware snapshot — capabilities not applied"
+            );
         }
     }
 }
@@ -275,16 +357,23 @@ pub fn map_worker_event(event: WorkerEvent) -> WsEvent {
 /// * `broadcaster` — The WebSocket event broadcaster for publishing `WsEvent`s.
 /// * `workers` — The worker pool, used to restore the responsible worker to `Idle`
 ///   on terminal events and wake the dispatch loop.
+/// * `hardware` — The shared hardware snapshot `GET /v1/system` serves. Callers
+///   should pass the same `Arc<RwLock<HardwareInfo>>` instance stored in
+///   `AppState.hardware`. On every `Ready` event, `apply_ready_capabilities()`
+///   writes that worker's runtime-probed capabilities into the matching
+///   `GpuDevice` entry and recomputes the aggregate `inference_caps` — see that
+///   function's own doc comment for why this update exists.
 ///
 /// # Returns
 ///
 /// A `JoinHandle<()>` for the spawned event loop task.
-#[tracing::instrument(skip(scheduler, demux, broadcaster, workers))]
+#[tracing::instrument(skip(scheduler, demux, broadcaster, workers, hardware))]
 pub fn spawn_event_loop(
     scheduler: Arc<JobScheduler>,
     demux: Arc<Demux>,
     broadcaster: Arc<EventBroadcaster>,
     workers: Arc<WorkerPool>,
+    hardware: Arc<RwLock<HardwareInfo>>,
 ) -> JoinHandle<()> {
     // Subscribe synchronously, before spawning the task — not inside the
     // spawned `async move` block. `tokio::spawn()` only schedules the task;
@@ -657,13 +746,41 @@ pub fn spawn_event_loop(
                         );
                     }
                 }
-                // Ready, Pong, Dying, and MemoryReport are handled by
-                // other subsystems (node registry, keepalive watchdog,
-                // worker pool) and must not be broadcast to WebSocket
-                // clients. The Demux fans out ALL events to all
-                // subscribers, so we must explicitly skip these here.
-                WorkerEvent::Ready { .. }
-                | WorkerEvent::Pong { .. }
+                // Ready carries the worker's own runtime-probed capabilities
+                // (per ANVILML_DESIGN.md §6.6, the only authoritative source
+                // for them) — apply them to the shared hardware snapshot, but
+                // do not broadcast anything to WebSocket clients. Node-type
+                // registration for the same event is handled independently,
+                // over the per-worker demux channel, by
+                // `ManagedWorker::handle_event()` — this fan-out subscription
+                // sees an independent copy of the same event and does not
+                // race or duplicate that registration.
+                WorkerEvent::Ready {
+                    device_index,
+                    fp32,
+                    fp16,
+                    bf16,
+                    fp8,
+                    fp4,
+                    flash_attention,
+                    ..
+                } => {
+                    let caps = InferenceCaps {
+                        fp32,
+                        fp16,
+                        bf16,
+                        fp8,
+                        fp4,
+                        flash_attention,
+                    };
+                    apply_ready_capabilities(&hardware, device_index, caps).await;
+                }
+                // Pong, Dying, and MemoryReport are handled by other
+                // subsystems (keepalive watchdog, worker pool) and must not
+                // be broadcast to WebSocket clients. The Demux fans out ALL
+                // events to all subscribers, so we must explicitly skip
+                // these here.
+                WorkerEvent::Pong { .. }
                 | WorkerEvent::Dying { .. }
                 | WorkerEvent::MemoryReport { .. } => {
                     tracing::debug!("skipping non-broadcast event (handled by other subsystem)");
