@@ -7479,3 +7479,38 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Fresh subprocess with `sys.executable -c` code.
 **Expected output:** `NODE_REGISTRY` contains "Sampler" as a key pointing to the `Sampler` class.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py::test_sampler_in_registry -v -m "not real_mode"` exits 0.
+
+## test_infer_hyperparams_qwen3_fixture (worker.nodes.arch.clip.qwen3)
+
+**File:** `worker/tests/test_arch_clip_qwen3.py`
+**Context:** The Qwen3 CLIP fixture checkpoint (`qwen3_tiny.safetensors`) is built by `build_qwen3_fixture.py` and contains Qwen3-shaped tensor keys with `arch: "qwen3"` metadata. The `_infer_hyperparams()` function reads ALL keys via `f.keys()` (never truncated) from the safetensors header using `safe_open(path, framework="np")`.
+**Tests:** `_infer_hyperparams()` against `qwen3_tiny.safetensors` returns correct hyperparameter dict: `hidden_dim=64`, `num_hidden_layers=2`, `intermediate_size=128`, `vocab_size=128`, `arch="qwen3"`, `native_dtype="fp32"`. Verifies all six expected keys are present and have correct values.
+**Mode:** both
+**Inputs:** `qwen3_tiny.safetensors` fixture path.
+**Expected output:** dict with all six keys and correct values (hidden_dim=64, num_hidden_layers=2, intermediate_size=128, vocab_size=128, arch="qwen3", native_dtype="fp32").
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_qwen3.py::test_infer_hyperparams_qwen3_fixture -v` exits 0.
+
+---
+
+## test_infer_hyperparams_nonexistent_path_raises (worker.nodes.arch.clip.qwen3)
+
+**File:** `worker/tests/test_arch_clip_qwen3.py`
+**Context:** The `_infer_hyperparams()` function wraps file open errors into `ValueError` with descriptive messages. A non-existent file path triggers `FileNotFoundError`, which is caught and re-raised as `ValueError` containing "No such file".
+**Tests:** `_infer_hyperparams()` raises `ValueError` for a non-existent file path, with a message containing "No such file". Verifies error handling for missing files.
+**Mode:** both
+**Inputs:** Path `/tmp/this_file_does_not_exist_abc123.safetensors` (non-existent).
+**Expected output:** `ValueError` raised with message matching "No such file".
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_qwen3.py::test_infer_hyperparams_nonexistent_path_raises -v` exits 0.
+
+---
+
+## test_infer_hyperparams_truncated_header_raises (worker.nodes.arch.clip.qwen3)
+
+**File:** `worker/tests/test_arch_clip_qwen3.py`
+**Context:** The `_infer_hyperparams()` function wraps safetensors deserialization errors into `ValueError`. A truncated/corrupted file (binary blob that is not a valid safetensors header) triggers `SafetensorError`, which is caught and re-raised as `ValueError`.
+**Tests:** `_infer_hyperparams()` raises `ValueError` for a truncated/corrupted safetensors file (small binary blob that is not a valid safetensors header). Verifies error handling for corrupted files.
+**Mode:** both
+**Inputs:** Temporary file containing 8 bytes of binary data (`\x00\x01\x02\x03\x04\x05\x06\x07`) — not a valid safetensors header.
+**Expected output:** `ValueError` raised.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_qwen3.py::test_infer_hyperparams_truncated_header_raises -v` exits 0.
+
