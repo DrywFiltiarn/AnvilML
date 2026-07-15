@@ -36,8 +36,19 @@ def _job_id_str(job_id: bytes) -> str:
     This helper is for formatting inside `logger.*()` calls exclusively —
     callers must keep passing the raw ``bytes`` value, unconverted, to
     `ipc.send_event(...)`.
+
+    Falls back to plain ``str(job_id)`` if ``job_id`` isn't valid 16-byte
+    UUID bytes. Production ``job_id`` always is, but plenty of existing
+    test fixtures in ``test_worker_main.py`` feed this function a plain
+    string sentinel instead (e.g. ``"job-done"``), since job_id is
+    normally irrelevant to what those tests check. This is a
+    display-only helper — it must never raise just because it was handed
+    something other than a real job_id.
     """
-    return str(uuid.UUID(bytes=job_id))
+    try:
+        return str(uuid.UUID(bytes=job_id))
+    except (TypeError, ValueError):
+        return str(job_id)
 
 
 def _import_nodes() -> list[dict]:
