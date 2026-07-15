@@ -78,8 +78,20 @@ class NodeContext:
         reimplement `uuid.UUID(bytes=...)` themselves, and never
         accidentally interpolate the raw bytes into a log message or
         cache-key label.
+
+        Falls back to plain `str(job_id)` if `job_id` isn't valid 16-byte
+        UUID bytes. Production `job_id` always is (that's exactly what
+        Rust's `Uuid` serializes to over msgpack), but plenty of existing
+        test fixtures across this codebase construct `NodeContext` with a
+        placeholder sentinel instead (e.g. `job_id="test-job"`), since
+        job_id is normally irrelevant to what's under test. This is a
+        display-only helper — it must never raise just because it was
+        handed something other than a real job_id.
         """
-        return str(uuid.UUID(bytes=self.job_id))
+        try:
+            return str(uuid.UUID(bytes=self.job_id))
+        except (TypeError, ValueError):
+            return str(self.job_id)
 
 
 class BaseNode(ABC):
