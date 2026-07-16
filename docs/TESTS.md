@@ -7714,3 +7714,63 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `qwen3_tiny.safetensors` fixture, `caps = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}`.
 **Expected output:** `model.arch == "qwen3"` after materialization.
 **Acceptance:** `python -m pytest worker/tests/test_arch_clip_qwen3.py::test_load_arch_attribute_persists_after_materialization -v -m real_mode` exits 0.
+
+---
+
+## test_infer_hyperparams_regular_fixture (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `zit_vae` module is imported with torch available (guarded). `_infer_hyperparams()` reads the safetensors header of `zit_vae_tiny.safetensors` using `framework="np"` and never imports torch.
+**Tests:** `_infer_hyperparams()` returns a dict with `encoder_channels=16`, `decoder_channels=32`, `latent_channels=4`, `arch="zit_vae"`, and `native_dtype="fp32"`. Verifies the regular code path where metadata contains the "arch" key and all VAE key prefixes are present.
+**Mode:** both
+**Inputs:** `zit_vae_tiny.safetensors` fixture with `arch="zit_vae"` metadata.
+**Expected output:** Dict with all five keys present and correct values.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_infer_hyperparams_regular_fixture -v` exits 0.
+
+---
+
+## test_infer_hyperparams_no_metadata_fixture (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `zit_vae` module is imported with torch available (guarded). `_infer_hyperparams()` reads the safetensors header of `zit_vae_tiny_no_metadata.safetensors` using `framework="np"`.
+**Tests:** `_infer_hyperparams()` succeeds via the metadata-fallback path, detecting `arch="zit_vae"` from key naming patterns (`xyz_encoder_block*conv`, `xyz_decoder_block*conv`, `xyz_mid_block_conv`). Returns correct channel counts matching the regular fixture.
+**Mode:** both
+**Inputs:** `zit_vae_tiny_no_metadata.safetensors` fixture with no metadata and xyz_ prefixed keys.
+**Expected output:** Dict with `arch="zit_vae"`, `encoder_channels=16`, `decoder_channels=32`, `latent_channels=4`, `native_dtype="fp32"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_infer_hyperparams_no_metadata_fixture -v` exits 0.
+
+---
+
+## test_infer_hyperparams_nonexistent_path_raises (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `zit_vae` module is imported. `_infer_hyperparams()` is called with a path that does not exist.
+**Tests:** `_infer_hyperparams()` raises `ValueError` with a message containing "No such file".
+**Mode:** both
+**Inputs:** Non-existent path `/tmp/this_file_does_not_exist_abc123.safetensors`.
+**Expected output:** `ValueError` raised with "No such file" in the message.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_infer_hyperparams_nonexistent_path_raises -v` exits 0.
+
+---
+
+## test_infer_hyperparams_truncated_header_raises (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `zit_vae` module is imported. A temporary file with invalid binary data is created.
+**Tests:** `_infer_hyperparams()` raises `ValueError` when given a file containing invalid safetensors data (8 bytes that do not form a valid header).
+**Mode:** both
+**Inputs:** Temporary file with bytes `\x00\x01\x02\x03\x04\x05\x06\x07`.
+**Expected output:** `ValueError` raised.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_infer_hyperparams_truncated_header_raises -v` exits 0.
+
+---
+
+## test_arch_constant (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `zit_vae` module is imported. The module-level `ARCH` constant is checked.
+**Tests:** `ARCH` equals `"zit_vae"`, confirming the architecture identifier is set correctly for use by `can_handle()` (P23-B2) and dispatch.
+**Mode:** both
+**Inputs:** Module import.
+**Expected output:** `ARCH == "zit_vae"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_arch_constant -v` exits 0.
