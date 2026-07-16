@@ -6863,15 +6863,15 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 ---
 
-## test_load_clip_real_raises_not_implemented (worker)
+## test_load_clip_real_loads_qwen3_fixture (worker)
 
 **File:** `worker/tests/test_nodes_loader.py`
-**Context:** The `LoadClip` node class is implemented in `worker/nodes/loader.py`. A `PipelineCache` and `NodeContext` with `mock=False` are constructed, and `execute(model_id="test_clip")` is called.
-**Tests:** Real-mode `LoadClip.execute()` raises `NotImplementedError` with the Phase-19 groundwork message ("no diffusion arch module registered yet"). Satisfies the `REAL_PATH_VERIFIED` marker.
+**Context:** The `LoadClip` node class is implemented in `worker/nodes/loader.py`. In real mode, `execute()` dispatches to `arch.clip.get_module("qwen3")` and calls `module.load()` via `pipeline_cache.get_or_load()`. A `PipelineCache` and `NodeContext` with `mock=False` are constructed, and `execute(model_id=fixture_path, clip_type="qwen3")` is called against the `qwen3_tiny.safetensors` fixture.
+**Tests:** Real-mode `LoadClip.execute()` loads the Qwen3 fixture checkpoint via the dispatch chain, returns a `torch.nn.Module` with `.arch == "qwen3"`, parameters on CPU, and an attached `.tokenizer`. Satisfies the `REAL_PATH_VERIFIED` marker.
 **Mode:** real
-**Inputs:** `NodeContext(mock=False, pipeline_cache=PipelineCache())`, `model_id="test_clip"`.
-**Expected output:** `NotImplementedError` with message containing "no diffusion arch module registered yet" is raised.
-**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_clip_real_raises_not_implemented -v -m real_mode` exits 0.
+**Inputs:** `NodeContext(mock=False, pipeline_cache=PipelineCache())`, `model_id=worker/tests/fixtures/qwen3_tiny.safetensors`, `clip_type="qwen3"`.
+**Expected output:** `{"clip": Qwen3TextEncoder(...)}` is returned; clip is a `torch.nn.Module` with `.arch == "qwen3"`, CPU parameters, and `.tokenizer` attribute.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_clip_real_loads_qwen3_fixture -v -m real_mode` exits 0.
 
 ---
 
@@ -6884,30 +6884,6 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Fresh subprocess that imports `worker.nodes.loader` and checks `NODE_REGISTRY`.
 **Expected output:** `NODE_REGISTRY` contains `"LoadClip"` as a key.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_clip_in_registry -v` exits 0.
-
----
-
-## test_load_clip_real_cache_key_format (worker)
-
-**File:** `worker/tests/test_nodes_loader.py`
-**Context:** The `LoadClip` node class is implemented in `worker/nodes/loader.py`. A `PipelineCache` and `NodeContext` with `mock=False` are constructed, and `execute(model_id="test_clip")` is called.
-**Tests:** Real-mode `LoadClip.execute()` calls `pipeline_cache.get_or_load` with the correct key format (`"clip:test_clip"` — prefixed CLIP namespace). The cache remains empty after the exception. Satisfies the `REAL_PATH_VERIFIED` marker.
-**Mode:** real
-**Inputs:** `NodeContext(mock=False, pipeline_cache=PipelineCache())`, `model_id="test_clip"`.
-**Expected output:** `NotImplementedError` is raised; cache remains empty.
-**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_clip_real_cache_key_format -v -m real_mode` exits 0.
-
----
-
-## test_load_clip_real_raises_no_diffusion_arch (worker)
-
-**File:** `worker/tests/test_nodes_loader.py`
-**Context:** The `LoadClip` node class is implemented in `worker/nodes/loader.py`. A `PipelineCache` and `NodeContext` with `mock=False` are constructed, and `execute(model_id="zit-clip")` is called.
-**Tests:** Canonical real-mode test. Constructs a `NodeContext` with `mock=False`, calls `execute(model_id="zit-clip")`, and asserts `NotImplementedError` is raised with the exact Phase-19 groundwork message. Satisfies the `REAL_PATH_VERIFIED` marker.
-**Mode:** real
-**Inputs:** `NodeContext(mock=False, pipeline_cache=PipelineCache())`, `model_id="zit-clip"`.
-**Expected output:** `NotImplementedError("no diffusion arch module registered yet")` is raised.
-**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_clip_real_raises_no_diffusion_arch -v -m real_mode` exits 0.
 
 ---
 

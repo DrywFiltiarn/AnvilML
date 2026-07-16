@@ -284,27 +284,52 @@ def test_load_clip_mock_returns_sentinel() -> None:
 
 
 @pytest.mark.real_mode
-def test_load_clip_real_raises_not_implemented() -> None:
-    """Real-mode LoadClip.execute() raises NotImplementedError with Phase-19 message.
+def test_load_clip_real_loads_qwen3_fixture() -> None:
+    """LoadClip.execute() loads the Qwen3 fixture checkpoint via the real branch.
 
-    Constructs a NodeContext with mock=False, calls execute() with
-    model_id="test_clip", and asserts that NotImplementedError is
-    raised with the Phase-19 groundwork message ("no diffusion arch
-    module registered yet"). This is the collectible real-mode test
-    for the REAL_PATH_VERIFIED marker.
+    Calls LoadClip.execute() with mock=False against the P22 fixture
+    path (qwen3_tiny.safetensors). Verifies the return dict has a "clip"
+    key containing a Qwen3TextEncoder (torch.nn.Module with .arch ==
+    "qwen3" and an attached .tokenizer), confirming the full real
+    loading chain works end-to-end.
 
-    Expected outcome: NotImplementedError with message containing
-    "no diffusion arch module registered yet" is raised.
+    This test exercises the real code path and satisfies the
+    REAL_PATH_VERIFIED marker.
+
+    Expected outcome: {"clip": Qwen3TextEncoder(...)} is returned, not
+    an exception.
     """
+    from pathlib import Path
+
+    import torch
+
     from worker.nodes.loader import LoadClip
     from worker.pipeline_cache import PipelineCache
 
+    fixture_path = str(
+        Path(__file__).parent / "fixtures" / "qwen3_tiny.safetensors"
+    )
+
     node = LoadClip()
     ctx = _make_ctx(mock=False, pipeline_cache=PipelineCache())
-    with pytest.raises(
-        NotImplementedError, match="no diffusion arch module registered yet"
-    ):
-        node.execute(ctx, model_id="test_clip")
+    result = node.execute(ctx, model_id=fixture_path, clip_type="qwen3")
+
+    # Verify the return dict has the expected CLIP slot.
+    assert "clip" in result
+    clip = result["clip"]
+
+    # Verify the returned object is a torch.nn.Module (loaded model).
+    assert isinstance(clip, torch.nn.Module)
+
+    # Verify the architecture identifier is set correctly.
+    assert clip.arch == "qwen3"
+
+    # Verify parameters are on CPU device (not meta).
+    for param in clip.parameters():
+        assert param.device.type == "cpu"
+
+    # Verify the tokenizer was attached (step 4 of the loading contract).
+    assert hasattr(clip, "tokenizer")
 
 
 def test_load_clip_in_registry() -> None:
@@ -336,54 +361,4 @@ def test_load_clip_in_registry() -> None:
     assert "OK" in result.stdout
 
 
-@pytest.mark.real_mode
-def test_load_clip_real_cache_key_format() -> None:
-    """Verify LoadClip's real branch calls pipeline_cache.get_or_load with correct key.
 
-    Constructs a real PipelineCache, a NodeContext with mock=False, and a LoadClip
-    node. Calls execute() with model_id="test_clip". The call raises NotImplementedError
-    as expected, but the test verifies that get_or_load was called with the correct
-    key format ("clip:test_clip" — prefixed CLIP namespace).
-
-    This test exercises the real code path (NotImplementedError) and satisfies the
-    REAL_PATH_VERIFIED marker.
-
-    Expected outcome: NotImplementedError is raised; get_or_load was called with
-    key="clip:test_clip".
-    """
-    from worker.nodes.loader import LoadClip
-    from worker.pipeline_cache import PipelineCache
-
-    cache = PipelineCache()
-    ctx = _make_ctx(mock=False, pipeline_cache=cache)
-    node = LoadClip()
-    with pytest.raises(
-        NotImplementedError, match="no diffusion arch module registered yet"
-    ):
-        node.execute(ctx, model_id="test_clip")
-    # The cache should still be empty because the loader_fn raised
-    # (exception does not populate the cache per PipelineCache contract).
-    assert len(cache._cache) == 0
-
-
-@pytest.mark.real_mode
-def test_load_clip_real_raises_no_diffusion_arch() -> None:
-    """Real-mode LoadClip.execute() raises NotImplementedError with the Phase-19 message.
-
-    Constructs a NodeContext with mock=False, calls execute() with model_id="zit-clip",
-    and asserts that NotImplementedError is raised with the exact Phase-19 groundwork
-    message. This is the canonical real-mode test for the
-    REAL_PATH_VERIFIED marker.
-
-    Expected outcome: NotImplementedError("no diffusion arch module registered yet")
-    is raised.
-    """
-    from worker.nodes.loader import LoadClip
-    from worker.pipeline_cache import PipelineCache
-
-    node = LoadClip()
-    ctx = _make_ctx(mock=False, pipeline_cache=PipelineCache())
-    with pytest.raises(
-        NotImplementedError, match="no diffusion arch module registered yet"
-    ):
-        node.execute(ctx, model_id="zit-clip")

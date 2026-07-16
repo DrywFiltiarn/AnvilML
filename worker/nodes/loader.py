@@ -175,9 +175,10 @@ class LoadClip(BaseNode):
     """Load a CLIP text encoder from a safetensors file.
 
     This node loads a text encoder component for prompt conditioning.
-    In mock mode it returns a sentinel dict; in real mode it raises
-    NotImplementedError pending P20 which will implement actual
-    safetensors reading and CLIP arch dispatch.
+    In mock mode it returns a sentinel dict; in real mode it dispatches
+    to the registered CLIP architecture module (currently "qwen3") via
+    ``arch.clip.get_module()`` and caches the result via
+    ``pipeline_cache.get_or_load()``.
 
     Class Attributes:
         NODE_TYPE: The registry key for this node type.
@@ -196,14 +197,16 @@ class LoadClip(BaseNode):
     INPUT_SLOTS = [SlotSpec("model_id", "STRING"), SlotSpec("clip_type", "STRING", optional=True)]
     OUTPUT_SLOTS = [SlotSpec("clip", "CLIP")]
 
-    # REAL_PATH_VERIFIED: worker/tests/test_nodes_loader.py::test_load_clip_real_raises_not_implemented
+    # REAL_PATH_VERIFIED: worker/tests/test_nodes_loader.py::test_load_clip_real_loads_qwen3_fixture
     # MOCK_PATH_VERIFIED: worker/tests/test_nodes_loader.py::test_load_clip_mock_returns_sentinel
     def execute(self, ctx: NodeContext, **inputs) -> dict:
         """Execute the LoadClip node.
 
         Branches on ctx.mock at the top per §14.6 — the mock branch
         returns a sentinel dict with no real loading; the real branch
-        delegates to the pipeline cache and raises NotImplementedError.
+        dispatches to the registered CLIP architecture module (currently
+        "qwen3") via ``arch.clip.get_module()`` and caches the loaded
+        encoder via ``pipeline_cache.get_or_load()``.
 
         Args:
             ctx: Runtime context carrying job_id, device, caps,
@@ -216,11 +219,13 @@ class LoadClip(BaseNode):
         Returns:
             In mock mode: Dict with key "clip" containing a sentinel
             dict {"mock": True, "model_id": <model_id>}.
-            In real mode: Raises NotImplementedError (deferred to P20).
+            In real mode: Dict with key "clip" containing a
+            ``torch.nn.Module`` (the loaded Qwen3TextEncoder).
 
         Raises:
-            NotImplementedError: When ctx.mock is False — real CLIP
-                loading logic is deferred to P20.
+            RuntimeError: If no CLIP arch module is registered for the
+                requested clip_type (should not occur after qwen3 is
+                registered in arch.clip.__init__).
         """
         if ctx.mock:
             # Mock branch: return a sentinel dict with no real loading,
@@ -229,17 +234,36 @@ class LoadClip(BaseNode):
             # was propagated through the node system.
             return {"clip": {"mock": True, "model_id": inputs["model_id"]}}
         else:
-            # Real branch: delegate to the pipeline cache using a CLIP-
-            # specific cache key namespace ("clip:{model_id}"). The
-            # loader_fn itself raises NotImplementedError because no
-            # CLIP arch module has been registered yet — real loading is
-            # deferred to P20. The cache is not modified on exception
+            # Real branch: dispatch to the registered CLIP arch module.
+            # The clip_type key defaults to "qwen3" which matches the
+            # dispatcher's registered module key in arch.clip.__init__.
+            # get_or_load provides caching: if the same model_id is
+            # loaded again, the cached Qwen3TextEncoder is returned
+            # without re-loading. The cache is not modified on exception
             # per the PipelineCache contract.
-            return ctx.pipeline_cache.get_or_load(
-                f"clip:{inputs['model_id']}",
-                lambda: (_ for _ in ()).throw(
-                    NotImplementedError(
-                        "no diffusion arch module registered yet"
-                    )
-                ),
+            from worker.nodes.arch.clip import get_module
+
+            module = get_module(inputs.get("clip_type", "qwen3"))
+            if module is None:
+                # Defensive guard — qwen3 is imported and appended to
+                # _REGISTERED_MODULES in arch.clip.__init__ (P22-B3),
+                # so this should never trigger in normal operation.
+                clip_type = inputs.get("clip_type", "qwen3")
+                raise RuntimeError(
+                    f"no clip arch module registered for '{clip_type}'; "
+                    f"cannot load clip '{inputs['model_id']}'"
+                )
+
+            logger.debug(
+                "LoadClip: requesting model_id=%s, clip_type=%s",
+                inputs["model_id"],
+                inputs.get("clip_type", "qwen3"),
             )
+            return {
+                "clip": ctx.pipeline_cache.get_or_load(
+                    f"clip:{inputs['model_id']}",
+                    lambda: module.load(
+                        inputs["model_id"], ctx.caps
+                    ),
+                )
+            }
