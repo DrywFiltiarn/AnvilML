@@ -146,26 +146,29 @@ def test_clip_get_module_skips_module_with_can_handle_false() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_vae_get_module_returns_none_when_empty() -> None:
-    """vae.get_module returns None when _REGISTERED_MODULES is empty.
+def test_vae_get_module_returns_zit_vae_when_registered() -> None:
+    """vae.get_module returns the zit_vae module after registration.
 
-    With zero registered modules, vae.get_module("zit_vae") must return None
-    without raising — the empty registry is the default state before
-    concrete arch modules are wired in later phases.
+    With zit_vae registered in _REGISTERED_MODULES, vae.get_module("zit_vae")
+    must return the zit_vae module — proving the dispatch registration
+    (P23-B2) wired the module correctly.
     """
     result = vae.get_module("zit_vae")
-    assert result is None
+    assert result is not None
+    assert result.__name__ == "worker.nodes.arch.vae.zit_vae"
 
 
 def test_vae_get_module_does_not_raise_for_various_key_types() -> None:
     """vae.get_module does not raise for str, None, or arbitrary object keys.
 
-    With an empty registry, vae.get_module must handle any key type without
+    With zit_vae registered, vae.get_module("zit_vae") returns the module,
+    while unrecognised keys (None, arbitrary object) return None without
     raising — the dispatch loop should never throw, even for edge-case
     keys that no module would ever match.
     """
-    # String key — the normal case.
-    assert vae.get_module("zit_vae") is None
+    # String key that matches — returns the registered module.
+    result = vae.get_module("zit_vae")
+    assert result is not None
 
     # None key — some callers may pass None as a fallback.
     assert vae.get_module(None) is None
@@ -178,10 +181,11 @@ def test_vae_get_module_does_not_raise_for_various_key_types() -> None:
 def test_vae_get_module_skips_module_with_can_handle_false() -> None:
     """vae dispatcher skips a module whose can_handle returns False.
 
-    Registers a test double whose can_handle(key) returns False, then
-    calls vae.get_module("zit_vae") and asserts it returns None — proving the
-    dispatcher continues scanning rather than returning a non-matching
-    module.
+    Registers a test double whose can_handle(key) returns False for the key
+    "flux2_vae", then calls vae.get_module("flux2_vae") and asserts it
+    returns None — proving the dispatcher continues scanning zit_vae
+    (which also returns False for "flux2_vae") and eventually returns None
+    when no module matches.
     """
     # Create a module-like object with a can_handle that always returns False.
     fake_module = Mock(spec=ModuleType)
@@ -190,12 +194,14 @@ def test_vae_get_module_skips_module_with_can_handle_false() -> None:
     # Register the fake module.
     vae._REGISTERED_MODULES.append(fake_module)
     try:
-        result = vae.get_module("zit_vae")
-        # can_handle must have been called at least once.
-        fake_module.can_handle.assert_called_once_with("zit_vae")
-        # Since can_handle returned False, the dispatcher should return None.
+        result = vae.get_module("flux2_vae")
+        # Both zit_vae.can_handle and fake_module.can_handle are called.
+        # zit_vae.can_handle("flux2_vae") returns False, then the fake
+        # module's can_handle is called.
+        assert fake_module.can_handle.called
+        # No module matches "flux2_vae", so result is None.
         assert result is None
     finally:
         # Always clean up: remove the fake module so subsequent tests see
-        # an empty registry.
+        # the original registry state.
         vae._REGISTERED_MODULES.remove(fake_module)

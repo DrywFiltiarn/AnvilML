@@ -156,6 +156,43 @@ def test_arch_constant() -> None:
 
     Imports ARCH from zit_vae and asserts it equals "zit_vae", confirming
     the module's architecture identifier is set correctly. This is used
-    by can_handle() (P23-B2) for dispatch matching.
+    by can_handle() for dispatch matching.
     """
     assert ARCH == "zit_vae"
+
+
+def test_can_handle_matches_zit_vae_key() -> None:
+    """can_handle() returns True when the key matches the module's ARCH constant.
+
+    Imports can_handle from zit_vae and calls it with "zit_vae", asserting
+    the dispatcher will route requests with the ZiT VAE architecture key
+    to this module.
+    """
+    from worker.nodes.arch.vae.zit_vae import can_handle
+
+    assert can_handle("zit_vae") is True
+
+
+def test_can_handle_rejects_unrelated_key() -> None:
+    """can_handle() returns False for an unrelated architecture key.
+
+    Calls can_handle("flux2_vae") and asserts it returns False, confirming
+    the dispatcher correctly rejects keys that do not match this module.
+    """
+    from worker.nodes.arch.vae.zit_vae import can_handle
+
+    assert can_handle("flux2_vae") is False
+
+
+def test_get_module_returns_zit_vae_for_matching_key() -> None:
+    """get_module() returns the zit_vae module when given the matching key.
+
+    Imports get_module from the VAE dispatcher and calls it with "zit_vae",
+    asserting the returned module's __name__ matches the full dotted path
+    of the zit_vae module — confirming end-to-end registration works.
+    """
+    from worker.nodes.arch.vae import get_module
+
+    module = get_module("zit_vae")
+    assert module is not None
+    assert module.__name__ == "worker.nodes.arch.vae.zit_vae"

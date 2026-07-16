@@ -7774,3 +7774,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Module import.
 **Expected output:** `ARCH == "zit_vae"`.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_arch_constant -v` exits 0.
+
+---
+
+## test_can_handle_matches_zit_vae_key (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `zit_vae` module is importable (torch is guarded behind `try/except ImportError`). The `can_handle()` function was added by P23-B2 to expose the dispatch matching entry point.
+**Tests:** `can_handle("zit_vae")` returns `True`, confirming the dispatcher will route requests with the ZiT VAE architecture key to this module.
+**Mode:** both
+**Inputs:** Module import of `can_handle` from `worker.nodes.arch.vae.zit_vae`, call with `"zit_vae"`.
+**Expected output:** `True` is returned.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_can_handle_matches_zit_vae_key -v` exits 0.
+
+---
+
+## test_can_handle_rejects_unrelated_key (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `zit_vae` module is importable. The `can_handle()` function must reject keys that do not match the module's architecture identifier, preventing incorrect dispatch.
+**Tests:** `can_handle("flux2_vae")` returns `False`, confirming the dispatcher correctly rejects keys that do not match this module.
+**Mode:** both
+**Inputs:** Module import of `can_handle` from `worker.nodes.arch.vae.zit_vae`, call with `"flux2_vae"`.
+**Expected output:** `False` is returned.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_can_handle_rejects_unrelated_key -v` exits 0.
+
+---
+
+## test_get_module_returns_zit_vae_for_matching_key (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `arch/vae/__init__.py` dispatcher now has `zit_vae` registered in `_REGISTERED_MODULES` (imported and appended). The `get_module()` function scans the registered modules and calls `can_handle()` on each.
+**Tests:** `get_module("zit_vae")` returns a module whose `__name__` is `"worker.nodes.arch.vae.zit_vae"`, confirming end-to-end dispatch registration works after P23-B2 wired the module into the dispatcher.
+**Mode:** both
+**Inputs:** Module import of `get_module` from `worker.nodes.arch.vae`, call with `"zit_vae"`.
+**Expected output:** Non-`None` module with `__name__ == "worker.nodes.arch.vae.zit_vae"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_get_module_returns_zit_vae_for_matching_key -v` exits 0.

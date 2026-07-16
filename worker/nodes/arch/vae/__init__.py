@@ -14,11 +14,13 @@ dispatcher per family, never reimplemented per module.
 
 from __future__ import annotations
 
-from typing import Any
 from types import ModuleType
+from typing import Any
 
+from worker.nodes.arch.vae import zit_vae
 
 _REGISTERED_MODULES: list[ModuleType] = []
+_REGISTERED_MODULES.append(zit_vae)
 
 
 def get_module(key: Any) -> ModuleType | None:

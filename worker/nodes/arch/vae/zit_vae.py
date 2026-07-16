@@ -256,3 +256,25 @@ def _infer_hyperparams(path: str) -> dict[str, Any]:
     except Exception as exc:
         # Catch-all for SafetensorError or other parsing failures.
         raise ValueError(f"cannot parse safetensors header: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Dispatch registration
+# ---------------------------------------------------------------------------
+
+
+def can_handle(key: str) -> bool:
+    """Confirm this module handles the given architecture key.
+
+    The dispatcher passes the architecture string (from safetensors
+    metadata or path fallback) as *key*. This function returns True
+    only when the key matches this module's canonical identifier.
+
+    Args:
+        key: Architecture string to check, e.g. ``"zit_vae"`` or
+            ``"flux2_vae"``.
+
+    Returns:
+        ``True`` if *key* equals ``"zit_vae"``, ``False`` otherwise.
+    """
+    return key == ARCH
