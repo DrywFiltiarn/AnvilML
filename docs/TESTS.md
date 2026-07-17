@@ -8168,3 +8168,33 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Loaded Qwen3TextEncoder from fixture, `positive_text="a quick brown fox jumps over the lazy dog"`.
 **Expected output:** `text_embeds.shape == (1, 77, 64)`.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_encoder.py::test_clip_text_encode_real_conditioning_shape -v -m real_mode` exits 0.
+
+## test_vae_decode_class_attributes (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_decode.py`
+**Context:** The VaeDecode node class has been created with all six required class attributes per ANVILML_DESIGN.md §10.3.
+**Tests:** All six class attributes (NODE_TYPE, CATEGORY, DISPLAY_NAME, DESCRIPTION, INPUT_SLOTS, OUTPUT_SLOTS) match the spec exactly — NODE_TYPE="VaeDecode", CATEGORY="Decoding", DISPLAY_NAME="VAE Decode", INPUT_SLOTS has 2 slots (vae/VAE, latent/LATENT), OUTPUT_SLOTS has 1 slot (image/IMAGE).
+**Mode:** mock
+**Inputs:** None — class attributes are inspected directly.
+**Expected output:** All assertions pass with correct values.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vae_decode_class_attributes -v` exits 0.
+
+## test_vae_decode_mock_returns_sentinel (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_decode.py`
+**Context:** The VaeDecode node's execute() method implements the mock branch per §14.6 — returns a sentinel dict with the input latent's shape when ctx.mock is True. Satisfies MOCK_PATH_VERIFIED marker.
+**Tests:** Execute with vae={} and latent={"shape": (1, 4, 64, 64)} in mock mode, assert the return dict equals the expected sentinel.
+**Mode:** mock
+**Inputs:** NodeContext(mock=True), vae={}, latent={"shape": (1, 4, 64, 64)}.
+**Expected output:** {"image": {"mock": True, "shape": (1, 4, 64, 64)}}.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vae_decode_mock_returns_sentinel -v` exits 0.
+
+## test_vae_decode_in_registry (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_decode.py`
+**Context:** The VaeDecode node module is auto-imported by worker.nodes.__init__ which scans for .py files under nodes/ and triggers @register. Verified in a subprocess to avoid cross-test pollution.
+**Tests:** Import worker.nodes.decode in a subprocess, verify NODE_REGISTRY["VaeDecode"] exists and references the class.
+**Mode:** mock
+**Inputs:** None — subprocess imports the module and checks NODE_REGISTRY.
+**Expected output:** NODE_REGISTRY contains "VaeDecode" as a key.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vae_decode_in_registry -v` exits 0.
