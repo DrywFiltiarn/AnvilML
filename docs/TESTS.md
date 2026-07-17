@@ -8198,3 +8198,73 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** None — subprocess imports the module and checks NODE_REGISTRY.
 **Expected output:** NODE_REGISTRY contains "VaeDecode" as a key.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vae_decode_in_registry -v` exits 0.
+
+## test_vae_decode_real_decodes_zit_vae_fixture (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_decode.py`
+**Context:** The VaeDecode node's execute() method real branch dispatches to arch.vae.get_module(vae.arch).decode(vae, latent) per P24-B2. Satisfies REAL_PATH_VERIFIED marker.
+**Tests:** Load the ZiT VAE fixture via arch.vae.zit_vae.load(), create a (1, 4, 8, 8) latent tensor, construct a non-mock NodeContext, execute VaeDecode, and assert: result is a dict with key "image"; "image" is a list of exactly 1 PIL.Image.Image; image mode is "RGB"; image size matches latent spatial dimensions (8, 8).
+**Mode:** real
+**Inputs:** NodeContext(mock=False), loaded ZiTVaeModel fixture, torch.randn(1, 4, 8, 8).
+**Expected output:** {"image": [PIL.Image.Image(mode="RGB", size=(8, 8))]}.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vae_decode_real_decodes_zit_vae_fixture -v` exits 0.
+
+## test_vae_decode_real_batched_latent (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_decode.py`
+**Context:** The VaeDecode node's real branch handles batched latents — the decode() function returns one PIL Image per batch item.
+**Tests:** Load the ZiT VAE fixture, create a (2, 4, 8, 8) latent tensor, execute VaeDecode in real mode, assert the output list has 2 images.
+**Mode:** real
+**Inputs:** NodeContext(mock=False), loaded ZiTVaeModel fixture, torch.randn(2, 4, 8, 8).
+**Expected output:** len(result["image"]) == 2, both items are PIL.Image.Image.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vae_decode_real_batched_latent -v` exits 0.
+
+## test_vae_decode_real_output_rgb_uint8 (anvilml-worker)
+
+**File:** `worker/tests/test_nodes.py`
+**Context:** The VaeDecode node's real branch produces valid PIL Images with pixel values in the [0, 255] range. The decode() function clamps to [0, 1] float then scales to uint8.
+**Tests:** Load the ZiT VAE fixture, decode a latent, assert the resulting PIL Image's pixel data consists of valid uint8 values (0–255) in all channels.
+**Mode:** real
+**Inputs:** NodeContext(mock=False), loaded ZiTVaeModel fixture, torch.randn(1, 4, 8, 8).
+**Expected output:** PIL.Image.Image with all pixel values in [0, 255].
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vae_decode_real_output_rgb_uint8 -v` exits 0.
+
+## test_vae_decode_real_arch_dispatch_uses_vae_arch (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_decode.py`
+**Context:** The VaeDecode node reads the .arch attribute from the loaded VAE module and passes it to arch.vae.get_module(). This verifies the dispatch key is correct.
+**Tests:** Load the ZiT VAE fixture (.arch = "zit_vae"), patch arch.vae.get_module to capture the key argument, execute VaeDecode, assert get_module("zit_vae") was called.
+**Mode:** real
+**Inputs:** NodeContext(mock=False), loaded ZiTVaeModel fixture, torch.randn(1, 4, 8, 8), mocked get_module.
+**Expected output:** get_module("zit_vae") called exactly once.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vae_decode_real_arch_dispatch_uses_vae_arch -v` exits 0.
+
+## test_vae_decode_real_missing_arch_raises (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_decode.py`
+**Context:** The VaeDecode node validates that the vae input has an .arch attribute. Without it, dispatch cannot proceed.
+**Tests:** Call execute with a plain dict (no .arch) and a valid latent tensor in real mode, assert ValueError is raised with a message containing "arch".
+**Mode:** real
+**Inputs:** NodeContext(mock=False), vae={}, latent=torch.randn(1, 4, 8, 8).
+**Expected output:** ValueError raised with "arch" in message.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vae_decode_real_missing_arch_raises -v` exits 0.
+
+## test_vae_decode_real_unregistered_arch_raises (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_decode.py`
+**Context:** The VaeDecode node handles the case where arch.vae.get_module() returns None for an unregistered arch key.
+**Tests:** Load the ZiT VAE fixture, patch arch.vae.get_module to return None, execute VaeDecode, assert RuntimeError is raised with a message containing the arch key.
+**Mode:** real
+**Inputs:** NodeContext(mock=False), loaded ZiTVaeModel fixture, torch.randn(1, 4, 8, 8), mocked get_module returning None.
+**Expected output:** RuntimeError raised with "no registered VAE module" in message.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vae_decode_real_unregistered_arch_raises -v` exits 0.
+
+## test_vae_decode_real_missing_vae_input_raises (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_decode.py`
+**Context:** The VaeDecode node validates that the 'vae' input is present before attempting dispatch.
+**Tests:** Call execute without the 'vae' input (only latent) in real mode, assert ValueError is raised.
+**Mode:** real
+**Inputs:** NodeContext(mock=False), latent=torch.randn(1, 4, 8, 8).
+**Expected output:** ValueError raised with "'vae' input is required" in message.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vae_decode_real_missing_vae_input_raises -v` exits 0.

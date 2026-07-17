@@ -6,6 +6,7 @@ registered VAE architecture module (currently "zit_vae") via
 ``arch.vae.get_module()`` and ``module.decode()``.
 """
 
+from worker.nodes import arch
 from worker.nodes.base import BaseNode, NodeContext, SlotSpec, register
 
 import logging
@@ -72,9 +73,10 @@ class VaeDecode(BaseNode):
             ``PIL.Image.Image`` objects decoded from the latent tensor.
 
         Raises:
-            NotImplementedError: When ctx.mock is False — the real branch
-                is deferred to a future task that dispatches to the registered
-                VAE architecture module.
+            ValueError: When 'vae' or 'latent' inputs are missing or None, or when
+                the vae input lacks an .arch attribute.
+            RuntimeError: When no registered VAE module handles the vae's arch key,
+                or when torch is not installed in the decode() call.
         """
         if ctx.mock:
             # Mock branch: return a sentinel dict with the input latent's
@@ -85,8 +87,47 @@ class VaeDecode(BaseNode):
             logger.debug("VaeDecode: mock mode, shape=%s", shape)
             return {"image": {"mock": True, "shape": shape}}
         else:
-            # defers_to: P24-B2 — real branch dispatches to arch.vae.get_module(vae.arch).decode()
-            raise NotImplementedError(
-                "VaeDecode real branch deferred to P24-B2; dispatches to "
-                "arch.vae.get_module(vae.arch).decode()"
-            )
+            # Real branch: dispatch to the registered VAE architecture module.
+            # The vae input is the fully-loaded module from LoadVae.execute();
+            # it carries an .arch attribute set by the arch module's load()
+            # function (Phase 23).
+            vae = inputs.get("vae")
+            latent = inputs.get("latent")
+
+            if vae is None:
+                raise ValueError(
+                    "VaeDecode: 'vae' input is required (missing or None)"
+                )
+            if latent is None:
+                raise ValueError(
+                    "VaeDecode: 'latent' input is required (missing or None)"
+                )
+
+            # Get the architecture key from the loaded VAE module.
+            # Using getattr with a default is safer than direct attribute
+            # access in case a test passes a dict-like object.
+            arch_key = getattr(vae, "arch", None)
+            if arch_key is None:
+                raise ValueError(
+                    f"VaeDecode: vae input has no .arch attribute "
+                    f"(type={type(vae).__name__}); expected a loaded arch module"
+                )
+
+            # Dispatch to the registered VAE architecture module.
+            # get_module returns None for unregistered keys — this is the
+            # correct failure mode: if a new arch module is registered
+            # without a corresponding node update, the error is explicit
+            # rather than a silent crash.
+            vae_module = arch.vae.get_module(arch_key)
+            if vae_module is None:
+                raise RuntimeError(
+                    f"VaeDecode: no registered VAE module handles arch={arch_key!r}; "
+                    f"check that the arch module is importable and can_handle() returns True"
+                )
+
+            # Call the architecture-specific decode function.
+            # decode(vae_module, latent) returns list[PIL.Image.Image].
+            images = vae_module.decode(vae, latent)
+
+            logger.debug("VaeDecode: real mode, decoded %d image(s)", len(images))
+            return {"image": images}

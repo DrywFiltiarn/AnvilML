@@ -218,16 +218,17 @@
     "P23-E1",
     "P23-F1",
     "P24-A1",
-    "P24-A2"
+    "P24-A2",
+    "P24-B1"
   ],
-  "in_progress": "P24-B1",
+  "in_progress": "P24-B2",
   "plan_approved": true,
-  "current_plan": "1. **Create `worker/nodes/decode.py`.** Follow the exact structure of `sampler.py` and\n   `encoder.py`:\n   - Module docstring: \"VaeDecode node \u2014 decodes a denoised latent to a PIL image\n     using the explicitly provided VAE. In mock mode it returns a sentinel dict; the\n     real branch dispatches to the registered VAE architecture module (currently\n     \\\"zit_vae\\\") via ``arch.vae.get_module()`` and ``module.decode()``.\"\n   - Import `BaseNode`, `NodeContext`, `SlotSpec`, `register` from `worker.nodes.base`.\n   - Import `logging`, create `logger = logging.getLogger(__name__)`.\n   - Define `@register class VaeDecode(BaseNode)` with:\n     - `NODE_TYPE = \"VaeDecode\"`\n     - `CATEGORY = \"Decoding\"`\n     - `DISPLAY_NAME = \"VAE Decode\"`\n     - `DESCRIPTION = \"Decodes a denoised latent to a PIL image using the explicitly provided VAE.\"`\n     - `INPUT_SLOTS = [SlotSpec(\"vae\", \"VAE\"), SlotSpec(\"latent\", \"LATENT\")]`\n     - `OUTPUT_SLOTS = [SlotSpec(\"image\", \"IMAGE\")]`\n   - Add dual-mode parity markers as module-level comments above `execute()`:\n     ```python\n     # REAL_PATH_VERIFIED: worker/tests/test_nodes_decode.py::test_vae_decode_real_decodes_zit_vae_fixture\n     # MOCK_PATH_VERIFIED: worker/tests/test_nodes_decode.py::test_vae_decode_mock_returns_sentinel\n     ```\n     The `REAL_PATH_VERIFIED` marker names the test that P24-B2 will create; the\n     `MOCK_PATH_VERIFIED` marker names this task's own mock test. Both markers are\n     required by \u00a710.6 on every `execute()` method, even when the real branch is a stub.\n   - Implement `execute(self, ctx: NodeContext, **inputs) -> dict`:\n     - `if ctx.mock:` \u2014 mock branch: return\n       `{\"image\": {\"mock\": True, \"shape\": inputs[\"latent\"].get(\"shape\")}}`. Add a\n       `logger.debug()` call with the shape value for observability.\n     - `else:` \u2014 real branch placeholder: `raise NotImplementedError(\n       \"VaeDecode real branch deferred to P24-B2; dispatches to arch.vae.get_module(vae.arch).decode()\")`.\n       This satisfies \u00a79.7a because the task's `defers_to` field names P24-B2, and\n       the stub will carry a `# defers_to: P24-B2` comment at the raise site.\n\n2. **Create `worker/tests/test_nodes_decode.py`.** Follow the structure of\n   `test_nodes_encoder.py` (which also has mock-only tests for a deferred real branch):\n   - `_make_ctx()` helper fixture (pattern from `test_nodes_encoder.py`, using\n     `job_id=\"test-job\"` since no raw UUID bytes are needed for these tests).\n   - `test_vae_decode_class_attributes()` \u2014 verify all six class attributes match\n     the \u00a710.3 spec exactly.\n   - `test_vae_decode_mock_returns_sentinel()` \u2014 construct `NodeContext(mock=True)`,\n     call `execute()` with `vae={}` and `latent={\"shape\": (1, 4, 64, 64)}`, assert\n     the return dict equals `{\"image\": {\"mock\": True, \"shape\": (1, 4, 64, 64)}}`.\n     This test satisfies the `MOCK_PATH_VERIFIED` marker.\n   - `test_vae_decode_in_registry()` \u2014 subprocess-isolated import of\n     `worker.nodes.decode`, assert `NODE_REGISTRY[\"VaeDecode\"]` exists and references\n     the class. Pattern from `test_nodes_encoder.py::test_clip_text_encode_in_registry`.\n\n3. **Verify syntax.** Run `python -m py_compile worker/nodes/decode.py worker/tests/test_nodes_decode.py`\n   to confirm no syntax errors before running pytest.\n\n4. **Run tests.** Execute `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest\n   worker/tests/test_nodes_decode.py -v` and confirm all \u22653 tests pass with exit 0.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-17T20:42:22+0200",
-  "plan_approval_message_id": "1527747255854043196",
+  "last_updated": "2026-07-17T21:38:35+0200",
+  "plan_approval_message_id": "1527754932432670740",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1527747253069025421",
+  "plan_report_message_id": "1527754930407084312",
   "impl_report_message_id": null
 }
