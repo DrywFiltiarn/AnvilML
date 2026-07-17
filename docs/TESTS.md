@@ -8058,3 +8058,33 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Loaded `ZiTVaeModel`, latent tensor `(0, 4, 8, 8)`.
 **Expected output:** `images == []`.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_decode_empty_batch -v` exits 0.
+
+## test_e2e_full_chain_produces_pil_image (anvilml-worker)
+
+**File:** `worker/tests/test_e2e_zit_pipeline.py`
+**Context:** The AnvilML Python worker has torch, PIL, diffusers, and safetensors installed in the real-mode venv. The fixture checkpoints `zit_tiny.safetensors` (diffusion, 8×8 latent) and `zit_vae_tiny.safetensors` (VAE) are present in `worker/tests/fixtures/`.
+**Tests:** Full load + sample + decode chain: loads the ZiT diffusion model from `zit_tiny.safetensors` via `zit.load()`, loads the ZiT VAE from `zit_vae_tiny.safetensors` via `zit_vae.load()`, creates an empty latent tensor of shape `(1, 4, 8, 8)` cast to the model's dtype, runs `Sampler.execute()` with steps=20, cfg=7.5, seed=42, decodes the denoised latent to PIL Images, and verifies the image has mode "RGB" and dimensions (8, 8).
+**Mode:** real
+**Inputs:** `zit_tiny.safetensors`, `zit_vae_tiny.safetensors`, latent `(1, 4, 8, 8)`, steps=20, cfg=7.5, seed=42.
+**Expected output:** `PIL.Image.Image` of size `(8, 8)`, mode "RGB".
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_e2e_zit_pipeline.py::test_e2e_full_chain_produces_pil_image -v` exits 0.
+
+## test_e2e_batch_produces_multiple_images (anvilml-worker)
+
+**File:** `worker/tests/test_e2e_zit_pipeline.py`
+**Context:** Same as `test_e2e_full_chain_produces_pil_image` but with a batched latent of shape `(2, 4, 8, 8)`.
+**Tests:** Full load + sample + decode chain with batch size 2. Asserts the result contains exactly 2 PIL Images, all with mode "RGB".
+**Mode:** real
+**Inputs:** `zit_tiny.safetensors`, `zit_vae_tiny.safetensors`, latent `(2, 4, 8, 8)`, steps=20, cfg=7.5, seed=42.
+**Expected output:** list of 2 `PIL.Image.Image` objects, all mode "RGB".
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_e2e_zit_pipeline.py::test_e2e_batch_produces_multiple_images -v` exits 0.
+
+## test_e2e_image_is_real_pil_not_mock (anvilml-worker)
+
+**File:** `worker/tests/test_e2e_zit_pipeline.py`
+**Context:** Same as `test_e2e_full_chain_produces_pil_image` but specifically asserts the output is a genuine PIL Image instance, not a mock sentinel dict.
+**Tests:** Full load + sample + decode chain, then asserts `isinstance(images[0], PIL.Image.Image)` is True.
+**Mode:** real
+**Inputs:** `zit_tiny.safetensors`, `zit_vae_tiny.safetensors`, latent `(1, 4, 8, 8)`, steps=20, cfg=7.5, seed=42.
+**Expected output:** `isinstance(images[0], PIL.Image.Image)` is True.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_e2e_zit_pipeline.py::test_e2e_image_is_real_pil_not_mock -v` exits 0.
