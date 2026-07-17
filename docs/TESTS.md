@@ -8088,3 +8088,43 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `zit_tiny.safetensors`, `zit_vae_tiny.safetensors`, latent `(1, 4, 8, 8)`, steps=20, cfg=7.5, seed=42.
 **Expected output:** `isinstance(images[0], PIL.Image.Image)` is True.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_e2e_zit_pipeline.py::test_e2e_image_is_real_pil_not_mock -v` exits 0.
+
+## test_clip_text_encode_class_attributes (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_encoder.py`
+**Context:** The `worker.nodes.encoder` module has been imported (triggering `@register`), and the `ClipTextEncode` class is available.
+**Tests:** All six required class attributes exist with correct values: `NODE_TYPE == "ClipTextEncode"`, `CATEGORY == "Conditioning"`, `DISPLAY_NAME == "Clip Text Encode"`, `DESCRIPTION == "Encodes a text prompt using a loaded CLIP-compatible encoder."`, `INPUT_SLOTS` has 3 slots (clip/CLIP, positive_text/STRING, negative_text/STRING optional), `OUTPUT_SLOTS` has 1 slot (conditioning/CONDITIONING).
+**Mode:** both
+**Inputs:** N/A (class-level attribute inspection).
+**Expected output:** All assertions pass.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_encoder.py::test_clip_text_encode_class_attributes -v` exits 0.
+
+## test_clip_text_encode_mock_returns_sentinel (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_encoder.py`
+**Context:** The `ClipTextEncode` node class is implemented with a mock branch. A `NodeContext` is constructed with `mock=True`.
+**Tests:** Mock-mode `execute()` returns the sentinel dict `{"conditioning": {"mock": True, "positive_text": "a red fox"}}` with the positive_text value propagated from inputs. This is the primary mock-mode test and serves as the `MOCK_PATH_VERIFIED` parity marker.
+**Mode:** mock
+**Inputs:** `clip={}`, `positive_text="a red fox"`.
+**Expected output:** `{"conditioning": {"mock": True, "positive_text": "a red fox"}}`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_encoder.py::test_clip_text_encode_mock_returns_sentinel -v` exits 0.
+
+## test_clip_text_encode_mock_without_negative_text (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_encoder.py`
+**Context:** The `ClipTextEncode` node has an optional `negative_text` input slot. A `NodeContext` is constructed with `mock=True`.
+**Tests:** Omitting the optional `negative_text` input does not cause an error. The sentinel dict is returned correctly with only the positive_text value propagated.
+**Mode:** mock
+**Inputs:** `clip={}`, `positive_text="hello"` (no `negative_text` key).
+**Expected output:** `{"conditioning": {"mock": True, "positive_text": "hello"}}`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_encoder.py::test_clip_text_encode_mock_without_negative_text -v` exits 0.
+
+## test_clip_text_encode_in_registry (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_encoder.py`
+**Context:** Subprocess isolation test that imports `worker.nodes.encoder` in a fresh Python process, triggering `@register` at module load time.
+**Tests:** After importing the module, `NODE_REGISTRY["ClipTextEncode"]` exists and maps to the `ClipTextEncode` class. This proves auto-import and registration work end-to-end.
+**Mode:** both
+**Inputs:** N/A (subprocess imports the module).
+**Expected output:** `NODE_REGISTRY` contains `"ClipTextEncode"` as a key.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_encoder.py::test_clip_text_encode_in_registry -v` exits 0.
