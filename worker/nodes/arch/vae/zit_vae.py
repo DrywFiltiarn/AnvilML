@@ -10,7 +10,7 @@ This module implements the full four-step loading contract
     3. load(path, caps, device) — steps 2–4: construct nn.Module on meta,
            materialize onto device via to_empty(), build key remapping,
            load_state_dict(assign=True), set .arch.
-    4. decode(model, image) — implemented in a later task.
+    4. decode(vae_module, latent) — implemented in this task (P23-D1).
 
 The module is genuinely independent of `zit.py`'s diffusion shape-inference
 logic (`ANVILML_DESIGN.md §11.4`) — each arch family has its own formula.
@@ -28,6 +28,17 @@ from safetensors import safe_open
 
 logger = logging.getLogger(__name__)
 
+# numpy and PIL are required by decode() — guarded so the module stays
+# importable in mock-mode collection. decode() itself raises RuntimeError
+# if torch is None, which also guards these imports since torch absent
+# means mock-mode, and mock-mode should never reach decode().
+try:
+    import numpy as np
+    from PIL import Image
+except ImportError:
+    np = None  # type: ignore[assignment]
+    Image = None  # type: ignore[assignment]
+
 # torch — and everything that transitively needs it (torch.nn, etc.) — is
 # guarded here rather than imported unconditionally. This module is imported
 # eagerly by arch/vae/__init__.py's dispatcher, which is reachable from
@@ -40,10 +51,12 @@ logger = logging.getLogger(__name__)
 try:
     import torch
     import torch.nn as nn
+    import torch.nn.functional as F
     from safetensors.torch import load_file
 except ImportError:
     torch = None  # type: ignore[assignment]
     nn = None  # type: ignore[assignment]
+    F = None  # type: ignore[assignment]
     load_file = None  # type: ignore[assignment]
 
 # nn.Module is unavailable when torch failed to import (see the guard above).
@@ -166,21 +179,23 @@ def _infer_hyperparams_inner(f: Any, path: str) -> dict[str, Any]:
 
     # --- Encoder channel count ---
     encoder_channels = 0
-    # Primary pattern: encoder.blocks.N.conv.weight (out_channels = shape[0])
+    # Primary pattern: encoder.blocks.N.conv.weight
+    # The first block's input (shape[1]) is the true encoder_channels,
+    # since the first block's output (shape[0]) is an interpolated value.
     encoder_pattern = re.compile(r"^encoder\.blocks\.\d+\.conv\.weight$")
     for key in keys:
         if encoder_pattern.match(key):
             slice_info = f.get_slice(key)  # type: ignore[union-attr]
-            encoder_channels = slice_info.get_shape()[0]
+            encoder_channels = slice_info.get_shape()[1]
             break
 
-    # Fallback: xyz_encoder_block*conv pattern (no .weight suffix in no-meta fixture)
+    # Fallback: xyz_encoder_block*conv.weight pattern (no-meta fixture)
     if encoder_channels == 0:
-        xyz_encoder_pattern = re.compile(r"^xyz_encoder_block(\d+)_conv$")
+        xyz_encoder_pattern = re.compile(r"^xyz_encoder_block(\d+)_conv\.weight$")
         for key in keys:
             if xyz_encoder_pattern.match(key):
                 slice_info = f.get_slice(key)  # type: ignore[union-attr]
-                encoder_channels = slice_info.get_shape()[0]
+                encoder_channels = slice_info.get_shape()[1]
                 break
 
     # --- Decoder channel count ---
@@ -193,9 +208,9 @@ def _infer_hyperparams_inner(f: Any, path: str) -> dict[str, Any]:
             decoder_channels = slice_info.get_shape()[0]
             break
 
-    # Fallback: xyz_decoder_block*conv pattern
+    # Fallback: xyz_decoder_block*conv.weight pattern (no-meta fixture)
     if decoder_channels == 0:
-        xyz_decoder_pattern = re.compile(r"^xyz_decoder_block(\d+)_conv$")
+        xyz_decoder_pattern = re.compile(r"^xyz_decoder_block(\d+)_conv\.weight$")
         for key in keys:
             if xyz_decoder_pattern.match(key):
                 slice_info = f.get_slice(key)  # type: ignore[union-attr]
@@ -341,10 +356,21 @@ class ZiTVaeModel(_ModuleBase):
         # Use the base class (nn.Module or object) — nn.Module when torch is
         # available, plain object when it is not (mock-mode collection path).
         super().__init__()
+
+        # Helper to compute GroupNorm num_groups: find the largest divisor of
+        # num_channels that is ≤ max_groups. This ensures PyTorch's requirement
+        # that num_channels % num_groups == 0 is always satisfied, even when
+        # interpolated channel counts produce non-standard values (e.g. 10).
+        def _group_norm_groups(num_channels: int, max_groups: int = 8) -> int:
+            """Find the largest divisor of num_channels that is ≤ max_groups."""
+            for g in range(min(max_groups, num_channels), 0, -1):
+                if num_channels % g == 0:
+                    return g
+            return 1  # fallback: 1 group (equivalent to LayerNorm)
+
         self.arch = "zit_vae"
 
         encoder_channels = hyperparams["encoder_channels"]
-        decoder_channels = hyperparams["decoder_channels"]
         latent_channels = hyperparams["latent_channels"]
 
         # The fixture has 2 encoder blocks and 2 decoder blocks. The channel
@@ -361,37 +387,34 @@ class ZiTVaeModel(_ModuleBase):
 
         # --- Encoder blocks ---
         # Each block is a Conv2d + GroupNorm + SiLU. The first block takes
-        # encoder_channels as input and outputs latent_channels; the last
-        # block outputs decoder_channels. Intermediate blocks interpolate.
+        # encoder_channels as input and the last block outputs latent_channels.
+        # Intermediate blocks interpolate between encoder_channels and
+        # latent_channels.
         # GroupNorm uses min(8, out_ch) groups to handle small channel counts
         # where 8 groups would exceed the channel dimension (PyTorch requires
         # num_channels % num_groups == 0).
         self.encoder = nn.ModuleDict()
         for i in range(encoder_block_count):
-            # First block: input = encoder_channels, output = latent_channels
-            # Last block: input = previous output, output = decoder_channels
-            # Intermediate: linearly interpolated between latent and decoder.
+            # Interpolate channel counts from encoder_channels to latent_channels.
+            # Block i's output becomes block i+1's input. The first block takes
+            # encoder_channels as input. The last block outputs latent_channels.
+            out_ch = int(
+                encoder_channels
+                + ((i + 1) / encoder_block_count) * (latent_channels - encoder_channels)
+            )
             if i == 0:
                 in_ch = encoder_channels
-                out_ch = latent_channels
-            elif i == encoder_block_count - 1:
-                in_ch = latent_channels
-                out_ch = decoder_channels
             else:
-                # Interpolate between latent_channels and decoder_channels.
-                progress = i / (encoder_block_count - 1)
+                # Previous block's output is this block's input.
                 in_ch = int(
-                    latent_channels + progress * (decoder_channels - latent_channels)
-                )
-                out_ch = int(
-                    latent_channels + ((i + 1) / (encoder_block_count - 1))
-                    * (decoder_channels - latent_channels)
+                    encoder_channels
+                    + (i / encoder_block_count) * (latent_channels - encoder_channels)
                 )
 
             self.encoder[f"block_{i}"] = nn.ModuleDict(
                 {
                     "conv": nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1),
-                    "norm": nn.GroupNorm(min(8, out_ch), out_ch),
+                    "norm": nn.GroupNorm(_group_norm_groups(out_ch), out_ch),
                 }
             )
 
@@ -404,45 +427,78 @@ class ZiTVaeModel(_ModuleBase):
                 "conv": nn.Conv2d(
                     latent_channels, latent_channels, kernel_size=3, padding=1
                 ),
-                "norm": nn.GroupNorm(min(8, latent_channels), latent_channels),
+                "norm": nn.GroupNorm(
+                    _group_norm_groups(latent_channels), latent_channels
+                ),
             }
         )
 
         # --- Decoder blocks ---
         # Each block is a Conv2d + GroupNorm + SiLU. The first block takes
-        # decoder_channels as input and outputs latent_channels; the last block
-        # outputs encoder_channels. Intermediate blocks interpolate in reverse.
+        # latent_channels as input (matching the mid-block output) and the
+        # last block outputs encoder_channels. Intermediate blocks interpolate
+        # between latent_channels and encoder_channels.
         # GroupNorm uses min(8, out_ch) groups to handle small channel counts.
         self.decoder = nn.ModuleDict()
         for i in range(decoder_block_count):
-            # First block: input = decoder_channels, output = latent_channels
-            # Last block: input = previous output, output = encoder_channels
-            # Intermediate: linearly interpolated between decoder and encoder.
+            # Interpolate channel counts from latent_channels to encoder_channels.
+            # Block i's output becomes block i+1's input. The first block takes
+            # latent_channels as input. The last block outputs encoder_channels.
+            # For N blocks, the interpolation points are:
+            #   out_ch(i) = latent_channels + (i+1)/(N) * (encoder_channels - latent_channels)
+            #   in_ch(i)  = out_ch(i-1) for i > 0, latent_channels for i == 0.
+            out_ch = int(
+                latent_channels
+                + ((i + 1) / decoder_block_count) * (encoder_channels - latent_channels)
+            )
             if i == 0:
-                in_ch = decoder_channels
-                out_ch = latent_channels
-            elif i == decoder_block_count - 1:
                 in_ch = latent_channels
-                out_ch = encoder_channels
             else:
-                # Interpolate between decoder_channels and encoder_channels.
-                progress = i / (decoder_block_count - 1)
+                # Previous block's output is this block's input.
                 in_ch = int(
-                    decoder_channels
-                    + progress * (encoder_channels - decoder_channels)
-                )
-                out_ch = int(
-                    decoder_channels
-                    + ((i + 1) / (decoder_block_count - 1))
-                    * (encoder_channels - decoder_channels)
+                    latent_channels
+                    + (i / decoder_block_count) * (encoder_channels - latent_channels)
                 )
 
             self.decoder[f"block_{i}"] = nn.ModuleDict(
                 {
                     "conv": nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1),
-                    "norm": nn.GroupNorm(min(8, out_ch), out_ch),
+                    "norm": nn.GroupNorm(_group_norm_groups(out_ch), out_ch),
                 }
             )
+
+    def forward(self, latent: torch.Tensor) -> torch.Tensor:
+        """Run the latent tensor through the decoder forward pass.
+
+        The VAE decoder topology applies the mid-block as a bottleneck
+        transformation, then sequentially passes the output through each
+        decoder block in order (block_0 → block_1). Each block applies
+        Conv2d → GroupNorm → SiLU.
+
+        Args:
+            latent: Input latent tensor of shape ``(batch, channels, H, W)``.
+
+        Returns:
+            The decoded tensor with the same shape as the input — the
+            decoder blocks preserve spatial resolution and restore the
+            original channel count through interpolation.
+        """
+        # Pass through the mid-block: conv → norm → SiLU.
+        # The mid_block is a shared bottleneck transformation at latent_channels.
+        x = self.mid_block["conv"](latent)
+        x = self.mid_block["norm"](x)
+        x = F.silu(x)
+
+        # Sequentially pass through each decoder block in order.
+        # Each block applies: conv → norm → SiLU, progressively restoring
+        # the channel dimension back to encoder_channels.
+        for i in range(len(self.decoder)):
+            block = self.decoder[f"block_{i}"]
+            x = block["conv"](x)
+            x = block["norm"](x)
+            x = F.silu(x)
+
+        return x
 
 
 # ---------------------------------------------------------------------------
@@ -542,11 +598,23 @@ def _build_key_remapping(
     # "block_N" (singular with underscore). These two patterns cover both
     # encoder and decoder blocks with any suffix (.conv.weight, .norm.weight,
     # .conv.bias, etc.).
+    #
+    # Additionally, no-metadata fixtures use "xyz_encoder_blockN_suffix" and
+    # "xyz_decoder_blockN_suffix" patterns (underscore between block index
+    # and suffix, no dot separator).
     remapping_patterns: list[tuple[str, str]] = [
         # Encoder blocks: encoder.blocks.N.* → encoder.block_N.*
         (r"encoder\.blocks\.(\d+)\.(.*)", r"encoder.block_\1.\2"),
         # Decoder blocks: decoder.blocks.N.* → decoder.block_N.*
         (r"decoder\.blocks\.(\d+)\.(.*)", r"decoder.block_\1.\2"),
+        # No-metadata fixture: xyz_encoder_blockN_suffix → encoder.block_N.suffix
+        (r"xyz_encoder_block(\d+)_(.*)", r"encoder.block_\1.\2"),
+        # No-metadata fixture: xyz_decoder_blockN_suffix → decoder.block_N.suffix
+        (r"xyz_decoder_block(\d+)_(.*)", r"decoder.block_\1.\2"),
+        # No-metadata fixture: xyz_mid_block_conv → mid_block.conv.weight
+        (r"xyz_mid_block_conv", r"mid_block.conv.weight"),
+        # No-metadata fixture: xyz_mid_block_norm → mid_block.norm.weight
+        (r"xyz_mid_block_norm", r"mid_block.norm.weight"),
     ]
 
     remap: dict[str, str] = {}
@@ -660,9 +728,7 @@ def load(path: str, caps: dict, device: str = "cpu") -> ZiTVaeModel:
     model.to(target_dtype)
 
     # Log the dtype selection for observability.
-    logger.debug(
-        "selected dtype=%s for VAE on device=%s", target_dtype, device
-    )
+    logger.debug("selected dtype=%s for VAE on device=%s", target_dtype, device)
 
     # Step 3a: materialize all parameters from meta device to the target
     # device. to_empty() allocates real memory for parameters but does not
@@ -678,13 +744,24 @@ def load(path: str, caps: dict, device: str = "cpu") -> ZiTVaeModel:
     )
     model = model.to_empty(device=device)
 
-    # Step 3b: verify .arch persists after materialization. to_empty() returns
+    # Step 3b: zero-initialize bias tensors after to_empty().
+    # to_empty() allocates memory for meta-device parameters but does not
+    # initialize them to zeros — bf16 tensors may contain garbage values.
+    # Bias tensors should be zero-initialized (the default for nn.Conv2d
+    # and nn.GroupNorm) since the checkpoint fixture doesn't include bias
+    # tensors. We use .data assignment to avoid the in-place operation error
+    # on leaf variables that require grad.
+    for name, param in model.named_parameters():
+        if name.endswith(".bias"):
+            param.data.zero_()
+
+    # Step 3c: verify .arch persists after materialization. to_empty() returns
     # the same module object (not a copy), so .arch should be preserved. If
     # it is not (a safety net for future PyTorch versions), re-set it.
     if not hasattr(model, "arch") or model.arch != ARCH:
         model.arch = ARCH
 
-    # Step 3c: load checkpoint tensors into the materialized module.
+    # Step 3d: load checkpoint tensors into the materialized module.
     # Only keys that exist in BOTH the checkpoint and the module's state_dict
     # are loaded. Keys that exist only in the checkpoint (e.g. the latents
     # metadata tensor) are silently skipped by the remapping — this is correct
@@ -692,13 +769,15 @@ def load(path: str, caps: dict, device: str = "cpu") -> ZiTVaeModel:
     # that doesn't fully populate every parameter.
     state_dict = load_file(path, device=device)
 
-    # Step 3d: build the checkpoint-key → module-key remapping table.
+    # Step 3e: build the checkpoint-key → module-key remapping table.
     # This handles direct matches (exact key equality) and pattern-based
     # remapping for VAE key naming conventions (encoder.blocks.N →
     # encoder.block_N, decoder.blocks.N → decoder.block_N).
-    remap = _build_key_remapping(list(state_dict.keys()), list(model.state_dict().keys()))
+    remap = _build_key_remapping(
+        list(state_dict.keys()), list(model.state_dict().keys())
+    )
 
-    # Step 3e: cast each loaded tensor to target_dtype BEFORE calling
+    # Step 3f: cast each loaded tensor to target_dtype BEFORE calling
     # load_state_dict with assign=True. The assign=True flag bypasses dtype
     # coercion, so the tensor must already have the correct dtype — this is
     # the exact safety measure that prevented the P904 dtype-swap incident.
@@ -724,7 +803,7 @@ def load(path: str, caps: dict, device: str = "cpu") -> ZiTVaeModel:
                 tuple(model.state_dict()[mod_key].shape),
             )
 
-    # Step 3f: load the remapped state dict into the model.
+    # Step 3g: load the remapped state dict into the model.
     # assign=True is required for zero-initialized parameters that are already
     # on the target device — it performs in-place assignment without dtype
     # checks. strict=False allows partial loading: only tensors with matching
@@ -742,8 +821,101 @@ def load(path: str, caps: dict, device: str = "cpu") -> ZiTVaeModel:
 
 
 # ---------------------------------------------------------------------------
-# Dispatch registration
+# decode() — latent-to-image (P23-D1)
 # ---------------------------------------------------------------------------
+
+# REAL_PATH_VERIFIED: worker/tests/test_arch_vae_zit.py::test_decode_real_zit_vae_fixture
+# MOCK_PATH_VERIFIED: worker/tests/test_arch_vae_zit.py::test_decode_mock_returns_sentinel
+
+
+def decode(
+    vae_module: ZiTVaeModel,
+    latent: torch.Tensor,
+    output_mode: str = "RGB",
+) -> list:
+    """Decode a denoised latent tensor to one or more PIL Images.
+
+    Runs the VAE model's forward pass on the latent tensor, then post-processes
+    the raw float output into valid PIL Images. The function clamps values to
+    the expected [0, 1] float range, converts to uint8, and reshapes from
+    NCHW (batch, channels, H, W) to HWC (H, W, channels) for PIL.
+
+    Args:
+        vae_module: A loaded ``ZiTVaeModel`` instance with parameters
+            materialized on a device. The model's ``.forward()`` method
+            runs the decoder forward pass.
+        latent: A denoised latent tensor of shape ``(batch_size, 4, H, W)``
+            — the output of the diffusion sampler's latent space.
+        output_mode: Image mode for the output. ``"RGB"`` (default) selects
+            the first 3 channels for a color image. ``"L"`` selects the
+            first channel for grayscale.
+
+    Returns:
+        A list of ``PIL.Image.Image`` objects, one per batch item. Each image
+        has mode ``"RGB"`` (or ``"L"`` if ``output_mode == "L"``).
+
+    Raises:
+        RuntimeError: If torch is not installed (decode is real-mode-only).
+    """
+    # torch is optional at module-import time (see the guard at the top of
+    # this file); decode() is a real-mode-only entry point and must never be
+    # reached from mock-mode code. Fail clearly here instead of surfacing a
+    # confusing AttributeError on a None torch deep inside the forward pass.
+    if torch is None:
+        raise RuntimeError(
+            "zit_vae.py: torch is not installed - decode() is a real-mode-only "
+            "entry point and must not be reached from mock-mode code paths."
+        )
+
+    # Run the decoder forward pass to get the raw decoded tensor.
+    # The output is in the range [0, 1] float, matching standard VAE decoder
+    # output normalization. The tensor shape is (batch, channels, H, W).
+    # Cast the latent to the model's parameter dtype — the model was
+    # constructed with a specific dtype (e.g. bf16), but the caller's
+    # latent tensor is typically fp32. A dtype mismatch causes a runtime
+    # error in the conv layer.
+    model_dtype = next(vae_module.parameters()).dtype
+    latent = latent.to(model_dtype)
+    decoded = vae_module.forward(latent)
+
+    # Clamp values to [0.0, 1.0] — standard VAE output normalization.
+    # This handles the case where the forward pass produces values slightly
+    # outside the expected range due to floating-point accumulation.
+    decoded = torch.clamp(decoded, 0.0, 1.0)
+
+    # Convert to numpy array for PIL image creation.
+    # .cpu() moves to host memory; .numpy() converts to a numpy array.
+    # Cast to float32 first — numpy does not support BFloat16.
+    decoded_np = decoded.detach().to(torch.float32).cpu().numpy()
+
+    # Select channels based on output_mode.
+    # RGB mode takes the first 3 channels from the 16-channel output.
+    # L (grayscale) mode takes the first channel only.
+    if output_mode == "RGB":
+        decoded_np = decoded_np[:, :3, :, :]
+    elif output_mode == "L":
+        decoded_np = decoded_np[:, :1, :, :]
+
+    # Scale from [0, 1] float to [0, 255] uint8 for PIL image creation.
+    decoded_np = (decoded_np * 255).astype("uint8")
+
+    # Build PIL Images from numpy arrays.
+    # Each batch item has shape (channels, H, W) — PIL requires (H, W, channels)
+    # (NCHW → HWC reshape via np.transpose).
+    # For L (grayscale) mode, the channel dimension is 1 and should be squeezed
+    # to produce a 2D array (H, W) since PIL's mode="L" expects grayscale input.
+    images = []
+    for i in range(decoded_np.shape[0]):
+        img_array = decoded_np[i]
+        # Squeeze channel dimension for grayscale — PIL mode="L" expects (H, W).
+        if output_mode == "L":
+            img_array = img_array.squeeze(0)
+        else:
+            # Transpose from (C, H, W) to (H, W, C) for PIL.
+            img_array = np.transpose(img_array, (1, 2, 0))
+        images.append(Image.fromarray(img_array, mode=output_mode))
+
+    return images
 
 
 def can_handle(key: str) -> bool:

@@ -58,9 +58,10 @@ def test_infer_hyperparams_regular_fixture() -> None:
         assert key in result, f"missing key '{key}' in hyperparameter dict"
 
     # Assert correct values for the tiny fixture.
+    # encoder.blocks.0.conv.weight has shape (10, 16, 3, 3), shape[1]=16
     assert result["encoder_channels"] == 16
-    # decoder.blocks.0.conv.weight has shape (32, 16, 3, 3), shape[0]=32
-    assert result["decoder_channels"] == 32
+    # decoder.blocks.0.conv.weight has shape (10, 4, 3, 3), shape[0]=10
+    assert result["decoder_channels"] == 10
     assert result["latent_channels"] == 4
     assert result["arch"] == "zit_vae"
     # torch.randn() defaults to float32 → safetensors stores "F32" → "fp32"
@@ -97,10 +98,10 @@ def test_infer_hyperparams_no_metadata_fixture() -> None:
     assert result["arch"] == "zit_vae"
 
     # Channel counts should match the regular fixture.
-    # xyz_encoder_block0_conv has shape (16, 8, 3, 3), shape[0]=16
+    # xyz_encoder_block0_conv.weight has shape (10, 16, 3, 3), shape[1]=16
     assert result["encoder_channels"] == 16
-    # xyz_decoder_block0_conv has shape (32, 16, 3, 3), shape[0]=32
-    assert result["decoder_channels"] == 32
+    # xyz_decoder_block0_conv.weight has shape (10, 4, 3, 3), shape[0]=10
+    assert result["decoder_channels"] == 10
     # xyz_latents has shape (1, 4, 8, 8), shape[1]=4
     assert result["latent_channels"] == 4
     # torch.randn() defaults to float32
@@ -134,9 +135,7 @@ def test_infer_hyperparams_truncated_header_raises() -> None:
     corrupt_data = b"\x00\x01\x02\x03\x04\x05\x06\x07"
 
     # Use a temp file — it will be cleaned up in the finally block.
-    with tempfile.NamedTemporaryFile(
-        suffix=".safetensors", delete=False
-    ) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=".safetensors", delete=False) as tmp:
         tmp.write(corrupt_data)
         tmp_path = tmp.name
 
@@ -147,6 +146,7 @@ def test_infer_hyperparams_truncated_header_raises() -> None:
         # Clean up the temporary file unconditionally.
         try:
             import os
+
             os.unlink(tmp_path)
         except OSError:
             pass
@@ -751,7 +751,9 @@ def test_load_mock_returns_sentinel() -> None:
     }
 
     # Patch load_file to return our sentinel tensors.
-    with patch("worker.nodes.arch.vae.zit_vae.load_file", return_value=sentinel_tensors):
+    with patch(
+        "worker.nodes.arch.vae.zit_vae.load_file", return_value=sentinel_tensors
+    ):
         model = load(str(fixture_path), caps, "cpu")
 
     # Assert the model was constructed successfully.
@@ -806,3 +808,214 @@ def test_load_real_zit_vae_fixture() -> None:
 
     # Assert the .arch attribute is set.
     assert model.arch == "zit_vae"
+
+
+# ---------------------------------------------------------------------------
+# Tests for decode() — latent-to-image (P23-D1)
+# ---------------------------------------------------------------------------
+# These tests call decode() which requires torch and PIL to be importable,
+# so they are marked real_mode. They are collected in mock-mode CI (the
+# guarded torch import in zit_vae.py prevents import errors) but only run
+# in real-mode where torch and PIL are installed.
+
+
+@pytest.mark.real_mode
+def test_decode_real_zit_vae_fixture() -> None:
+    """decode() against a loaded fixture model produces valid PIL Images.
+
+    Calls load() to get a ZiTVaeModel, creates a (1, 4, 8, 8) latent tensor,
+    calls decode(), and asserts the result is a list of exactly 1 PIL Image
+    with mode "RGB". This is the primary real-mode test for the decode()
+    function — it exercises the full pipeline: forward pass, clamping,
+    channel selection, and PIL image creation.
+
+    The fixture has 4 latent channels and 8×8 spatial dimensions, so the
+    decoded output should have 16 channels and 8×8 spatial dimensions.
+    """
+    from worker.nodes.arch.vae.zit_vae import decode, load
+
+    fixture_path = _FIXTURE_DIR / "zit_vae_tiny.safetensors"
+    caps: dict = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}
+
+    model = load(str(fixture_path), caps, "cpu")
+    latent = torch.randn(1, 4, 8, 8)
+
+    images = decode(model, latent)
+
+    # Assert the result is a list of exactly 1 PIL Image.
+    assert isinstance(images, list)
+    assert len(images) == 1
+
+    # Assert the image has mode "RGB".
+    assert images[0].mode == "RGB"
+
+    # Assert the image dimensions match the latent spatial dimensions (8×8).
+    assert images[0].size == (8, 8)
+
+
+@pytest.mark.real_mode
+def test_decode_single_image_produces_pil() -> None:
+    """decode() with a single-image latent produces exactly one PIL Image.
+
+    Calls load() to get a model, creates a (1, 4, 8, 8) latent tensor,
+    calls decode(), and asserts the result is a list of exactly 1 PIL Image
+    with mode "RGB".
+    """
+    from worker.nodes.arch.vae.zit_vae import decode, load
+
+    fixture_path = _FIXTURE_DIR / "zit_vae_tiny.safetensors"
+    caps: dict = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}
+
+    model = load(str(fixture_path), caps, "cpu")
+    latent = torch.randn(1, 4, 8, 8)
+
+    images = decode(model, latent)
+
+    assert len(images) == 1
+    assert images[0].mode == "RGB"
+
+
+@pytest.mark.real_mode
+def test_decode_batch_produces_multiple_images() -> None:
+    """decode() with a batched latent produces one image per batch item.
+
+    Creates a (2, 4, 8, 8) batched latent tensor, calls decode(), and
+    asserts the result is a list of exactly 2 PIL Images.
+    """
+    from worker.nodes.arch.vae.zit_vae import decode, load
+
+    fixture_path = _FIXTURE_DIR / "zit_vae_tiny.safetensors"
+    caps: dict = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}
+
+    model = load(str(fixture_path), caps, "cpu")
+    latent = torch.randn(2, 4, 8, 8)
+
+    images = decode(model, latent)
+
+    assert len(images) == 2
+    assert all(img.mode == "RGB" for img in images)
+
+
+@pytest.mark.real_mode
+def test_decode_output_dimensions_match_latent_spatial() -> None:
+    """Output PIL Image dimensions match the latent's spatial dimensions.
+
+    Verifies that the output PIL Image's width and height match the latent's
+    spatial dimensions (8×8 for the fixture), confirming the decoder preserves
+    spatial resolution through the mid-block and decoder blocks.
+    """
+    from worker.nodes.arch.vae.zit_vae import decode, load
+
+    fixture_path = _FIXTURE_DIR / "zit_vae_tiny.safetensors"
+    caps: dict = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}
+
+    model = load(str(fixture_path), caps, "cpu")
+    latent = torch.randn(1, 4, 8, 8)
+
+    images = decode(model, latent)
+
+    assert images[0].size == (8, 8), f"expected image size (8, 8), got {images[0].size}"
+
+
+@pytest.mark.real_mode
+def test_decode_output_is_rgb_uint8() -> None:
+    """Output PIL Image mode is "RGB" with valid uint8 pixel values.
+
+    Verifies the PIL Image mode is "RGB" and that pixel values are in the
+    valid uint8 range (0-255). The decode() function clamps to [0, 1] float
+    then scales to [0, 255] uint8, so all pixel values must be in range.
+    """
+    from worker.nodes.arch.vae.zit_vae import decode, load
+
+    fixture_path = _FIXTURE_DIR / "zit_vae_tiny.safetensors"
+    caps: dict = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}
+
+    model = load(str(fixture_path), caps, "cpu")
+    latent = torch.randn(1, 4, 8, 8)
+
+    images = decode(model, latent)
+
+    assert images[0].mode == "RGB"
+
+    # Verify pixel values are valid uint8 (0-255).
+    import numpy as np
+
+    arr = np.array(images[0])
+    assert arr.dtype == np.uint8, f"expected uint8, got {arr.dtype}"
+    assert arr.min() >= 0 and arr.max() <= 255, (
+        f"pixel values out of [0, 255] range: min={arr.min()}, max={arr.max()}"
+    )
+
+
+@pytest.mark.real_mode
+def test_decode_mock_returns_sentinel() -> None:
+    """Mock-mode path: decode() post-processing works with patched forward.
+
+    Patches ZiTVaeModel.forward to return a sentinel tensor of known shape
+    (1, 16, 8, 8), calls decode(), and asserts the result is a list of 1 PIL
+    Image. This tests the post-processing path (clamp, convert, NCHW→HWC,
+    PIL creation) without requiring the full forward pass.
+    """
+    from unittest.mock import MagicMock
+
+    from worker.nodes.arch.vae.zit_vae import decode
+
+    # Create a minimal mock model — no need for a real loaded model.
+    # MagicMock provides a .forward() that can be configured to return
+    # a sentinel tensor. We also need .parameters() to return a tensor
+    # with a .dtype attribute, since decode() uses next(model.parameters())
+    # to determine the model's dtype.
+    model = MagicMock()
+    sentinel = torch.ones(1, 16, 8, 8)  # 16 channels, 8×8 spatial
+    model.forward.return_value = sentinel
+    mock_param = torch.ones(1, dtype=torch.float32)
+    model.parameters.return_value = iter([mock_param])
+
+    images = decode(model, torch.randn(1, 4, 8, 8))
+
+    # Assert decode() produced exactly 1 PIL Image.
+    assert isinstance(images, list)
+    assert len(images) == 1
+    assert images[0].mode == "RGB"
+
+
+@pytest.mark.real_mode
+def test_decode_non_rgb_mode() -> None:
+    """decode(output_mode="L") produces a grayscale PIL Image with mode "L".
+
+    Tests the grayscale output mode by calling decode(output_mode="L") and
+    asserting the result is a PIL Image with mode "L" (selects first channel).
+    """
+    from worker.nodes.arch.vae.zit_vae import decode, load
+
+    fixture_path = _FIXTURE_DIR / "zit_vae_tiny.safetensors"
+    caps: dict = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}
+
+    model = load(str(fixture_path), caps, "cpu")
+    latent = torch.randn(1, 4, 8, 8)
+
+    images = decode(model, latent, output_mode="L")
+
+    assert len(images) == 1
+    assert images[0].mode == "L"
+
+
+@pytest.mark.real_mode
+def test_decode_empty_batch() -> None:
+    """decode() with an empty batch (0, 4, 8, 8) returns an empty list.
+
+    Tests the edge case where the latent tensor has zero batch items.
+    decode() should return an empty list without error.
+    """
+    from worker.nodes.arch.vae.zit_vae import decode, load
+
+    fixture_path = _FIXTURE_DIR / "zit_vae_tiny.safetensors"
+    caps: dict = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}
+
+    model = load(str(fixture_path), caps, "cpu")
+    latent = torch.randn(0, 4, 8, 8)
+
+    images = decode(model, latent)
+
+    assert isinstance(images, list)
+    assert len(images) == 0

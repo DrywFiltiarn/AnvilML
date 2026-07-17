@@ -7990,3 +7990,83 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `zit_vae_tiny.safetensors` fixture, `caps={"bf16": True, "fp16": True, "fp8": False, "fp32": True}`, device `"cpu"`.
 **Expected output:** `ZiTVaeModel` with cpu-device parameters, `dtype=bfloat16`, non-zero values, `.arch="zit_vae"`.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_load_real_zit_vae_fixture -v` exits 0.
+
+## test_decode_real_zit_vae_fixture (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `decode()` function in `zit_vae.py` implements the latent-to-image conversion. This test exercises the full decode pipeline: forward pass, clamp, channel selection, NCHW→HWC conversion, and PIL image creation.
+**Tests:** `decode()` against a loaded `ZiTVaeModel` with a random latent tensor returns a list of 1 PIL Image with mode "RGB" and size (8, 8).
+**Mode:** real
+**Inputs:** `zit_vae_tiny.safetensors` fixture, random latent tensor `(1, 4, 8, 8)`.
+**Expected output:** List of 1 `PIL.Image.Image` with mode "RGB", size (8, 8).
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_decode_real_zit_vae_fixture -v` exits 0.
+
+## test_decode_single_image_produces_pil (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** Tests that `decode()` produces a valid PIL Image for a single latent batch item.
+**Tests:** `decode()` with a single-item latent tensor `(1, 4, 8, 8)` returns a list containing exactly 1 PIL Image.
+**Mode:** real
+**Inputs:** Loaded `ZiTVaeModel`, latent tensor `(1, 4, 8, 8)`.
+**Expected output:** `isinstance(images, list) == True`, `len(images) == 1`, `isinstance(images[0], PIL.Image.Image) == True`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_decode_single_image_produces_pil -v` exits 0.
+
+## test_decode_batch_produces_multiple_images (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** Tests that `decode()` handles batched latent tensors correctly, producing one PIL Image per batch item.
+**Tests:** `decode()` with a 4-item batch latent tensor `(4, 4, 8, 8)` returns a list of 4 PIL Images.
+**Mode:** real
+**Inputs:** Loaded `ZiTVaeModel`, latent tensor `(4, 4, 8, 8)`.
+**Expected output:** `len(images) == 4`, each `images[i]` is a `PIL.Image.Image` with mode "RGB", size (8, 8).
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_decode_batch_produces_multiple_images -v` exits 0.
+
+## test_decode_output_dimensions_match_latent_spatial (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** Tests that the decoded image spatial dimensions match the latent spatial dimensions.
+**Tests:** `decode()` with latent tensor `(1, 4, 8, 8)` produces an image with size (8, 8).
+**Mode:** real
+**Inputs:** Loaded `ZiTVaeModel`, latent tensor `(1, 4, 8, 8)`.
+**Expected output:** `images[0].size == (8, 8)`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_decode_output_dimensions_match_latent_spatial -v` exits 0.
+
+## test_decode_output_is_rgb_uint8 (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** Tests that `decode()` produces RGB uint8 images (values 0–255).
+**Tests:** `decode()` output is verified to be a list of RGB PIL Images with pixel values in [0, 255].
+**Mode:** real
+**Inputs:** Loaded `ZiTVaeModel`, latent tensor `(1, 4, 8, 8)`.
+**Expected output:** `images[0].mode == "RGB"`, all pixel values in [0, 255].
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_decode_output_is_rgb_uint8 -v` exits 0.
+
+## test_decode_mock_returns_sentinel (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** Tests the `decode()` post-processing path (clamp, convert, NCHW→HWC, PIL creation) without requiring the full forward pass. Uses a MagicMock model with a patched `forward()` returning a sentinel tensor.
+**Tests:** `decode()` with a mock model returning a sentinel tensor `(1, 16, 8, 8)` produces 1 PIL Image with mode "RGB".
+**Mode:** real (collected in mock-mode CI; runs in real-mode where torch is installed)
+**Inputs:** MagicMock model with `forward()` returning `torch.ones(1, 16, 8, 8)`, latent tensor `(1, 4, 8, 8)`.
+**Expected output:** `len(images) == 1`, `images[0].mode == "RGB"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_decode_mock_returns_sentinel -v` exits 0.
+
+## test_decode_non_rgb_mode (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** Tests the `decode(output_mode="L")` grayscale output mode. Selects the first channel from the 16-channel output and produces a grayscale PIL Image.
+**Tests:** `decode(output_mode="L")` returns a PIL Image with mode "L".
+**Mode:** real
+**Inputs:** Loaded `ZiTVaeModel`, latent tensor `(1, 4, 8, 8)`, `output_mode="L"`.
+**Expected output:** `len(images) == 1`, `images[0].mode == "L"`, `images[0].size == (8, 8)`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_decode_non_rgb_mode -v` exits 0.
+
+## test_decode_empty_batch (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** Tests the edge case where `decode()` receives an empty batch (0 batch items). The function should return an empty list without error.
+**Tests:** `decode()` with latent tensor `(0, 4, 8, 8)` returns an empty list.
+**Mode:** real
+**Inputs:** Loaded `ZiTVaeModel`, latent tensor `(0, 4, 8, 8)`.
+**Expected output:** `images == []`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_decode_empty_batch -v` exits 0.
