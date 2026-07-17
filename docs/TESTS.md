@@ -7846,3 +7846,51 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `zit_vae_tiny.safetensors` fixture, all capability flags False, device `"cpu"`.
 **Expected output:** `ZiTVaeModel` with meta-device parameters, `dtype=float32`, `.arch="zit_vae"`.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_load_dtype_selection_applied -v` exits 0.
+
+---
+
+## test_load_dtype_fp8_caps_and_native (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `_select_dtype()` function in `zit_vae.py` implements the fixed precedence chain from ANVILML_DESIGN.md §11.5 (fp8 → bf16 → fp16 → fp32). This test exercises the fp8 branch by passing `caps.fp8=True` against a fixture whose native dtype is FP8 (the `zit_vae_tiny_fp8.safetensors` fixture built by `build_zit_vae_fp8_fixture.py`).
+**Tests:** `load()` with `caps={"fp8": True, "bf16": False, "fp16": False, "fp32": True}` against the FP8 fixture returns a `ZiTVaeModel` with parameters having `dtype=torch.float8_e4m3fn`, confirming the fp8 branch of `_select_dtype()` is correctly applied through the load() pipeline.
+**Mode:** real
+**Inputs:** `zit_vae_tiny_fp8.safetensors` fixture (native_dtype=fp8), `caps.fp8=True`, device `"cpu"`.
+**Expected output:** `ZiTVaeModel` with meta-device parameters, `dtype=float8_e4m3fn`, `.arch="zit_vae"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_load_dtype_fp8_caps_and_native -v` exits 0.
+
+---
+
+## test_load_dtype_bf16_caps_selects_bf16 (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `_select_dtype()` function in `zit_vae.py` implements the fixed precedence chain from ANVILML_DESIGN.md §11.5 (fp8 → bf16 → fp16 → fp32). This test exercises the bf16 branch by passing `caps.bf16=True` against a fixture whose native dtype is fp32.
+**Tests:** `load()` with `caps={"bf16": True, "fp16": True, "fp8": False, "fp32": True}` returns a `ZiTVaeModel` with parameters having `dtype=torch.bfloat16`, confirming the bf16 branch of `_select_dtype()` is correctly applied through the load() pipeline. This is a dedicated test distinct from `test_load_meta_construction_succeeds` which also uses bf16 but is primarily a meta-construction test.
+**Mode:** real
+**Inputs:** `zit_vae_tiny.safetensors` fixture (native_dtype=fp32), `caps.bf16=True`, device `"cpu"`.
+**Expected output:** `ZiTVaeModel` with meta-device parameters, `dtype=bfloat16`, `.arch="zit_vae"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_load_dtype_bf16_caps_selects_bf16 -v` exits 0.
+
+---
+
+## test_load_dtype_fp16_caps_selects_fp16 (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `_select_dtype()` function in `zit_vae.py` implements the fixed precedence chain from ANVILML_DESIGN.md §11.5 (fp8 → bf16 → fp16 → fp32). This test exercises the fp16 branch by passing `caps.bf16=False, caps.fp16=True` against a fixture whose native dtype is fp32.
+**Tests:** `load()` with `caps={"bf16": False, "fp16": True, "fp8": False, "fp32": True}` returns a `ZiTVaeModel` with parameters having `dtype=torch.float16`, confirming the fp16 branch of `_select_dtype()` is correctly applied through the load() pipeline.
+**Mode:** real
+**Inputs:** `zit_vae_tiny.safetensors` fixture (native_dtype=fp32), `caps.bf16=False, caps.fp16=True`, device `"cpu"`.
+**Expected output:** `ZiTVaeModel` with meta-device parameters, `dtype=float16`, `.arch="zit_vae"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_load_dtype_fp16_caps_selects_fp16 -v` exits 0.
+
+---
+
+## test_load_dtype_fp32_fallback (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `_select_dtype()` function in `zit_vae.py` implements the fixed precedence chain from ANVILML_DESIGN.md §11.5 (fp8 → bf16 → fp16 → fp32). This test exercises the fp32 fallback branch by passing all capability flags as False.
+**Tests:** `load()` with `caps={"bf16": False, "fp16": False, "fp8": False, "fp32": True}` returns a `ZiTVaeModel` with parameters having `dtype=torch.float32`, confirming the fp32 fallback branch of `_select_dtype()` is correctly applied through the load() pipeline. This is a dedicated test — the existing `test_load_dtype_selection_applied` also covers this branch, but having a separate test makes the coverage unambiguous.
+**Mode:** real
+**Inputs:** `zit_vae_tiny.safetensors` fixture (native_dtype=fp32), all capability flags False, device `"cpu"`.
+**Expected output:** `ZiTVaeModel` with meta-device parameters, `dtype=float32`, `.arch="zit_vae"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_load_dtype_fp32_fallback -v` exits 0.

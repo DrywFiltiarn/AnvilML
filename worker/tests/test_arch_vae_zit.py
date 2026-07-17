@@ -322,3 +322,178 @@ def test_load_dtype_selection_applied() -> None:
     # Assert the .arch attribute is set.
     assert hasattr(model, "arch")
     assert model.arch == "zit_vae"
+
+
+# ---------------------------------------------------------------------------
+# Dedicated dtype-branch tests (P23-C2)
+# ---------------------------------------------------------------------------
+# Each of the four tests below exercises exactly one branch of the
+# _select_dtype() precedence chain (ANVILML_DESIGN.md §11.5) through the
+# full load() pipeline. Having one dedicated test per branch makes coverage
+# unambiguous — no branch is only reachable through a shared test that
+# primarily asserts something else.
+
+
+@pytest.mark.real_mode
+def test_load_dtype_fp8_caps_and_native() -> None:
+    """Model parameters are float8_e4m3fn when caps.fp8=True and checkpoint native dtype is FP8.
+
+    Calls load() against ``zit_vae_tiny_fp8.safetensors`` (native_dtype=fp8)
+    with caps that enable fp8 and asserts the model's parameters have
+    dtype == torch.float8_e4m3fn.
+
+    This is the primary test for the fp8 branch of _select_dtype():
+    caps.fp8=True AND native_dtype="fp8" → torch.float8_e4m3fn.
+
+    On meta device, this checks the dtype metadata, not actual tensor data.
+    """
+    from worker.nodes.arch.vae.zit_vae import ZiTVaeModel, load
+
+    fixture_path = _FIXTURE_DIR / "zit_vae_tiny_fp8.safetensors"
+    # caps.fp8=True AND native_dtype=fp8 → fp8 branch selected.
+    caps: dict = {"fp8": True, "bf16": False, "fp16": False, "fp32": True}
+
+    model = load(str(fixture_path), caps, "cpu")
+
+    # Assert the returned module is a ZiTVaeModel.
+    assert isinstance(model, ZiTVaeModel)
+
+    # Assert all parameters have dtype == torch.float8_e4m3fn.
+    for param in model.parameters():
+        assert param.dtype == torch.float8_e4m3fn, (
+            f"expected dtype float8_e4m3fn, got {param.dtype}"
+        )
+
+    # Assert parameters are on meta device.
+    for param in model.parameters():
+        assert param.device.type == "meta"
+
+    # Assert the .arch attribute is set.
+    assert hasattr(model, "arch")
+    assert model.arch == "zit_vae"
+
+
+@pytest.mark.real_mode
+def test_load_dtype_bf16_caps_selects_bf16() -> None:
+    """Model parameters are bfloat16 when caps.bf16=True (bf16 branch).
+
+    Calls load() against the regular fixture (native_dtype=fp32) with
+    caps that enable bf16 and asserts the model's parameters have
+    dtype == torch.bfloat16.
+
+    This is a dedicated test for the bf16 branch of _select_dtype():
+    caps.bf16=True AND native_dtype != fp8 → torch.bfloat16.
+
+    This is distinct from test_load_meta_construction_succeeds which also
+    exercises bf16 but is primarily a meta-construction test — this one
+    focuses on dtype selection as the primary assertion.
+
+    On meta device, this checks the dtype metadata, not actual tensor data.
+    """
+    from worker.nodes.arch.vae.zit_vae import ZiTVaeModel, load
+
+    fixture_path = _FIXTURE_DIR / "zit_vae_tiny.safetensors"
+    # caps.bf16=True, native_dtype=fp32 → bf16 branch selected.
+    caps: dict = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}
+
+    model = load(str(fixture_path), caps, "cpu")
+
+    # Assert the returned module is a ZiTVaeModel.
+    assert isinstance(model, ZiTVaeModel)
+
+    # Assert all parameters have dtype == torch.bfloat16.
+    for param in model.parameters():
+        assert param.dtype == torch.bfloat16, (
+            f"expected dtype bfloat16, got {param.dtype}"
+        )
+
+    # Assert parameters are on meta device.
+    for param in model.parameters():
+        assert param.device.type == "meta"
+
+    # Assert the .arch attribute is set.
+    assert hasattr(model, "arch")
+    assert model.arch == "zit_vae"
+
+
+@pytest.mark.real_mode
+def test_load_dtype_fp16_caps_selects_fp16() -> None:
+    """Model parameters are float16 when caps.bf16=False, caps.fp16=True (fp16 branch).
+
+    Calls load() against the regular fixture (native_dtype=fp32) with
+    caps that disable bf16 but enable fp16 and asserts the model's
+    parameters have dtype == torch.float16.
+
+    This is the dedicated test for the fp16 branch of _select_dtype():
+    caps.fp16=True AND caps.bf16=False → torch.float16.
+
+    On meta device, this checks the dtype metadata, not actual tensor data.
+    """
+    from worker.nodes.arch.vae.zit_vae import ZiTVaeModel, load
+
+    fixture_path = _FIXTURE_DIR / "zit_vae_tiny.safetensors"
+    # caps.fp16=True, bf16=False → fp16 branch selected.
+    caps: dict = {"bf16": False, "fp16": True, "fp8": False, "fp32": True}
+
+    model = load(str(fixture_path), caps, "cpu")
+
+    # Assert the returned module is a ZiTVaeModel.
+    assert isinstance(model, ZiTVaeModel)
+
+    # Assert all parameters have dtype == torch.float16.
+    for param in model.parameters():
+        assert param.dtype == torch.float16, (
+            f"expected dtype float16, got {param.dtype}"
+        )
+
+    # Assert parameters are on meta device.
+    for param in model.parameters():
+        assert param.device.type == "meta"
+
+    # Assert the .arch attribute is set.
+    assert hasattr(model, "arch")
+    assert model.arch == "zit_vae"
+
+
+@pytest.mark.real_mode
+def test_load_dtype_fp32_fallback() -> None:
+    """Model parameters are float32 when all capability flags are False (fp32 fallback).
+
+    Calls load() against the regular fixture (native_dtype=fp32) with
+    caps that disable all accelerated precisions and asserts the model's
+    parameters have dtype == torch.float32.
+
+    This is the dedicated test for the fp32 fallback branch of
+    _select_dtype(): all capability flags False → torch.float32.
+
+    The existing test_load_dtype_selection_applied already covers this
+    branch, but a dedicated test makes the coverage unambiguous — the
+    acceptance criterion says "each of the 4 precedence branches is
+    exercised" and one test per branch satisfies that requirement.
+
+    On meta device, this checks the dtype metadata, not actual tensor data.
+    """
+    from worker.nodes.arch.vae.zit_vae import ZiTVaeModel, load
+
+    fixture_path = _FIXTURE_DIR / "zit_vae_tiny.safetensors"
+    # All capability flags False → fp32 fallback.
+    caps: dict = {"bf16": False, "fp16": False, "fp8": False, "fp32": True}
+
+    model = load(str(fixture_path), caps, "cpu")
+
+    # Assert the returned module is a ZiTVaeModel.
+    assert isinstance(model, ZiTVaeModel)
+
+    # Assert all parameters have dtype == torch.float32.
+    for param in model.parameters():
+        assert param.dtype == torch.float32, (
+            f"expected dtype float32, got {param.dtype}"
+        )
+
+    # Assert parameters are on meta device.
+    for param in model.parameters():
+        assert param.device.type == "meta"
+
+    # Assert the .arch attribute is set.
+    assert hasattr(model, "arch")
+    assert model.arch == "zit_vae"
