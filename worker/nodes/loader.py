@@ -282,3 +282,85 @@ class LoadClip(BaseNode):
                     ),
                 )
             }
+
+
+@register
+class EmptyLatent(BaseNode):
+    """Create a blank noise latent tensor.
+
+    This node generates an empty latent of the specified dimensions.
+    In mock mode it returns a placeholder tensor with no model dispatch.
+    In real mode it dispatches to the loaded model's arch module to
+    compute the architecture-specific latent shape (P24-C2).
+
+    Class Attributes:
+        NODE_TYPE: The registry key for this node type.
+        CATEGORY: The category this node belongs to.
+        DISPLAY_NAME: Human-readable name shown in UI/tooling.
+        DESCRIPTION: One-line description of the node's purpose.
+        INPUT_SLOTS: width (INT, required), height (INT, required),
+            batch_size (INT, optional, default 1), model (MODEL, optional).
+        OUTPUT_SLOTS: Single output slot named "latent" with type "LATENT".
+    """
+    NODE_TYPE = "EmptyLatent"
+    CATEGORY = "Latents"
+    DISPLAY_NAME = "Empty Latent"
+    DESCRIPTION = "Creates a blank noise latent tensor."
+    INPUT_SLOTS = [
+        SlotSpec("width", "INT"),
+        SlotSpec("height", "INT"),
+        SlotSpec("batch_size", "INT", optional=True),
+        SlotSpec("model", "MODEL", optional=True),
+    ]
+    OUTPUT_SLOTS = [SlotSpec("latent", "LATENT")]
+
+    # REAL_PATH_VERIFIED: worker/tests/test_nodes_loader.py::test_empty_latent_real_raises_not_implemented
+    # MOCK_PATH_VERIFIED: worker/tests/test_nodes_loader.py::test_empty_latent_mock_returns_placeholder_shape
+    def execute(self, ctx: NodeContext, **inputs) -> dict:
+        """Execute the EmptyLatent node.
+
+        Branches on ctx.mock at the top per §14.6 — the mock branch
+        returns a placeholder latent tensor with no model dispatch;
+        the real branch (P24-C2) dispatches to the loaded model's
+        arch module for architecture-specific shape computation.
+
+        Args:
+            ctx: Runtime context carrying job_id, device, caps,
+                cancel_flag, emit, pipeline_cache, and mock flag.
+            **inputs: Must contain "width" (int) and "height" (int).
+                Optional "batch_size" (int, default 1) and "model"
+                (MODEL, optional — ignored in mock mode, required
+                in real mode).
+
+        Returns:
+            In mock mode: Dict with key "latent" containing a
+            torch.zeros tensor of shape (batch_size, 4, height//8, width//8).
+            In real mode: (deferred to P24-C2) Dict with key "latent"
+            containing a tensor computed via compute_latent_shape().
+
+        Raises:
+            NotImplementedError: If called in real mode without
+                P24-C2's real branch implementation.
+        """
+        if ctx.mock:
+            # Mock branch: return a generic placeholder latent with
+            # the standard VAE-downsampled shape formula (C=4, H/8, W/8).
+            # Per §10.3's note, mock mode ignores the optional "model"
+            # input entirely — this is correct behavior, not an oversight.
+            import torch
+
+            width = inputs["width"]
+            height = inputs["height"]
+            batch_size = inputs.get("batch_size", 1)
+
+            latent_shape = (batch_size, 4, height // 8, width // 8)
+            return {"latent": torch.zeros(latent_shape, dtype=torch.float32)}
+        else:
+            # Real branch placeholder — full implementation is deferred
+            # to P24-C2, which dispatches to arch.diffusion.get_module()
+            # and calls compute_latent_shape().
+            # defers_to: P24-C2 — real branch dispatches to arch.diffusion
+            raise NotImplementedError(
+                f"EmptyLatent real branch not yet implemented; "
+                f"deferred to P24-C2"
+            )

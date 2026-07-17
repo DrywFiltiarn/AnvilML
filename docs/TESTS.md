@@ -6875,6 +6875,54 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 ---
 
+## test_empty_latent_mock_returns_placeholder_shape (worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `EmptyLatent` node class is implemented in `worker/nodes/loader.py` and decorated with `@register`. A `NodeContext` with `mock=True` is constructed, and `execute(width=64, height=64)` is called.
+**Tests:** Mock-mode `EmptyLatent.execute()` returns a `torch.Tensor` with shape `(1, 4, 8, 8)` (batch_size=1, 4 channels, 64//8=8 height, 64//8=8 width). Satisfies the `MOCK_PATH_VERIFIED` marker.
+**Mode:** mock
+**Inputs:** `NodeContext(mock=True)`, `width=64`, `height=64`.
+**Expected output:** `{"latent": torch.zeros((1, 4, 8, 8), dtype=torch.float32)}` is returned.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_empty_latent_mock_returns_placeholder_shape -v` exits 0.
+
+---
+
+## test_empty_latent_mock_ignores_model_input (worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `EmptyLatent` node class is implemented in `worker/nodes/loader.py`. A `NodeContext` with `mock=True` is constructed, and `execute(width=128, height=128, model={"mock": True, "model_id": "ignored"})` is called. This verifies that the optional `model` input is ignored in mock mode per §10.3.
+**Tests:** Mock-mode `EmptyLatent.execute()` returns a `torch.Tensor` with shape `(1, 4, 16, 16)` (batch_size=1, 4 channels, 128//8=16 height, 128//8=16 width), confirming the model input was ignored.
+**Mode:** mock
+**Inputs:** `NodeContext(mock=True)`, `width=128`, `height=128`, `model={"mock": True, "model_id": "ignored"}`.
+**Expected output:** `{"latent": torch.zeros((1, 4, 16, 16), dtype=torch.float32)}` is returned — identical shape to calling without the model input.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_empty_latent_mock_ignores_model_input -v` exits 0.
+
+---
+
+## test_empty_latent_in_registry (worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `EmptyLatent` node class is implemented in `worker/nodes/loader.py` and decorated with `@register`. Importing `worker.nodes.loader` in a subprocess triggers the `@register` side effect which populates `NODE_REGISTRY`.
+**Tests:** `EmptyLatent` appears in `NODE_REGISTRY` after importing the module. Uses subprocess isolation to avoid cross-test pollution from prior imports.
+**Mode:** both
+**Inputs:** Fresh subprocess that imports `worker.nodes.loader` and checks `NODE_REGISTRY`.
+**Expected output:** `NODE_REGISTRY` contains `"EmptyLatent"` as a key.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_empty_latent_in_registry -v` exits 0.
+
+---
+
+## test_empty_latent_real_raises_not_implemented (worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** The `EmptyLatent` node class is implemented in `worker/nodes/loader.py`. In real mode, `execute()` raises `NotImplementedError` with a message naming P24-C2 as the deferring task. A `NodeContext` with `mock=False` is constructed, and `execute(width=64, height=64)` is called.
+**Tests:** Real-mode `EmptyLatent.execute()` raises `NotImplementedError` with "P24-C2" in the error message. Satisfies the `REAL_PATH_VERIFIED` marker.
+**Mode:** real
+**Inputs:** `NodeContext(mock=False)`, `width=64`, `height=64`.
+**Expected output:** `NotImplementedError` is raised; error message contains "P24-C2".
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_empty_latent_real_raises_not_implemented -v -m real_mode` exits 0.
+
+---
+
 ## test_infer_hyperparams_regular_fixture (worker)
 
 **File:** `worker/tests/test_arch_zit.py`
