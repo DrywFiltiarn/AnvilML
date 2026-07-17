@@ -6803,18 +6803,6 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 ---
 
-## test_load_vae_real_raises_not_implemented (worker)
-
-**File:** `worker/tests/test_nodes_loader.py`
-**Context:** The `LoadVae` node class is implemented in `worker/nodes/loader.py`. A `PipelineCache` and `NodeContext` with `mock=False` are constructed, and `execute(model_id="test_vae")` is called.
-**Tests:** Real-mode `LoadVae.execute()` raises `NotImplementedError` with the Phase-19 groundwork message ("no diffusion arch module registered yet"). Satisfies the `REAL_PATH_VERIFIED` marker.
-**Mode:** real
-**Inputs:** `NodeContext(mock=False, pipeline_cache=PipelineCache())`, `model_id="test_vae"`.
-**Expected output:** `NotImplementedError` with message containing "no diffusion arch module registered yet" is raised.
-**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_vae_real_raises_not_implemented -v -m real_mode` exits 0.
-
----
-
 ## test_load_vae_in_registry (worker)
 
 **File:** `worker/tests/test_nodes_loader.py`
@@ -6827,27 +6815,27 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 ---
 
-## test_load_vae_real_cache_key_format (worker)
+## test_load_vae_real_loads_zit_vae_fixture (worker)
 
 **File:** `worker/tests/test_nodes_loader.py`
-**Context:** The `LoadVae` node class is implemented in `worker/nodes/loader.py`. A `PipelineCache` and `NodeContext` with `mock=False` are constructed, and `execute(model_id="test_model")` is called.
-**Tests:** Real-mode `LoadVae.execute()` calls `pipeline_cache.get_or_load` with the correct key format (`"vae:test_model"` — prefixed VAE namespace). The cache remains empty after the exception. Satisfies the `REAL_PATH_VERIFIED` marker.
+**Context:** The `LoadVae` node class is implemented in `worker/nodes/loader.py`. Its real branch dispatches to `arch.vae.get_module("zit_vae")` and calls `.load(path, ctx.caps)` via `pipeline_cache.get_or_load()`. A `PipelineCache` and `NodeContext` with `mock=False` are constructed, and `execute(model_id=<fixture_path>)` is called against the P23-A1 fixture (`zit_vae_tiny.safetensors`).
+**Tests:** Real-mode `LoadVae.execute()` loads the ZiT VAE fixture checkpoint, returns a dict with key `"vae"` containing a `torch.nn.Module` with `.arch == "zit_vae"` and parameters on CPU. Satisfies the `REAL_PATH_VERIFIED` marker.
 **Mode:** real
-**Inputs:** `NodeContext(mock=False, pipeline_cache=PipelineCache())`, `model_id="test_model"`.
-**Expected output:** `NotImplementedError` is raised; cache remains empty.
-**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_vae_real_cache_key_format -v -m real_mode` exits 0.
+**Inputs:** `NodeContext(mock=False, pipeline_cache=PipelineCache())`, `model_id` = path to `worker/tests/fixtures/zit_vae_tiny.safetensors`.
+**Expected output:** `{"vae": ZiTVaeModel(...)}` is returned with valid architecture and CPU-placed parameters.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_vae_real_loads_zit_vae_fixture -v -m real_mode` exits 0.
 
 ---
 
-## test_load_vae_real_raises_no_diffusion_arch (worker)
+## test_load_vae_real_cache_returns_cached_instance (worker)
 
 **File:** `worker/tests/test_nodes_loader.py`
-**Context:** The `LoadVae` node class is implemented in `worker/nodes/loader.py`. A `PipelineCache` and `NodeContext` with `mock=False` are constructed, and `execute(model_id="zit-vae")` is called.
-**Tests:** Canonical real-mode test. Constructs a `NodeContext` with `mock=False`, calls `execute(model_id="zit-vae")`, and asserts `NotImplementedError` is raised with the exact Phase-19 groundwork message. Satisfies the `REAL_PATH_VERIFIED` marker.
+**Context:** The `LoadVae` node class is implemented in `worker/nodes/loader.py`. Its real branch uses `pipeline_cache.get_or_load()` to cache loaded VAEs by key. Two `execute()` calls with the same fixture path are made against a shared `PipelineCache`.
+**Tests:** Real-mode `LoadVae.execute()` returns the same cached VAE object on a second call with the same `model_id`, confirming the LRU cache integration works correctly.
 **Mode:** real
-**Inputs:** `NodeContext(mock=False, pipeline_cache=PipelineCache())`, `model_id="zit-vae"`.
-**Expected output:** `NotImplementedError("no diffusion arch module registered yet")` is raised.
-**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_vae_real_raises_no_diffusion_arch -v -m real_mode` exits 0.
+**Inputs:** Shared `PipelineCache`, `NodeContext(mock=False, pipeline_cache=cache)`, same `model_id` passed twice.
+**Expected output:** Both calls return the identical VAE object (`is` comparison).
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_vae_real_cache_returns_cached_instance -v -m real_mode` exits 0.
 
 ---
 

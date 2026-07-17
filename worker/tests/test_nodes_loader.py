@@ -151,30 +151,6 @@ def test_load_vae_mock_returns_sentinel() -> None:
     assert result == {"vae": {"mock": True, "model_id": "test_vae"}}
 
 
-@pytest.mark.real_mode
-def test_load_vae_real_raises_not_implemented() -> None:
-    """Real-mode LoadVae.execute() raises NotImplementedError with Phase-19 message.
-
-    Constructs a NodeContext with mock=False, calls execute() with
-    model_id="test_vae", and asserts that NotImplementedError is
-    raised with the Phase-19 groundwork message ("no diffusion arch
-    module registered yet"). This is the collectible real-mode test
-    for the REAL_PATH_VERIFIED marker.
-
-    Expected outcome: NotImplementedError with message containing
-    "no diffusion arch module registered yet" is raised.
-    """
-    from worker.nodes.loader import LoadVae
-    from worker.pipeline_cache import PipelineCache
-
-    node = LoadVae()
-    ctx = _make_ctx(mock=False, pipeline_cache=PipelineCache())
-    with pytest.raises(
-        NotImplementedError, match="no diffusion arch module registered yet"
-    ):
-        node.execute(ctx, model_id="test_vae")
-
-
 def test_load_vae_in_registry() -> None:
     """LoadVae appears in NODE_REGISTRY after importing the module.
 
@@ -205,56 +181,89 @@ def test_load_vae_in_registry() -> None:
 
 
 @pytest.mark.real_mode
-def test_load_vae_real_cache_key_format() -> None:
-    """Verify LoadVae's real branch calls pipeline_cache.get_or_load with correct key.
+def test_load_vae_real_loads_zit_vae_fixture() -> None:
+    """LoadVae.execute() loads the ZiT VAE fixture checkpoint via the real branch.
 
-    Constructs a real PipelineCache, a NodeContext with mock=False, and a LoadVae
-    node. Calls execute() with model_id="test_model". The call raises NotImplementedError
-    as expected, but the test verifies that get_or_load was called with the correct
-    key format ("vae:test_model" — prefixed VAE namespace).
+    Calls LoadVae.execute() with mock=False against the P23-A1 fixture
+    path (zit_vae_tiny.safetensors). Verifies the return dict has a 'vae'
+    key containing a ZiTVaeModel (torch.nn.Module with .arch == 'zit_vae'),
+    confirming the full real loading chain works end-to-end.
 
-    This test exercises the real code path (NotImplementedError) and satisfies the
+    This test exercises the real code path and satisfies the
     REAL_PATH_VERIFIED marker.
 
-    Expected outcome: NotImplementedError is raised; get_or_load was called with
-    key="vae:test_model".
+    Expected outcome: {"vae": ZiTVaeModel(...)} is returned, not an exception.
     """
+    from pathlib import Path
+
+    import torch
+
     from worker.nodes.loader import LoadVae
     from worker.pipeline_cache import PipelineCache
 
-    cache = PipelineCache()
-    ctx = _make_ctx(mock=False, pipeline_cache=cache)
-    node = LoadVae()
-    with pytest.raises(
-        NotImplementedError, match="no diffusion arch module registered yet"
-    ):
-        node.execute(ctx, model_id="test_model")
-    # The cache should still be empty because the loader_fn raised
-    # (exception does not populate the cache per PipelineCache contract).
-    assert len(cache._cache) == 0
-
-
-@pytest.mark.real_mode
-def test_load_vae_real_raises_no_diffusion_arch() -> None:
-    """Real-mode LoadVae.execute() raises NotImplementedError with the Phase-19 message.
-
-    Constructs a NodeContext with mock=False, calls execute() with model_id="zit-vae",
-    and asserts that NotImplementedError is raised with the exact Phase-19 groundwork
-    message. This is the canonical real-mode test for the
-    REAL_PATH_VERIFIED marker.
-
-    Expected outcome: NotImplementedError("no diffusion arch module registered yet")
-    is raised.
-    """
-    from worker.nodes.loader import LoadVae
-    from worker.pipeline_cache import PipelineCache
+    fixture_path = str(
+        Path(__file__).parent / "fixtures" / "zit_vae_tiny.safetensors"
+    )
 
     node = LoadVae()
     ctx = _make_ctx(mock=False, pipeline_cache=PipelineCache())
-    with pytest.raises(
-        NotImplementedError, match="no diffusion arch module registered yet"
-    ):
-        node.execute(ctx, model_id="zit-vae")
+    result = node.execute(ctx, model_id=fixture_path)
+
+    # Verify the return dict has the expected VAE slot.
+    assert "vae" in result
+    vae = result["vae"]
+
+    # Verify the returned object is a torch.nn.Module (loaded VAE).
+    assert isinstance(vae, torch.nn.Module)
+
+    # Verify the architecture identifier is set correctly.
+    assert vae.arch == "zit_vae"
+
+    # Verify parameters are on the real device (not meta).
+    for param in vae.parameters():
+        assert param.device.type == "cpu"
+
+
+@pytest.mark.real_mode
+def test_load_vae_real_cache_returns_cached_instance() -> None:
+    """LoadVae.execute() returns the cached VAE on a second call with the same model_id.
+
+    Calls LoadVae.execute() twice with mock=False and the same fixture path.
+    Verifies that both calls return the same object (the PipelineCache LRU
+    cache returned the cached value on the second call rather than reloading).
+
+    This test exercises the real code path and confirms the cache integration
+    works correctly for VAE loading.
+
+    Expected outcome: both execute() calls return the identical VAE object.
+    """
+    from pathlib import Path
+
+    import torch
+
+    from worker.nodes.loader import LoadVae
+    from worker.pipeline_cache import PipelineCache
+
+    fixture_path = str(
+        Path(__file__).parent / "fixtures" / "zit_vae_tiny.safetensors"
+    )
+
+    node = LoadVae()
+    cache = PipelineCache()
+    ctx = _make_ctx(mock=False, pipeline_cache=cache)
+
+    result1 = node.execute(ctx, model_id=fixture_path)
+    vae1 = result1["vae"]
+
+    result2 = node.execute(ctx, model_id=fixture_path)
+    vae2 = result2["vae"]
+
+    # Both calls must return the same cached object.
+    assert vae1 is vae2
+
+    # Verify the cached object is still a valid torch.nn.Module.
+    assert isinstance(vae1, torch.nn.Module)
+    assert vae1.arch == "zit_vae"
 
 
 # ---------------------------------------------------------------------------

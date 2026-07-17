@@ -104,9 +104,10 @@ class LoadVae(BaseNode):
     """Load a VAE from a standalone safetensors file.
 
     This node loads a Variational Autoencoder component. In mock mode
-    it returns a sentinel dict; in real mode it raises NotImplementedError
-    pending P20 which will implement actual safetensors reading and VAE
-    arch dispatch.
+    it returns a sentinel dict; in real mode it dispatches to the
+    registered VAE architecture module (currently "zit_vae") via
+    ``arch.vae.get_module()`` and caches the result via
+    ``pipeline_cache.get_or_load()``.
 
     Class Attributes:
         NODE_TYPE: The registry key for this node type.
@@ -123,14 +124,16 @@ class LoadVae(BaseNode):
     INPUT_SLOTS = [SlotSpec("model_id", "STRING")]
     OUTPUT_SLOTS = [SlotSpec("vae", "VAE")]
 
-    # REAL_PATH_VERIFIED: worker/tests/test_nodes_loader.py::test_load_vae_real_raises_not_implemented
+    # REAL_PATH_VERIFIED: worker/tests/test_nodes_loader.py::test_load_vae_real_loads_zit_vae_fixture
     # MOCK_PATH_VERIFIED: worker/tests/test_nodes_loader.py::test_load_vae_mock_returns_sentinel
     def execute(self, ctx: NodeContext, **inputs) -> dict:
         """Execute the LoadVae node.
 
         Branches on ctx.mock at the top per §14.6 — the mock branch
         returns a sentinel dict with no real loading; the real branch
-        delegates to the pipeline cache and raises NotImplementedError.
+        dispatches to the registered VAE architecture module ("zit_vae")
+        via ``arch.vae.get_module()`` and caches the loaded VAE via
+        ``pipeline_cache.get_or_load()``.
 
         Args:
             ctx: Runtime context carrying job_id, device, caps,
@@ -141,11 +144,12 @@ class LoadVae(BaseNode):
         Returns:
             In mock mode: Dict with key "vae" containing a sentinel
             dict {"mock": True, "model_id": <model_id>}.
-            In real mode: Raises NotImplementedError (deferred to P20).
+            In real mode: Dict with key "vae" containing a
+            ``torch.nn.Module`` (the loaded ZiTVaeModel).
 
         Raises:
-            NotImplementedError: When ctx.mock is False — real VAE
-                loading logic is deferred to P20.
+            RuntimeError: If no VAE arch module is registered for
+                key "zit_vae" (should not occur after P23-B2).
         """
         if ctx.mock:
             # Mock branch: return a sentinel dict with no real loading,
@@ -154,20 +158,31 @@ class LoadVae(BaseNode):
             # was propagated through the node system.
             return {"vae": {"mock": True, "model_id": inputs["model_id"]}}
         else:
-            # Real branch: delegate to the pipeline cache using a VAE-
-            # specific cache key namespace ("vae:{model_id}"). The
-            # loader_fn itself raises NotImplementedError because no
-            # VAE arch module has been registered yet — real loading is
-            # deferred to P20. The cache is not modified on exception
+            # Real branch: dispatch to the registered VAE arch module.
+            # The arch key "zit_vae" matches zit_vae.py's can_handle()
+            # contract. get_or_load provides caching: if the same
+            # model_id is loaded again, the cached ZiTVaeModel is returned
+            # without re-loading. The cache is not modified on exception
             # per the PipelineCache contract.
-            return ctx.pipeline_cache.get_or_load(
-                f"vae:{inputs['model_id']}",
-                lambda: (_ for _ in ()).throw(
-                    NotImplementedError(
-                        "no diffusion arch module registered yet"
-                    )
-                ),
-            )
+            from worker.nodes.arch.vae import get_module
+
+            module = get_module("zit_vae")
+            if module is None:
+                # Defensive guard — zit_vae is imported and appended to
+                # _REGISTERED_MODULES in vae/__init__.py (P23-B2),
+                # so this should never trigger in normal operation.
+                raise RuntimeError(
+                    f"no VAE arch module registered for 'zit_vae'; "
+                    f"cannot load VAE '{inputs['model_id']}'"
+                )
+
+            logger.debug("LoadVae: requesting model_id=%s", inputs["model_id"])
+            return {
+                "vae": ctx.pipeline_cache.get_or_load(
+                    f"vae:{inputs['model_id']}",
+                    lambda: module.load(inputs["model_id"], ctx.caps),
+                )
+            }
 
 
 @register
