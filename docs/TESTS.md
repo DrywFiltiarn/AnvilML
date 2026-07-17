@@ -7810,3 +7810,39 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** Module import of `get_module` from `worker.nodes.arch.vae`, call with `"zit_vae"`.
 **Expected output:** Non-`None` module with `__name__ == "worker.nodes.arch.vae.zit_vae"`.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_get_module_returns_zit_vae_for_matching_key -v` exits 0.
+
+---
+
+## test_load_meta_construction_succeeds (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `load()` function in `zit_vae.py` now implements steps 1–2 of the four-step loading contract: infer hyperparameters, select dtype, construct `ZiTVaeModel` on meta-device, and apply dtype. This test exercises the full `load()` pipeline against the regular fixture with bf16 capability.
+**Tests:** `load()` against the regular fixture with `caps.bf16=True` returns a `ZiTVaeModel` with all parameters on `torch.device("meta")` and dtype `torch.bfloat16`, confirming no real memory was allocated during construction (prevents the ~15 GB crash from P904).
+**Mode:** real
+**Inputs:** `zit_vae_tiny.safetensors` fixture, `caps={"bf16": True, "fp16": True, "fp8": False, "fp32": True}`, device `"cpu"`.
+**Expected output:** `ZiTVaeModel` with meta-device parameters, `dtype=bfloat16`, `.arch="zit_vae"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_load_meta_construction_succeeds -v` exits 0.
+
+---
+
+## test_load_meta_construction_no_metadata_fixture (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `load()` function in `zit_vae.py` exercises the metadata-fallback path in `_infer_hyperparams()` when called against a fixture without `arch` metadata. This test verifies the end-to-end pipeline works with the no-metadata fixture.
+**Tests:** `load()` against `zit_vae_tiny_no_metadata.safetensors` returns a `ZiTVaeModel` with meta-device parameters and `.arch="zit_vae"`, confirming the metadata-fallback path is exercised correctly through the full load() pipeline.
+**Mode:** real
+**Inputs:** `zit_vae_tiny_no_metadata.safetensors` fixture (no metadata, xyz_ prefixed keys), `caps={"bf16": True, "fp16": True, "fp8": False, "fp32": True}`, device `"cpu"`.
+**Expected output:** `ZiTVaeModel` with meta-device parameters, `.arch="zit_vae"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_load_meta_construction_no_metadata_fixture -v` exits 0.
+
+---
+
+## test_load_dtype_selection_applied (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `_select_dtype()` function in `zit_vae.py` implements the fixed precedence chain from ANVILML_DESIGN.md §11.5 (fp8 → bf16 → fp16 → fp32). This test exercises the default fp32 branch by passing all capability flags as False.
+**Tests:** `load()` with `caps={"bf16": False, "fp16": False, "fp8": False, "fp32": True}` returns a `ZiTVaeModel` with parameters having `dtype=torch.float32`, confirming the fp32 fallback branch of `_select_dtype()` is correctly applied through the load() pipeline.
+**Mode:** real
+**Inputs:** `zit_vae_tiny.safetensors` fixture, all capability flags False, device `"cpu"`.
+**Expected output:** `ZiTVaeModel` with meta-device parameters, `dtype=float32`, `.arch="zit_vae"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_load_dtype_selection_applied -v` exits 0.

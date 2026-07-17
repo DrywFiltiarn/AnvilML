@@ -196,3 +196,129 @@ def test_get_module_returns_zit_vae_for_matching_key() -> None:
     module = get_module("zit_vae")
     assert module is not None
     assert module.__name__ == "worker.nodes.arch.vae.zit_vae"
+
+
+# ---------------------------------------------------------------------------
+# Tests for load() — meta construction + dtype selection (P23-C1)
+# ---------------------------------------------------------------------------
+# These tests call load() which requires torch to be importable, so they
+# are marked real_mode. They are collected in mock-mode CI (the guarded
+# torch import in zit_vae.py prevents import errors) but only run in
+# real-mode where torch is installed.
+
+
+@pytest.mark.real_mode
+def test_load_meta_construction_succeeds() -> None:
+    """load() returns a ZiTVaeModel with meta-device parameters (zero real memory).
+
+    Calls load() against the regular fixture with bf16=True in caps and
+    asserts the returned module is a ZiTVaeModel with all parameters on
+    torch.device("meta"), confirming no real memory was allocated during
+    construction — the meta device means param.numel() > 0 but actual
+    memory is zero.
+
+    This is the primary test for the meta-construction contract: it proves
+    the ~15 GB crash from P904 is prevented because no real memory is
+    allocated when constructing the model on meta-device.
+    """
+    from worker.nodes.arch.vae.zit_vae import ZiTVaeModel, load
+
+    fixture_path = _FIXTURE_DIR / "zit_vae_tiny.safetensors"
+    caps: dict = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}
+
+    model = load(str(fixture_path), caps, "cpu")
+
+    # Assert the returned module is a ZiTVaeModel.
+    assert isinstance(model, ZiTVaeModel)
+
+    # Assert all parameters are on the meta device.
+    for param in model.parameters():
+        assert param.device.type == "meta", (
+            f"expected parameter on meta device, got {param.device}"
+        )
+
+    # Assert no real memory was allocated — meta device tensors have
+    # numel() > 0 but consume zero actual memory.
+    total_numel = sum(p.numel() for p in model.parameters())
+    assert total_numel > 0, "model should have parameters with non-zero numel"
+
+    # Assert the selected dtype is bf16 (caps.bf16=True, native_dtype=fp32).
+    # On meta device, this checks the dtype metadata, not actual tensor data.
+    for param in model.parameters():
+        assert param.dtype == torch.bfloat16, (
+            f"expected dtype bfloat16, got {param.dtype}"
+        )
+
+    # Assert the .arch attribute is set.
+    assert hasattr(model, "arch")
+    assert model.arch == "zit_vae"
+
+
+@pytest.mark.real_mode
+def test_load_meta_construction_no_metadata_fixture() -> None:
+    """load() against the no-metadata fixture variant succeeds with meta-device parameters.
+
+    Calls load() against ``zit_vae_tiny_no_metadata.safetensors`` (which has
+    no "arch" key in its safetensors header and uses xyz_ prefixed keys)
+    and asserts it returns a valid ZiTVaeModel with meta-device parameters.
+
+    This verifies the metadata-fallback path in _infer_hyperparams works
+    correctly when exercised through the full load() pipeline.
+    """
+    from worker.nodes.arch.vae.zit_vae import ZiTVaeModel, load
+
+    fixture_path = _FIXTURE_DIR / "zit_vae_tiny_no_metadata.safetensors"
+    caps: dict = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}
+
+    model = load(str(fixture_path), caps, "cpu")
+
+    # Assert the returned module is a ZiTVaeModel.
+    assert isinstance(model, ZiTVaeModel)
+
+    # Assert all parameters are on the meta device.
+    for param in model.parameters():
+        assert param.device.type == "meta", (
+            f"expected parameter on meta device, got {param.device}"
+        )
+
+    # Assert the .arch attribute is set (even though the fixture has no
+    # metadata, the model class sets it in __init__).
+    assert hasattr(model, "arch")
+    assert model.arch == "zit_vae"
+
+
+@pytest.mark.real_mode
+def test_load_dtype_selection_applied() -> None:
+    """Model parameters have the dtype selected by _select_dtype() (fp32 when all caps are False).
+
+    Calls load() with caps that select fp32 (all capability flags False)
+    and asserts the model's parameters have dtype == torch.float32.
+    On meta device, this checks the dtype metadata, not actual tensor data.
+
+    This verifies the default fp32 branch of _select_dtype() is exercised
+    through the full load() pipeline.
+    """
+    from worker.nodes.arch.vae.zit_vae import ZiTVaeModel, load
+
+    fixture_path = _FIXTURE_DIR / "zit_vae_tiny.safetensors"
+    # All capability flags False → _select_dtype returns torch.float32.
+    caps: dict = {"bf16": False, "fp16": False, "fp8": False, "fp32": True}
+
+    model = load(str(fixture_path), caps, "cpu")
+
+    # Assert the returned module is a ZiTVaeModel.
+    assert isinstance(model, ZiTVaeModel)
+
+    # Assert all parameters have dtype == torch.float32.
+    for param in model.parameters():
+        assert param.dtype == torch.float32, (
+            f"expected dtype float32, got {param.dtype}"
+        )
+
+    # Assert parameters are on meta device.
+    for param in model.parameters():
+        assert param.device.type == "meta"
+
+    # Assert the .arch attribute is set.
+    assert hasattr(model, "arch")
+    assert model.arch == "zit_vae"
