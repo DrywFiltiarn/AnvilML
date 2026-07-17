@@ -7894,3 +7894,99 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** `zit_vae_tiny.safetensors` fixture (native_dtype=fp32), all capability flags False, device `"cpu"`.
 **Expected output:** `ZiTVaeModel` with meta-device parameters, `dtype=float32`, `.arch="zit_vae"`.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_load_dtype_fp32_fallback -v` exits 0.
+
+---
+
+## test_build_key_remapping_direct_match (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `_build_key_remapping()` function in `zit_vae.py` builds a checkpoint-key → module-key mapping for the VAE namespace. This test calls it with checkpoint keys that include a direct match (`mid_block.conv.weight`) and a non-weight key (`latents`) that has no module equivalent.
+**Tests:** `_build_key_remapping()` returns identity mapping for direct matches and excludes keys not in the module state_dict.
+**Mode:** both
+**Inputs:** Checkpoint keys: `["mid_block.conv.weight", "mid_block.norm.weight", "latents"]`; Module keys: all VAE parameter keys.
+**Expected output:** `{"mid_block.conv.weight": "mid_block.conv.weight", "mid_block.norm.weight": "mid_block.norm.weight"}` — `latents` excluded.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_build_key_remapping_direct_match -v` exits 0.
+
+---
+
+## test_build_key_remapping_pattern_match (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `_build_key_remapping()` function in `zit_vae.py` applies pattern-based remapping for VAE checkpoint keys. The checkpoint uses `encoder.blocks.N` and `decoder.blocks.N` (plural "blocks" with dot), but the module uses `encoder.block_N` and `decoder.block_N` (singular "block" with underscore).
+**Tests:** `_build_key_remapping()` correctly converts `encoder.blocks.N.*` → `encoder.block_N.*` and `decoder.blocks.N.*` → `decoder.block_N.*` for all encoder and decoder block keys.
+**Mode:** both
+**Inputs:** Checkpoint keys with `encoder.blocks.0.conv.weight`, `encoder.blocks.1.conv.weight`, `decoder.blocks.0.conv.weight`, `decoder.blocks.1.conv.weight`; Module keys with corresponding `block_N` variants.
+**Expected output:** All 8 block keys remapped correctly; `mid_block.conv.weight` not in remap (not in checkpoint_keys).
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_build_key_remapping_pattern_match -v` exits 0.
+
+---
+
+## test_load_weights_loaded_regular_fixture (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `load()` function in `zit_vae.py` now implements the full four-step loading contract (P23-C3): meta construction, materialization, key remapping, weight loading via `load_state_dict(assign=True)`, and `.arch` attribute. This test exercises the complete pipeline against the regular fixture.
+**Tests:** `load()` against `zit_vae_tiny.safetensors` returns a `ZiTVaeModel` with parameters on cpu, bf16 dtype, non-zero values, and `.arch="zit_vae"`.
+**Mode:** real
+**Inputs:** `zit_vae_tiny.safetensors` fixture, `caps={"bf16": True, "fp16": True, "fp8": False, "fp32": True}`, device `"cpu"`.
+**Expected output:** `ZiTVaeModel` with cpu-device parameters, `dtype=bfloat16`, non-zero tensor values, `.arch="zit_vae"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_load_weights_loaded_regular_fixture -v` exits 0.
+
+---
+
+## test_load_weights_loaded_no_metadata_fixture (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `load()` function in `zit_vae.py` handles the no-metadata fixture where xyz_ prefixed keys don't match any VAE remapping pattern — no weights are loaded, but the model structure is valid and `.arch` is set.
+**Tests:** `load()` against `zit_vae_tiny_no_metadata.safetensors` returns a `ZiTVaeModel` with cpu-device parameters and `.arch="zit_vae"`.
+**Mode:** real
+**Inputs:** `zit_vae_tiny_no_metadata.safetensors` fixture (no metadata, xyz_ prefixed keys), `caps={"bf16": True, "fp16": True, "fp8": False, "fp32": True}`, device `"cpu"`.
+**Expected output:** `ZiTVaeModel` with cpu-device parameters, `.arch="zit_vae"`, no matching weights loaded.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_load_weights_loaded_no_metadata_fixture -v` exits 0.
+
+---
+
+## test_load_arch_attribute_set (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `load()` function in `zit_vae.py` sets `.arch` to `"zit_vae"` after materialization (step 4 of the loading contract). This test isolates the `.arch` verification.
+**Tests:** `load()` against the regular fixture returns a model with `.arch == "zit_vae"`.
+**Mode:** real
+**Inputs:** `zit_vae_tiny.safetensors` fixture, `caps={"bf16": True, "fp16": True, "fp8": False, "fp32": True}`, device `"cpu"`.
+**Expected output:** `model.arch == "zit_vae"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_load_arch_attribute_set -v` exits 0.
+
+---
+
+## test_load_dtype_applied_to_loaded_tensors (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `load()` function in `zit_vae.py` casts tensors to `target_dtype` BEFORE calling `load_state_dict(assign=True)`, which is critical because `assign=True` bypasses dtype coercion. This test verifies the cast happens correctly.
+**Tests:** `load()` with `caps={"bf16": False, "fp16": False, "fp8": False, "fp32": True}` returns a `ZiTVaeModel` with `dtype=torch.float32` parameters, confirming the fp32 cast was applied before `load_state_dict`.
+**Mode:** real
+**Inputs:** `zit_vae_tiny.safetensors` fixture, all capability flags False, device `"cpu"`.
+**Expected output:** `ZiTVaeModel` with cpu-device parameters, `dtype=float32`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_load_dtype_applied_to_loaded_tensors -v` exits 0.
+
+---
+
+## test_load_mock_returns_sentinel (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `load()` function in `zit_vae.py` uses `load_file()` to read checkpoint tensors. This test patches `load_file` to return sentinel tensors (ones) instead of reading from disk, exercising the remapping and `load_state_dict` path without requiring a real checkpoint file.
+**Tests:** `load()` with patched `load_file` returns a `ZiTVaeModel` with cpu-device parameters and `.arch="zit_vae"`, confirming the full load pipeline executes without error.
+**Mode:** both
+**Inputs:** Patched `load_file` returning sentinel tensor dict matching VAE checkpoint key patterns.
+**Expected output:** `ZiTVaeModel` with cpu-device parameters, `.arch="zit_vae"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_load_mock_returns_sentinel -v` exits 0.
+
+---
+
+## test_load_real_zit_vae_fixture (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** The `load()` function in `zit_vae.py` implements the full four-step loading contract. This is the complete end-to-end acceptance test exercising every step from header inference through weight loading.
+**Tests:** `load()` against `zit_vae_tiny.safetensors` with bf16 caps returns a `ZiTVaeModel` with cpu-device parameters, bf16 dtype, non-zero values, and `.arch="zit_vae"`.
+**Mode:** real
+**Inputs:** `zit_vae_tiny.safetensors` fixture, `caps={"bf16": True, "fp16": True, "fp8": False, "fp32": True}`, device `"cpu"`.
+**Expected output:** `ZiTVaeModel` with cpu-device parameters, `dtype=bfloat16`, non-zero values, `.arch="zit_vae"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_load_real_zit_vae_fixture -v` exits 0.
