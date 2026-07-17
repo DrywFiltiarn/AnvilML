@@ -129,6 +129,7 @@ _FIXTURE_DIR = Path(__file__).parent / "fixtures"
 _VAE_FIXTURE = str(_FIXTURE_DIR / "zit_vae_tiny.safetensors")
 
 
+@pytest.mark.real_mode
 def test_vae_decode_real_decodes_zit_vae_fixture() -> None:
     """End-to-end real-mode test: load ZiT VAE fixture, create latent, execute VaeDecode.
 
@@ -175,6 +176,7 @@ def test_vae_decode_real_decodes_zit_vae_fixture() -> None:
     assert img.size == (8, 8), f"Expected size (8, 8), got {img.size}"
 
 
+@pytest.mark.real_mode
 def test_vae_decode_real_batched_latent() -> None:
     """Batched latent (batch=2) produces exactly 2 PIL Images.
 
@@ -204,6 +206,7 @@ def test_vae_decode_real_batched_latent() -> None:
         assert isinstance(img, Image.Image)
 
 
+@pytest.mark.real_mode
 def test_vae_decode_real_output_rgb_uint8() -> None:
     """Output PIL Image has valid uint8 pixel values in [0, 255] range.
 
@@ -237,6 +240,7 @@ def test_vae_decode_real_output_rgb_uint8() -> None:
     )
 
 
+@pytest.mark.real_mode
 def test_vae_decode_real_arch_dispatch_uses_vae_arch() -> None:
     """arch.vae.get_module() is called with the correct arch key from the loaded VAE.
 
@@ -276,6 +280,7 @@ def test_vae_decode_real_arch_dispatch_uses_vae_arch() -> None:
     )
 
 
+@pytest.mark.real_mode
 def test_vae_decode_real_missing_arch_raises() -> None:
     """Passing a dict-like vae input without .arch attribute raises ValueError.
 
@@ -298,6 +303,7 @@ def test_vae_decode_real_missing_arch_raises() -> None:
         node.execute(ctx, vae={}, latent=latent)
 
 
+@pytest.mark.real_mode
 def test_vae_decode_real_unregistered_arch_raises() -> None:
     """get_module() returning None raises RuntimeError with descriptive message.
 
@@ -324,6 +330,7 @@ def test_vae_decode_real_unregistered_arch_raises() -> None:
             node.execute(ctx, vae=vae, latent=latent)
 
 
+@pytest.mark.real_mode
 def test_vae_decode_real_missing_vae_input_raises() -> None:
     """Calling execute without the 'vae' input raises ValueError.
 

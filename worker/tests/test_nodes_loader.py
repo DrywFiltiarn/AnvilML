@@ -370,4 +370,123 @@ def test_load_clip_in_registry() -> None:
     assert "OK" in result.stdout
 
 
+# ---------------------------------------------------------------------------
+# EmptyLatent tests
+# ---------------------------------------------------------------------------
+
+
+def test_empty_latent_mock_returns_placeholder_shape() -> None:
+    """Mock-mode EmptyLatent.execute() returns a torch.Tensor with the correct shape.
+
+    Constructs a NodeContext with mock=True, calls execute() with
+    width=64 and height=64, and asserts the return dict has a "latent"
+    key containing a torch.Tensor of shape (1, 4, 8, 8).
+
+    This test exercises the mock code path and satisfies the
+    MOCK_PATH_VERIFIED marker.
+
+    Expected outcome: result["latent"] is a torch.Tensor with shape (1, 4, 8, 8).
+    """
+    import torch
+
+    from worker.nodes.loader import EmptyLatent
+
+    node = EmptyLatent()
+    ctx = _make_ctx(mock=True)
+    result = node.execute(ctx, width=64, height=64)
+
+    assert "latent" in result
+    latent = result["latent"]
+    assert isinstance(latent, torch.Tensor)
+    assert latent.shape == (1, 4, 8, 8)
+
+
+def test_empty_latent_mock_ignores_model_input() -> None:
+    """Mock-mode EmptyLatent.execute() ignores the optional model input.
+
+    Constructs a NodeContext with mock=True, calls execute() with
+    width=128, height=128, and a model input. Asserts the result has
+    a "latent" key with shape (1, 4, 16, 16), identical to calling
+    without the model input — verifying that mock mode ignores the
+    model input per §10.3.
+
+    This test exercises the mock code path and confirms the "ignores
+    model" contract.
+
+    Expected outcome: result["latent"] is a torch.Tensor with shape
+    (1, 4, 16, 16), and the model input has no effect on the output.
+    """
+    import torch
+
+    from worker.nodes.loader import EmptyLatent
+
+    node = EmptyLatent()
+    ctx = _make_ctx(mock=True)
+
+    # Call with a model input — mock mode should ignore it.
+    result = node.execute(
+        ctx,
+        width=128,
+        height=128,
+        model={"mock": True, "model_id": "ignored"},
+    )
+
+    assert "latent" in result
+    latent = result["latent"]
+    assert isinstance(latent, torch.Tensor)
+    assert latent.shape == (1, 4, 16, 16)
+
+
+def test_empty_latent_in_registry() -> None:
+    """EmptyLatent appears in NODE_REGISTRY after importing the module.
+
+    Imports worker.nodes.loader in a subprocess (triggering @register
+    at module load), then checks that NODE_REGISTRY["EmptyLatent"]
+    exists and equals the imported class. This proves auto-import and
+    registration work end-to-end.
+
+    Uses subprocess isolation to avoid cross-test pollution from prior
+    imports, following the pattern in test_passthrough.py::
+    test_node_in_registry_after_import.
+
+    Expected outcome: NODE_REGISTRY contains "EmptyLatent" as a key.
+    """
+    code = (
+        "import importlib; "
+        "mod = importlib.import_module('worker.nodes.loader'); "
+        "from worker.nodes.base import NODE_REGISTRY; "
+        "assert 'EmptyLatent' in NODE_REGISTRY; "
+        "assert NODE_REGISTRY['EmptyLatent'] is mod.EmptyLatent; "
+        "print('OK')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, f"subprocess failed: {result.stderr}"
+    assert "OK" in result.stdout
+
+
+@pytest.mark.real_mode
+def test_empty_latent_real_raises_not_implemented() -> None:
+    """EmptyLatent.execute() raises NotImplementedError in real mode.
+
+    Constructs a NodeContext with mock=False, calls execute() with
+    width=64 and height=64, and asserts that NotImplementedError is
+    raised with a message mentioning "P24-C2".
+
+    This test exercises the real code path (the stub) and satisfies
+    the REAL_PATH_VERIFIED marker.
+
+    Expected outcome: NotImplementedError is raised with "P24-C2"
+    in the error message.
+    """
+    from worker.nodes.loader import EmptyLatent
+
+    node = EmptyLatent()
+    ctx = _make_ctx(mock=False)
+
+    with pytest.raises(NotImplementedError, match="P24-C2"):
+        node.execute(ctx, width=64, height=64)
+
 
