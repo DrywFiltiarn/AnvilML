@@ -1,0 +1,1 @@
+{"tokenizer_class": "BertTokenizer", "model_max_length": 77, "do_lower_case": true, "do_basic_tokenize": true, "never_split": null, "unk_token": "<unk>", "sep_token": "</s>", "pad_token": "<pad>", "cls_token": "<s>", "mask_token": "<mask>", "tokenize_chinese_chars": true, "strip_accents": null}

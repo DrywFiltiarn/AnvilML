@@ -8128,3 +8128,43 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** N/A (subprocess imports the module).
 **Expected output:** `NODE_REGISTRY` contains `"ClipTextEncode"` as a key.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_encoder.py::test_clip_text_encode_in_registry -v` exits 0.
+
+## test_clip_text_encode_real_positive_only (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_encoder.py`
+**Context:** The `ClipTextEncode` node's real branch tokenizes text using the encoder's attached tokenizer (max_length=77) and runs the encoder's forward pass. The Qwen3 fixture checkpoint (qwen3_tiny.safetensors) is loaded via `qwen3.load()` which attaches the tokenizer.
+**Tests:** Real-mode execute with only `positive_text` produces a conditioning dict containing `text_embeds` tensor of correct shape (1, 77, 64) on CPU. Verifies the REAL_PATH_VERIFIED marker target.
+**Mode:** real
+**Inputs:** Loaded Qwen3TextEncoder from fixture, `positive_text="a red fox"`.
+**Expected output:** `{"conditioning": {"text_embeds": Tensor(1, 77, 64)}}` with tensor on CPU.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_encoder.py::test_clip_text_encode_real_positive_only -v -m real_mode` exits 0.
+
+## test_clip_text_encode_real_with_negative (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_encoder.py`
+**Context:** Real-mode ClipTextEncode with both positive and negative text prompts. The Qwen3 fixture checkpoint is loaded and the encoder's tokenizer encodes both texts.
+**Tests:** Execute with both `positive_text="fox"` and `negative_text="dog"` produces conditioning dict with both `text_embeds` and `negative_text_embeds` tensors.
+**Mode:** real
+**Inputs:** Loaded Qwen3TextEncoder from fixture, `positive_text="fox"`, `negative_text="dog"`.
+**Expected output:** Conditioning dict has both `text_embeds` and `negative_text_embeds`, each Tensor(1, 77, 64).
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_encoder.py::test_clip_text_encode_real_with_negative -v -m real_mode` exits 0.
+
+## test_clip_text_encode_real_negative_omitted (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_encoder.py`
+**Context:** Real-mode ClipTextEncode with only positive text, no negative text argument provided. Tests the optional input slot behavior.
+**Tests:** Execute with only `positive_text` (no `negative_text` key in inputs) produces conditioning dict containing `text_embeds` but NOT `negative_text_embeds`.
+**Mode:** real
+**Inputs:** Loaded Qwen3TextEncoder from fixture, `positive_text="test prompt"` (no `negative_text`).
+**Expected output:** Conditioning has `text_embeds` but no `negative_text_embeds` key.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_encoder.py::test_clip_text_encode_real_negative_omitted -v -m real_mode` exits 0.
+
+## test_clip_text_encode_real_conditioning_shape (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_encoder.py`
+**Context:** Real-mode ClipTextEncode verifies the exact tensor shape. The Qwen3 fixture has `hidden_dim=64` (inferred from checkpoint metadata).
+**Tests:** Execute with a multi-word positive prompt and verify `text_embeds.shape == (1, 77, 64)` where 1=batch, 77=CLIP max tokens, 64=hidden_dim.
+**Mode:** real
+**Inputs:** Loaded Qwen3TextEncoder from fixture, `positive_text="a quick brown fox jumps over the lazy dog"`.
+**Expected output:** `text_embeds.shape == (1, 77, 64)`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_encoder.py::test_clip_text_encode_real_conditioning_shape -v -m real_mode` exits 0.

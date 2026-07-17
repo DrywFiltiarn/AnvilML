@@ -650,6 +650,37 @@ class Qwen3DecoderLayer(_ModuleBase):
         # SwiGLU activation pattern.
         self.mlp = _Qwen3MLP(hidden_dim, intermediate_size)
 
+    def forward(
+        self,
+        x: "torch.Tensor",
+    ) -> "torch.Tensor":
+        """Forward pass through a single decoder layer.
+
+        Implements the standard transformer block with pre-normalization:
+        1. Self-attention with residual (input_layernorm → self_attn → add)
+        2. MLP with residual (post_attention_layernorm → mlp → add)
+
+        Args:
+            x: Input tensor of shape (batch, seq_len, hidden_dim).
+
+        Returns:
+            Output tensor of shape (batch, seq_len, hidden_dim).
+        """
+        # Self-attention branch: pre-norm → attention → residual.
+        # LayerNorm is applied first (pre-normalization), then
+        # multi-head attention, then the result is added back to x.
+        attn_input = self.input_layernorm(x)
+        attn_output, _ = self.self_attn(attn_input, attn_input, attn_input)
+        x = x + attn_output
+
+        # MLP branch: pre-norm → gated MLP → residual.
+        # Same pre-normalization pattern as the attention branch.
+        mlp_input = self.post_attention_layernorm(x)
+        mlp_output = self.mlp(mlp_input)
+        x = x + mlp_output
+
+        return x
+
 
 class _Qwen3MLP(_ModuleBase):
     """Gated MLP block used in Qwen3 decoder layers.

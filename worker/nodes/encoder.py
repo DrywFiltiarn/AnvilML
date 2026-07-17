@@ -2,8 +2,9 @@
 
 This node takes a CLIP encoder (already loaded by LoadClip) and positive/negative
 text prompts, then produces CONDITIONING output for downstream use by a Sampler node.
-In mock mode it returns a sentinel dict; the real branch (P24-A2) will tokenize and
-encode the text using the CLIP encoder.
+In mock mode it returns a sentinel dict; the real branch tokenizes the text using the
+encoder's attached tokenizer and runs the encoder's forward pass to produce conditioning
+tensors with ``text_embeds`` and optionally ``negative_text_embeds``.
 """
 
 from worker.nodes.base import BaseNode, NodeContext, SlotSpec, register
@@ -22,9 +23,10 @@ class ClipTextEncode(BaseNode):
     output for use by downstream nodes such as Sampler.
 
     In mock mode (ANVILML_WORKER_MOCK=1) it returns a sentinel dict carrying
-    the positive_text value. The real branch, implemented in P24-A2, will
-    call the CLIP encoder's tokenizer and forward pass to produce
-    conditioning tensors.
+    the positive_text value. The real branch tokenizes the text using the
+    encoder's attached tokenizer (max_length=77) and runs the encoder's
+    forward pass to produce conditioning tensors with ``text_embeds`` and
+    optionally ``negative_text_embeds``.
 
     Class Attributes:
         NODE_TYPE: The registry key for this node type.
@@ -47,15 +49,16 @@ class ClipTextEncode(BaseNode):
     ]
     OUTPUT_SLOTS = [SlotSpec("conditioning", "CONDITIONING")]
 
-    # REAL_PATH_VERIFIED: worker/tests/test_nodes_encoder.py::test_clip_text_encode_real_raises_placeholder
+    # REAL_PATH_VERIFIED: worker/tests/test_nodes_encoder.py::test_clip_text_encode_real_positive_only
     # MOCK_PATH_VERIFIED: worker/tests/test_nodes_encoder.py::test_clip_text_encode_mock_returns_sentinel
     def execute(self, ctx: NodeContext, **inputs) -> dict:
         """Execute the ClipTextEncode node.
 
         Branches on ctx.mock at the top per §14.6 — the mock branch
         returns a sentinel dict with the propagated positive_text; the
-        real branch (P24-A2) will tokenize and encode the text using
-        the loaded CLIP encoder.
+        real branch tokenizes the text using the CLIP encoder's tokenizer
+        (max_length=77) and runs the encoder's forward pass to produce
+        conditioning tensors.
 
         Args:
             ctx: Runtime context carrying job_id, device, caps,
@@ -67,12 +70,13 @@ class ClipTextEncode(BaseNode):
             In mock mode: Dict with key "conditioning" containing a
             sentinel dict {"mock": True, "positive_text": <positive_text>}.
             In real mode: Dict with key "conditioning" containing
-            conditioning tensors (P24-A2).
+            {"text_embeds": Tensor(1, 77, hidden_dim)} and optionally
+            {"negative_text_embeds": Tensor(1, 77, hidden_dim)}.
 
         Raises:
-            NotImplementedError: In real mode — the real branch is
-                deferred to P24-A2 which will implement actual
-                tokenization and encoding.
+            RuntimeError: If the clip encoder lacks a .tokenizer attribute
+                (should not happen — the tokenizer is attached by LoadClip's
+                real branch via qwen3.py's load() function).
         """
         if ctx.mock:
             # Mock branch: return a sentinel dict with no real encoding.
@@ -93,7 +97,53 @@ class ClipTextEncode(BaseNode):
                 }
             }
         else:
-            # defers_to: P24-A1 — real branch implementation deferred to
-            # P24-A2 which will tokenize and encode the text prompts using
-            # the CLIP encoder's tokenizer and forward pass.
-            raise NotImplementedError("real branch in P24-A2")
+            # Real branch: tokenize and encode text prompts using the
+            # CLIP encoder's tokenizer and forward pass.
+            # The clip encoder is already loaded and has an attached
+            # .tokenizer attribute (set by LoadClip's real branch).
+            clip_encoder = inputs["clip"]
+            tokenizer = clip_encoder.tokenizer
+
+            # Tokenize positive text with standard CLIP context window
+            # (77 tokens). padding="max_length" ensures consistent shape;
+            # truncation=True handles prompts longer than 77 tokens.
+            positive_tokens = tokenizer(
+                inputs["positive_text"],
+                padding="max_length",
+                max_length=77,
+                truncation=True,
+                return_tensors="pt",
+            )
+
+            # Run encoder forward pass to get hidden states.
+            # Shape: (batch=1, seq_len=77, hidden_dim).
+            positive_embeds = clip_encoder.forward(positive_tokens["input_ids"])
+
+            # Build the conditioning dict with positive text embeds.
+            # This is the standard ComfyUI conditioning format that
+            # downstream Sampler nodes expect.
+            conditioning: dict = {"text_embeds": positive_embeds}
+
+            # Tokenize and encode negative text if provided.
+            # The negative_text slot is optional; when omitted, only
+            # text_embeds is included in the conditioning dict.
+            negative_text = inputs.get("negative_text")
+            if negative_text is not None:
+                negative_tokens = tokenizer(
+                    negative_text,
+                    padding="max_length",
+                    max_length=77,
+                    truncation=True,
+                    return_tensors="pt",
+                )
+                negative_embeds = clip_encoder.forward(negative_tokens["input_ids"])
+                conditioning["negative_text_embeds"] = negative_embeds
+
+            logger.debug(
+                "ClipTextEncode: real mode, text_embeds.shape=%s, "
+                "has_negative=%s",
+                tuple(positive_embeds.shape),
+                "negative_text_embeds" in conditioning,
+            )
+
+            return {"conditioning": conditioning}
