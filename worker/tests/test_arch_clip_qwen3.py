@@ -17,7 +17,13 @@ try:
 except ImportError:
     torch = None  # type: ignore[assignment]
 
-from worker.nodes.arch.clip.qwen3 import ARCH, _build_key_remapping, _infer_hyperparams, can_handle
+from worker.nodes.arch.clip.qwen3 import (
+    ARCH,
+    _build_key_remapping,
+    _infer_hyperparams,
+    _normalize_attention_keys,
+    can_handle,
+)
 import worker.nodes.arch.clip.qwen3 as qwen3_mod
 
 from worker.nodes.arch.clip import get_module
@@ -441,82 +447,226 @@ def test_tokenizer_loads_from_vendored_path_no_network() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.real_mode
 def test_build_key_remapping_direct_match() -> None:
-    """_build_key_remapping() returns identity mappings for keys in both checkpoint and module.
+    """_build_key_remapping() returns identity mappings for keys already matching the module.
 
-    Calls _build_key_remapping() with two identical key lists and asserts
-    that every key maps to itself (identity mapping). This verifies the
-    direct-match code path in the remapping function.
+    Calls _build_key_remapping() with the REAL Qwen3TextEncoder's own
+    state_dict keys (bare — no "model." prefix, since there is no "model"
+    submodule wrapping this architecture's construction) on both sides,
+    and asserts every key maps to itself.
 
-    The checkpoint keys and module keys are the same, so every checkpoint
-    key should be found as a direct match and mapped to itself.
+    P902 fix: the prior version of this test used synthetic
+    "model."-prefixed keys on *both* sides (checkpoint_keys == module_keys
+    == the same "model."-prefixed list), which never exercised the real
+    mismatch — a realistic checkpoint's "model."-prefixed keys against
+    this module's actual bare keys — since both sides always agreed by
+    construction. That mismatch is covered separately by
+    test_build_key_remapping_strips_model_prefix below (via
+    _normalize_attention_keys(), which is where prefix-stripping actually
+    happens per the P902 redesign — see its docstring).
     """
-    keys = [
-        "model.embed_tokens.weight",
-        "model.layers.0.mlp.gate_proj.weight",
-        "model.layers.0.mlp.up_proj.weight",
-        "model.layers.0.mlp.down_proj.weight",
-        "model.layers.0.input_layernorm.weight",
-        "model.layers.0.post_attention_layernorm.weight",
-        "model.norm.weight",
-    ]
+    from worker.nodes.arch.clip.qwen3 import Qwen3TextEncoder
+
+    hp = {
+        "hidden_dim": 8,
+        "num_hidden_layers": 1,
+        "intermediate_size": 16,
+        "vocab_size": 20,
+    }
+    keys = list(Qwen3TextEncoder(hp).state_dict().keys())
+
     result = _build_key_remapping(keys, keys)
     for key in keys:
         assert key in result, f"key '{key}' not found in remapping result"
         assert result[key] == key, f"key '{key}' should map to itself, got {result[key]}"
 
 
-def test_build_key_remapping_attention_remap() -> None:
-    """_build_key_remapping() remaps q/k/v/o_proj → in_proj/out_proj for MultiheadAttention.
+def test_build_key_remapping_ignores_unmatched_keys() -> None:
+    """_build_key_remapping() omits checkpoint keys with no matching module parameter.
 
-    Calls _build_key_remapping() with Qwen3-style checkpoint keys (separate
-    q_proj/k_proj/v_proj/o_proj) and module keys (concatenated in_proj/out_proj)
-    and asserts the remapping is correct.
-
-    This verifies the pattern-based remapping code path that handles the
-    structural difference between Qwen3 checkpoint key naming and PyTorch's
-    MultiheadAttention parameter naming.
+    A key with no counterpart in module_keys (e.g. a metadata/marker
+    tensor, or a genuinely unrecognized key) must be absent from the
+    returned mapping, not silently included or erroring.
     """
-    # Checkpoint keys: Qwen3 uses separate q/k/v/o attention projections.
-    checkpoint_keys = [
-        "model.layers.0.self_attn.q_proj.weight",
-        "model.layers.0.self_attn.k_proj.weight",
-        "model.layers.0.self_attn.v_proj.weight",
-        "model.layers.0.self_attn.o_proj.weight",
-        "model.layers.1.self_attn.q_proj.weight",
-        "model.layers.1.self_attn.k_proj.weight",
-        "model.layers.1.self_attn.v_proj.weight",
-        "model.layers.1.self_attn.o_proj.weight",
-    ]
+    result = _build_key_remapping(
+        ["embed_tokens.weight", "some_marker_tensor"], ["embed_tokens.weight"]
+    )
+    assert result == {"embed_tokens.weight": "embed_tokens.weight"}
+    assert "some_marker_tensor" not in result
 
-    # Module keys: PyTorch's MultiheadAttention uses concatenated projections.
-    module_keys = [
-        "model.layers.0.self_attn.in_proj.weight",
-        "model.layers.0.self_attn.out_proj.weight",
-        "model.layers.1.self_attn.in_proj.weight",
-        "model.layers.1.self_attn.out_proj.weight",
-    ]
 
-    result = _build_key_remapping(checkpoint_keys, module_keys)
+@pytest.mark.real_mode
+def test_normalize_attention_keys_concatenates_qkv() -> None:
+    """_normalize_attention_keys() concatenates a q/k/v triple into in_proj_weight.
 
-    # Verify q/k/v → in_proj.weight remapping for layer 0.
-    assert result["model.layers.0.self_attn.q_proj.weight"] == "model.layers.0.self_attn.in_proj.weight"
-    assert result["model.layers.0.self_attn.k_proj.weight"] == "model.layers.0.self_attn.in_proj.weight"
-    assert result["model.layers.0.self_attn.v_proj.weight"] == "model.layers.0.self_attn.in_proj.weight"
+    Builds a checkpoint dict with separate, distinct q_proj/k_proj/v_proj
+    weight tensors (Qwen3/HF convention) for one layer, and asserts the
+    normalized output's "layers.0.self_attn.in_proj_weight" entry equals
+    torch.cat([q, k, v], dim=0) exactly — verifying both the concatenation
+    order and that the "model." prefix and per-projection key names are
+    replaced with the module's real nn.MultiheadAttention parameter name
+    (bare "layers.0.self_attn.in_proj_weight", no dot, no "model." prefix
+    — this is the P902 fix for the "in_proj.weight" typo and the missing
+    "model." strip that made the pre-P902 version of this remapping dead
+    code for every realistic checkpoint).
+    """
+    q = torch.randn(8, 8)
+    k = torch.randn(8, 8)
+    v = torch.randn(8, 8)
+    ckpt = {
+        "model.layers.0.self_attn.q_proj.weight": q,
+        "model.layers.0.self_attn.k_proj.weight": k,
+        "model.layers.0.self_attn.v_proj.weight": v,
+    }
+    result = _normalize_attention_keys(ckpt)
+    assert "layers.0.self_attn.in_proj_weight" in result
+    assert torch.equal(
+        result["layers.0.self_attn.in_proj_weight"], torch.cat([q, k, v], dim=0)
+    )
+    # The original separate-projection keys must not appear in the output
+    # under any name — they've been consumed by the concatenation.
+    assert "layers.0.self_attn.q_proj.weight" not in result
+    assert "model.layers.0.self_attn.q_proj.weight" not in result
 
-    # Verify o_proj → out_proj.weight remapping for layer 0.
-    assert result["model.layers.0.self_attn.o_proj.weight"] == "model.layers.0.self_attn.out_proj.weight"
 
-    # Verify the same pattern for layer 1.
-    assert result["model.layers.1.self_attn.q_proj.weight"] == "model.layers.1.self_attn.in_proj.weight"
-    assert result["model.layers.1.self_attn.k_proj.weight"] == "model.layers.1.self_attn.in_proj.weight"
-    assert result["model.layers.1.self_attn.v_proj.weight"] == "model.layers.1.self_attn.in_proj.weight"
-    assert result["model.layers.1.self_attn.o_proj.weight"] == "model.layers.1.self_attn.out_proj.weight"
+@pytest.mark.real_mode
+def test_normalize_attention_keys_concatenates_qkv_bias() -> None:
+    """_normalize_attention_keys() concatenates a q/k/v bias triple into in_proj_bias.
+
+    Same as the weight case, but for the 1-D bias tensors.
+    """
+    q = torch.randn(8)
+    k = torch.randn(8)
+    v = torch.randn(8)
+    ckpt = {
+        "model.layers.0.self_attn.q_proj.bias": q,
+        "model.layers.0.self_attn.k_proj.bias": k,
+        "model.layers.0.self_attn.v_proj.bias": v,
+    }
+    result = _normalize_attention_keys(ckpt)
+    assert torch.equal(
+        result["layers.0.self_attn.in_proj_bias"], torch.cat([q, k, v], dim=0)
+    )
+
+
+@pytest.mark.real_mode
+def test_normalize_attention_keys_incomplete_triple_is_dropped() -> None:
+    """_normalize_attention_keys() drops a q/k/v triple missing any member.
+
+    A lone q_proj.weight with no matching k_proj/v_proj is not a valid
+    in_proj_weight and must not be silently emitted under any key —
+    concatenating a partial triple would produce a tensor of the wrong
+    shape, silently corrupting the loaded model rather than leaving the
+    parameter at its safe post-P902 zero-initialized default.
+    """
+    ckpt = {"model.layers.0.self_attn.q_proj.weight": torch.randn(8, 8)}
+    result = _normalize_attention_keys(ckpt)
+    assert "layers.0.self_attn.in_proj_weight" not in result
+    assert "layers.0.self_attn.q_proj.weight" not in result
+    assert "model.layers.0.self_attn.q_proj.weight" not in result
+
+
+@pytest.mark.real_mode
+def test_normalize_attention_keys_renames_o_proj() -> None:
+    """_normalize_attention_keys() renames o_proj.weight/bias to out_proj.weight/bias.
+
+    o_proj -> out_proj is a straight rename (identical shape, no
+    concatenation needed), independent of whether q/k/v are present.
+    """
+    o_weight = torch.randn(8, 8)
+    o_bias = torch.randn(8)
+    ckpt = {
+        "model.layers.0.self_attn.o_proj.weight": o_weight,
+        "model.layers.0.self_attn.o_proj.bias": o_bias,
+    }
+    result = _normalize_attention_keys(ckpt)
+    assert torch.equal(result["layers.0.self_attn.out_proj.weight"], o_weight)
+    assert torch.equal(result["layers.0.self_attn.out_proj.bias"], o_bias)
+
+
+@pytest.mark.real_mode
+def test_normalize_attention_keys_strips_model_prefix() -> None:
+    """_normalize_attention_keys() strips a leading "model." from non-attention keys.
+
+    P902 fix: no code anywhere previously stripped checkpoints'
+    conventional "model." prefix before comparing against this module's
+    bare (no "model." wrapper) state_dict keys, so embed_tokens.weight,
+    every mlp.*/layernorm.* key, and norm.weight all silently failed to
+    match against any realistically-prefixed checkpoint — not just the
+    attention projections most of the surrounding bug narrative focuses
+    on.
+    """
+    tensor = torch.randn(4)
+    ckpt = {
+        "model.embed_tokens.weight": tensor,
+        "model.norm.weight": tensor,
+        "already_bare.weight": tensor,
+    }
+    result = _normalize_attention_keys(ckpt)
+    assert "embed_tokens.weight" in result
+    assert "norm.weight" in result
+    assert "already_bare.weight" in result
+    assert "model.embed_tokens.weight" not in result
+    assert "model.norm.weight" not in result
 
 
 # ---------------------------------------------------------------------------
 # Tests for load() — weight loading verification
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.real_mode
+def test_load_real_qwen3_fixture_no_unmatched_parameters() -> None:
+    """load() populates every real Qwen3TextEncoder parameter from the checkpoint.
+
+    P902 regression test: prior to the P902 retrofit, this module's
+    ``_build_key_remapping()`` had three separate bugs — a missing
+    "model." prefix strip, a typo'd ``in_proj.weight`` target key (real
+    attribute is ``in_proj_weight``, no dot), and no actual q/k/v
+    concatenation logic — such that 0 of this model's 31 real parameters
+    were ever successfully loaded from any realistically-shaped
+    checkpoint, regardless of what qwen3_tiny.safetensors contained (see
+    ``_normalize_attention_keys()``'s docstring for the full history).
+    This test independently re-derives the checkpoint-to-module key
+    remapping (mirroring what load() does internally, including the
+    ``_normalize_attention_keys()`` preprocessing step) and asserts every
+    one of the model's real parameters has a match — i.e. the fixture is
+    genuinely complete and the loading pipeline genuinely works — plus
+    confirms no parameter is NaN/Inf/suspiciously large.
+    """
+    from safetensors.torch import load_file
+
+    from worker.nodes.arch.clip.qwen3 import (
+        Qwen3TextEncoder,
+        _normalize_attention_keys,
+        load,
+    )
+
+    fixture_path = _FIXTURE_DIR / "qwen3_tiny.safetensors"
+    caps: dict = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}
+
+    hyperparams = _infer_hyperparams(str(fixture_path))
+    raw_state_dict = load_file(str(fixture_path))
+    normalized = _normalize_attention_keys(raw_state_dict)
+    with torch.device("meta"):
+        reference_model = Qwen3TextEncoder(hyperparams)
+    model_keys = list(reference_model.state_dict().keys())
+    remap = _build_key_remapping(list(normalized.keys()), model_keys)
+    matched = set(remap.values())
+    unmatched = [k for k in model_keys if k not in matched]
+    assert not unmatched, (
+        f"fixture does not populate every real Qwen3TextEncoder parameter: "
+        f"{len(unmatched)}/{len(model_keys)} unmatched: {unmatched}"
+    )
+
+    model = load(str(fixture_path), caps)
+    for name, param in model.named_parameters():
+        assert not torch.isnan(param).any(), f"{name} contains NaN"
+        assert not torch.isinf(param).any(), f"{name} contains Inf"
+        assert param.abs().max().item() < 1e6, (
+            f"{name} has suspiciously large values (max={param.abs().max().item():.3e})"
+        )
 
 
 @pytest.mark.real_mode

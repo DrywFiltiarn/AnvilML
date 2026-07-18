@@ -8426,3 +8426,65 @@ retrofit's tests span multiple existing test files.
 **Inputs:** `qwen3_tiny_no_metadata.safetensors`, `caps={"bf16": True, "fp16": True, "fp8": False, "fp32": True}`.
 **Expected output:** valid `Qwen3TextEncoder` with `.arch == "qwen3"`, all parameters on CPU.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_qwen3.py::test_load_no_metadata_real -v -m real_mode` exits 0.
+
+---
+
+## P902 Retrofit — Fixture Completeness, `to_empty()` Zero-Init, Qwen3 Loading
+
+See `docs/ADDENDUM_P902_FIXTURE_COMPLETENESS_AND_QWEN3_LOADING.md` for the full
+incident writeup. Appended here rather than interleaved, for the same reason as
+the P901 section above.
+
+## test_load_real_zit_fixture_no_unmatched_parameters (anvilml-worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** `zit_tiny.safetensors` previously covered only 6 of `ZiTModel`'s 28 real parameters; `load()`'s `to_empty()` materialization left the rest as uninitialized garbage (NaN/near-float32-max), invisible because no existing test checked parameter values.
+**Tests:** Independently re-derives the checkpoint-to-module key remapping via `_build_key_remapping()` and asserts every real parameter has a match; separately loads the model and asserts no parameter is NaN/Inf/>1e6 in magnitude.
+**Mode:** real
+**Inputs:** `zit_tiny.safetensors`, default caps.
+**Expected output:** 0 unmatched parameters (28/28 matched); no NaN/Inf/extreme values after `load()`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_load_real_zit_fixture_no_unmatched_parameters -v -m real_mode` exits 0.
+
+## test_load_real_zit_vae_fixture_no_unmatched_parameters (anvilml-worker)
+
+**File:** `worker/tests/test_arch_vae_zit.py`
+**Context:** Same defect class as zit, VAE counterpart — `zit_vae_tiny.safetensors` previously omitted all 10 bias parameters.
+**Tests:** Same shape as the zit version, against `ZiTVaeModel`.
+**Mode:** real
+**Inputs:** `zit_vae_tiny.safetensors`, default caps.
+**Expected output:** 0 unmatched parameters (20/20 matched); no NaN/Inf/extreme values.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_zit.py::test_load_real_zit_vae_fixture_no_unmatched_parameters -v -m real_mode` exits 0.
+
+## test_load_real_qwen3_fixture_no_unmatched_parameters (anvilml-worker)
+
+**File:** `worker/tests/test_arch_clip_qwen3.py`
+**Context:** Most severe of the three — `_build_key_remapping()` had three independent bugs (no "model." prefix strip, a typo'd `in_proj.weight` target, no actual q/k/v concatenation) meaning 0 of 31 real parameters could ever load from any realistic checkpoint, regardless of fixture content.
+**Tests:** Re-derives the remapping via `_normalize_attention_keys()` + `_build_key_remapping()` and asserts full coverage; separately loads and asserts no NaN/Inf/extreme values.
+**Mode:** real
+**Inputs:** `qwen3_tiny.safetensors`, default caps.
+**Expected output:** 0 unmatched parameters (31/31 matched); no NaN/Inf/extreme values.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_qwen3.py::test_load_real_qwen3_fixture_no_unmatched_parameters -v -m real_mode` exits 0.
+
+## test_normalize_attention_keys_* (anvilml-worker)
+
+**File:** `worker/tests/test_arch_clip_qwen3.py`
+**Context:** New helper `_normalize_attention_keys()` replaces the broken q/k/v-remapping portion of `_build_key_remapping()`. Five tests: `concatenates_qkv`, `concatenates_qkv_bias`, `incomplete_triple_is_dropped`, `renames_o_proj`, `strips_model_prefix`.
+**Tests:** Concatenation order/correctness (`torch.cat([q,k,v], dim=0)` exactly), bias handled the same way, an incomplete triple is dropped entirely (not passed through under any key), `o_proj`→`out_proj` rename, and `model.` prefix stripping for non-attention keys.
+**Mode:** real (constructs/compares real tensors; the underlying function itself doesn't need torch, but these tests exercise it with real tensor data)
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_qwen3.py -v -k normalize_attention_keys -m real_mode` exits 0.
+
+## test_build_key_remapping_direct_match / test_build_key_remapping_ignores_unmatched_keys (anvilml-worker)
+
+**File:** `worker/tests/test_arch_clip_qwen3.py`
+**Context:** Replaces two pre-existing tests that validated `_build_key_remapping()` against *invented* key conventions rather than the real model's actual keys — `test_build_key_remapping_direct_match` previously used "model."-prefixed keys on both checkpoint and module sides (never exercising the real mismatch), and the deleted `test_build_key_remapping_attention_remap` asserted against `"in_proj.weight"` (with the same dot-typo the implementation had, so the test and the bug agreed with each other).
+**Tests:** `direct_match` now uses a real `Qwen3TextEncoder`'s own keys on both sides; `ignores_unmatched_keys` confirms a key with no module counterpart is simply absent from the result, not erroring.
+**Mode:** `direct_match` real (constructs a real model); `ignores_unmatched_keys` mock (pure string logic).
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_qwen3.py -v -k build_key_remapping` exits 0.
+
+## test_infer_hyperparams_no_metadata_fixture (anvilml-worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** Unrelated to the P902 completeness work, but exposed by it: the committed `zit_tiny_no_metadata.safetensors` binary predated a source-code edit to `_no_metadata_tensors()`'s `xyz_latents` shape and was never regenerated to match, so this test's assertion (`latent_height == 4`) had silently been checking stale-but-correct data for an unknown period.
+**Tests:** No change to the test itself — the source (`xyz_latents` shape) was corrected back to `(1, 4, 4, 4)` to match the test's stated intent and the regular fixture's inferred hyperparams.
+**Mode:** mock (pure `_infer_hyperparams()` call, no torch)
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_infer_hyperparams_no_metadata_fixture -v -m "not real_mode"` exits 0.

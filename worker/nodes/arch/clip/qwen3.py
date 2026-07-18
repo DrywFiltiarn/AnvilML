@@ -397,100 +397,179 @@ def _select_dtype(caps: dict, native_dtype: str) -> "torch.dtype":
 # ---------------------------------------------------------------------------
 
 
+def _normalize_attention_keys(
+    state_dict: dict[str, torch.Tensor]
+) -> dict[str, torch.Tensor]:
+    """Normalize Qwen3/HF-style attention keys to this module's parameter layout.
+
+    Real-world Qwen3 checkpoints use separate ``self_attn.{q,k,v,o}_proj.
+    {weight,bias}`` tensors per layer, each shaped ``(hidden_dim,
+    hidden_dim)``/``(hidden_dim,)``. This module's own architecture uses
+    ``nn.MultiheadAttention``, whose internal parameters are a single
+    concatenated ``in_proj_weight``/``in_proj_bias`` (shaped
+    ``(3*hidden_dim, hidden_dim)``/``(3*hidden_dim,)``) plus
+    ``out_proj.weight``/``out_proj.bias``.
+
+    This is a genuine structural difference — not just a naming
+    difference like the "model." prefix stripped here — so it cannot be
+    expressed as a 1:1 checkpoint-key -> module-key string mapping (which
+    is what ``_build_key_remapping()`` provides). A prior implementation
+    attempted exactly that: mapping three separate checkpoint keys
+    (q_proj, k_proj, v_proj) to the same module-key string. That's
+    incoherent as a dict — only the last-processed of the three would
+    ever survive the assignment — and even the survivor's shape
+    ``(hidden_dim, hidden_dim)`` doesn't match ``in_proj_weight``'s real
+    shape ``(3*hidden_dim, hidden_dim)``, so ``load()``'s shape check
+    would skip it regardless. Combined with a second bug (the target key
+    was written as ``"in_proj.weight"``, with a dot, but
+    ``nn.MultiheadAttention``'s real attribute is ``in_proj_weight``, no
+    dot) and a third (no code anywhere stripped checkpoints' conventional
+    "model." prefix before comparing against this module's bare
+    ``layers.N...`` keys, so *every* key — not just attention — silently
+    failed to match against any realistically-prefixed checkpoint), the
+    net effect was that this module could not correctly load a single
+    parameter from any real-world-shaped Qwen3 checkpoint (P902 fix).
+
+    Args:
+        state_dict: Raw tensors as loaded from the checkpoint file, keyed
+            by their original (possibly "model."-prefixed) checkpoint
+            names.
+
+    Returns:
+        A NEW dict, keyed by this module's own (bare, unprefixed)
+        parameter names wherever a normalization rule applies:
+
+        - Every ``self_attn.{q,k,v}_proj.weight`` triple for a given
+          layer (all three present and identically shaped) is replaced
+          by a single ``self_attn.in_proj_weight`` entry
+          (``torch.cat([q, k, v], dim=0)``, matching
+          ``nn.MultiheadAttention``'s internal layout exactly). The
+          corresponding bias triple, if all three are present, is
+          concatenated into ``in_proj_bias`` the same way. An
+          incomplete or shape-inconsistent triple is left out entirely
+          (not passed through under its original key either — a lone
+          q_proj.weight with no matching k/v is not a valid
+          in_proj_weight and shouldn't be silently loaded as one).
+        - ``self_attn.o_proj.{weight,bias}`` is renamed to
+          ``self_attn.out_proj.{weight,bias}`` — a straight rename, no
+          concatenation needed, since the shapes already match.
+        - Every other key has a leading "model." prefix stripped (if
+          present) and passes through unchanged otherwise, matching this
+          module's own bare state_dict key convention (there is no
+          "model" submodule wrapping this architecture's construction).
+    """
+
+    def _strip_model_prefix(key: str) -> str:
+        return key[len("model.") :] if key.startswith("model.") else key
+
+    q_by_prefix: dict[str, str] = {}
+    k_by_prefix: dict[str, str] = {}
+    v_by_prefix: dict[str, str] = {}
+    q_bias_by_prefix: dict[str, str] = {}
+    k_bias_by_prefix: dict[str, str] = {}
+    v_bias_by_prefix: dict[str, str] = {}
+    o_weight_by_prefix: dict[str, str] = {}
+    o_bias_by_prefix: dict[str, str] = {}
+
+    result: dict[str, torch.Tensor] = {}
+
+    for ckpt_key, tensor in state_dict.items():
+        bare_key = _strip_model_prefix(ckpt_key)
+
+        m = re.match(r"(layers\.\d+\.self_attn\.)q_proj\.weight$", bare_key)
+        if m:
+            q_by_prefix[m.group(1)] = ckpt_key
+            continue
+        m = re.match(r"(layers\.\d+\.self_attn\.)k_proj\.weight$", bare_key)
+        if m:
+            k_by_prefix[m.group(1)] = ckpt_key
+            continue
+        m = re.match(r"(layers\.\d+\.self_attn\.)v_proj\.weight$", bare_key)
+        if m:
+            v_by_prefix[m.group(1)] = ckpt_key
+            continue
+        m = re.match(r"(layers\.\d+\.self_attn\.)q_proj\.bias$", bare_key)
+        if m:
+            q_bias_by_prefix[m.group(1)] = ckpt_key
+            continue
+        m = re.match(r"(layers\.\d+\.self_attn\.)k_proj\.bias$", bare_key)
+        if m:
+            k_bias_by_prefix[m.group(1)] = ckpt_key
+            continue
+        m = re.match(r"(layers\.\d+\.self_attn\.)v_proj\.bias$", bare_key)
+        if m:
+            v_bias_by_prefix[m.group(1)] = ckpt_key
+            continue
+        m = re.match(r"(layers\.\d+\.self_attn\.)o_proj\.weight$", bare_key)
+        if m:
+            o_weight_by_prefix[m.group(1)] = ckpt_key
+            continue
+        m = re.match(r"(layers\.\d+\.self_attn\.)o_proj\.bias$", bare_key)
+        if m:
+            o_bias_by_prefix[m.group(1)] = ckpt_key
+            continue
+
+        # Not an attention-projection key — pass through with the
+        # "model." prefix stripped (a no-op if it wasn't present).
+        result[bare_key] = tensor
+
+    # Concatenate q/k/v weight triples where all three are present and
+    # shape-consistent.
+    for prefix, q_key in q_by_prefix.items():
+        k_key = k_by_prefix.get(prefix)
+        v_key = v_by_prefix.get(prefix)
+        if k_key is None or v_key is None:
+            continue
+        q_t, k_t, v_t = state_dict[q_key], state_dict[k_key], state_dict[v_key]
+        if q_t.shape == k_t.shape == v_t.shape:
+            result[f"{prefix}in_proj_weight"] = torch.cat([q_t, k_t, v_t], dim=0)
+
+    # Concatenate q/k/v bias triples the same way, independently of
+    # whether the weight triple was present.
+    for prefix, q_key in q_bias_by_prefix.items():
+        k_key = k_bias_by_prefix.get(prefix)
+        v_key = v_bias_by_prefix.get(prefix)
+        if k_key is None or v_key is None:
+            continue
+        q_t, k_t, v_t = state_dict[q_key], state_dict[k_key], state_dict[v_key]
+        if q_t.shape == k_t.shape == v_t.shape:
+            result[f"{prefix}in_proj_bias"] = torch.cat([q_t, k_t, v_t], dim=0)
+
+    # Rename o_proj -> out_proj (straight rename — shapes already match).
+    for prefix, o_key in o_weight_by_prefix.items():
+        result[f"{prefix}out_proj.weight"] = state_dict[o_key]
+    for prefix, o_key in o_bias_by_prefix.items():
+        result[f"{prefix}out_proj.bias"] = state_dict[o_key]
+
+    return result
+
+
 def _build_key_remapping(
     checkpoint_keys: list[str], module_keys: list[str]
 ) -> dict[str, str]:
     """Build a checkpoint-key → module-key mapping for ``load_state_dict``.
 
-    Iterates over checkpoint keys and builds a remapping table that maps
-    each checkpoint key to the corresponding module state_dict key. The
-    function handles two cases:
-
-    1. **Direct match:** the checkpoint key exists verbatim in the module's
-       state_dict keys. The mapping is identity: ``ckpt_key → mod_key``.
-    2. **Pattern-based remapping:** for Qwen3 checkpoint keys that use
-       separate attention projection names (``q_proj``, ``k_proj``,
-       ``v_proj``, ``o_proj``) but the constructed module uses PyTorch's
-       ``MultiheadAttention`` which stores them as concatenated
-       ``in_proj_weight``, the function applies known remapping patterns.
+    Called AFTER ``_normalize_attention_keys()`` has already resolved the
+    structural q/k/v-concatenation and o_proj-rename differences (see its
+    docstring) — by this point every checkpoint key is expected to use
+    this module's own bare (no "model." prefix) key convention already,
+    so this function's job is purely the direct-match case: a checkpoint
+    key maps to itself whenever it's also a real module parameter name.
+    Any checkpoint key that still doesn't match after normalization
+    (metadata/marker tensors the module has no corresponding parameter
+    for, or a genuinely unrecognized key) is simply absent from the
+    returned mapping.
 
     Args:
-        checkpoint_keys: List of tensor keys from the safetensors file.
+        checkpoint_keys: List of tensor keys, post-normalization.
         module_keys: List of parameter keys from ``model.state_dict().keys()``.
 
     Returns:
-        A dict mapping ``checkpoint_key → module_key`` for all keys that
-        can be successfully remapped.
+        A dict mapping ``checkpoint_key → module_key`` for every key that
+        matches a real module parameter name.
     """
     module_key_set = set(module_keys)
-    remap: dict[str, str] = {}
-
-    # Collect q_proj and k_proj keys by layer prefix.
-    # We need both q and k present before remapping — the in_proj_weight
-    # tensor in MultiheadAttention concatenates all three projections,
-    # so we only remap when the full q/k/v triplet is available.
-    q_keys_by_prefix: dict[str, str] = {}
-    k_keys_by_prefix: dict[str, str] = {}
-    v_keys_by_prefix: dict[str, str] = {}
-    o_keys_by_prefix: dict[str, str] = {}
-
-    for ckpt_key in checkpoint_keys:
-        # Direct match — the key exists in both checkpoint and module.
-        if ckpt_key in module_key_set:
-            remap[ckpt_key] = ckpt_key
-            continue
-
-        # Collect Qwen3 attention projection keys by layer prefix.
-        m_q = re.match(
-            r"(model\.layers\.\d+\.self_attn\.)q_proj\.weight", ckpt_key
-        )
-        if m_q:
-            q_keys_by_prefix[m_q.group(1)] = ckpt_key
-            continue
-
-        m_k = re.match(
-            r"(model\.layers\.\d+\.self_attn\.)k_proj\.weight", ckpt_key
-        )
-        if m_k:
-            k_keys_by_prefix[m_k.group(1)] = ckpt_key
-            continue
-
-        m_v = re.match(
-            r"(model\.layers\.\d+\.self_attn\.)v_proj\.weight", ckpt_key
-        )
-        if m_v:
-            v_keys_by_prefix[m_v.group(1)] = ckpt_key
-            continue
-
-        # o_proj → out_proj.weight (independent of q/k/v presence).
-        m_o = re.match(
-            r"(model\.layers\.\d+\.self_attn\.)o_proj\.weight", ckpt_key
-        )
-        if m_o:
-            o_keys_by_prefix[m_o.group(1)] = ckpt_key
-            continue
-
-    # Now that we've collected all q/k/v/o keys, remap them.
-    # For each layer prefix that has q, k, and v, remap all three to
-    # in_proj.weight. The in_proj_weight tensor in MultiheadAttention
-    # concatenates the q, k, and v projections into a single tensor.
-    for prefix, q_key in q_keys_by_prefix.items():
-        k_key = k_keys_by_prefix.get(prefix)
-        v_key = v_keys_by_prefix.get(prefix)
-        if k_key is not None and v_key is not None:
-            in_proj_key = f"{prefix}in_proj.weight"
-            if in_proj_key in module_key_set:
-                remap[q_key] = in_proj_key
-                remap[k_key] = in_proj_key
-                remap[v_key] = in_proj_key
-
-    # Remap o_proj → out_proj.weight for each layer that has it.
-    for prefix, o_key in o_keys_by_prefix.items():
-        out_proj_key = f"{prefix}out_proj.weight"
-        if out_proj_key in module_key_set:
-            remap[o_key] = out_proj_key
-
-    return remap
+    return {key: key for key in checkpoint_keys if key in module_key_set}
 
 
 # ---------------------------------------------------------------------------
@@ -826,23 +905,54 @@ def load(
     # weights — this is the bridge between meta-construction and weight loading.
     model = model.to_empty(device=device)
 
+    # P902 fix: to_empty() allocates UNINITIALIZED memory — it does not
+    # zero anything, despite the checkpoint-loading comment below having
+    # historically assumed unpopulated parameters are "zero-initialized by
+    # design." That assumption was false, and this module had no
+    # corrective step at all — every parameter this checkpoint doesn't
+    # populate (which, before the P902 fixture rebuild, was 100% of this
+    # module's ~31 parameters, since the fixture's simplified key
+    # convention didn't match any of them) kept whatever garbage bits
+    # to_empty() left behind. Zero every parameter and buffer explicitly
+    # here, before loading the checkpoint, so any key the checkpoint
+    # doesn't cover deterministically stays at zero rather than silently
+    # propagating garbage/NaN through the first forward pass. This
+    # mirrors the identical fix applied to zit.py and zit_vae.py.
+    for param in model.parameters():
+        param.data.zero_()
+    for buf in model.buffers():
+        buf.data.zero_()
+
     # Verify .arch persists after materialization. to_empty() returns the same
     # module object (not a copy), so .arch should be preserved. If it is not,
     # explicitly re-set it — this is a safety net for future PyTorch versions.
     if not hasattr(model, "arch") or model.arch != ARCH:
         model.arch = ARCH
 
-    # Load checkpoint tensors and build the remapped state dict.
-    # Only keys that exist in BOTH the checkpoint and the module's state_dict
-    # are loaded. Keys that exist only in the checkpoint (e.g. metadata tensors)
-    # are silently skipped — this is correct because the test fixture checkpoint
-    # uses a simplified key naming convention that doesn't fully populate the
-    # MultiheadAttention parameters (which are zero-initialized by design).
+    # Load checkpoint tensors, normalize attention-projection keys, and
+    # build the remapped state dict.
+    #
+    # P902 fix: this comment previously claimed unmatched keys were
+    # "correct... because the test fixture checkpoint uses a simplified
+    # key naming convention that doesn't fully populate the
+    # MultiheadAttention parameters (which are zero-initialized by
+    # design)." That was covering for three real bugs — a missing
+    # "model." prefix strip, a typo'd in_proj key name, and no actual
+    # q/k/v concatenation logic — that meant this module could not load a
+    # single parameter from any realistically-shaped Qwen3 checkpoint.
+    # See _normalize_attention_keys()'s docstring for the full
+    # explanation and the fix. Any key still unmatched after
+    # normalization (a true metadata/marker tensor, or a genuinely
+    # unrecognized key) is still legitimately skipped — see the module
+    # docstring's list of what _infer_hyperparams() reads that isn't a
+    # real model parameter.
     state_dict = load_file(path, device=device)
+    state_dict = _normalize_attention_keys(state_dict)
 
-    # Build the checkpoint-key → module-key remapping table.
-    # This handles direct matches (exact key equality) and pattern-based
-    # remapping for Qwen3 attention projection key naming conventions.
+    # Build the checkpoint-key → module-key remapping table. By this
+    # point every key in state_dict already uses this module's own bare
+    # key convention (see _normalize_attention_keys()), so this is a
+    # direct-match lookup.
     remap = _build_key_remapping(
         list(state_dict.keys()), list(model.state_dict().keys())
     )

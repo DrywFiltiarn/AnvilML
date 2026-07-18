@@ -4,24 +4,43 @@
 Generates two tiny synthetic .safetensors files used by real-mode tests to
 exercise the model-loading contract end-to-end:
 
-1. zit_tiny.safetensors — ZiT-shaped tensor keys with ``arch: "zit"``
-   metadata in the safetensors header. Recognizable key prefixes
-   (``input_proj``, ``time_text_emb``, ``double_blocks``, ``single_blocks``,
-   ``output_proj``) let the loader identify the architecture family from
-   key naming conventions alone.
+1. zit_tiny.safetensors -- a COMPLETE checkpoint: every real parameter in
+   ``ZiTModel``'s actual ``state_dict()`` (P902 retrofit; previously this
+   fixture hand-picked 8 representative keys, leaving 22 of the model's 28
+   real parameters -- every bias, both LayerNorms, the feed-forward block,
+   and the second attention block's output projections -- unpopulated by
+   the checkpoint. ``load()`` materializes those via ``model.to_empty()``,
+   which allocates *uninitialized* memory, not zeros, despite ``load()``'s
+   historical assumption otherwise; the result was NaN or near-float32-max
+   garbage propagating through the very first forward pass of every
+   real-mode ``sample()``/E2E test, invisible because none of them checked
+   parameter values, only shapes/dtypes/devices). Built by directly
+   constructing ``ZiTModel(_HYPERPARAMS)`` (real device, not meta) and
+   dumping its full ``state_dict()`` -- this guarantees the fixture always
+   exactly matches the real architecture, keyed identically, with no
+   hand-maintained key list to fall out of sync as the model evolves.
+   Carries ``arch: "zit"`` metadata in the safetensors header.
 
-2. zit_tiny_no_metadata.safetensors — same structural tensor shapes but with
-   non-recognizable ``xyz_`` key prefix and no ``arch`` metadata key. This
-   combination forces the loader's metadata-fallback code path, exercising
-   the exact regression path that the v3 ``st.metadata`` vs ``st.metadata()``
-   bug lived in.
+2. zit_tiny_no_metadata.safetensors -- unchanged by this retrofit: a
+   deliberately minimal, non-recognizable-key-prefix fixture that only
+   needs to exercise ``_infer_hyperparams()``'s metadata-fallback path and
+   ``load()``'s ability to construct without crashing -- not a full
+   forward pass -- so full-state-dict completeness doesn't apply to it.
+   See ``_no_metadata_tensors()``'s docstring.
 
-Tensor shapes are structurally valid for a diffusion transformer's
-shape-inference formula (consistent hidden dim of 64 — a structurally
-valid but small dimension that stays well under the 10 MB per-file
-budget while preserving the same key-prefix patterns and shape
-relationships as the canonical 768-dim base model), 4-channel 8x8 latent
-matching the standard VAE-encoded latent space.
+``_HYPERPARAMS`` reproduces exactly what ``_infer_hyperparams()`` inferred
+from the pre-P902 fixture (hidden_dim=64, double_block_count=1,
+single_block_count=1, latent_channels=4, latent_height=4, latent_width=4,
+patch_size=4) -- chosen so every existing test that depends on these
+inferred values (shape assertions, dtype selection, etc.) is unaffected by
+this retrofit; only the fixture's *completeness*, not its *shape*, changed.
+
+Two synthetic marker tensors -- "latents" and "c_crossattn_dim" -- are
+included alongside the real state_dict. These are not real ``ZiTModel``
+parameters; ``_infer_hyperparams()`` reads them directly (``"latents"``'s
+shape[1] for ``latent_channels``; ``"c_crossattn_dim"``'s shape[0] as a
+``hidden_dim`` fallback) as part of its checkpoint-header shape-inference
+contract, independent of the model's actual architecture.
 
 Usage:
     worker/.venv/bin/python worker/tests/fixtures/build_zit_fixture.py
@@ -42,37 +61,69 @@ _FIXTURES_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
 )
 
+# Insert the repo root (three levels up from this file's directory:
+# worker/tests/fixtures/ -> repo root) onto sys.path so `import worker...`
+# resolves regardless of invocation style. Running this script directly
+# (`python worker/tests/fixtures/build_zit_fixture.py`) puts only this
+# file's own directory on sys.path[0], not the repo root, even when
+# invoked from the repo root as cwd -- unlike `python -c` or `-m`, which
+# do include cwd.
+_REPO_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")
+)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from worker.nodes.arch.diffusion.zit import ZiTModel  # noqa: E402
+
+# Hyperparameters for the real ZiTModel construction below. These exactly
+# reproduce what _infer_hyperparams() derived from the pre-P902 fixture --
+# see this module's docstring for why that equivalence matters.
+_HYPERPARAMS: dict[str, int] = {
+    "hidden_dim": 64,
+    "double_block_count": 1,
+    "single_block_count": 1,
+    "latent_channels": 4,
+    "latent_height": 4,
+    "latent_width": 4,
+    "patch_size": 4,
+}
+
 
 def _zit_tensors() -> dict[str, torch.Tensor]:
-    """Return the ZiT-shaped tensor dict for the regular fixture.
+    """Return a COMPLETE tensor dict covering every real ZiTModel parameter.
 
-    Keys use recognizable ZiT diffusion transformer prefixes so the loader
-    can identify the architecture from key naming conventions alone. All
-    tensors share a consistent hidden dimension of 768 (the canonical
-    base-model hidden dim).
+    Constructs ``ZiTModel(_HYPERPARAMS)`` directly on the real (CPU)
+    device -- not the meta device ``load()`` uses for memory efficiency --
+    so every ``nn.Linear``/``nn.LayerNorm``/``nn.MultiheadAttention``
+    submodule runs its normal PyTorch default initialization
+    (``reset_parameters()``), producing finite, properly-scaled values for
+    every one of the model's real parameters. ``torch.manual_seed()`` is
+    set immediately before construction so the fixture's content is
+    reproducible across runs of this script, unlike the pre-P902 version
+    (which called unseeded ``torch.randn()`` per tensor).
+
+    Two non-parameter marker tensors ("latents", "c_crossattn_dim") are
+    added on top of the real state_dict -- see this module's docstring.
 
     Returns:
-        Dict mapping tensor names to ``torch.Tensor`` values.
+        Dict mapping tensor names to ``torch.Tensor`` values: every key
+        in ``ZiTModel(_HYPERPARAMS).state_dict()``, plus the two marker
+        tensors.
     """
-    return {
-        # Input projection: latent space → hidden dimension
-        "input_proj.weight": torch.randn(64, 64),
-        # Time-step + text embedding projection
-        "time_text_emb.weight": torch.randn(64, 64),
-        # Cross-attention dimension (1-D tensor, common in diffusion transformers)
-        "c_crossattn_dim": torch.randn(64),
-        # First double-block self-attention projection
-        "double_blocks.0.img_attn.proj.weight": torch.randn(64, 64),
-        # First double-block cross-attention projection
-        "double_blocks.0.txt_attn.proj.weight": torch.randn(64, 64),
-        # First single-block linear projection
-        "single_blocks.0.linear1.weight": torch.randn(64, 64),
-        # Output projection back to latent space
-        "output_proj.weight": torch.randn(64, 64),
-        # Small latent tensor for shape inference on channel/spatial dimensions
-        # (4 channels from VAE encoding, 8x8 for a downscaled 1024x1024 image)
-        "latents": torch.randn(1, 4, 8, 8),
+    torch.manual_seed(42)
+    model = ZiTModel(_HYPERPARAMS)
+    tensors: dict[str, torch.Tensor] = {
+        key: value.detach().clone()
+        for key, value in model.state_dict().items()
     }
+
+    # Marker tensors for _infer_hyperparams()'s shape-inference contract
+    # (not real ZiTModel parameters -- see module docstring).
+    tensors["latents"] = torch.randn(1, 4, 8, 8)
+    tensors["c_crossattn_dim"] = torch.randn(_HYPERPARAMS["hidden_dim"])
+
+    return tensors
 
 
 def _no_metadata_tensors() -> dict[str, torch.Tensor]:
@@ -82,6 +133,31 @@ def _no_metadata_tensors() -> dict[str, torch.Tensor]:
     no known architecture pattern matcher can identify. Combined with the
     absent ``arch`` metadata key, this exercises the metadata-fallback
     code path.
+
+    ``xyz_latents``'s shape is ``(1, 4, 4, 4)``, NOT ``(1, 4, 8, 8)`` like
+    ``_zit_tensors()``'s "latents" marker -- and this difference matters,
+    unlike in the regular fixture. There, "latents" is only ever used for
+    its channel dimension (``_infer_hyperparams()``'s primary path derives
+    ``latent_height``/``latent_width`` from ``input_proj.weight``'s shape
+    instead, since that key is present, so "latents"'s own spatial dims
+    are never read). Here, with no ``input_proj.weight``-style key
+    present, ``_infer_hyperparams()`` falls back to reading
+    ``latent_height``/``latent_width`` directly from this tensor's own
+    spatial shape — so it must already equal ``(1, 4, 4, 4)`` for this
+    fixture to reproduce ``_HYPERPARAMS``' values (patch_size=4,
+    latent_height=4, latent_width=4), as this module's docstring and
+    ``test_infer_hyperparams_no_metadata_fixture`` both require. (P902
+    fix: found via a pre-existing, unrelated bug this retrofit's fixture
+    rebuild exposed — the *checked-in* zit_tiny_no_metadata.safetensors
+    binary predated a source-code edit that changed this shape to
+    ``(1, 4, 8, 8)``, matching ``_zit_tensors()``'s comment by copy-paste
+    without noticing this function's fallback path actually depends on
+    the value, unlike that one. The binary was never regenerated to match
+    the edit, so CI — which only ever loads the committed binary, never
+    re-runs this script — silently kept testing the old, correct shape
+    while the source drifted to a shape that would have failed the exact
+    moment anyone did regenerate it, as this retrofit's own fixture
+    rebuild immediately did.)
 
     Returns:
         Dict mapping tensor names to ``torch.Tensor`` values.
@@ -94,7 +170,7 @@ def _no_metadata_tensors() -> dict[str, torch.Tensor]:
         "xyz_double_block_txt_attn": torch.randn(64, 64),
         "xyz_single_block_linear": torch.randn(64, 64),
         "xyz_output_proj": torch.randn(64, 64),
-        "xyz_latents": torch.randn(1, 4, 8, 8),
+        "xyz_latents": torch.randn(1, 4, 4, 4),
     }
 
 

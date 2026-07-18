@@ -744,16 +744,25 @@ def load(path: str, caps: dict, device: str = "cpu") -> ZiTVaeModel:
     )
     model = model.to_empty(device=device)
 
-    # Step 3b: zero-initialize bias tensors after to_empty().
+    # Step 3b: zero-initialize all parameters and buffers after to_empty().
     # to_empty() allocates memory for meta-device parameters but does not
-    # initialize them to zeros — bf16 tensors may contain garbage values.
-    # Bias tensors should be zero-initialized (the default for nn.Conv2d
-    # and nn.GroupNorm) since the checkpoint fixture doesn't include bias
-    # tensors. We use .data assignment to avoid the in-place operation error
-    # on leaf variables that require grad.
-    for name, param in model.named_parameters():
-        if name.endswith(".bias"):
-            param.data.zero_()
+    # initialize them to zeros — any tensor may contain garbage values,
+    # not just biases. This step originally only zeroed ``.bias``-suffixed
+    # parameters, on the assumption that this fixture's only unmatched keys
+    # were biases — true for this specific fixture, but a fragile,
+    # fixture-specific assumption rather than a real guarantee: nothing
+    # here actually verified that every ``.weight`` key the checkpoint
+    # doesn't cover is otherwise safe. P902 widened this to zero every
+    # parameter and buffer unconditionally, matching the identical fix
+    # applied to zit.py and qwen3.py — both of which had unmatched
+    # *weight* tensors (not just biases) that this narrower version would
+    # not have protected against. Loaded values are unaffected: every
+    # matched key is overwritten by load_state_dict() below regardless of
+    # what it was zeroed to first.
+    for param in model.parameters():
+        param.data.zero_()
+    for buf in model.buffers():
+        buf.data.zero_()
 
     # Step 3c: verify .arch persists after materialization. to_empty() returns
     # the same module object (not a copy), so .arch should be preserved. If

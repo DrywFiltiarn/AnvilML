@@ -535,6 +535,27 @@ def load(path: str, caps: dict, device: str = "cpu") -> ZiTModel:
     )
     model = model.to_empty(device=device)
 
+    # P902 fix: to_empty() allocates UNINITIALIZED memory — it does not
+    # zero anything, despite this function's checkpoint-loading comments
+    # below having historically assumed unpopulated parameters are
+    # "zero-initialized by design." That assumption was false: any
+    # parameter this checkpoint doesn't populate (see the comment above
+    # the remapping call below) keeps whatever garbage bits to_empty()
+    # left behind, which is undefined — observed in practice as
+    # everything from plausible-looking floats to literal NaN and
+    # near-float32-max values, depending on process allocator history.
+    # Zero every parameter and buffer explicitly here, before loading the
+    # checkpoint, so any key the checkpoint doesn't cover deterministically
+    # stays at zero — making the "zero-initialized by design" comment
+    # below actually true — rather than silently propagating NaN through
+    # the first forward pass. This mirrors the identical fix applied to
+    # zit_vae.py and qwen3.py, which had the same to_empty()-without-zero
+    # gap.
+    for param in model.parameters():
+        param.data.zero_()
+    for buf in model.buffers():
+        buf.data.zero_()
+
     # Verify .arch persists after materialization. to_empty() returns the same
     # module object (not a copy), so .arch should be preserved. If it is not,
     # explicitly re-set it — this is a safety net for future PyTorch versions.

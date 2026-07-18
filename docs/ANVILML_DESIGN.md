@@ -1882,6 +1882,26 @@ that implements that family.
    cast to the target dtype **before** this call — `assign=True` bypasses dtype
    coercion, so casting after the call does not work; this exact ordering mistake is
    what caused P904's dtype-safety incident.
+
+   **`to_empty()` allocates uninitialized memory — it does not zero anything**
+   (P902 fix; all three arch modules' `load()` implementations previously carried a
+   comment asserting the opposite, which was false and went undetected for as long
+   as it did partly because every affected test fixture also happened to be
+   incomplete, so nothing exercised the difference between "zero" and "garbage").
+   Every `load()` implementation must explicitly zero every parameter and buffer
+   immediately after `to_empty()` and before loading the checkpoint, so any key the
+   checkpoint doesn't cover deterministically stays at zero rather than propagating
+   whatever bits were already in that memory (observed in practice as everything
+   from plausible-looking floats to literal NaN and near-dtype-max values,
+   depending on process allocator history — not a hypothetical). See
+   `docs/ADDENDUM_P902_FIXTURE_COMPLETENESS_AND_QWEN3_LOADING.md` for the full
+   incident writeup, including a case (Qwen3) where the checkpoint-to-module key
+   remapping itself was broken in a way that meant *no* real checkpoint, however
+   complete, could ever have populated the model at all — completeness of the test
+   fixture and correctness of the remapping logic are independent properties, and a
+   test suite needs to check both (see that addendum's finding 5 for the pattern:
+   independently re-derive the remapping and assert full coverage, *and* separately
+   assert no loaded parameter is NaN/Inf/suspiciously large).
 4. **Return the constructed module** with an `.arch` attribute set to the
    architecture string this module's `can_handle()` matches, so later dispatch
    (`Sampler`, `VaeDecode`, `EmptyLatent`) can route correctly without re-deriving

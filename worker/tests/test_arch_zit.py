@@ -20,6 +20,8 @@ except ImportError:
 from worker.nodes.arch.diffusion import get_module
 from worker.nodes.arch.diffusion import zit
 from worker.nodes.arch.diffusion.zit import (
+    ZiTModel,
+    _build_key_remapping,
     _infer_hyperparams,
     _select_dtype,
     can_handle,
@@ -491,10 +493,62 @@ def test_load_real_zit_fixture() -> None:
     # Verify the selected dtype is bfloat16.
     assert next(model.parameters()).dtype == torch.bfloat16
     # Spot-check: verify the model loaded successfully — the arch
-    # attribute is set and parameters are on the real device. The
-    # fixture checkpoint is synthetic with simplified shapes, so we
-    # only verify the structural properties rather than weight values.
+    # attribute is set and parameters are on the real device.
     assert model.arch == "zit"
+
+
+@pytest.mark.real_mode
+def test_load_real_zit_fixture_no_unmatched_parameters() -> None:
+    """load() populates every real ZiTModel parameter from the checkpoint — none left at zero.
+
+    P902 regression test: prior to the P902 retrofit, zit_tiny.safetensors
+    only covered 6 of ZiTModel's 28 real parameters (every bias, both
+    LayerNorms, the feed-forward block, and the second attention block's
+    output projections were unpopulated), and load()'s to_empty()
+    materialization left those as uninitialized garbage — observed as NaN
+    or near-float32-max values propagating through the very first forward
+    pass. This test independently re-derives the checkpoint-to-module key
+    remapping (mirroring what load() does internally) and asserts every
+    one of the model's real parameters has a match — i.e. that the fixture
+    is genuinely complete, not just that load() doesn't crash. Combined
+    with test_load_real_zit_fixture_no_nan_or_extreme_values below (which
+    would catch a *future* incomplete fixture even without re-deriving the
+    remapping), this is the pair of tests that should have existed from
+    the start to catch this class of defect.
+    """
+    from safetensors import safe_open
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    caps = {
+        "fp32": True, "fp16": True, "bf16": True, "fp8": False,
+        "fp4": False, "flash_attention": False,
+    }
+    hyperparams = _infer_hyperparams(str(fixture_path))
+    with safe_open(str(fixture_path), framework="np") as f:
+        ckpt_keys = list(f.keys())
+    with torch.device("meta"):
+        reference_model = ZiTModel(hyperparams)
+    model_keys = list(reference_model.state_dict().keys())
+    remap = _build_key_remapping(ckpt_keys, model_keys)
+    matched = set(remap.values())
+    unmatched = [k for k in model_keys if k not in matched]
+    assert not unmatched, (
+        f"fixture does not populate every real ZiTModel parameter: "
+        f"{len(unmatched)}/{len(model_keys)} unmatched: {unmatched}"
+    )
+
+    # Independently confirm load() itself agrees: no parameter is NaN,
+    # infinite, or suspiciously large (a value load()'s defensive
+    # zero-init could never itself produce, but that to_empty()'s
+    # undefined-memory behavior demonstrably can — see the P902 addendum).
+    model = load(str(fixture_path), caps, device="cpu")
+    for name, param in model.named_parameters():
+        assert not torch.isnan(param).any(), f"{name} contains NaN"
+        assert not torch.isinf(param).any(), f"{name} contains Inf"
+        assert param.abs().max().item() < 1e6, (
+            f"{name} has suspiciously large values (max={param.abs().max().item():.3e}), "
+            f"consistent with uninitialized to_empty() memory rather than a real weight"
+        )
 
 
 @pytest.mark.real_mode

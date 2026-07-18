@@ -810,6 +810,51 @@ def test_load_real_zit_vae_fixture() -> None:
     assert model.arch == "zit_vae"
 
 
+@pytest.mark.real_mode
+def test_load_real_zit_vae_fixture_no_unmatched_parameters() -> None:
+    """load() populates every real ZiTVaeModel parameter from the checkpoint.
+
+    P902 regression test: prior to the P902 retrofit, zit_vae_tiny.safetensors
+    only covered ``.conv.weight``/``.norm.weight`` keys, leaving all 10 bias
+    parameters unpopulated. ``load()`` already had a defensive zero-init for
+    exactly this gap, narrowly scoped to ``.bias``-suffixed parameters —
+    which happened to be sufficient for this specific fixture's gap, but
+    wasn't a real guarantee. This test independently re-derives the
+    checkpoint-to-module key remapping and asserts every one of the model's
+    real parameters has a match — i.e. the fixture is genuinely complete —
+    plus confirms no parameter is NaN/Inf/suspiciously large, matching the
+    equivalent regression tests added for the zit and qwen3 families.
+    """
+    from safetensors import safe_open
+
+    from worker.nodes.arch.vae.zit_vae import ZiTVaeModel, load
+
+    fixture_path = _FIXTURE_DIR / "zit_vae_tiny.safetensors"
+    caps: dict = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}
+
+    hyperparams = _infer_hyperparams(str(fixture_path))
+    with safe_open(str(fixture_path), framework="np") as f:
+        ckpt_keys = list(f.keys())
+    with torch.device("meta"):
+        reference_model = ZiTVaeModel(hyperparams)
+    model_keys = list(reference_model.state_dict().keys())
+    remap = _build_key_remapping(ckpt_keys, model_keys)
+    matched = set(remap.values())
+    unmatched = [k for k in model_keys if k not in matched]
+    assert not unmatched, (
+        f"fixture does not populate every real ZiTVaeModel parameter: "
+        f"{len(unmatched)}/{len(model_keys)} unmatched: {unmatched}"
+    )
+
+    model = load(str(fixture_path), caps, "cpu")
+    for name, param in model.named_parameters():
+        assert not torch.isnan(param).any(), f"{name} contains NaN"
+        assert not torch.isinf(param).any(), f"{name} contains Inf"
+        assert param.abs().max().item() < 1e6, (
+            f"{name} has suspiciously large values (max={param.abs().max().item():.3e})"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Tests for decode() — latent-to-image (P23-D1)
 # ---------------------------------------------------------------------------
