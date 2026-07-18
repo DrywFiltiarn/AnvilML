@@ -596,25 +596,213 @@ def test_empty_latent_in_registry() -> None:
 
 
 @pytest.mark.real_mode
-def test_empty_latent_real_raises_not_implemented() -> None:
-    """EmptyLatent.execute() raises NotImplementedError in real mode.
+def test_empty_latent_real_raises_value_error_without_model() -> None:
+    """EmptyLatent.execute() raises ValueError when model is absent in real mode.
 
     Constructs a NodeContext with mock=False, calls execute() with
-    width=64 and height=64, and asserts that NotImplementedError is
-    raised with a message mentioning "P24-C2".
+    width=64 and height=64 but without a "model" input, and asserts that
+    ValueError is raised with a clear message mentioning "model".
 
-    This test exercises the real code path (the stub) and satisfies
-    the REAL_PATH_VERIFIED marker.
+    This test exercises the real code path's input validation and satisfies
+    the REAL_PATH_VERIFIED marker for the error path.
 
-    Expected outcome: NotImplementedError is raised with "P24-C2"
-    in the error message.
+    Expected outcome: ValueError is raised with "model" in the error message.
     """
     from worker.nodes.loader import EmptyLatent
 
     node = EmptyLatent()
     ctx = _make_ctx(mock=False)
 
-    with pytest.raises(NotImplementedError, match="P24-C2"):
+    with pytest.raises(ValueError, match="model"):
         node.execute(ctx, width=64, height=64)
+
+
+@pytest.mark.real_mode
+def test_empty_latent_real_produces_latent_with_loaded_model() -> None:
+    """EmptyLatent.execute() produces a latent matching compute_latent_shape() with a loaded ZiT model.
+
+    Loads the ZiT fixture checkpoint via LoadModel, then calls
+    EmptyLatent.execute() with the loaded model, width=64, height=64.
+    Verifies the returned latent tensor's shape matches
+    ``compute_latent_shape(64, 64, 1)``'s output using the fixture's
+    actual patch_size (set by load() on the zit module).
+
+    This test exercises the real code path end-to-end: LoadModel →
+    EmptyLatent, confirming the dispatch chain and latent allocation work.
+
+    Expected outcome: {"latent": torch.Tensor} with shape (1, 4, 8, 8)
+    on CPU device.
+    """
+    from pathlib import Path
+
+    import torch
+
+    from worker.nodes.arch.diffusion.zit import compute_latent_shape
+    from worker.nodes.loader import EmptyLatent, LoadModel
+    from worker.pipeline_cache import PipelineCache
+
+    fixture_path = str(
+        Path(__file__).parent / "fixtures" / "zit_tiny.safetensors"
+    )
+
+    # Load the model first — this sets MODEL_PATCH_SIZE and
+    # MODEL_LATENT_CHANNELS on the zit module.
+    load_node = LoadModel()
+    load_ctx = _make_ctx(mock=False, pipeline_cache=PipelineCache())
+    load_result = load_node.execute(load_ctx, model_id=fixture_path)
+
+    # Run EmptyLatent with the loaded model.
+    latent_node = EmptyLatent()
+    latent_ctx = _make_ctx(mock=False, pipeline_cache=PipelineCache())
+    result = latent_node.execute(
+        latent_ctx,
+        width=64,
+        height=64,
+        model=load_result["model"],
+    )
+
+    # Verify the return dict has the expected LATENT slot.
+    assert "latent" in result
+    latent = result["latent"]
+
+    # Verify the returned object is a torch.Tensor.
+    assert isinstance(latent, torch.Tensor)
+
+    # Verify the shape matches compute_latent_shape()'s output.
+    expected_shape = compute_latent_shape(64, 64, 1)
+    assert tuple(latent.shape) == expected_shape, (
+        f"expected shape {expected_shape}, got {tuple(latent.shape)}"
+    )
+
+    # Verify the tensor is on the correct device.
+    assert latent.device.type == "cpu"
+
+
+@pytest.mark.real_mode
+def test_empty_latent_real_different_dimensions() -> None:
+    """EmptyLatent.execute() produces correct shape for 128×128 dimensions in real mode.
+
+    Loads the ZiT fixture, calls EmptyLatent.execute() with width=128,
+    height=128, and verifies the returned latent tensor has shape
+    (1, 4, 32, 32) — since patch_size=4 (set by load()), 128/4=32.
+
+    Expected outcome: {"latent": torch.Tensor} with shape (1, 4, 32, 32).
+    """
+    from pathlib import Path
+
+    import torch
+
+    from worker.nodes.loader import EmptyLatent, LoadModel
+    from worker.pipeline_cache import PipelineCache
+
+    fixture_path = str(
+        Path(__file__).parent / "fixtures" / "zit_tiny.safetensors"
+    )
+
+    load_node = LoadModel()
+    load_ctx = _make_ctx(mock=False, pipeline_cache=PipelineCache())
+    load_result = load_node.execute(load_ctx, model_id=fixture_path)
+
+    latent_node = EmptyLatent()
+    latent_ctx = _make_ctx(mock=False, pipeline_cache=PipelineCache())
+    result = latent_node.execute(
+        latent_ctx,
+        width=128,
+        height=128,
+        model=load_result["model"],
+    )
+
+    assert "latent" in result
+    latent = result["latent"]
+    assert isinstance(latent, torch.Tensor)
+    assert tuple(latent.shape) == (1, 4, 32, 32), (
+        f"expected shape (1, 4, 32, 32), got {tuple(latent.shape)}"
+    )
+
+
+@pytest.mark.real_mode
+def test_empty_latent_real_batch_size_scaling() -> None:
+    """EmptyLatent.execute() scales latent shape correctly with batch_size=3 in real mode.
+
+    Loads the ZiT fixture, calls EmptyLatent.execute() with width=64,
+    height=64, batch_size=3, and verifies the returned latent tensor
+    has shape (3, 4, 8, 8) — batch_size scales the first dimension.
+
+    Expected outcome: {"latent": torch.Tensor} with shape (3, 4, 8, 8).
+    """
+    from pathlib import Path
+
+    import torch
+
+    from worker.nodes.loader import EmptyLatent, LoadModel
+    from worker.pipeline_cache import PipelineCache
+
+    fixture_path = str(
+        Path(__file__).parent / "fixtures" / "zit_tiny.safetensors"
+    )
+
+    load_node = LoadModel()
+    load_ctx = _make_ctx(mock=False, pipeline_cache=PipelineCache())
+    load_result = load_node.execute(load_ctx, model_id=fixture_path)
+
+    latent_node = EmptyLatent()
+    latent_ctx = _make_ctx(mock=False, pipeline_cache=PipelineCache())
+    result = latent_node.execute(
+        latent_ctx,
+        width=64,
+        height=64,
+        batch_size=3,
+        model=load_result["model"],
+    )
+
+    assert "latent" in result
+    latent = result["latent"]
+    assert isinstance(latent, torch.Tensor)
+    assert tuple(latent.shape) == (3, 4, 16, 16), (
+        f"expected shape (3, 4, 16, 16), got {tuple(latent.shape)}"
+    )
+
+
+@pytest.mark.real_mode
+def test_empty_latent_real_zero_dimensions() -> None:
+    """EmptyLatent.execute() produces zero latent dims when width=0 in real mode.
+
+    Loads the ZiT fixture, calls EmptyLatent.execute() with width=0
+    and height=32, and verifies the returned latent tensor has shape
+    (1, 4, 0, 4) — zero width produces zero latent height via the
+    ceiling-division formula in compute_latent_shape().
+
+    Expected outcome: {"latent": torch.Tensor} with shape (1, 4, 0, 4).
+    """
+    from pathlib import Path
+
+    import torch
+
+    from worker.nodes.loader import EmptyLatent, LoadModel
+    from worker.pipeline_cache import PipelineCache
+
+    fixture_path = str(
+        Path(__file__).parent / "fixtures" / "zit_tiny.safetensors"
+    )
+
+    load_node = LoadModel()
+    load_ctx = _make_ctx(mock=False, pipeline_cache=PipelineCache())
+    load_result = load_node.execute(load_ctx, model_id=fixture_path)
+
+    latent_node = EmptyLatent()
+    latent_ctx = _make_ctx(mock=False, pipeline_cache=PipelineCache())
+    result = latent_node.execute(
+        latent_ctx,
+        width=0,
+        height=32,
+        model=load_result["model"],
+    )
+
+    assert "latent" in result
+    latent = result["latent"]
+    assert isinstance(latent, torch.Tensor)
+    assert tuple(latent.shape) == (1, 4, 0, 8), (
+        f"expected shape (1, 4, 0, 8), got {tuple(latent.shape)}"
+    )
 
 

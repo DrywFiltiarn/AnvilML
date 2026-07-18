@@ -324,15 +324,16 @@ class EmptyLatent(BaseNode):
     ]
     OUTPUT_SLOTS = [SlotSpec("latent", "LATENT")]
 
-    # REAL_PATH_VERIFIED: worker/tests/test_nodes_loader.py::test_empty_latent_real_raises_not_implemented
+    # REAL_PATH_VERIFIED: worker/tests/test_nodes_loader.py::test_empty_latent_real_produces_latent_with_loaded_model
     # MOCK_PATH_VERIFIED: worker/tests/test_nodes_loader.py::test_empty_latent_mock_returns_placeholder_shape
     def execute(self, ctx: NodeContext, **inputs) -> dict:
         """Execute the EmptyLatent node.
 
         Branches on ctx.mock at the top per §14.6 — the mock branch
         returns a placeholder latent tensor with no model dispatch;
-        the real branch (P24-C2) dispatches to the loaded model's
-        arch module for architecture-specific shape computation.
+        the real branch dispatches to the loaded model's arch module
+        for architecture-specific shape computation via
+        ``compute_latent_shape()``.
 
         Args:
             ctx: Runtime context carrying job_id, device, caps,
@@ -346,12 +347,16 @@ class EmptyLatent(BaseNode):
             In mock mode: Dict with key "latent" containing the sentinel
             {"mock": True, "shape": (batch_size, 4, height//8, width//8)}
             — no torch import, matching every other node's mock branch.
-            In real mode: (deferred to P24-C2) Dict with key "latent"
-            containing a tensor computed via compute_latent_shape().
+            In real mode: Dict with key "latent" containing a
+            ``torch.Tensor`` whose shape is computed via
+            ``compute_latent_shape()`` from the loaded model's arch module.
 
         Raises:
-            NotImplementedError: If called in real mode without
-                P24-C2's real branch implementation.
+            ValueError: If called in real mode without a "model" input
+                — the model is required to dispatch to the correct arch
+                module for shape computation.
+            RuntimeError: If the model's arch module is not registered
+                (should not occur after zit is wired in).
         """
         if ctx.mock:
             # Mock branch: return a generic placeholder latent with
@@ -381,11 +386,65 @@ class EmptyLatent(BaseNode):
             latent_shape = (batch_size, 4, height // 8, width // 8)
             return {"latent": {"mock": True, "shape": latent_shape}}
         else:
-            # Real branch placeholder — full implementation is deferred
-            # to P24-C2, which dispatches to arch.diffusion.get_module()
-            # and calls compute_latent_shape().
-            # defers_to: P24-C2 — real branch dispatches to arch.diffusion
-            raise NotImplementedError(
-                f"EmptyLatent real branch not yet implemented; "
-                f"deferred to P24-C2"
-            )
+            # Real branch: model input is required — per §10.3's "required
+            # in real mode" note, EmptyLatent dispatches to the loaded model's
+            # arch module for architecture-specific latent shape computation.
+            # The mock branch ignores model entirely.
+            model = inputs.get("model")
+            if model is None:
+                # model is required in real mode to determine the architecture-
+                # specific latent shape formula. Without it, we cannot dispatch
+                # to the correct arch module's compute_latent_shape().
+                raise ValueError(
+                    "EmptyLatent requires a 'model' input in real mode; "
+                    "provide the output of LoadModel to this node."
+                )
+
+            # Dispatch to the model's arch module for compute_latent_shape().
+            # model.arch is the architecture string (e.g. "zit") set by the
+            # loader node's load() function. get_module() returns the matching
+            # arch module (currently zit), whose compute_latent_shape() reads
+            # module-level globals set by load() to produce the correct shape.
+            from worker.nodes.arch.diffusion import get_module
+
+            arch = getattr(model, "arch", None)
+            if arch is None:
+                # Defensive guard — the ZiTModel (and any future arch modules)
+                # must carry an .arch attribute set by load(). This catches
+                # models from corrupted checkpoints or future architectures
+                # that forgot to set the attribute.
+                raise RuntimeError(
+                    f"model has no 'arch' attribute; "
+                    f"cannot compute latent shape"
+                )
+
+            module = get_module(arch)
+            if module is None:
+                # Defensive guard — if arch is "zit" (the only registered
+                # arch), get_module("zit") should always return zit. This
+                # guard catches unexpected arch strings from corrupted or
+                # future models.
+                raise RuntimeError(
+                    f"no diffusion arch module registered for '{arch}'; "
+                    f"cannot compute latent shape"
+                )
+
+            width = inputs["width"]
+            height = inputs["height"]
+            batch_size = inputs.get("batch_size", 1)
+
+            # compute_latent_shape() reads module-level globals (MODEL_PATCH_SIZE,
+            # MODEL_LATENT_CHANNELS) that were set by load() on this same module.
+            # It returns (batch_size, latent_channels, latent_height, latent_width).
+            latent_shape = module.compute_latent_shape(width, height, batch_size)
+
+            # Allocate a zero-filled latent tensor on the worker's device.
+            # torch.zeros produces a tensor with the exact shape returned by
+            # compute_latent_shape(), ready to be passed to the Sampler's
+            # denoising loop. The model's arch module's compute_latent_shape()
+            # already accounts for the correct patch_size and latent_channels
+            # for this architecture.
+            import torch
+
+            latent = torch.zeros(latent_shape, device=ctx.device)
+            return {"latent": latent}

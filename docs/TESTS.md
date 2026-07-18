@@ -8488,3 +8488,13 @@ the P901 section above.
 **Tests:** No change to the test itself — the source (`xyz_latents` shape) was corrected back to `(1, 4, 4, 4)` to match the test's stated intent and the regular fixture's inferred hyperparams.
 **Mode:** mock (pure `_infer_hyperparams()` call, no torch)
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_infer_hyperparams_no_metadata_fixture -v -m "not real_mode"` exits 0.
+
+## test_empty_latent_real_* (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** P24-C2 — replaces the `NotImplementedError` stub in `EmptyLatent.execute()`'s real branch with actual dispatch logic. Five new real-mode tests validate the real branch: missing-model error, successful latent allocation with loaded model, different dimensions, batch size scaling, and zero dimensions. The old stub test `test_empty_latent_real_raises_not_implemented` was removed.
+**Tests:** `test_empty_latent_real_raises_value_error_without_model` asserts `ValueError` when model is absent. `test_empty_latent_real_produces_latent_with_loaded_model` loads the ZiT fixture, calls EmptyLatent, and verifies shape matches `compute_latent_shape()`. `test_empty_latent_real_different_dimensions` verifies 128×128 → (1, 4, 32, 32). `test_empty_latent_real_batch_size_scaling` verifies batch_size=3 → (3, 4, 16, 16). `test_empty_latent_real_zero_dimensions` verifies width=0 → (1, 4, 0, 8).
+**Mode:** real
+**Inputs:** `zit_tiny.safetensors` fixture, various width/height/batch_size combinations.
+**Expected output:** Real-mode tests produce `torch.Tensor` outputs with correct shapes; missing-model test raises `ValueError`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py -v -m real_mode -k "test_empty_latent_real"` exits 0.
