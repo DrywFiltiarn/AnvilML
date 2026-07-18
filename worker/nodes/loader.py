@@ -90,11 +90,15 @@ class LoadModel(BaseNode):
                     f"cannot load model '{inputs['model_id']}'"
                 )
 
-            logger.debug("LoadModel: requesting model_id=%s", inputs["model_id"])
+            logger.debug(
+                "LoadModel: requesting model_id=%s, device=%s",
+                inputs["model_id"],
+                ctx.device,
+            )
             return {
                 "model": ctx.pipeline_cache.get_or_load(
-                    inputs["model_id"],
-                    lambda: module.load(inputs["model_id"], ctx.caps),
+                    f"model:{inputs['model_id']}",
+                    lambda: module.load(inputs["model_id"], ctx.caps, ctx.device),
                 )
             }
 
@@ -176,11 +180,15 @@ class LoadVae(BaseNode):
                     f"cannot load VAE '{inputs['model_id']}'"
                 )
 
-            logger.debug("LoadVae: requesting model_id=%s", inputs["model_id"])
+            logger.debug(
+                "LoadVae: requesting model_id=%s, device=%s",
+                inputs["model_id"],
+                ctx.device,
+            )
             return {
                 "vae": ctx.pipeline_cache.get_or_load(
                     f"vae:{inputs['model_id']}",
-                    lambda: module.load(inputs["model_id"], ctx.caps),
+                    lambda: module.load(inputs["model_id"], ctx.caps, ctx.device),
                 )
             }
 
@@ -270,15 +278,16 @@ class LoadClip(BaseNode):
                 )
 
             logger.debug(
-                "LoadClip: requesting model_id=%s, clip_type=%s",
+                "LoadClip: requesting model_id=%s, clip_type=%s, device=%s",
                 inputs["model_id"],
                 inputs.get("clip_type", "qwen3"),
+                ctx.device,
             )
             return {
                 "clip": ctx.pipeline_cache.get_or_load(
                     f"clip:{inputs['model_id']}",
                     lambda: module.load(
-                        inputs["model_id"], ctx.caps
+                        inputs["model_id"], ctx.caps, ctx.device
                     ),
                 )
             }

@@ -18,17 +18,22 @@ logger = logging.getLogger(__name__)
 class Sampler(BaseNode):
     """A generic sampling node that runs a denoising diffusion step.
 
-    Takes a model, conditioning, CLIP, latent, steps, cfg, and seed as inputs,
+    Takes a model, conditioning, latent, steps, cfg, and seed as inputs,
     and produces a latent and seed as outputs. Both mock and real branches are
     exercised by dedicated tests per the dual-mode parity marker convention
     (ANVILML_DESIGN.md §10.6).
+
+    Does not take a CLIP input: the conditioning it consumes (positive and,
+    optionally, negative) is already fully resolved by ClipTextEncode
+    upstream, so Sampler has no independent need for the CLIP encoder
+    itself (ANVILML_DESIGN.md §10.3, revised).
 
     Class Attributes:
         NODE_TYPE: The registry key for this node type.
         CATEGORY: The category this node belongs to.
         DISPLAY_NAME: Human-readable name shown in UI/tooling.
         DESCRIPTION: One-line description of the node's purpose.
-        INPUT_SLOTS: Seven input slots — model, conditioning, clip, latent,
+        INPUT_SLOTS: Six input slots — model, conditioning, latent,
             steps, cfg, and seed.
         OUTPUT_SLOTS: Two output slots — latent and seed.
     """
@@ -42,7 +47,6 @@ class Sampler(BaseNode):
     INPUT_SLOTS = [
         SlotSpec("model", "MODEL"),
         SlotSpec("conditioning", "CONDITIONING"),
-        SlotSpec("clip", "CLIP"),
         SlotSpec("latent", "LATENT"),
         SlotSpec("steps", "INT"),
         SlotSpec("cfg", "FLOAT"),
@@ -68,8 +72,8 @@ class Sampler(BaseNode):
             ctx: Runtime context carrying job_id, device, caps,
                 cancel_flag, emit, pipeline_cache, and mock flag.
             **inputs: Named input values keyed by slot name. Must contain
-                "model", "conditioning", "clip", "latent", "steps", "cfg",
-                and "seed".
+                "model", "conditioning", "latent", "steps", "cfg", and
+                "seed".
 
         Returns:
             Dict with keys "latent" (a ``torch.Tensor`` in real mode,

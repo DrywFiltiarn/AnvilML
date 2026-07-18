@@ -1621,7 +1621,7 @@ type list anywhere. On respawn, the worker re-reports its node types.
 | `LoadClip` | Loaders | `model_id: String, clip_type: String?` | `clip: Clip` | Loads a Qwen3 text encoder from a safetensors file via raw shape-inferred construction (§11). `clip_type` hint: `"qwen3"` (only value in MVP scope). |
 | `ClipTextEncode` | Conditioning | `clip: Clip, positive_text: String, negative_text: String?` | `conditioning: Conditioning` | Encodes a text prompt using any loaded CLIP-compatible encoder. Architecture-agnostic. |
 | `EmptyLatent` | Latents | `width: Int, height: Int, batch_size: Int?, model: Model?` | `latent: Latent` | Creates a blank noise latent tensor. The optional `model` input is required in real mode: dispatches to the loaded model's arch module's `compute_latent_shape()` — the shape *formula*, not just a scale factor, is architecture-specific. Mock mode ignores this input. |
-| `Sampler` | Sampling | `model: Model, conditioning: Conditioning, clip: Clip, latent: Latent, steps: Int, cfg: Float, seed: Int` | `latent: Latent, seed: Int` | Dispatches internally to the matched arch module. Returns the denoised latent and the actual seed used (`-1` resolves to a random seed). |
+| `Sampler` | Sampling | `model: Model, conditioning: Conditioning, latent: Latent, steps: Int, cfg: Float, seed: Int` | `latent: Latent, seed: Int` | Dispatches internally to the matched arch module. Returns the denoised latent and the actual seed used (`-1` resolves to a random seed). Does not take `clip` directly — `conditioning` (from `ClipTextEncode`, positive and optionally negative) is already fully resolved by the time it reaches `Sampler`; see the P901 retrofit addendum for the P24-B2-era implementation that briefly declared an unused `clip` slot here. |
 | `VaeDecode` | Decoding | `vae: Vae, latent: Latent` | `image: Image` | Decodes a denoised latent to a PIL image using the explicitly provided VAE. |
 | `ImageResize` | Images | `image: Image, width: Int, height: Int, method: String?` | `image: Image` | Resizes a PIL image. `method` defaults to `"lanczos"`. |
 | `SaveImage` | Output | `image: Image, seed: Int?, steps: Int?` | *(none)* | Encodes to PNG, writes to artifact store, emits `ImageReady`. |
@@ -1746,6 +1746,34 @@ reference this marker):**
 
 This marker is additive to, not a replacement for, the normal test-writing
 obligations in `FORGE_AGENT_RULES.md §5` and `docs/ENVIRONMENT.md §11`.
+
+**Documented exception: arch-module `load()`/`sample()`/`decode()` have no genuine
+mock-path test (P901 retrofit).** §11.2 states these three functions are
+"real-mode-only by nature and may assume torch is present once past the guard" —
+which means, unlike a node's `execute()` (which genuinely branches on `ctx.mock`
+and has two distinct code paths to verify), an arch module's `load()`/`sample()`/
+`decode()` has exactly one implementation and no mock branch to point a
+`MOCK_PATH_VERIFIED` marker at in the strict §17.2 sense (a test that runs under
+`ANVILML_WORKER_MOCK=1` with no torch import). `zit.py` and `zit_vae.py` originally
+worked around this by pointing `MOCK_PATH_VERIFIED` at a `@pytest.mark.real_mode`
+test whose name and docstring call it "mock" (e.g. `test_load_mock_zit_fixture`) —
+meaning it loads real weights against a small/synthetic fixture, not that it runs
+under the mock env var. That satisfies neither the letter nor the intent of rule 2
+above, and is exactly the "marker pointing at a stale test" failure mode rule 4
+warns is worse than no marker.
+
+Rather than force a synthetic mock-path test that would test nothing (there is no
+mock branch inside `load()`/`sample()`/`decode()` to exercise), this is a
+documented, permanent exception to rule 3: for these three functions only,
+`MOCK_PATH_VERIFIED` may instead name a **collection-safety** test — a test that
+imports the arch module's package (e.g. `worker.nodes.arch.diffusion`) in a
+subprocess with `ANVILML_WORKER_MOCK=1` and no torch installed, and asserts
+collection/import succeeds without raising (this is what the §11.2 import-guard
+requirement exists to guarantee, and is genuinely mock-mode-verifiable). Every
+node's `execute()` — including `Sampler`, `VaeDecode`, `ClipTextEncode`, and
+`LoadModel`/`LoadVae`/`LoadClip` — is unaffected by this exception and must
+continue to satisfy rule 3 in full: those functions do have a real `ctx.mock`
+branch, and both markers must point at tests that genuinely exercise it.
 
 ---
 
@@ -1901,13 +1929,38 @@ correct, not a workaround to special-case away.
 ### 11.6 Component vs. Pipeline Caching
 
 `LoadModel`, `LoadVae`, `LoadClip` each cache their own raw component (transformer,
-VAE, text encoder) via `pipeline_cache.get_or_load(model_id, ...)`. None of the three
-loader nodes call a `diffusers`/`transformers` *pipeline* class directly — that
-responsibility belongs entirely to the diffusion arch module's `sample()` function,
-which on its first call for a given `model_id` assembles the runnable pipeline object
-from the already-cached components and caches that assembled pipeline itself under
-`f"{model_id}:pipeline"`. Subsequent `sample()` calls reuse it. This keeps
+VAE, text encoder) via `pipeline_cache.get_or_load(key, ...)`, where `key` is
+namespaced as `f"{kind}:{model_id}"` — `f"model:{model_id}"`, `f"vae:{model_id}"`,
+`f"clip:{model_id}"` respectively. The prefix is mandatory and identical in shape
+across all three loaders: it keeps each loader's cache entries in their own
+namespace regardless of whether a diffusion model, VAE, and CLIP encoder ever
+share the same `model_id` string, rather than relying on registry IDs happening
+never to collide across component kinds. (P901 retrofit: `LoadModel` originally
+cached under the bare `model_id`, inconsistent with `LoadVae`/`LoadClip`'s prefixed
+keys — corrected to the uniform `{kind}:{model_id}` form documented here.) None of
+the three loader nodes call a `diffusers`/`transformers` *pipeline* class directly
+— that responsibility belongs entirely to the diffusion arch module's `sample()`
+function, which on its first call for a given `model_id` assembles the runnable
+pipeline object from the already-cached components and caches that assembled
+pipeline itself under `f"{model_id}:pipeline"` (deliberately un-prefixed — it is
+the one pipeline-level cache, not a same-shaped sibling of the three component
+caches above). Subsequent `sample()` calls reuse it. This keeps
 `LoadModel`/`LoadVae`/`LoadClip` decoupled from any specific pipeline class.
+
+**Device propagation (P901 retrofit).** All three loaders must call
+`module.load(model_id, caps, device)` with `ctx.device` passed explicitly as the
+third positional argument — never omitted. Every arch module's `load()` defaults
+`device` to `"cpu"` (§10.4), which exists so the arch module remains directly
+callable from tests without constructing a full `NodeContext`; it is not license
+for a loader node to omit the argument. A loader that omits it silently loads
+every model onto CPU regardless of the worker's actual assigned device, and no
+existing test catches this because every fixture test constructs `ctx` with
+`device="cpu"` in the first place — the assertion `param.device.type == "cpu"`
+holds whether the loader passes the argument or not. A regression test for this
+class of defect must assert *that the loader actually passed `ctx.device` through*
+(e.g. by patching `module.load` and inspecting the captured call arguments), not
+just that the resulting device matches when `ctx.device` and the default happen to
+agree, as they always do in a CPU-only CI environment (§2.2).
 
 ### 11.7 FP8 Capability Gate At Dispatch Time
 

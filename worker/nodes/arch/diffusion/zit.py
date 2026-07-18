@@ -602,6 +602,32 @@ def load(path: str, caps: dict, device: str = "cpu") -> ZiTModel:
 
 # REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_sample_denoising_real_zit_fixture
 # MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_sample_seed_minus_one_resolves_random
+def _resolve_conditioning(conditioning: Any) -> tuple[Any, Any]:
+    """Split *conditioning* into its positive and negative embedding tensors.
+
+    ``ClipTextEncode``'s real branch (``worker/nodes/encoder.py``,
+    ``ANVILML_DESIGN.md`` §10.3) produces a dict shaped
+    ``{"text_embeds": Tensor, "negative_text_embeds": Tensor?}`` — the
+    latter present only when a negative prompt was supplied. This function
+    is the single place ``sample()`` interprets that shape, so callers
+    that bypass ``ClipTextEncode`` and pass a bare tensor (or ``None``)
+    directly keep working unchanged: a non-dict value is treated as the
+    positive embedding with no negative counterpart.
+
+    Args:
+        conditioning: Either a dict with "text_embeds"/"negative_text_embeds"
+            keys, a bare tensor, or None.
+
+    Returns:
+        A ``(cond_embeds, uncond_embeds)`` tuple. *uncond_embeds* is
+        ``None`` whenever no negative embedding is available, which
+        ``forward()`` already treats as "no conditioning" for that pass.
+    """
+    if isinstance(conditioning, dict):
+        return conditioning.get("text_embeds"), conditioning.get("negative_text_embeds")
+    return conditioning, None
+
+
 def sample(
     model: ZiTModel,
     model_id: str,
@@ -625,17 +651,21 @@ def sample(
     logged and returned — the caller never sees ``-1`` in the output.
 
     The denoising loop iterates over the scheduler's timesteps, performing
-    classifier-free guidance at each step: an unconditional pass (empty
-    conditioning) and a conditional pass are blended using the *cfg* scale
-    to interpolate between pure noise and guided output.
+    classifier-free guidance at each step: an unconditional pass (the
+    negative prompt's conditioning, via ``_resolve_conditioning()``, or no
+    conditioning when none was supplied) and a conditional pass (the
+    positive prompt's conditioning) are blended using the *cfg* scale to
+    interpolate between the unconditional prior and guided output.
 
     Args:
         model: An already-loaded ``ZiTModel`` instance.
         model_id: Stable model identifier used as the cache key prefix.
             Pipelines are cached per-model-id, keyed as ``f"{model_id}:pipeline"``.
-        conditioning: Conditioning input (e.g. text embeddings) for the
-            diffusion process. Passed to the model's forward pass at each
-            denoising step.
+        conditioning: Conditioning input for the diffusion process — either
+            a dict shaped ``{"text_embeds": Tensor, "negative_text_embeds":
+            Tensor?}`` (ClipTextEncode's real-branch output), or a bare
+            tensor/None for callers that build conditioning directly. See
+            ``_resolve_conditioning()``.
         latent: The initial noise latent tensor. Cloned before denoising
             so the caller's tensor is never mutated.
         steps: Number of denoising steps to run.
@@ -708,29 +738,38 @@ def sample(
     # propagation or for generating multiple samples from the same seed).
     latent = latent.clone()
 
+    # Resolve the positive (conditional) and negative (unconditional)
+    # conditioning tensors via the shared helper (see its docstring for
+    # the accepted shapes).
+    cond_embeds, uncond_embeds = _resolve_conditioning(conditioning)
+
     # Denoising loop: iterate over the scheduler's timesteps in order.
     # At each timestep, we perform classifier-free guidance (CFG) by
-    # running both an unconditional pass (empty conditioning) and a
-    # conditional pass, then interpolating between them using the cfg scale.
-    # The interpolation formula is:
+    # running both an unconditional pass (the negative prompt's
+    # conditioning, or no conditioning when none was supplied) and a
+    # conditional pass, then interpolating between them using the cfg
+    # scale. The interpolation formula is:
     #   noise_pred = noise_pred_uncond + cfg * (noise_pred_cond - noise_pred_uncond)
     # which is the standard CFG formulation: uncond + scale * delta.
     for t in scheduler.timesteps:
-        # Unconditional pass: model predicts noise with no conditioning.
-        # This represents the "prior" — what the model would generate
-        # without any text prompt guidance.
+        # Unconditional pass: model predicts noise using the negative
+        # prompt's conditioning when one was supplied, else no
+        # conditioning at all. This represents the "prior" being pushed
+        # away from — either an explicit negative prompt, or (absent one)
+        # what the model would generate without any text prompt guidance.
         # The model's forward() returns a tensor directly (not a named
         # tuple), so we use it without .sample.
         with torch.no_grad():
             noise_pred_uncond = pipeline.model(
-                latent, t / 1000.0
+                latent, t / 1000.0, conditioning=uncond_embeds
             )
 
-        # Conditional pass: model predicts noise with the provided
-        # conditioning (e.g. text embeddings from a CLIP encoder).
+        # Conditional pass: model predicts noise with the positive
+        # prompt's conditioning (e.g. text embeddings from a CLIP
+        # encoder).
         with torch.no_grad():
             noise_pred_cond = pipeline.model(
-                latent, t / 1000.0, conditioning=conditioning
+                latent, t / 1000.0, conditioning=cond_embeds
             )
 
         # Classifier-free guidance interpolation.

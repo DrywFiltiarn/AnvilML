@@ -7378,7 +7378,7 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 
 **File:** `worker/tests/test_nodes_sampler.py`
 **Context:** The Sampler node module has been created with all six required class attributes and the `@register` decorator.
-**Tests:** All six class attributes (`NODE_TYPE`, `CATEGORY`, `DISPLAY_NAME`, `DESCRIPTION`, `INPUT_SLOTS`, `OUTPUT_SLOTS`) match expected values exactly. INPUT_SLOTS has 7 SlotSpecs, OUTPUT_SLOTS has 2.
+**Tests:** All six class attributes (`NODE_TYPE`, `CATEGORY`, `DISPLAY_NAME`, `DESCRIPTION`, `INPUT_SLOTS`, `OUTPUT_SLOTS`) match expected values exactly. INPUT_SLOTS has 6 SlotSpecs (`model`, `conditioning`, `latent`, `steps`, `cfg`, `seed` — P901 retrofit removed an unused `clip` slot that was declared but never forwarded to `sample()`), OUTPUT_SLOTS has 2.
 **Mode:** mock
 **Inputs:** None — class-level attribute inspection.
 **Expected output:** All six attributes match their expected values.
@@ -7392,7 +7392,7 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Context:** The Sampler node's mock branch returns a sentinel dict with the input latent's shape and the seed passed through.
 **Tests:** Mock-mode `execute()` returns `{"latent": {"mock": True, "shape": (1, 4, 64, 64)}, "seed": 42}` with shape propagated from `inputs["latent"]`. Satisfies the `MOCK_PATH_VERIFIED` marker.
 **Mode:** mock
-**Inputs:** `model={}`, `conditioning={}`, `clip={}`, `latent={"shape": (1, 4, 64, 64)}`, `steps=20`, `cfg=7.5`, `seed=42`.
+**Inputs:** `model={}`, `conditioning={}`, `latent={"shape": (1, 4, 64, 64)}`, `steps=20`, `cfg=7.5`, `seed=42` (P901 retrofit: `clip={}` removed — Sampler no longer takes a `clip` input).
 **Expected output:** `{"latent": {"mock": True, "shape": (1, 4, 64, 64)}, "seed": 42}`.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py::test_sampler_mock_returns_expected_shape -v -m "not real_mode"` exits 0.
 
@@ -8316,3 +8316,113 @@ Every test in the AnvilML codebase is catalogued here. One entry per test.
 **Inputs:** NodeContext(mock=False), latent=torch.randn(1, 4, 8, 8).
 **Expected output:** ValueError raised with "'vae' input is required" in message.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_decode.py::test_vae_decode_real_missing_vae_input_raises -v` exits 0.
+
+---
+
+## P901 Retrofit — Device Propagation, Negative Conditioning, CLIP Metadata Fallback
+
+The tests below were added by the P901 manual retrofit (see
+`docs/ADDENDUM_P901_MANUAL_RETROFIT.md`), closing gaps found by an audit of
+Phases 21–24 against `ANVILML_DESIGN.md`. Appended here rather than interleaved
+into the sections above, since completed phases are historical record and this
+retrofit's tests span multiple existing test files.
+
+## test_load_model_passes_ctx_device_to_arch_load (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** `LoadModel.execute()` previously omitted `ctx.device` when calling `module.load()`, silently relying on the arch module's `device="cpu"` default regardless of the worker's actual assigned device.
+**Tests:** Patches `arch.diffusion.get_module` to return a stub whose `load()` records its call arguments; sets `ctx.device="cuda:0"`; asserts the captured call received `device="cuda:0"`.
+**Mode:** mock (no torch import; the arch module is stubbed out entirely)
+**Inputs:** `NodeContext(mock=False, device="cuda:0")`, `model_id="some-model-id"`.
+**Expected output:** captured `module.load()` call has `device="cuda:0"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_model_passes_ctx_device_to_arch_load -v` exits 0.
+
+## test_load_vae_passes_ctx_device_to_arch_load (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** Same defect class as above, `LoadVae`.
+**Tests:** Patches `arch.vae.get_module`; asserts `ctx.device` is forwarded to `module.load()`.
+**Mode:** mock
+**Inputs:** `NodeContext(mock=False, device="cuda:0")`, `model_id="some-vae-id"`.
+**Expected output:** captured `module.load()` call has `device="cuda:0"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_vae_passes_ctx_device_to_arch_load -v` exits 0.
+
+## test_load_clip_passes_ctx_device_to_arch_load (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_loader.py`
+**Context:** Same defect class as above, `LoadClip`.
+**Tests:** Patches `arch.clip.get_module`; asserts `ctx.device` is forwarded to `module.load()`.
+**Mode:** mock
+**Inputs:** `NodeContext(mock=False, device="cuda:0")`, `model_id="some-clip-id"`, `clip_type="qwen3"`.
+**Expected output:** captured `module.load()` call has `device="cuda:0"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py::test_load_clip_passes_ctx_device_to_arch_load -v` exits 0.
+
+## test_resolve_conditioning_dict_with_negative (anvilml-worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** `zit.py`'s new `_resolve_conditioning()` helper splits a `ClipTextEncode`-shaped dict into `(cond_embeds, uncond_embeds)`.
+**Tests:** A dict with both `text_embeds` and `negative_text_embeds` splits into the two corresponding objects by identity.
+**Mode:** mock (pure function, no torch reference)
+**Inputs:** `{"text_embeds": <sentinel>, "negative_text_embeds": <sentinel>}`.
+**Expected output:** `(positive_sentinel, negative_sentinel)`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_resolve_conditioning_dict_with_negative -v -m "not real_mode"` exits 0.
+
+## test_resolve_conditioning_dict_without_negative (anvilml-worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** Same helper; the no-negative-prompt case.
+**Tests:** A dict with only `text_embeds` resolves `uncond_embeds` to `None`.
+**Mode:** mock
+**Inputs:** `{"text_embeds": <sentinel>}`.
+**Expected output:** `(positive_sentinel, None)`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_resolve_conditioning_dict_without_negative -v -m "not real_mode"` exits 0.
+
+## test_resolve_conditioning_bare_tensor_backward_compatible (anvilml-worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** Callers that build conditioning directly (bypassing `ClipTextEncode`) must keep working unchanged.
+**Tests:** A non-dict value, and `None`, both resolve to `(value, None)` / `(None, None)`.
+**Mode:** mock
+**Inputs:** an arbitrary sentinel object; `None`.
+**Expected output:** `(sentinel, None)`; `(None, None)`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_resolve_conditioning_bare_tensor_backward_compatible -v -m "not real_mode"` exits 0.
+
+## test_sample_uses_negative_text_embeds_for_uncond_pass (anvilml-worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** `sample()`'s CFG loop previously always used no conditioning for the unconditional pass, silently ignoring any `negative_text_embeds` supplied — `ClipTextEncode`'s negative-prompt feature had no effect on generation.
+**Tests:** Patches the loaded model's `forward()` to record the `conditioning` argument per call; runs `sample()` with distinct positive/negative embedding tensors; asserts every unconditional call received the negative tensor by identity and every conditional call received the positive tensor.
+**Mode:** real
+**Inputs:** ZiT fixture loaded via `zit.load()`, `conditioning={"text_embeds": <tensor>, "negative_text_embeds": <tensor>}`, `steps=2`, `cfg=7.5`, `seed=42`.
+**Expected output:** 4 recorded `forward()` calls (2 steps × 2 passes); even-indexed (uncond) calls `is` the negative tensor, odd-indexed (cond) calls `is` the positive tensor.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_sample_uses_negative_text_embeds_for_uncond_pass -v -m real_mode` exits 0.
+
+## test_sample_no_negative_conditioning_falls_back_to_none (anvilml-worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** Backward compatibility: when no negative prompt was given, the uncond pass must still receive no conditioning, matching pre-retrofit behavior.
+**Tests:** Runs `sample()` with `conditioning={"text_embeds": <tensor>}` (no negative key); asserts the unconditional pass received `None`.
+**Mode:** real
+**Inputs:** ZiT fixture loaded via `zit.load()`, `conditioning={"text_embeds": <tensor>}`, `steps=1`, `cfg=7.5`, `seed=42`.
+**Expected output:** uncond call received `None`; cond call received the positive tensor.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_sample_no_negative_conditioning_falls_back_to_none -v -m real_mode` exits 0.
+
+## test_sampler_real_forwards_dict_conditioning_untouched (anvilml-worker)
+
+**File:** `worker/tests/test_nodes_sampler.py`
+**Context:** Node-level counterpart to the two tests above — proves `Sampler.execute()` doesn't lose or repack the conditioning dict in transit between `ClipTextEncode` and `zit.py`'s `sample()`.
+**Tests:** Patches `arch.diffusion.get_module` to return a stub whose `sample()` records its `conditioning` argument; asserts the exact same dict object arrives unchanged.
+**Mode:** mock (arch module stubbed out; no torch import required)
+**Inputs:** `conditioning={"text_embeds": <sentinel>, "negative_text_embeds": <sentinel>}`.
+**Expected output:** captured `sample()` call's `conditioning` argument `is` the original dict object.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_sampler.py::test_sampler_real_forwards_dict_conditioning_untouched -v` exits 0.
+
+## test_load_no_metadata_real (worker.nodes.arch.clip.qwen3)
+
+**File:** `worker/tests/test_arch_clip_qwen3.py`
+**Context:** The CLIP family was the only one of the three arch families (diffusion, CLIP, VAE) without the mandatory no-metadata regression fixture required by `ANVILML_DESIGN.md` §17.5 — the historical `st.metadata` vs `st.metadata()` call-as-property bug had no CLIP-family test guarding against its reintroduction.
+**Tests:** Calls `load()` against `qwen3_tiny_no_metadata.safetensors` (same key schema as the regular fixture, but no `arch` entry in the header) and asserts it succeeds with `.arch == "qwen3"`.
+**Mode:** real
+**Inputs:** `qwen3_tiny_no_metadata.safetensors`, `caps={"bf16": True, "fp16": True, "fp8": False, "fp32": True}`.
+**Expected output:** valid `Qwen3TextEncoder` with `.arch == "qwen3"`, all parameters on CPU.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_clip_qwen3.py::test_load_no_metadata_real -v -m real_mode` exits 0.

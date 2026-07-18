@@ -8,13 +8,20 @@ import pytest
 from worker.nodes.base import NodeContext
 
 
-def _make_ctx(mock: bool = True, pipeline_cache: object | None = None) -> NodeContext:
+def _make_ctx(
+    mock: bool = True,
+    pipeline_cache: object | None = None,
+    device: str = "cpu",
+) -> NodeContext:
     """Construct a minimal NodeContext for testing.
 
     Args:
         mock: The mock flag value for the context.
         pipeline_cache: Optional pipeline cache to use. Defaults to
             an empty dict for backward compatibility with existing tests.
+        device: The torch device string. Defaults to "cpu" for backward
+            compatibility with existing tests; regression tests for
+            device propagation (P901 retrofit) override this explicitly.
 
     Returns:
         A NodeContext with all required attributes populated with
@@ -22,7 +29,7 @@ def _make_ctx(mock: bool = True, pipeline_cache: object | None = None) -> NodeCo
     """
     return NodeContext(
         job_id="test-job",
-        device="cpu",
+        device=device,
         caps={"bf16": True, "fp8": False},
         cancel_flag=threading.Event(),
         emit=lambda e: None,
@@ -96,7 +103,54 @@ def test_load_model_real_loads_zit_fixture() -> None:
         assert param.device.type == "cpu"
 
 
-def test_load_model_in_registry() -> None:
+def test_load_model_passes_ctx_device_to_arch_load() -> None:
+    """LoadModel.execute() forwards ctx.device to module.load() (P901 retrofit).
+
+    Prior to this retrofit, LoadModel called ``module.load(model_id, caps)``
+    with no device argument, silently relying on every arch module's
+    ``device: str = "cpu"`` default regardless of the worker's actual
+    assigned device. Patches ``worker.nodes.arch.diffusion.get_module`` to
+    return a stub module whose ``load()`` records its call arguments, sets
+    ``ctx.device`` to a non-default value, and asserts that exact value was
+    passed through as the third positional/matching argument — a case a
+    device="cpu"-only assertion on the loaded result can never catch, since
+    the default and an explicit "cpu" are indistinguishable that way.
+
+    Expected outcome: the captured call to ``module.load()`` includes
+    ``device="cuda:0"`` (matching ``ctx.device``), not the "cpu" default.
+    """
+    from unittest.mock import patch, MagicMock
+
+    from worker.nodes.loader import LoadModel
+    from worker.pipeline_cache import PipelineCache
+
+    captured_calls: list[tuple] = []
+
+    stub_module = MagicMock()
+
+    def _fake_load(model_id, caps, device):
+        captured_calls.append((model_id, caps, device))
+        return {"stub": True}
+
+    stub_module.load.side_effect = _fake_load
+
+    node = LoadModel()
+    ctx = _make_ctx(mock=False, pipeline_cache=PipelineCache(), device="cuda:0")
+
+    with patch(
+        "worker.nodes.arch.diffusion.get_module", return_value=stub_module
+    ):
+        node.execute(ctx, model_id="some-model-id")
+
+    assert len(captured_calls) == 1, f"expected 1 call to load(), got {len(captured_calls)}"
+    _, _, device_arg = captured_calls[0]
+    assert device_arg == "cuda:0", (
+        f"expected ctx.device ('cuda:0') to be forwarded to module.load(), "
+        f"got device={device_arg!r}"
+    )
+
+
+
     """LoadModel appears in NODE_REGISTRY after importing the module.
 
     Imports worker.nodes.loader in a subprocess (triggering @register
@@ -224,6 +278,44 @@ def test_load_vae_real_loads_zit_vae_fixture() -> None:
         assert param.device.type == "cpu"
 
 
+def test_load_vae_passes_ctx_device_to_arch_load() -> None:
+    """LoadVae.execute() forwards ctx.device to module.load() (P901 retrofit).
+
+    See test_load_model_passes_ctx_device_to_arch_load's docstring for the
+    full rationale; this is the LoadVae counterpart.
+
+    Expected outcome: the captured call to ``module.load()`` includes
+    ``device="cuda:0"`` (matching ``ctx.device``), not the "cpu" default.
+    """
+    from unittest.mock import patch, MagicMock
+
+    from worker.nodes.loader import LoadVae
+    from worker.pipeline_cache import PipelineCache
+
+    captured_calls: list[tuple] = []
+
+    stub_module = MagicMock()
+
+    def _fake_load(model_id, caps, device):
+        captured_calls.append((model_id, caps, device))
+        return {"stub": True}
+
+    stub_module.load.side_effect = _fake_load
+
+    node = LoadVae()
+    ctx = _make_ctx(mock=False, pipeline_cache=PipelineCache(), device="cuda:0")
+
+    with patch("worker.nodes.arch.vae.get_module", return_value=stub_module):
+        node.execute(ctx, model_id="some-vae-id")
+
+    assert len(captured_calls) == 1, f"expected 1 call to load(), got {len(captured_calls)}"
+    _, _, device_arg = captured_calls[0]
+    assert device_arg == "cuda:0", (
+        f"expected ctx.device ('cuda:0') to be forwarded to module.load(), "
+        f"got device={device_arg!r}"
+    )
+
+
 @pytest.mark.real_mode
 def test_load_vae_real_cache_returns_cached_instance() -> None:
     """LoadVae.execute() returns the cached VAE on a second call with the same model_id.
@@ -339,6 +431,44 @@ def test_load_clip_real_loads_qwen3_fixture() -> None:
 
     # Verify the tokenizer was attached (step 4 of the loading contract).
     assert hasattr(clip, "tokenizer")
+
+
+def test_load_clip_passes_ctx_device_to_arch_load() -> None:
+    """LoadClip.execute() forwards ctx.device to module.load() (P901 retrofit).
+
+    See test_load_model_passes_ctx_device_to_arch_load's docstring for the
+    full rationale; this is the LoadClip counterpart.
+
+    Expected outcome: the captured call to ``module.load()`` includes
+    ``device="cuda:0"`` (matching ``ctx.device``), not the "cpu" default.
+    """
+    from unittest.mock import patch, MagicMock
+
+    from worker.nodes.loader import LoadClip
+    from worker.pipeline_cache import PipelineCache
+
+    captured_calls: list[tuple] = []
+
+    stub_module = MagicMock()
+
+    def _fake_load(model_id, caps, device):
+        captured_calls.append((model_id, caps, device))
+        return {"stub": True}
+
+    stub_module.load.side_effect = _fake_load
+
+    node = LoadClip()
+    ctx = _make_ctx(mock=False, pipeline_cache=PipelineCache(), device="cuda:0")
+
+    with patch("worker.nodes.arch.clip.get_module", return_value=stub_module):
+        node.execute(ctx, model_id="some-clip-id", clip_type="qwen3")
+
+    assert len(captured_calls) == 1, f"expected 1 call to load(), got {len(captured_calls)}"
+    _, _, device_arg = captured_calls[0]
+    assert device_arg == "cuda:0", (
+        f"expected ctx.device ('cuda:0') to be forwarded to module.load(), "
+        f"got device={device_arg!r}"
+    )
 
 
 def test_load_clip_in_registry() -> None:

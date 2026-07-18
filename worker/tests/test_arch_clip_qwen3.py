@@ -295,7 +295,32 @@ def test_load_real_qwen3_fixture() -> None:
 
 
 @pytest.mark.real_mode
-def test_load_mock_qwen3_fixture() -> None:
+def test_load_no_metadata_real() -> None:
+    """load() succeeds against the no-metadata fixture via the fallback path.
+
+    Calls load() against ``qwen3_tiny_no_metadata.safetensors`` (which has
+    no "arch" key in its safetensors header, per
+    ``build_qwen3_fixture.py``'s ``_no_metadata_tensors()``) and asserts it
+    succeeds and returns a valid ``Qwen3TextEncoder`` with ``.arch ==
+    "qwen3"``. This is the CLIP family's counterpart to
+    ``test_arch_zit.py::test_load_no_metadata_real`` and
+    ``test_arch_vae_zit.py``'s equivalent — added in the P901 retrofit to
+    close the gap left by the CLIP family being the only one of the three
+    arch families without this mandatory regression case
+    (``ANVILML_DESIGN.md`` §17.5): a header lacking an ``arch`` metadata
+    entry must not crash ``load()`` (the historical ``st.metadata`` vs
+    ``st.metadata()`` call-as-property bug).
+    """
+    caps: dict = {"bf16": True, "fp16": True, "fp8": False, "fp32": True}
+    fixture_path = _FIXTURE_DIR / "qwen3_tiny_no_metadata.safetensors"
+    model = qwen3_mod.load(str(fixture_path), caps)
+
+    assert model.arch == "qwen3"
+    for p in model.parameters():
+        assert p.device.type == "cpu", f"parameter {p.shape} is on {p.device}, expected cpu"
+
+
+
     """load() constructs Qwen3TextEncoder with bf16 dtype in mock-mode.
 
     This is the mock-mode counterpart required by the dual-mode parity

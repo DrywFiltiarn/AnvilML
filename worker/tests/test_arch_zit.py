@@ -1207,6 +1207,186 @@ def test_sample_explicit_seed_returned_unchanged() -> None:
         del pipeline_cache._cache["seed_explicit:pipeline"]
 
 
+# ---------------------------------------------------------------------------
+# P901 retrofit: negative-conditioning is actually wired into the CFG loop's
+# unconditional pass, instead of being silently dropped. See
+# _resolve_conditioning()'s docstring in worker/nodes/arch/diffusion/zit.py.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_conditioning_dict_with_negative() -> None:
+    """A dict with both keys splits into (text_embeds, negative_text_embeds).
+
+    This is a pure-function unit test with no torch model involved — it
+    only exercises _resolve_conditioning()'s dict-handling branch, so it
+    is deliberately not real_mode-marked despite living in this file (the
+    function itself does not touch torch).
+    """
+    from worker.nodes.arch.diffusion.zit import _resolve_conditioning
+
+    positive = object()
+    negative = object()
+    cond, uncond = _resolve_conditioning(
+        {"text_embeds": positive, "negative_text_embeds": negative}
+    )
+    assert cond is positive
+    assert uncond is negative
+
+
+def test_resolve_conditioning_dict_without_negative() -> None:
+    """A dict with only text_embeds resolves uncond to None.
+
+    This is the case ClipTextEncode produces when no negative_text was
+    supplied — the unconditional pass must fall back to no conditioning,
+    matching sample()'s behavior prior to negative-conditioning support.
+    """
+    from worker.nodes.arch.diffusion.zit import _resolve_conditioning
+
+    positive = object()
+    cond, uncond = _resolve_conditioning({"text_embeds": positive})
+    assert cond is positive
+    assert uncond is None
+
+
+def test_resolve_conditioning_bare_tensor_backward_compatible() -> None:
+    """A non-dict value (bare tensor or None) is treated as cond with no uncond.
+
+    Callers that build conditioning directly rather than going through
+    ClipTextEncode (this module's own pre-existing tests, for instance)
+    must keep working unchanged.
+    """
+    from worker.nodes.arch.diffusion.zit import _resolve_conditioning
+
+    bare = object()
+    cond, uncond = _resolve_conditioning(bare)
+    assert cond is bare
+    assert uncond is None
+
+    cond_none, uncond_none = _resolve_conditioning(None)
+    assert cond_none is None
+    assert uncond_none is None
+
+
+@pytest.mark.real_mode
+def test_sample_uses_negative_text_embeds_for_uncond_pass() -> None:
+    """sample()'s CFG loop uses negative_text_embeds for the uncond pass.
+
+    Prior to this retrofit, the unconditional CFG pass always used no
+    conditioning at all, silently ignoring any negative_text_embeds a
+    caller supplied — ClipTextEncode's negative-prompt feature had no
+    effect on generation. This test patches the loaded model's forward()
+    to record the `conditioning` argument passed on each call, runs
+    sample() with a dict-shaped conditioning containing distinct positive
+    and negative embedding tensors, and asserts that every unconditional
+    call received the negative tensor (by identity) and every conditional
+    call received the positive tensor — proving negative_text_embeds is
+    actually threaded through rather than dropped.
+
+    Verifying call arguments by identity, rather than comparing sample()'s
+    final output values between two runs, sidesteps this model's inherent
+    run-to-run floating-point non-determinism (it is never placed in
+    eval() mode, and the scheduler's ancestral sampling step consumes the
+    global RNG) — that non-determinism is a pre-existing, separate
+    property of this fixture model and out of scope for this retrofit.
+    """
+    from unittest.mock import patch
+
+    from worker.nodes.arch.diffusion.zit import (
+        load,
+        pipeline_cache,
+    )
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    model = load(str(fixture_path), _DEFAULT_CAPS, device="cpu")
+    model_dtype = next(model.parameters()).dtype
+
+    latent_in = torch.zeros(1, 4, 8, 8, dtype=model_dtype)
+    positive = torch.randn(3, model.time_text_emb.in_features, dtype=model_dtype)
+    negative = torch.randn(3, model.time_text_emb.in_features, dtype=model_dtype)
+
+    calls: list = []
+    orig_forward = model.forward
+
+    def _spy(x, timestep, conditioning=None):
+        calls.append(conditioning)
+        return orig_forward(x, timestep, conditioning=conditioning)
+
+    from worker.nodes.arch.diffusion.zit import sample
+
+    with patch.object(model, "forward", side_effect=_spy):
+        sample(
+            model,
+            "negative_cond_test",
+            {"text_embeds": positive, "negative_text_embeds": negative},
+            latent_in,
+            2,
+            7.5,
+            42,
+        )
+
+    # Two calls per step: unconditional (even indices) then conditional
+    # (odd indices), per the CFG loop's call order in sample().
+    assert len(calls) == 4, f"expected 4 forward() calls for 2 steps, got {len(calls)}"
+    for uncond_call, cond_call in zip(calls[0::2], calls[1::2]):
+        assert uncond_call is negative, "unconditional pass did not receive negative_text_embeds"
+        assert cond_call is positive, "conditional pass did not receive text_embeds"
+
+    # Clean up.
+    if "negative_cond_test:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache["negative_cond_test:pipeline"]
+
+
+@pytest.mark.real_mode
+def test_sample_no_negative_conditioning_falls_back_to_none() -> None:
+    """Without negative_text_embeds, the uncond pass still gets no conditioning.
+
+    Runs sample() with a dict-shaped conditioning that only has
+    "text_embeds" (ClipTextEncode's output when no negative prompt was
+    given), and asserts the unconditional pass receives ``None`` —
+    preserving the pre-retrofit behavior for the no-negative-prompt case.
+    """
+    from unittest.mock import patch
+
+    from worker.nodes.arch.diffusion.zit import (
+        load,
+        pipeline_cache,
+        sample,
+    )
+
+    fixture_path = _FIXTURE_DIR / "zit_tiny.safetensors"
+    model = load(str(fixture_path), _DEFAULT_CAPS, device="cpu")
+    model_dtype = next(model.parameters()).dtype
+
+    latent_in = torch.zeros(1, 4, 8, 8, dtype=model_dtype)
+    positive = torch.randn(3, model.time_text_emb.in_features, dtype=model_dtype)
+
+    calls: list = []
+    orig_forward = model.forward
+
+    def _spy(x, timestep, conditioning=None):
+        calls.append(conditioning)
+        return orig_forward(x, timestep, conditioning=conditioning)
+
+    with patch.object(model, "forward", side_effect=_spy):
+        sample(
+            model,
+            "no_negative_cond_test",
+            {"text_embeds": positive},
+            latent_in,
+            1,
+            7.5,
+            42,
+        )
+
+    assert len(calls) == 2
+    assert calls[0] is None, "unconditional pass should receive None when no negative prompt was given"
+    assert calls[1] is positive
+
+    # Clean up.
+    if "no_negative_cond_test:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache["no_negative_cond_test:pipeline"]
+
+
 @pytest.mark.real_mode
 def test_sample_denoising_runs_for_steps() -> None:
     """Denoising runs the model forward exactly ``steps`` times.

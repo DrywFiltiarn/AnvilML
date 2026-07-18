@@ -67,14 +67,13 @@ def test_sampler_class_attributes() -> None:
         == "Runs a denoising diffusion step to produce a latent from a model, "
            "conditioning, and latent input."
     )
-    assert len(Sampler.INPUT_SLOTS) == 7
+    assert len(Sampler.INPUT_SLOTS) == 6
     assert Sampler.INPUT_SLOTS[0] == SlotSpec("model", "MODEL")
     assert Sampler.INPUT_SLOTS[1] == SlotSpec("conditioning", "CONDITIONING")
-    assert Sampler.INPUT_SLOTS[2] == SlotSpec("clip", "CLIP")
-    assert Sampler.INPUT_SLOTS[3] == SlotSpec("latent", "LATENT")
-    assert Sampler.INPUT_SLOTS[4] == SlotSpec("steps", "INT")
-    assert Sampler.INPUT_SLOTS[5] == SlotSpec("cfg", "FLOAT")
-    assert Sampler.INPUT_SLOTS[6] == SlotSpec("seed", "INT")
+    assert Sampler.INPUT_SLOTS[2] == SlotSpec("latent", "LATENT")
+    assert Sampler.INPUT_SLOTS[3] == SlotSpec("steps", "INT")
+    assert Sampler.INPUT_SLOTS[4] == SlotSpec("cfg", "FLOAT")
+    assert Sampler.INPUT_SLOTS[5] == SlotSpec("seed", "INT")
     assert len(Sampler.OUTPUT_SLOTS) == 2
     assert Sampler.OUTPUT_SLOTS[0] == SlotSpec("latent", "LATENT")
     assert Sampler.OUTPUT_SLOTS[1] == SlotSpec("seed", "INT")
@@ -101,7 +100,6 @@ def test_sampler_mock_returns_expected_shape() -> None:
         ctx,
         model={},
         conditioning={},
-        clip={},
         latent={"shape": (1, 4, 64, 64)},
         steps=20,
         cfg=7.5,
@@ -131,7 +129,6 @@ def test_sampler_mock_seed_zero() -> None:
         ctx,
         model={},
         conditioning={},
-        clip={},
         latent={"shape": (1, 4, 64, 64)},
         steps=20,
         cfg=7.5,
@@ -143,7 +140,6 @@ def test_sampler_mock_seed_zero() -> None:
         ctx,
         model={},
         conditioning={},
-        clip={},
         latent={"shape": (1, 4, 64, 64)},
         steps=20,
         cfg=7.5,
@@ -190,7 +186,6 @@ def test_sampler_real_denoises_zit_fixture() -> None:
         ctx,
         model=model,
         conditioning=None,
-        clip={},
         latent=latent_in,
         steps=20,
         cfg=7.5,
@@ -237,7 +232,6 @@ def test_sampler_real_seed_minus_one_resolves() -> None:
         ctx,
         model=model,
         conditioning=None,
-        clip={},
         latent=latent_in,
         steps=20,
         cfg=7.5,
@@ -283,7 +277,6 @@ def test_sampler_real_explicit_seed_unchanged() -> None:
         ctx,
         model=model,
         conditioning=None,
-        clip={},
         latent=latent_in,
         steps=20,
         cfg=7.5,
@@ -328,7 +321,6 @@ def test_sampler_real_multiple_steps() -> None:
         ctx,
         model=model,
         conditioning=None,
-        clip={},
         latent=latent_in,
         steps=10,
         cfg=7.5,
@@ -375,7 +367,6 @@ def test_sampler_real_cfg_one_is_conditional_only() -> None:
         ctx,
         model=model,
         conditioning=None,
-        clip={},
         latent=latent_in,
         steps=20,
         cfg=1.0,
@@ -421,7 +412,6 @@ def test_sampler_real_latent_shape_preserved() -> None:
         ctx,
         model=model,
         conditioning=None,
-        clip={},
         latent=latent_in,
         steps=20,
         cfg=7.5,
@@ -434,6 +424,57 @@ def test_sampler_real_latent_shape_preserved() -> None:
     # Clean up.
     if f"test-job:pipeline" in pipeline_cache._cache:
         del pipeline_cache._cache[f"test-job:pipeline"]
+
+
+def test_sampler_real_forwards_dict_conditioning_untouched() -> None:
+    """Sampler.execute()'s real branch forwards a dict conditioning as-is.
+
+    Patches ``worker.nodes.arch.diffusion.get_module`` to return a stub
+    module whose ``sample()`` records its ``conditioning`` argument, calls
+    ``Sampler.execute()`` with a ClipTextEncode-shaped dict (``text_embeds``
+    + ``negative_text_embeds``), and asserts the exact same dict object was
+    passed to ``sample()`` unchanged. This is the node-level counterpart to
+    ``test_arch_zit.py::test_sample_uses_negative_text_embeds_for_uncond_pass``
+    — that test proves ``zit.py``'s ``sample()`` correctly interprets the
+    dict once it arrives; this test proves ``Sampler.execute()`` doesn't
+    lose or mangle it in transit (P901 retrofit).
+    """
+    from unittest.mock import patch, MagicMock
+
+    from worker.nodes.sampler import Sampler
+
+    node = Sampler()
+    ctx = _make_ctx(mock=False)
+
+    conditioning = {"text_embeds": object(), "negative_text_embeds": object()}
+    captured: list = []
+
+    stub_module = MagicMock()
+
+    def _fake_sample(model, model_id, conditioning, latent, steps, cfg, seed):
+        captured.append(conditioning)
+        return latent, seed if seed != -1 else 0
+
+    stub_module.sample.side_effect = _fake_sample
+
+    with patch(
+        "worker.nodes.arch.diffusion.get_module", return_value=stub_module
+    ):
+        node.execute(
+            ctx,
+            model=type("M", (), {"arch": "zit"})(),
+            conditioning=conditioning,
+            latent="latent-sentinel",
+            steps=20,
+            cfg=7.5,
+            seed=42,
+        )
+
+    assert len(captured) == 1
+    assert captured[0] is conditioning, (
+        "Sampler.execute() must forward the conditioning dict to "
+        "module.sample() unchanged, not repack or drop any of its keys"
+    )
 
 
 def test_sampler_in_registry() -> None:
