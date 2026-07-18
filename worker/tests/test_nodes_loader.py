@@ -506,29 +506,32 @@ def test_load_clip_in_registry() -> None:
 
 
 def test_empty_latent_mock_returns_placeholder_shape() -> None:
-    """Mock-mode EmptyLatent.execute() returns a torch.Tensor with the correct shape.
+    """Mock-mode EmptyLatent.execute() returns a {"mock": True, "shape": ...} sentinel.
 
     Constructs a NodeContext with mock=True, calls execute() with
     width=64 and height=64, and asserts the return dict has a "latent"
-    key containing a torch.Tensor of shape (1, 4, 8, 8).
+    key containing the sentinel dict {"mock": True, "shape": (1, 4, 8, 8)}
+    — not a real torch.Tensor. A prior version of this test asserted
+    isinstance(latent, torch.Tensor) and required `import torch`, which
+    is precisely what caused the mock branch under test to import torch
+    and crash CI's torch-free mock job (ModuleNotFoundError: No module
+    named 'torch', on both Linux and Windows) — see ANVILML_DESIGN.md
+    §11.2/§17.2 and every other node's mock branch (LoadModel, LoadVae,
+    LoadClip, Sampler, VaeDecode, ClipTextEncode), none of which import
+    torch or construct real tensors in their mock branch.
 
     This test exercises the mock code path and satisfies the
     MOCK_PATH_VERIFIED marker.
 
-    Expected outcome: result["latent"] is a torch.Tensor with shape (1, 4, 8, 8).
+    Expected outcome: result["latent"] == {"mock": True, "shape": (1, 4, 8, 8)}.
     """
-    import torch
-
     from worker.nodes.loader import EmptyLatent
 
     node = EmptyLatent()
     ctx = _make_ctx(mock=True)
     result = node.execute(ctx, width=64, height=64)
 
-    assert "latent" in result
-    latent = result["latent"]
-    assert isinstance(latent, torch.Tensor)
-    assert latent.shape == (1, 4, 8, 8)
+    assert result == {"latent": {"mock": True, "shape": (1, 4, 8, 8)}}
 
 
 def test_empty_latent_mock_ignores_model_input() -> None:
@@ -536,18 +539,16 @@ def test_empty_latent_mock_ignores_model_input() -> None:
 
     Constructs a NodeContext with mock=True, calls execute() with
     width=128, height=128, and a model input. Asserts the result has
-    a "latent" key with shape (1, 4, 16, 16), identical to calling
-    without the model input — verifying that mock mode ignores the
-    model input per §10.3.
+    a "latent" key with the sentinel {"mock": True, "shape": (1, 4, 16, 16)},
+    identical to calling without the model input — verifying that mock
+    mode ignores the model input per §10.3.
 
     This test exercises the mock code path and confirms the "ignores
     model" contract.
 
-    Expected outcome: result["latent"] is a torch.Tensor with shape
-    (1, 4, 16, 16), and the model input has no effect on the output.
+    Expected outcome: result["latent"] == {"mock": True, "shape": (1, 4, 16, 16)},
+    and the model input has no effect on the output.
     """
-    import torch
-
     from worker.nodes.loader import EmptyLatent
 
     node = EmptyLatent()
@@ -561,10 +562,7 @@ def test_empty_latent_mock_ignores_model_input() -> None:
         model={"mock": True, "model_id": "ignored"},
     )
 
-    assert "latent" in result
-    latent = result["latent"]
-    assert isinstance(latent, torch.Tensor)
-    assert latent.shape == (1, 4, 16, 16)
+    assert result == {"latent": {"mock": True, "shape": (1, 4, 16, 16)}}
 
 
 def test_empty_latent_in_registry() -> None:

@@ -298,9 +298,10 @@ class EmptyLatent(BaseNode):
     """Create a blank noise latent tensor.
 
     This node generates an empty latent of the specified dimensions.
-    In mock mode it returns a placeholder tensor with no model dispatch.
-    In real mode it dispatches to the loaded model's arch module to
-    compute the architecture-specific latent shape (P24-C2).
+    In mock mode it returns a {"mock": True, "shape": ...} sentinel dict
+    with no torch dependency and no model dispatch. In real mode it
+    dispatches to the loaded model's arch module to compute the
+    architecture-specific latent shape (P24-C2).
 
     Class Attributes:
         NODE_TYPE: The registry key for this node type.
@@ -342,8 +343,9 @@ class EmptyLatent(BaseNode):
                 in real mode).
 
         Returns:
-            In mock mode: Dict with key "latent" containing a
-            torch.zeros tensor of shape (batch_size, 4, height//8, width//8).
+            In mock mode: Dict with key "latent" containing the sentinel
+            {"mock": True, "shape": (batch_size, 4, height//8, width//8)}
+            — no torch import, matching every other node's mock branch.
             In real mode: (deferred to P24-C2) Dict with key "latent"
             containing a tensor computed via compute_latent_shape().
 
@@ -356,14 +358,28 @@ class EmptyLatent(BaseNode):
             # the standard VAE-downsampled shape formula (C=4, H/8, W/8).
             # Per §10.3's note, mock mode ignores the optional "model"
             # input entirely — this is correct behavior, not an oversight.
-            import torch
-
+            #
+            # Returns the {"mock": True, "shape": <shape>} sentinel dict —
+            # NOT a real torch.Tensor — matching every other node's mock
+            # branch (LoadModel/LoadVae/LoadClip return {"mock": True,
+            # "model_id": ...}; Sampler and VaeDecode's mock branches
+            # already read a LATENT input's shape via
+            # inputs["latent"].get("shape")). Mock mode must not import
+            # torch at all (ANVILML_DESIGN.md §11.2, §17.2) — a prior
+            # version of this branch did `import torch` and constructed a
+            # real `torch.zeros(...)` tensor here, which crashed CI's
+            # mock job on both Linux and Windows with
+            # `ModuleNotFoundError: No module named 'torch'` (mock CI
+            # installs requirements/base.txt only, no torch), and would
+            # also have broken Sampler's own mock branch downstream in any
+            # full mock-mode graph, since `.get("shape")` doesn't exist on
+            # a raw Tensor.
             width = inputs["width"]
             height = inputs["height"]
             batch_size = inputs.get("batch_size", 1)
 
             latent_shape = (batch_size, 4, height // 8, width // 8)
-            return {"latent": torch.zeros(latent_shape, dtype=torch.float32)}
+            return {"latent": {"mock": True, "shape": latent_shape}}
         else:
             # Real branch placeholder — full implementation is deferred
             # to P24-C2, which dispatches to arch.diffusion.get_module()
