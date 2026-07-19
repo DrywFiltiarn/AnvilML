@@ -2,8 +2,9 @@
 
 The SaveImage node accepts an image (and optional seed/steps) and emits an
 ImageReady event. In mock mode it generates a 64×64 black PNG and emits the
-ImageReady event dict via ctx.emit. The real branch is a placeholder for
-P24-D2 (real PNG encoding + artifact emission).
+ImageReady event dict via ctx.emit. The real branch encodes the input
+PIL.Image to PNG bytes, base64-encodes for the IPC payload, and emits
+ImageReady via ctx.emit.
 """
 
 from worker.nodes.base import BaseNode, NodeContext, SlotSpec, register
@@ -21,8 +22,9 @@ class SaveImage(BaseNode):
     It does not produce output slots — instead it emits an ImageReady
     event via ``ctx.emit`` per §10.3's table (Output nodes emit events,
     not slot outputs). In mock mode it generates a 64×64 black PNG and
-    emits the ImageReady event dict. The real branch is a placeholder
-    for P24-D2.
+    emits the ImageReady event dict. The real branch encodes the input
+    PIL.Image to PNG bytes, base64-encodes for the IPC payload, and
+    emits ImageReady via ctx.emit.
 
     Class Attributes:
         NODE_TYPE: The registry key for this node type.
@@ -47,14 +49,14 @@ class SaveImage(BaseNode):
 
     # REAL_PATH_VERIFIED: worker/tests/test_nodes_image.py::test_save_image_real_emits_png
     # MOCK_PATH_VERIFIED: worker/tests/test_nodes_image.py::test_save_image_mock_emits_image_ready
-    # defers_to: P24-D2 — real branch placeholder; P24-D2 will replace NotImplementedError
-    #            with real PNG encoding + artifact emission
     def execute(self, ctx: NodeContext, **inputs) -> dict:
         """Execute the SaveImage node.
 
         Branches on ctx.mock at the top per §14.6 — the mock branch
         generates a 64×64 black PNG and emits an ImageReady event dict
-        via ctx.emit; the real branch is a placeholder for P24-D2.
+        via ctx.emit; the real branch encodes the input PIL.Image to
+        PNG bytes, base64-encodes for the IPC payload, and emits
+        ImageReady via ctx.emit.
 
         Args:
             ctx: Runtime context carrying job_id, device, caps,
@@ -65,11 +67,10 @@ class SaveImage(BaseNode):
         Returns:
             Dict with key "image" containing a sentinel dict
             {"mock": True, "width": 64, "height": 64} in mock mode.
-            The real branch is not yet implemented.
+            Empty dict {} in real mode (no output slots).
 
         Raises:
             KeyError: If "image" is not provided in inputs.
-            NotImplementedError: If called in real mode (placeholder).
         """
         if ctx.mock:
             # Validate required inputs before proceeding. The "image" key
@@ -110,8 +111,50 @@ class SaveImage(BaseNode):
 
             return {"image": {"mock": True, "width": 64, "height": 64}}
         else:
-            # defers_to: P24-D2 — real branch placeholder. P24-D2 will
-            # replace this with real PNG encoding and artifact emission.
-            raise NotImplementedError(
-                "real branch not yet implemented — P24-D2"
+            # Validate required inputs before proceeding. The "image" key
+            # is required (not optional) per INPUT_SLOTS — accessing it
+            # directly raises KeyError if absent, which is the desired
+            # failure mode for missing required inputs.
+            image = inputs["image"]
+
+            # In real mode, the "image" input is a PIL.Image instance
+            # (produced by VaeDecode's real branch). Encode it to PNG
+            # bytes, base64-encode for the IPC payload, then emit
+            # ImageReady via ctx.emit.
+            import base64
+            from io import BytesIO
+
+            buf = BytesIO()
+            image.save(buf, format="PNG")  # Encode PIL.Image to PNG bytes
+            png_bytes = buf.getvalue()
+
+            # Base64-encode the PNG bytes for the IPC msgpack payload.
+            # The Rust event_loop.rs decodes this with
+            # base64::engine::general_purpose::STANDARD.
+            image_b64 = base64.b64encode(png_bytes).decode("ascii")
+
+            # Emit ImageReady event with all required fields matching
+            # WorkerEvent::ImageReady (messages.rs):
+            #   job_id, image_b64, width, height, format, seed, steps
+            ctx.emit({
+                "_type": "ImageReady",
+                "job_id": ctx.job_id,
+                "image_b64": image_b64,
+                "width": image.width,
+                "height": image.height,
+                "format": "png",
+                "seed": inputs.get("seed", -1),
+                "steps": inputs.get("steps", 1),
+            })
+
+            logger.debug(
+                "SaveImage: real branch emitted ImageReady for job_id=%s, "
+                "width=%d, height=%d",
+                ctx.job_id_str,
+                image.width,
+                image.height,
             )
+
+            # Return an empty dict — SaveImage has no output slots per
+            # §10.3. Output nodes emit events, not slot outputs.
+            return {}

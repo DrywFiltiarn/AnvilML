@@ -8530,3 +8530,63 @@ the P901 section above.
 **Inputs:** `NodeContext` with `mock=True`, no `image` argument.
 **Expected output:** `KeyError` is raised.
 **Acceptance:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_image.py::test_save_image_missing_image_input_raises -v` exits 0.
+
+## test_save_image_real_emits_png (worker.nodes.image)
+
+**File:** `worker/tests/test_nodes_image.py`
+**Context:** The `worker.nodes.image` module defines `SaveImage` with a real branch that encodes a PIL.Image to PNG bytes, base64-encodes for the IPC payload, and emits ImageReady via ctx.emit. Real mode is active via `mock=False` in NodeContext.
+**Tests:** Constructs a NodeContext with `mock=False`, creates a real PIL Image (128×64 red), calls `execute()`, and asserts that `ctx.emit` was called with `_type=="ImageReady"`, `width==128`, `height==64`, `format=="png"`, and a valid base64-encoded PNG payload with correct PNG magic bytes.
+**Mode:** real
+**Inputs:** `NodeContext` with `mock=False`, `image=PIL.Image.new("RGB", (128, 64), (255, 0, 0))`.
+**Expected output:** `ctx.emit` called with ImageReady event containing correct dimensions, format, and base64-encoded PNG.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_image.py::test_save_image_real_emits_png -v` exits 0.
+
+## test_save_image_real_seed_pass_through (worker.nodes.image)
+
+**File:** `worker/tests/test_nodes_image.py`
+**Context:** The `worker.nodes.image` module defines `SaveImage` with a real branch that passes through the optional `seed` input to the ImageReady event. Real mode is active via `mock=False`.
+**Tests:** Constructs a NodeContext with `mock=False`, calls `execute()` with `image=PIL Image` and `seed=42`, and asserts that the emitted ImageReady event contains `seed == 42`.
+**Mode:** real
+**Inputs:** `NodeContext` with `mock=False`, `image=PIL.Image.new("RGB", (32, 32), (0, 128, 255))`, `seed=42`.
+**Expected output:** `event["seed"] == 42`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_image.py::test_save_image_real_seed_pass_through -v` exits 0.
+
+## test_save_image_real_steps_pass_through (worker.nodes.image)
+
+**File:** `worker/tests/test_nodes_image.py`
+**Context:** The `worker.nodes.image` module defines `SaveImage` with a real branch that passes through the optional `steps` input to the ImageReady event. Real mode is active via `mock=False`.
+**Tests:** Constructs a NodeContext with `mock=False`, calls `execute()` with `image=PIL Image` and `steps=20`, and asserts that the emitted ImageReady event contains `steps == 20`.
+**Mode:** real
+**Inputs:** `NodeContext` with `mock=False`, `image=PIL.Image.new("RGB", (32, 32), (0, 128, 255))`, `steps=20`.
+**Expected output:** `event["steps"] == 20`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_image.py::test_save_image_real_steps_pass_through -v` exits 0.
+
+## test_save_image_real_default_seed_steps (worker.nodes.image)
+
+**File:** `worker/tests/test_nodes_image.py`
+**Context:** The `worker.nodes.image` module defines `SaveImage` with optional `seed` (default -1) and `steps` (default 1) inputs. Real mode is active via `mock=False`.
+**Tests:** Constructs a NodeContext with `mock=False`, calls `execute()` with only the image input (no seed or steps), and asserts that the emitted ImageReady event contains `seed == -1` and `steps == 1`.
+**Mode:** real
+**Inputs:** `NodeContext` with `mock=False`, `image=PIL.Image.new("RGB", (16, 16), (255, 255, 0))`, no seed/steps.
+**Expected output:** `event["seed"] == -1` and `event["steps"] == 1`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_image.py::test_save_image_real_default_seed_steps -v` exits 0.
+
+## test_save_image_real_png_bytes_valid (worker.nodes.image)
+
+**File:** `worker/tests/test_nodes_image.py`
+**Context:** The `worker.nodes.image` module defines `SaveImage` with a real branch that encodes PIL.Image to PNG bytes and base64-encodes for the IPC payload. Real mode is active via `mock=False`.
+**Tests:** Constructs a NodeContext with `mock=False`, creates a real PIL Image (32×96 green), calls `execute()`, then base64-decodes the payload and re-opens it as a PIL Image to verify dimensions match (32, 96).
+**Mode:** real
+**Inputs:** `NodeContext` with `mock=False`, `image=PIL.Image.new("RGB", (32, 96), (0, 255, 0))`.
+**Expected output:** Base64-decoded payload reopens as PIL Image with size (32, 96) and mode "RGB".
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_image.py::test_save_image_real_png_bytes_valid -v` exits 0.
+
+## test_save_image_real_returns_empty_dict (worker.nodes.image)
+
+**File:** `worker/tests/test_nodes_image.py`
+**Context:** The `worker.nodes.image` module defines `SaveImage` with `OUTPUT_SLOTS = []` — it emits events, not slot outputs. Real mode is active via `mock=False`.
+**Tests:** Constructs a NodeContext with `mock=False`, calls `execute()` with a real PIL Image, and asserts that the return value is `{}`.
+**Mode:** real
+**Inputs:** `NodeContext` with `mock=False`, `image=PIL.Image.new("RGB", (64, 64), (128, 128, 128))`.
+**Expected output:** `result == {}`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_image.py::test_save_image_real_returns_empty_dict -v` exits 0.

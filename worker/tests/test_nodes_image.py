@@ -3,6 +3,7 @@
 import subprocess
 import sys
 import threading
+from io import BytesIO
 import pytest
 
 from worker.nodes.base import NodeContext
@@ -135,3 +136,238 @@ def test_save_image_missing_image_input_raises() -> None:
 
     with pytest.raises(KeyError):
         node.execute(ctx)
+
+
+@pytest.mark.real_mode
+def test_save_image_real_emits_png() -> None:
+    """Real-mode SaveImage.execute() emits ImageReady with correct fields.
+
+    Constructs a NodeContext with mock=False, creates a real PIL Image
+    input (128×64 red), calls execute(), and asserts that ctx.emit was
+    called with a dict containing _type == "ImageReady", width == 128,
+    height == 64, format == "png", and a valid base64-encoded PNG payload.
+
+    This test exercises the real code path and satisfies the
+    REAL_PATH_VERIFIED marker.
+
+    Expected outcome: ctx.emit is called with an ImageReady event dict
+    containing the correct dimensions, format, and base64-encoded PNG.
+    """
+    import base64
+
+    from PIL import Image as PILImage
+    from worker.nodes.image import SaveImage
+
+    captured_events: list[dict] = []
+
+    def _emit(event: dict) -> None:
+        captured_events.append(event)
+
+    node = SaveImage()
+    ctx = _make_ctx(mock=False)
+    ctx.emit = _emit
+
+    # Create a real PIL Image (128×64 red rectangle).
+    pil_image = PILImage.new("RGB", (128, 64), (255, 0, 0))
+
+    result = node.execute(ctx, image=pil_image)
+
+    # Verify emit was called exactly once.
+    assert len(captured_events) == 1, (
+        f"expected 1 emit call, got {len(captured_events)}"
+    )
+
+    event = captured_events[0]
+
+    # Verify the event type.
+    assert event["_type"] == "ImageReady", (
+        f"expected _type='ImageReady', got '{event['_type']}'"
+    )
+
+    # Verify the image dimensions in the event.
+    assert event["width"] == 128, f"expected width=128, got {event['width']}"
+    assert event["height"] == 64, f"expected height=64, got {event['height']}"
+
+    # Verify the format field.
+    assert event["format"] == "png", (
+        f"expected format='png', got '{event['format']}'"
+    )
+
+    # Verify the image_b64 is valid base64 that decodes to a real PNG.
+    image_b64 = event["image_b64"]
+    png_bytes = base64.b64decode(image_b64)
+    assert len(png_bytes) > 0, "image_b64 decoded to empty bytes"
+
+    # Verify the PNG signature (first 8 bytes must be the PNG magic).
+    png_signature = b"\x89PNG\r\n\x1a\n"
+    assert png_bytes[:8] == png_signature, (
+        f"decoded bytes do not start with PNG signature"
+    )
+
+
+@pytest.mark.real_mode
+def test_save_image_real_seed_pass_through() -> None:
+    """Real-mode SaveImage.execute() passes seed through unchanged.
+
+    Constructs a NodeContext with mock=False, calls execute() with
+    image=PIL Image and seed=42, and asserts that the emitted
+    ImageReady event contains seed == 42.
+
+    This test verifies that the seed input is forwarded to the event
+    without modification.
+
+    Expected outcome: event["seed"] == 42.
+    """
+    from PIL import Image as PILImage
+    from worker.nodes.image import SaveImage
+
+    captured_events: list[dict] = []
+
+    def _emit(event: dict) -> None:
+        captured_events.append(event)
+
+    node = SaveImage()
+    ctx = _make_ctx(mock=False)
+    ctx.emit = _emit
+
+    pil_image = PILImage.new("RGB", (32, 32), (0, 128, 255))
+
+    node.execute(ctx, image=pil_image, seed=42)
+
+    event = captured_events[0]
+    assert event["seed"] == 42, f"expected seed=42, got {event['seed']}"
+
+
+@pytest.mark.real_mode
+def test_save_image_real_steps_pass_through() -> None:
+    """Real-mode SaveImage.execute() passes steps through unchanged.
+
+    Constructs a NodeContext with mock=False, calls execute() with
+    image=PIL Image and steps=20, and asserts that the emitted
+    ImageReady event contains steps == 20.
+
+    This test verifies that the steps input is forwarded to the event
+    without modification.
+
+    Expected outcome: event["steps"] == 20.
+    """
+    from PIL import Image as PILImage
+    from worker.nodes.image import SaveImage
+
+    captured_events: list[dict] = []
+
+    def _emit(event: dict) -> None:
+        captured_events.append(event)
+
+    node = SaveImage()
+    ctx = _make_ctx(mock=False)
+    ctx.emit = _emit
+
+    pil_image = PILImage.new("RGB", (32, 32), (0, 128, 255))
+
+    node.execute(ctx, image=pil_image, steps=20)
+
+    event = captured_events[0]
+    assert event["steps"] == 20, f"expected steps=20, got {event['steps']}"
+
+
+@pytest.mark.real_mode
+def test_save_image_real_default_seed_steps() -> None:
+    """Real-mode SaveImage.execute() uses default seed=-1, steps=1 when absent.
+
+    Constructs a NodeContext with mock=False, calls execute() with
+    only the image input (no seed or steps), and asserts that the
+    emitted ImageReady event contains seed == -1 and steps == 1.
+
+    This test verifies the default value handling for optional inputs.
+
+    Expected outcome: event["seed"] == -1 and event["steps"] == 1.
+    """
+    from PIL import Image as PILImage
+    from worker.nodes.image import SaveImage
+
+    captured_events: list[dict] = []
+
+    def _emit(event: dict) -> None:
+        captured_events.append(event)
+
+    node = SaveImage()
+    ctx = _make_ctx(mock=False)
+    ctx.emit = _emit
+
+    pil_image = PILImage.new("RGB", (16, 16), (255, 255, 0))
+
+    node.execute(ctx, image=pil_image)
+
+    event = captured_events[0]
+    assert event["seed"] == -1, f"expected seed=-1, got {event['seed']}"
+    assert event["steps"] == 1, f"expected steps=1, got {event['steps']}"
+
+
+@pytest.mark.real_mode
+def test_save_image_real_png_bytes_valid() -> None:
+    """Real-mode SaveImage.execute() produces a valid PNG matching input dimensions.
+
+    Constructs a NodeContext with mock=False, creates a real PIL Image
+    (32×96 green), calls execute(), then base64-decodes the payload
+    and re-opens it as a PIL Image to verify dimensions match.
+
+    This test confirms that the PNG encoding round-trips correctly.
+
+    Expected outcome: decoded PNG has size (32, 96).
+    """
+    import base64
+
+    from PIL import Image as PILImage
+    from worker.nodes.image import SaveImage
+
+    captured_events: list[dict] = []
+
+    def _emit(event: dict) -> None:
+        captured_events.append(event)
+
+    node = SaveImage()
+    ctx = _make_ctx(mock=False)
+    ctx.emit = _emit
+
+    # Create a 32×96 green image (unusual dimensions to verify exact match).
+    pil_image = PILImage.new("RGB", (32, 96), (0, 255, 0))
+
+    node.execute(ctx, image=pil_image)
+
+    event = captured_events[0]
+
+    # Decode the base64 payload back to PNG bytes.
+    png_bytes = base64.b64decode(event["image_b64"])
+
+    # Re-open as a PIL Image and verify dimensions.
+    reopened = PILImage.open(BytesIO(png_bytes))
+    assert reopened.size == (32, 96), (
+        f"expected reopened size (32, 96), got {reopened.size}"
+    )
+    assert reopened.mode == "RGB", (
+        f"expected mode 'RGB', got '{reopened.mode}'"
+    )
+
+
+@pytest.mark.real_mode
+def test_save_image_real_returns_empty_dict() -> None:
+    """Real-mode SaveImage.execute() returns an empty dict.
+
+    Constructs a NodeContext with mock=False, calls execute() with
+    a real PIL Image, and asserts that the return value is {}.
+
+    SaveImage has OUTPUT_SLOTS = [] — it emits events, not slot outputs.
+
+    Expected outcome: result == {}.
+    """
+    from PIL import Image as PILImage
+    from worker.nodes.image import SaveImage
+
+    node = SaveImage()
+    ctx = _make_ctx(mock=False)
+
+    pil_image = PILImage.new("RGB", (64, 64), (128, 128, 128))
+
+    result = node.execute(ctx, image=pil_image)
+    assert result == {}, f"expected result == {{}}, got {result}"
