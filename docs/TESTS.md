@@ -8498,3 +8498,35 @@ the P901 section above.
 **Inputs:** `zit_tiny.safetensors` fixture, various width/height/batch_size combinations.
 **Expected output:** Real-mode tests produce `torch.Tensor` outputs with correct shapes; missing-model test raises `ValueError`.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_loader.py -v -m real_mode -k "test_empty_latent_real"` exits 0.
+
+---
+
+## test_save_image_mock_emits_image_ready (worker.nodes.image)
+
+**File:** `worker/tests/test_nodes_image.py`
+**Context:** The `worker.nodes.image` module defines `SaveImage` with `NODE_TYPE="SaveImage"`, `CATEGORY="Output"`, and three input slots (`image:IMAGE`, `seed:INT?`, `steps:INT?`). Mock mode is active via `ANVILML_WORKER_MOCK=1`.
+**Tests:** `SaveImage.execute()` with `ctx.mock=True` generates a 64×64 black PNG via PIL, emits an `ImageReady` event dict via `ctx.emit`, and returns the sentinel `{"image": {"mock": True, "width": 64, "height": 64}}`.
+**Mode:** mock
+**Inputs:** `NodeContext` with `mock=True`, `image={"mock": True, "width": 512, "height": 512}`.
+**Expected output:** `ctx.emit` is called once with `_type="ImageReady"`, `width=64`, `height=64`; `execute()` returns the sentinel dict.
+**Acceptance:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_image.py::test_save_image_mock_emits_image_ready -v` exits 0.
+
+## test_save_image_in_registry (worker.nodes.image)
+
+**File:** `worker/tests/test_nodes_image.py`
+**Context:** The `worker.nodes.image` module is auto-imported by `worker.nodes.__init__._import_nodes()` at package load time, triggering the `@register` decorator which populates `NODE_REGISTRY`.
+**Tests:** Imports `worker.nodes.image` in a subprocess (isolated from the test runner's import state), then asserts `NODE_REGISTRY["SaveImage"]` exists and equals the imported class — proving auto-import and registration work end-to-end.
+**Mode:** mock
+**Inputs:** Subprocess runs `import worker.nodes.image; assert "SaveImage" in NODE_REGISTRY`.
+**Expected output:** Subprocess exits 0 with "OK" in stdout.
+**Acceptance:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_image.py::test_save_image_in_registry -v` exits 0.
+
+## test_save_image_missing_image_input_raises (worker.nodes.image)
+
+**File:** `worker/tests/test_nodes_image.py`
+**Context:** The `worker.nodes.image` module defines `SaveImage` with `image` as a required input slot (no `optional=True`). The node accesses `inputs["image"]` implicitly via the mock branch's `ctx.emit` call chain.
+**Tests:** Calls `SaveImage.execute()` with `ctx.mock=True` but without the required `image` input, and asserts that `KeyError` is raised — Python's natural behavior when accessing a missing dict key in `**inputs`.
+**Mode:** mock
+**Inputs:** `NodeContext` with `mock=True`, no `image` argument.
+**Expected output:** `KeyError` is raised.
+**Acceptance:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_nodes_image.py::test_save_image_missing_image_input_raises -v` exits 0.
