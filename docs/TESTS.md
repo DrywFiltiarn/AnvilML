@@ -8590,3 +8590,63 @@ the P901 section above.
 **Inputs:** `NodeContext` with `mock=False`, `image=PIL.Image.new("RGB", (64, 64), (128, 128, 128))`.
 **Expected output:** `result == {}`.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_image.py::test_save_image_real_returns_empty_dict -v` exits 0.
+
+---
+
+## test_resize_mock_returns_correct_dimensions (worker)
+
+**File:** `worker/tests/test_nodes_image.py`
+**Context:** The `ImageResize` node is registered via `@register` and available in `NODE_REGISTRY`. Uses a mock context (`mock=True`).
+**Tests:** `ImageResize.execute()` in mock mode returns a sentinel dict with the requested width and height (128×256).
+**Mode:** mock
+**Inputs:** `NodeContext` with `mock=True`, `image={"mock": True, "width": 512, "height": 512}`, `width=128`, `height=256`.
+**Expected output:** `{"image": {"mock": True, "width": 128, "height": 256}}`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_image.py::test_resize_mock_returns_correct_dimensions -v` exits 0.
+
+---
+
+## test_resize_real_produces_requested_dimensions (worker)
+
+**File:** `worker/tests/test_nodes_image.py`
+**Context:** The `ImageResize` node is registered via `@register` and available in `NODE_REGISTRY`. Uses a real context (`mock=False`) with a real PIL Image.
+**Tests:** `ImageResize.execute()` in real mode produces a PIL.Image with the exact requested dimensions (128×256) via `PIL.Image.resize()`.
+**Mode:** real
+**Inputs:** `NodeContext` with `mock=False`, `image=PIL.Image.new("RGB", (64, 64), (255, 0, 0))`, `width=128`, `height=256`.
+**Expected output:** `result["image"].size == (128, 256)`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_image.py::test_resize_real_produces_requested_dimensions -v -m real_mode` exits 0.
+
+---
+
+## test_resize_default_method_is_lanczos (worker)
+
+**File:** `worker/tests/test_nodes_image.py`
+**Context:** The `ImageResize` node is registered via `@register`. Uses a mock context (`mock=True`).
+**Tests:** `ImageResize.execute()` without specifying `method` defaults to lanczos filter and succeeds (dimensions match).
+**Mode:** both
+**Inputs:** `NodeContext` with `mock=True`, `image={"mock": True, "width": 512, "height": 512}`, `width=64`, `height=64` (no `method`).
+**Expected output:** `{"image": {"mock": True, "width": 64, "height": 64}}`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_image.py::test_resize_default_method_is_lanczos -v` exits 0.
+
+---
+
+## test_resize_explicit_method_bilinear (worker)
+
+**File:** `worker/tests/test_nodes_image.py`
+**Context:** The `ImageResize` node is registered via `@register`. Uses a mock context (`mock=True`).
+**Tests:** `ImageResize.execute()` with `method="bilinear"` is accepted and produces correct dimensions.
+**Mode:** both
+**Inputs:** `NodeContext` with `mock=True`, `image={"mock": True, "width": 512, "height": 512}`, `width=64`, `height=64`, `method="bilinear"`.
+**Expected output:** `{"image": {"mock": True, "width": 64, "height": 64}}`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_image.py::test_resize_explicit_method_bilinear -v` exits 0.
+
+---
+
+## test_resize_unrecognized_method_raises_error (worker)
+
+**File:** `worker/tests/test_nodes_image.py`
+**Context:** The `ImageResize` node is registered via `@register`. Uses a mock context (`mock=True`).
+**Tests:** `ImageResize.execute()` with an unrecognized method raises `ValueError` with a clear error message containing the invalid method name.
+**Mode:** both
+**Inputs:** `NodeContext` with `mock=True`, `image={"mock": True, "width": 512, "height": 512}`, `width=64`, `height=64`, `method="invalid_method"`.
+**Expected output:** `ValueError` raised with `"invalid_method"` in the error message.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_image.py::test_resize_unrecognized_method_raises_error -v` exits 0.

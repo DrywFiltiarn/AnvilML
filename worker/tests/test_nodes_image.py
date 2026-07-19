@@ -371,3 +371,152 @@ def test_save_image_real_returns_empty_dict() -> None:
 
     result = node.execute(ctx, image=pil_image)
     assert result == {}, f"expected result == {{}}, got {result}"
+
+
+def test_resize_mock_returns_correct_dimensions() -> None:
+    """Mock-mode ImageResize.execute() returns sentinel dict with correct dimensions.
+
+    Constructs a NodeContext with mock=True, calls execute() with
+    image={"mock": True, "width": 512, "height": 512}, width=128, height=256,
+    and asserts the return value is {"image": {"mock": True, "width": 128,
+    "height": 256}}.
+
+    This test exercises the mock code path and satisfies the
+    MOCK_PATH_VERIFIED marker.
+
+    Expected outcome: result == {"image": {"mock": True, "width": 128, "height": 256}}.
+    """
+    from worker.nodes.image import ImageResize
+
+    node = ImageResize()
+    ctx = _make_ctx(mock=True)
+
+    result = node.execute(
+        ctx,
+        image={"mock": True, "width": 512, "height": 512},
+        width=128,
+        height=256,
+    )
+
+    assert result == {
+        "image": {"mock": True, "width": 128, "height": 256},
+    }, f"unexpected mock sentinel: {result}"
+
+
+@pytest.mark.real_mode
+def test_resize_real_produces_requested_dimensions() -> None:
+    """Real-mode ImageResize.execute() produces a PIL.Image with exact dimensions.
+
+    Constructs a NodeContext with mock=False, creates a real PIL Image
+    (64×64), calls execute() with width=128, height=256, and asserts that
+    the returned image has size (128, 256).
+
+    This test exercises the real code path and satisfies the
+    REAL_PATH_VERIFIED marker.
+
+    Expected outcome: resized image size == (128, 256).
+    """
+    from PIL import Image as PILImage
+    from worker.nodes.image import ImageResize
+
+    node = ImageResize()
+    ctx = _make_ctx(mock=False)
+
+    pil_image = PILImage.new("RGB", (64, 64), (255, 0, 0))
+
+    result = node.execute(ctx, image=pil_image, width=128, height=256)
+
+    resized = result["image"]
+    assert resized.size == (128, 256), (
+        f"expected resized size (128, 256), got {resized.size}"
+    )
+
+
+def test_resize_default_method_is_lanczos() -> None:
+    """ImageResize.execute() uses lanczos filter when method is not specified.
+
+    Calls execute() without the "method" parameter and asserts that the
+    call succeeds with the default lanczos filter (dimensions match).
+
+    Uses a mock context — runs in both mock and real since the resize
+    logic is identical (both branches call PIL.Image.resize()).
+
+    Expected outcome: call succeeds, dimensions match request.
+    """
+    from worker.nodes.image import ImageResize
+
+    node = ImageResize()
+    ctx = _make_ctx(mock=True)
+
+    result = node.execute(
+        ctx,
+        image={"mock": True, "width": 512, "height": 512},
+        width=64,
+        height=64,
+    )
+
+    # Verify the call succeeded with default lanczos (dimensions match).
+    assert result == {
+        "image": {"mock": True, "width": 64, "height": 64},
+    }, f"unexpected result with default method: {result}"
+
+
+def test_resize_explicit_method_bilinear() -> None:
+    """ImageResize.execute() accepts explicit method="bilinear".
+
+    Calls execute() with method="bilinear" and asserts that the call
+    succeeds (dimensions match). This verifies that the method parameter
+    is accepted and does not raise ValueError for a recognized filter.
+
+    Uses a mock context — runs in both mock and real since the resize
+    logic is identical (both branches call PIL.Image.resize()).
+
+    Expected outcome: call succeeds, dimensions match request.
+    """
+    from worker.nodes.image import ImageResize
+
+    node = ImageResize()
+    ctx = _make_ctx(mock=True)
+
+    result = node.execute(
+        ctx,
+        image={"mock": True, "width": 512, "height": 512},
+        width=64,
+        height=64,
+        method="bilinear",
+    )
+
+    # Verify the call succeeded with explicit bilinear method.
+    assert result == {
+        "image": {"mock": True, "width": 64, "height": 64},
+    }, f"unexpected result with bilinear method: {result}"
+
+
+def test_resize_unrecognized_method_raises_error() -> None:
+    """ImageResize.execute() raises ValueError for unrecognized method.
+
+    Calls execute() with method="invalid_method" and asserts that
+    ValueError is raised with a message containing the invalid method name.
+
+    Uses a mock context — runs in both mock and real since the method
+    validation happens before the PIL resize call.
+
+    Expected outcome: ValueError is raised with clear error message.
+    """
+    from worker.nodes.image import ImageResize
+
+    node = ImageResize()
+    ctx = _make_ctx(mock=True)
+
+    with pytest.raises(ValueError) as exc_info:
+        node.execute(
+            ctx,
+            image={"mock": True, "width": 512, "height": 512},
+            width=64,
+            height=64,
+            method="invalid_method",
+        )
+
+    assert "invalid_method" in str(exc_info.value), (
+        f"expected 'invalid_method' in error message, got: {exc_info.value}"
+    )

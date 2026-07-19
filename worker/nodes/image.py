@@ -10,6 +10,7 @@ ImageReady via ctx.emit.
 from worker.nodes.base import BaseNode, NodeContext, SlotSpec, register
 
 import logging
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -158,3 +159,124 @@ class SaveImage(BaseNode):
             # Return an empty dict — SaveImage has no output slots per
             # §10.3. Output nodes emit events, not slot outputs.
             return {}
+
+
+@register
+class ImageResize(BaseNode):
+    """Resize a PIL.Image to specified dimensions.
+
+    This node accepts an image (required) plus width and height (both required,
+    positive integers) and an optional method string (defaults to "lanczos").
+    It returns a resized IMAGE via the output slot.
+
+    Both mock and real branches call the same PIL.Image.resize() since image
+    resizing has no GPU/model dependency to mock around. The ctx.mock branch
+    structure is required per §14.6's general node pattern.
+
+    Class Attributes:
+        NODE_TYPE: "ImageResize"
+        CATEGORY: "Images"
+        DISPLAY_NAME: "Image Resize"
+        DESCRIPTION: One-line description.
+        INPUT_SLOTS: image (IMAGE, required), width (INT, required),
+            height (INT, required), method (STRING, optional=True).
+        OUTPUT_SLOTS: image (IMAGE).
+    """
+    NODE_TYPE = "ImageResize"
+    CATEGORY = "Images"
+    DISPLAY_NAME = "Image Resize"
+    DESCRIPTION = "Resizes a PIL image to the requested dimensions."
+    INPUT_SLOTS = [
+        SlotSpec("image", "IMAGE"),
+        SlotSpec("width", "INT"),
+        SlotSpec("height", "INT"),
+        SlotSpec("method", "STRING", optional=True),
+    ]
+    OUTPUT_SLOTS = [
+        SlotSpec("image", "IMAGE"),
+    ]
+
+    # REAL_PATH_VERIFIED: worker/tests/test_nodes_image.py::test_resize_real_produces_requested_dimensions
+    # MOCK_PATH_VERIFIED: worker/tests/test_nodes_image.py::test_resize_mock_returns_correct_dimensions
+    def execute(self, ctx: NodeContext, **inputs) -> dict:
+        """Resize the input image to the requested dimensions.
+
+        Branches on ctx.mock at the top per §14.6 — both branches call
+        PIL.Image.resize() with the same underlying logic since resizing
+        has no GPU/model dependency. The mock branch returns a dict with
+        the resized dimensions as a sentinel (consistent with SaveImage's
+        mock return pattern of returning {"image": {...}}).
+
+        Args:
+            ctx: Runtime context carrying job_id, device, caps,
+                cancel_flag, emit, pipeline_cache, and mock flag.
+            **inputs: Must contain "image" (PIL.Image), "width" (int),
+                and "height" (int). Optional "method" (str) defaults
+                to "lanczos".
+
+        Returns:
+            Dict with key "image" containing the resized PIL.Image in
+            real mode, or {"image": {"mock": True, "width": <w>,
+            "height": <h>}} sentinel dict in mock mode.
+
+        Raises:
+            KeyError: If "image", "width", or "height" is not provided.
+            ValueError: If "method" is not a recognized PIL resize filter.
+        """
+        # Validate required inputs — "image", "width", "height" are all
+        # required (optional=False) per INPUT_SLOTS. Accessing them via
+        # dict key raises KeyError if absent, which is the desired failure
+        # mode for missing required inputs.
+        image = inputs["image"]
+        width = inputs["width"]
+        height = inputs["height"]
+
+        # Resolve the resize method. The "method" input is optional per
+        # INPUT_SLOTS — default to "lanczos" when absent or unset.
+        method = inputs.get("method", "lanczos")
+
+        # Map the string method name to a PIL.Image resize filter constant.
+        # This uses Pillow 12.x filter names (BILINEAR, BICUBIC — LINEAR
+        # and CUBIC were removed in Pillow 12). An unrecognized string
+        # raises ValueError with a clear message listing valid options.
+        filter_map = {
+            "lanczos": Image.LANCZOS,
+            "nearest": Image.NEAREST,
+            "bilinear": Image.BILINEAR,
+            "bicubic": Image.BICUBIC,
+            "box": Image.BOX,
+        }
+
+        # Look up the filter from the map; raise ValueError if unrecognized.
+        # This provides a clear error message listing valid method strings.
+        try:
+            filter_constant = filter_map[method]
+        except KeyError:
+            valid = ", ".join(sorted(filter_map.keys()))
+            raise ValueError(
+                f"Unrecognized resize method '{method}'. "
+                f"Valid methods: {valid}"
+            )
+
+        if ctx.mock:
+            # Mock branch: the image input may be a dict sentinel
+            # ({"mock": True, ...}) rather than a real PIL.Image in tests.
+            # Skip the resize call and return the sentinel dimensions directly.
+            logger.debug(
+                "ImageResize: mock branch resized to %dx%d for job_id=%s",
+                width, height, ctx.job_id_str,
+            )
+            return {"image": {"mock": True, "width": width, "height": height}}
+        else:
+            # Real branch: the image input is a real PIL.Image. Resize it
+            # with the resolved filter using Pillow 12.x's `resample`
+            # parameter (not `filter` — that was removed in Pillow 10).
+            # Both branches use the same PIL call because image resizing is
+            # a pure CPU operation with no GPU/model dependency to mock
+            # around (ANVILML_DESIGN.md §14.6 note).
+            resized = image.resize((width, height), resample=filter_constant)
+            logger.debug(
+                "ImageResize: real branch resized to %dx%d for job_id=%s",
+                width, height, ctx.job_id_str,
+            )
+            return {"image": resized}

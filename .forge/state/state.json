@@ -223,16 +223,17 @@
     "P24-B2",
     "P24-C1",
     "P24-C2",
-    "P24-D1"
+    "P24-D1",
+    "P24-D2"
   ],
-  "in_progress": "P24-D2",
+  "in_progress": "P24-D3",
   "plan_approved": true,
-  "current_plan": "1. **Implement the real branch in `SaveImage.execute()`** (`worker/nodes/image.py`).\n   Replace the `else: raise NotImplementedError(...)` block with:\n\n   ```python\n   else:\n       # Validate required inputs before proceeding. The \"image\" key is\n       # required (not optional) per INPUT_SLOTS \u2014 accessing it directly\n       # raises KeyError if absent, which is the desired failure mode for\n       # missing required inputs.\n       image = inputs[\"image\"]\n\n       # In real mode, the \"image\" input is a PIL.Image instance (produced\n       # by VaeDecode's real branch). Encode it to PNG bytes, base64-encode\n       # for the IPC payload, then emit ImageReady via ctx.emit.\n       import base64\n       from io import BytesIO\n\n       buf = BytesIO()\n       image.save(buf, format=\"PNG\")  # Encode PIL.Image to PNG bytes\n       png_bytes = buf.getvalue()\n\n       # Base64-encode the PNG bytes for the IPC msgpack payload.\n       # The Rust event_loop.rs decodes this with base64::engine::general_purpose::STANDARD.\n       image_b64 = base64.b64encode(png_bytes).decode(\"ascii\")\n\n       # Emit ImageReady event with all required fields matching\n       # WorkerEvent::ImageReady (messages.rs):\n       #   job_id, image_b64, width, height, format, seed, steps\n       ctx.emit({\n           \"_type\": \"ImageReady\",\n           \"job_id\": ctx.job_id,\n           \"image_b64\": image_b64,\n           \"width\": image.width,\n           \"height\": image.height,\n           \"format\": \"png\",\n           \"seed\": inputs.get(\"seed\", -1),\n           \"steps\": inputs.get(\"steps\", 1),\n       })\n\n       logger.debug(\n           \"SaveImage: real branch emitted ImageReady for job_id=%s, \"\n           \"width=%d, height=%d\",\n           ctx.job_id_str,\n           image.width,\n           image.height,\n       )\n\n       # Return an empty dict \u2014 SaveImage has no output slots per \u00a710.3.\n       return {}\n   ```\n\n   **Rationale:** The real branch mirrors the mock branch's structure (validate \u2192 encode\n   \u2192 emit \u2192 log \u2192 return) but uses the actual PIL.Image input instead of generating a\n   synthetic one. The return value is `{}` because SaveImage has `OUTPUT_SLOTS = []` \u2014\n   it emits an event rather than producing a slot output. The mock branch returns\n   `{\"image\": {\"mock\": True, ...}}` as a sentinel for test verification; the real branch\n   returns `{}` since there are no outputs to return.\n\n2. **Update the defers_to comment markers.** Remove the `defers_to: P24-D2` notation\n   from both comment blocks in `image.py`, since the deferred scope is now implemented.\n   Keep the `REAL_PATH_VERIFIED` and `MOCK_PATH_VERIFIED` markers pointing at their\n   respective tests.\n\n3. **Write new tests in `worker/tests/test_nodes_image.py`.** At least 5 new tests:\n   - `test_save_image_real_emits_png` (real_mode): real PIL Image \u2192 emits ImageReady\n     with correctly base64-encoded PNG bytes matching the input dimensions.\n   - `test_save_image_real_seed_pass_through` (real_mode): seed input passes through\n     unchanged to the ImageReady event.\n   - `test_save_image_real_steps_pass_through` (real_mode): steps input passes through\n     unchanged to the ImageReady event.\n   - `test_save_image_real_default_seed_steps` (real_mode): when seed/steps are absent,\n     defaults are -1 and 1 respectively.\n   - `test_save_image_real_png_bytes_valid` (real_mode): the base64-decoded payload\n     is a valid PNG image matching the input dimensions.\n\n   Each real-mode test uses a real `PIL.Image` as the `image` input and verifies the\n   emitted event's fields.\n\n4. **Update the marker comments** to confirm both markers name passing tests.",
+  "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-19T16:41:14+0200",
-  "plan_approval_message_id": "1528411304090538046",
+  "last_updated": "2026-07-19T18:52:24+0200",
+  "plan_approval_message_id": "1528440096510967869",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1528411302106628167",
+  "plan_report_message_id": "1528440094283927602",
   "impl_report_message_id": null
 }
