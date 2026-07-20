@@ -1,4 +1,5 @@
 [tool.pytest.ini_options]
 markers = [
     "real_mode: test requires real torch import, never runs under ANVILML_WORKER_MOCK=1",
+    "serial: test must run serially (spawns subprocesses that share ports)",
 ]

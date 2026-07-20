@@ -8650,3 +8650,33 @@ the P901 section above.
 **Inputs:** `NodeContext` with `mock=True`, `image={"mock": True, "width": 512, "height": 512}`, `width=64`, `height=64`, `method="invalid_method"`.
 **Expected output:** `ValueError` raised with `"invalid_method"` in the error message.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_nodes_image.py::test_resize_unrecognized_method_raises_error -v` exits 0.
+
+## test_full_graph_mock_mode (worker)
+
+**File:** `worker/tests/test_e2e_full_graph.py`
+**Context:** The full ZiT generation graph (LoadModel + LoadVae + LoadClip + EmptyLatent + ClipTextEncode + Sampler + VaeDecode + SaveImage) executes end-to-end through the generic node layer in mock mode (ANVILML_WORKER_MOCK=1). The Rust server binary is spawned as a subprocess, a mock worker connects via ZeroMQ, and the graph is submitted via the HTTP API.
+**Tests:** Starts the Rust server, waits for health and worker registration, submits the full graph via POST /v1/jobs, polls for job completion, retrieves the artifact via GET /v1/artifacts/{hash}, and verifies it is a valid 64×64 PNG.
+**Mode:** mock
+**Inputs:** POST /v1/jobs with the full 8-node ZiT generation graph JSON.
+**Expected output:** Job reaches ``Completed`` status, artifact is a valid PNG with size (64, 64) and mode "RGB".
+**Acceptance:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_e2e_full_graph.py::test_full_graph_mock_mode -v --timeout=120` exits 0.
+
+## test_full_graph_real_mode (worker)
+
+**File:** `worker/tests/test_e2e_full_graph.py`
+**Context:** The full ZiT generation graph executes end-to-end through the generic node layer with a real Python worker (no ANVILML_WORKER_MOCK). The real worker loads fixture checkpoints and runs actual torch inference.
+**Tests:** Same pipeline as test_full_graph_mock_mode but with real mode — the artifact is verified to be a valid 64×64 PNG produced by actual inference.
+**Mode:** real
+**Inputs:** POST /v1/jobs with the full 8-node ZiT generation graph JSON; real worker loads fixture checkpoints.
+**Expected output:** Job reaches ``Completed`` status, artifact is a valid PNG with size (64, 64) and mode "RGB".
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_e2e_full_graph.py::test_full_graph_real_mode -v --timeout=300` exits 0.
+
+## test_full_graph_invalid_graph_returns_400 (worker)
+
+**File:** `worker/tests/test_e2e_full_graph.py`
+**Context:** The Rust scheduler's DAG validator rejects graphs with unknown node types. A structurally valid graph (has nodes array, valid IDs) references a node type ("NonExistentNode") not in the registry.
+**Tests:** Starts the Rust server, submits an invalid graph via POST /v1/jobs, and asserts the response is 400 Bad Request with a validation error message.
+**Mode:** mock
+**Inputs:** POST /v1/jobs with a graph containing `{ "type": "NonExistentNode" }`.
+**Expected output:** 400 Bad Request with validation error message containing the unknown type name.
+**Acceptance:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_e2e_full_graph.py::test_full_graph_invalid_graph_returns_400 -v --timeout=30` exits 0.

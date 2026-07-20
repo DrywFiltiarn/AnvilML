@@ -91,18 +91,21 @@ class SaveImage(BaseNode):
             img.save(buffer, format="PNG")
             png_bytes = buffer.getvalue()
 
-            # Emit ImageReady event with truncated hex for test verification.
-            # The hex[:32] is a deterministic prefix of the full PNG bytes
-            # that tests can assert on without needing the full binary blob.
+            # Emit ImageReady event with base64-encoded PNG bytes.
+            # The Rust handle_image_ready() decodes image_b64 via
+            # base64::engine::general_purpose::STANDARD, so we use
+            # Python's base64.b64encode() to produce the same encoding.
+            import base64
+
             ctx.emit({
                 "_type": "ImageReady",
                 "job_id": ctx.job_id,
-                "artifact_hash": "mock_black_png_64x64",
+                "image_b64": base64.b64encode(png_bytes).decode("ascii"),
                 "width": 64,
                 "height": 64,
+                "format": "png",
                 "seed": inputs.get("seed", -1),
                 "steps": inputs.get("steps", 1),
-                "image_data": png_bytes.hex()[:32],
             })
 
             logger.debug(
