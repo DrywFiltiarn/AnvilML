@@ -684,6 +684,14 @@ generation job in the project — a full ZiT/Qwen3/ZiT-VAE graph submitted via
 PNG artifact matching the requested dimensions. This closes "ZiT Diffusion + Qwen3
 CLIP + ZiT VAE" as a fully completed roadmap group.
 
+**Verified passing** (manually, against a live server in real mode): the sequence
+below was actually run, not merely planned. Doing so for the first time surfaced
+eight defects, none of which any prior phase's own test suite could have caught —
+see `docs/PHASES_GRAPH.md`'s Known Wiring Gaps Closed table, items 29–36, and
+`docs/ADDENDUM_P903_QWEN3_TOKENIZER_VOCAB_MISMATCH.md` for the full account. With
+all eight fixed, the job reaches `Completed` and `GET /v1/artifacts/:hash` returns
+a real, valid 64×64 PNG.
+
 ```bash
 # Runnable Proof (manual): real (non-mock-hardware) mode, fixture checkpoints
 # already registered in the model registry under their SHA256 ids.

@@ -90,6 +90,17 @@ project-wide compliance sweep (Phase 30).
 - LoadModel/LoadVae/LoadClip's deliberately-raising real branch (Phase 19),
   resolved across Phases 20, 22, 23 - all three loader nodes are fully real as of
   Phase 23, with stale NotImplementedError-asserting markers removed at each step.
+- P24-F1 Runnable Proof, first real end-to-end run, found eight further defects
+  (Phase 24) - actually submitting the Appendix B.2 graph via POST /v1/jobs in
+  real mode for the first time (rather than planning the proof, as prior phases'
+  own real-mode work had stopped short of) surfaced eight defects across
+  anvilml.toml, executor.py, worker_main.py, qwen3.py, the vendored tiny
+  tokenizer asset, loader.py, zit.py, and image.py - each only reachable once
+  the previous one was fixed, none caught by any single phase's own test suite.
+  All eight fixed as manual retrofit patches, not new Forge tasks (per project
+  owner decision - see docs/PHASES_GRAPH.md's Known Wiring Gaps Closed table,
+  items 29-36, and docs/ADDENDUM_P903_QWEN3_TOKENIZER_VOCAB_MISMATCH.md for the
+  full account). P24-F1 is now confirmed passing.
 - Flux 2 Klein 4B confirms architecture-agnosticism (Phase 25) - adding the second
   diffusion architecture required zero changes to the generic node layer and zero
   new CLIP module, explicitly confirmed rather than assumed.

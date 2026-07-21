@@ -780,6 +780,21 @@ def sample(
     #   noise_pred = noise_pred_uncond + cfg * (noise_pred_cond - noise_pred_uncond)
     # which is the standard CFG formulation: uncond + scale * delta.
     for t in scheduler.timesteps:
+        # Scale the current latent by this timestep's sigma before feeding
+        # it to the model — EulerDiscreteScheduler (like most sigma-based
+        # schedulers) requires this; the raw, unscaled latent is only ever
+        # correct for the timestep-independent `scheduler.step()` call
+        # below, never for the model's own forward pass.
+        #
+        # P903 retrofit: this call was previously missing entirely, which
+        # diffusers only ever surfaces as a runtime UserWarning ("The
+        # scale_model_input function should be called before step to
+        # ensure correct denoising") rather than an exception — so the
+        # pipeline ran to completion and produced an image, but a silently
+        # wrong one, on every single step. See
+        # docs/ADDENDUM_P903_QWEN3_TOKENIZER_VOCAB_MISMATCH.md.
+        scaled_latent = scheduler.scale_model_input(latent, t)
+
         # Unconditional pass: model predicts noise using the negative
         # prompt's conditioning when one was supplied, else no
         # conditioning at all. This represents the "prior" being pushed
@@ -789,7 +804,7 @@ def sample(
         # tuple), so we use it without .sample.
         with torch.no_grad():
             noise_pred_uncond = pipeline.model(
-                latent, t / 1000.0, conditioning=uncond_embeds
+                scaled_latent, t / 1000.0, conditioning=uncond_embeds
             )
 
         # Conditional pass: model predicts noise with the positive
@@ -797,7 +812,7 @@ def sample(
         # encoder).
         with torch.no_grad():
             noise_pred_cond = pipeline.model(
-                latent, t / 1000.0, conditioning=cond_embeds
+                scaled_latent, t / 1000.0, conditioning=cond_embeds
             )
 
         # Classifier-free guidance interpolation.

@@ -121,10 +121,30 @@ class SaveImage(BaseNode):
             # failure mode for missing required inputs.
             image = inputs["image"]
 
-            # In real mode, the "image" input is a PIL.Image instance
-            # (produced by VaeDecode's real branch). Encode it to PNG
-            # bytes, base64-encode for the IPC payload, then emit
-            # ImageReady via ctx.emit.
+            # In real mode, the "image" input is normally a single PIL.Image
+            # instance. VaeDecode's real branch, however, always returns
+            # list[PIL.Image.Image] (it's batch-capable — see decode.py's
+            # own docstring and P24-B2's batch tests), even for the common
+            # batch_size=1 case. Passing that list straight through to
+            # image.save() raised "'list' object has no attribute 'save'"
+            # the first time a real VaeDecode -> SaveImage graph edge ran
+            # end to end. Accept both shapes here rather than changing
+            # VaeDecode's own tested batch-list contract or this node's own
+            # tested bare-Image contract: unwrap a list to its first image,
+            # warning if more than one was provided, since nothing in the
+            # current MVP graph contract (ANVILML_DESIGN.md §10.3) has a
+            # batched-IMAGE concept downstream of this node.
+            if isinstance(image, list):
+                if len(image) > 1:
+                    logger.warning(
+                        "SaveImage: received %d images but can only save "
+                        "one; using image[0] and dropping the rest",
+                        len(image),
+                    )
+                image = image[0]
+
+            # Encode it to PNG bytes, base64-encode for the IPC payload,
+            # then emit ImageReady via ctx.emit.
             import base64
             from io import BytesIO
 
