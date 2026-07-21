@@ -162,6 +162,22 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
     import worker.ipc as ipc
 
     logger.info("dispatch_loop: starting")
+    # Worker-permanent pipeline cache: constructed ONCE per worker process
+    # (i.e. once per call to _dispatch_loop(), which itself runs for the
+    # process's entire lifetime — see this function's own docstring), and
+    # reused by every job's NodeContext below via the ctx_factory closure.
+    #
+    # P903 retrofit: this used to be constructed fresh inside run_execute()
+    # on every single Execute message, defeating LoadModel/LoadVae/LoadClip's
+    # entire purpose in calling ctx.pipeline_cache.get_or_load() — every job
+    # re-loaded every model from disk from scratch, regardless of whether an
+    # identical model_id had already been loaded by a prior job on this same
+    # worker. pipeline_cache.py's own module docstring has always described
+    # this cache as scoped to "a single worker process lifetime"; the
+    # per-job construction contradicted that from the start. This is also
+    # now consistent with zit.py's own pipeline-assembly cache, which was
+    # already correctly a per-process module-level singleton.
+    pipeline_cache = PipelineCache()
     # Track the currently-executing job so CancelJob messages can target it.
     # These persist across loop iterations while a job is executing; they
     # are reset only after the job completes (success, failure, or
@@ -395,7 +411,7 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
                     caps=caps,
                     cancel_flag=cancel_flag,
                     emit=ipc.send_event,
-                    pipeline_cache=PipelineCache(),
+                    pipeline_cache=pipeline_cache,
                     mock=mock,
                 )
                 try:

@@ -812,6 +812,70 @@ class _Qwen3MLP(_ModuleBase):
 # ---------------------------------------------------------------------------
 
 
+def _load_tokenizer_matching_vocab(vocab_size: int) -> Any:
+    """Load whichever vendored tokenizer's vocabulary matches *vocab_size*.
+
+    Two tokenizers are vendored under ``worker/assets/``: the production
+    Qwen3 tokenizer (``qwen3_tokenizer/``, ~151k tokens) and a tiny
+    fixture-compatible tokenizer (``qwen3_tiny_tokenizer/``, matching the
+    synthetic test checkpoint's small ``embed_tokens`` table). A
+    checkpoint's ``embed_tokens`` row count and its tokenizer's vocabulary
+    must always agree for any Qwen3 model — real or fixture — or token
+    IDs the tokenizer emits will index outside the embedding table. This
+    tries each vendored tokenizer in turn and returns the first whose
+    vocabulary size matches the checkpoint just loaded, rather than
+    assuming the production tokenizer unconditionally.
+
+    P903 retrofit: ``load()`` previously always loaded the production
+    tokenizer regardless of checkpoint. Against the tiny test fixture
+    (``vocab_size=128``) this produced token IDs up to ~151,936 the first
+    time anything ran a real forward pass outside of a test-only
+    tokenizer-swap workaround introduced in P24-A2 (which patched
+    ``test_nodes_encoder.py`` only, never ``load()`` itself) — see
+    ``docs/ADDENDUM_P903_QWEN3_TOKENIZER_VOCAB_MISMATCH.md``.
+
+    Args:
+        vocab_size: The checkpoint's inferred vocabulary size
+            (``hyperparams["vocab_size"]``), i.e. ``embed_tokens.weight``'s
+            first dimension.
+
+    Returns:
+        A loaded ``transformers`` tokenizer whose vocabulary size equals
+        *vocab_size*.
+
+    Raises:
+        RuntimeError: If no vendored tokenizer's vocabulary matches
+            *vocab_size* — surfaced here, at load time, instead of as a
+            cryptic ``IndexError`` deep inside a later forward pass.
+    """
+    from transformers import AutoTokenizer
+
+    assets_dir = Path(__file__).parent.parent.parent.parent / "assets"
+    attempts: list[str] = []
+    for name in ("qwen3_tokenizer", "qwen3_tiny_tokenizer"):
+        candidate_path = assets_dir / name
+        tokenizer = AutoTokenizer.from_pretrained(
+            str(candidate_path),
+            local_files_only=True,
+        )
+        if len(tokenizer) == vocab_size:
+            logger.info(
+                "loaded tokenizer from=%s (vocab_size=%d matches checkpoint)",
+                candidate_path,
+                vocab_size,
+            )
+            return tokenizer
+        attempts.append(f"{candidate_path} (vocab_size={len(tokenizer)})")
+
+    raise RuntimeError(
+        f"no vendored tokenizer's vocabulary matches this checkpoint's "
+        f"inferred vocab_size={vocab_size}. Tried: {', '.join(attempts)}. "
+        "A checkpoint's embed_tokens table and its attached tokenizer's "
+        "vocabulary must agree, or forward() will raise IndexError on "
+        "out-of-range token ids."
+    )
+
+
 # REAL_PATH_VERIFIED: worker/tests/test_arch_clip_qwen3.py::test_load_real_qwen3_fixture_with_weights
 # MOCK_PATH_VERIFIED: worker/tests/test_arch_clip_qwen3.py::test_load_mock_qwen3_fixture_with_weights
 def load(
@@ -993,25 +1057,15 @@ def load(
         device,
     )
 
-    # Load the tokenizer from the vendored local asset directory.
+    # Load the vendored tokenizer whose vocabulary matches this checkpoint.
     # transformers' AutoTokenizer.from_pretrained() auto-detects the tokenizer
     # type (Qwen2Tokenizer / BPE / SentencePiece) from tokenizer_config.json.
     # local_files_only=True guarantees zero network calls — this is the
     # critical security property that prevents any Hugging Face Hub lookup
-    # even if the model path itself points to a hub URL.
-    # __file__ is at worker/nodes/arch/clip/qwen3.py.
-    # parent.parent.parent.parent walks: clip → arch → nodes → worker
-    # then we append "assets/qwen3_tokenizer".
-    tokenizer_path = str(
-        Path(__file__).parent.parent.parent.parent / "assets" / "qwen3_tokenizer"
-    )
-    from transformers import AutoTokenizer
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        tokenizer_path,
-        local_files_only=True,
-    )
-    logger.info("loaded tokenizer from=%s", tokenizer_path)
+    # even if the model path itself points to a hub URL. See
+    # _load_tokenizer_matching_vocab()'s docstring (P903 retrofit) for why
+    # this is no longer a single hardcoded path.
+    tokenizer = _load_tokenizer_matching_vocab(hyperparams["vocab_size"])
 
     # Attach the tokenizer to the model so downstream code has a single
     # object containing both the encoder and its tokenizer.
