@@ -438,7 +438,18 @@ class EmptyLatent(BaseNode):
             # It returns (batch_size, latent_channels, latent_height, latent_width).
             latent_shape = module.compute_latent_shape(width, height, batch_size)
 
-            # Allocate a zero-filled latent tensor on the worker's device.
+            # Allocate a zero-filled latent tensor on the worker's device,
+            # at the same dtype as the loaded model's own parameters.
+            #
+            # P903 retrofit: this previously called torch.zeros(latent_shape,
+            # device=ctx.device) with no dtype, which defaults to float32.
+            # The model itself is materialized at whatever dtype _select_dtype()
+            # chose (bf16 on CPU per ANVILML_DESIGN.md §11.5's precedence,
+            # fp8/fp16 elsewhere) — feeding an fp32 latent into a bf16 model's
+            # first Linear layer (input_proj) raised "mat1 and mat2 must have
+            # the same dtype, but got Float and BFloat16" the first time this
+            # path ran end to end via a real Sampler dispatch. See
+            # docs/ADDENDUM_P903_QWEN3_TOKENIZER_VOCAB_MISMATCH.md.
             # torch.zeros produces a tensor with the exact shape returned by
             # compute_latent_shape(), ready to be passed to the Sampler's
             # denoising loop. The model's arch module's compute_latent_shape()
@@ -446,5 +457,6 @@ class EmptyLatent(BaseNode):
             # for this architecture.
             import torch
 
-            latent = torch.zeros(latent_shape, device=ctx.device)
+            model_dtype = next(model.parameters()).dtype
+            latent = torch.zeros(latent_shape, device=ctx.device, dtype=model_dtype)
             return {"latent": latent}
