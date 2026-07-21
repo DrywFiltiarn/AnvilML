@@ -305,9 +305,16 @@ class ZiTModel(_ModuleBase):
             attn_out, _ = block["img_attn"](h, h, h)
             h = h + attn_out
             # Text cross-attention: Q from h, K/V from conditioning.
+            # h has shape (batch, hidden_dim) but txt_attn with batch_first=True
+            # expects (N, L, E) — insert a sequence dimension of size 1 so the
+            # query is (batch, 1, hidden_dim) matching the (batch, seq_len,
+            # hidden_dim) format of the key/value tensors. After the attention
+            # call, squeeze back to (batch, hidden_dim) before adding to h.
             if conditioning is not None:
-                cross_out, _ = block["txt_attn"](h, conditioning, conditioning)
-                h = h + cross_out
+                cross_out, _ = block["txt_attn"](
+                    h.unsqueeze(1), conditioning, conditioning
+                )
+                h = h + cross_out.squeeze(1)
             h = block["norm2"](h)
             h = h + block["ff"](h)
 

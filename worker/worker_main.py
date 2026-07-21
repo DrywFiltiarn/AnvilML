@@ -14,6 +14,8 @@ import sys
 import traceback
 import uuid
 
+from worker.pipeline_cache import PipelineCache
+
 logger = logging.getLogger(__name__)
 
 
@@ -393,7 +395,7 @@ def _dispatch_loop(device: str = "cpu", caps: dict | None = None, mock: bool = F
                     caps=caps,
                     cancel_flag=cancel_flag,
                     emit=ipc.send_event,
-                    pipeline_cache=None,
+                    pipeline_cache=PipelineCache(),
                     mock=mock,
                 )
                 try:

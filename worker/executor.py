@@ -194,17 +194,36 @@ def execute_graph(graph: dict, ctx_factory) -> dict:
             logger.info("execute_graph: cancel flag set, stopping after %d nodes", len(results))
             return {"cancelled": True}
 
+        # Resolve node-output references in inputs.  Inputs may contain
+        # dicts shaped {"node_id": "<id>", "output_slot": "<slot>"} that
+        # must be replaced with the actual output value from a previously-
+        # executed node.  Scalar values (strings, ints, floats) pass
+        # through unchanged.
+        raw_inputs = node.get("inputs", {})
+        resolved_inputs: dict = {}
+        for slot_name, value in raw_inputs.items():
+            if isinstance(value, dict) and "node_id" in value and "output_slot" in value:
+                # Resolve the reference: look up the output from the
+                # referenced node and extract the named output slot.
+                ref_node_id = value["node_id"]
+                ref_slot = value["output_slot"]
+                ref_output = results.get(ref_node_id, {})
+                resolved_inputs[slot_name] = ref_output.get(ref_slot)
+            else:
+                # Scalar or non-reference value — pass through unchanged.
+                resolved_inputs[slot_name] = value
+
         # Instantiate the node class from the registry.  The node type
         # string comes from the graph dict (validated by the Rust scheduler
         # before reaching the worker), so a KeyError here would indicate a
         # missing node type registration — a bug, not a runtime condition.
         node_cls = NODE_REGISTRY[node["type"]]
 
-        # Execute the node with its inputs.  The node's execute() method
-        # is responsible for reading from ctx and producing output.
+        # Execute the node with its resolved inputs.  The node's execute()
+        # method is responsible for reading from ctx and producing output.
         # Inputs are passed as keyword arguments matching slot names.
         node_instance = node_cls()
-        node_output = node_instance.execute(ctx, **node.get("inputs", {}))
+        node_output = node_instance.execute(ctx, **resolved_inputs)
 
         # Store the output keyed by node ID.  This allows the caller to
         # inspect results after execution completes (normal or cancelled).
