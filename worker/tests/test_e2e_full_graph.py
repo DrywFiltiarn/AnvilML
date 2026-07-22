@@ -272,13 +272,16 @@ def _build_server_binary() -> Path:
         return _SERVER_BINARY
 
     # Build the release binary. This is a one-time cost — the binary is
-    # cached across test runs.
+    # cached across test runs. Windows CI runners' cold release builds
+    # (MSVC linker, no warm incremental cache) can take substantially
+    # longer than Linux's; 300s was observed to time out mid-build on
+    # Windows even though the build would otherwise succeed.
     result = subprocess.run(
         ["cargo", "build", "--release", "-p", "anvilml"],
         cwd=str(_REPO_ROOT),
         capture_output=True,
         text=True,
-        timeout=300,
+        timeout=900,
     )
     if result.returncode != 0:
         raise RuntimeError(
@@ -571,7 +574,7 @@ def test_full_graph_mock_mode() -> None:
                 _, stderr = proc.communicate(timeout=5)
             pytest.fail(
                 f"Server did not become healthy within {_HEALTH_TIMEOUT}s. "
-                f"stderr={stderr.decode(errors='replace')}"
+                f"stderr={stderr}"
             )
 
        # Wait for the mock worker to register its node types.
@@ -759,7 +762,7 @@ def test_full_graph_real_mode() -> None:
                 _, stderr = proc.communicate(timeout=5)
             pytest.fail(
                 f"Server did not become healthy within {_HEALTH_TIMEOUT}s. "
-                f"stderr={stderr.decode(errors='replace')}"
+                f"stderr={stderr}"
             )
 
         # Wait for the real worker to register.
@@ -930,7 +933,7 @@ def test_full_graph_invalid_graph_returns_400() -> None:
                 _, stderr = proc.communicate(timeout=5)
             pytest.fail(
                 f"Server did not become healthy within {_HEALTH_TIMEOUT}s. "
-                f"stderr={stderr.decode(errors='replace')}"
+                f"stderr={stderr}"
             )
 
         # Build an invalid graph with an unknown node type.
