@@ -8726,3 +8726,63 @@ the P901 section above.
 **Inputs:** Temp file with bytes `b"\x00\x01\x02\x03\x04\x05\x06\x07"`.
 **Expected output:** `ValueError` raised.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_infer_hyperparams_truncated_header_raises -v` exits 0.
+
+---
+
+## test_can_handle_matches_flux2klein (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** The `flux2klein` module is importable without torch (its torch import is guarded at module level). `can_handle()` is a pure string comparison with no torch dependency.
+**Tests:** Calls `can_handle("flux2klein")` and asserts it returns `True`, proving the dispatcher will route a `"flux2klein"` key to this module.
+**Mode:** both
+**Inputs:** Key string `"flux2klein"`.
+**Expected output:** `True` — the primary match path.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_can_handle_matches_flux2klein -v` exits 0.
+
+---
+
+## test_can_handle_rejects_zit_key (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** The `flux2klein` module is importable without torch. `can_handle()` is a pure string comparison.
+**Tests:** Calls `can_handle("zit")` and asserts it returns `False`, proving the dispatcher will skip this module for non-Flux2Klein keys. This is the cross-check against zit.py's fixture key.
+**Mode:** both
+**Inputs:** Key string `"zit"`.
+**Expected output:** `False` — the module rejects unrelated keys.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_can_handle_rejects_zit_key -v` exits 0.
+
+---
+
+## test_get_module_returns_flux2klein_for_flux2klein_key (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** The `flux2klein` module is imported and registered in `arch/diffusion/__init__.py` alongside `zit`. `get_module()` iterates over `_REGISTERED_MODULES` and calls `can_handle()` on each.
+**Tests:** Calls `get_module("flux2klein")` and asserts the result is not None and is the flux2klein module object (identity check), proving that importing and registering flux2klein in __init__.py makes the dispatcher find it.
+**Mode:** both
+**Inputs:** Key string `"flux2klein"`.
+**Expected output:** The flux2klein module (not None, identity match).
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_get_module_returns_flux2klein_for_flux2klein_key -v` exits 0.
+
+---
+
+## test_get_module_returns_zit_for_zit_key (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** Both `flux2klein` and `zit` are registered in `arch/diffusion/__init__.py`. `get_module()` iterates over `_REGISTERED_MODULES` and calls `can_handle()` on each.
+**Tests:** Calls `get_module("zit")` and asserts the result is not None and is the zit module object (identity check), proving that both zit and flux2klein coexist in `_REGISTERED_MODULES` and each is correctly disambiguated by its own `can_handle()`. This is the primary test for the two-module disambiguation that ANVILML_DESIGN.md §20 requires.
+**Mode:** both
+**Inputs:** Key string `"zit"`.
+**Expected output:** The zit module (not None, identity match).
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_get_module_returns_zit_for_zit_key -v` exits 0.
+
+---
+
+## test_can_handle_rejects_flux2klein (worker)
+
+**File:** `worker/tests/test_arch_zit.py`
+**Context:** The `zit` module is importable without torch. `can_handle()` is a pure string comparison. This test is the bidirectional cross-check: flux2klein's can_handle must reject zit's fixture AND zit's can_handle must reject flux2klein's fixture.
+**Tests:** Calls `can_handle("flux2klein")` and asserts it returns `False`, proving that zit.py's can_handle correctly rejects flux2klein's key.
+**Mode:** both
+**Inputs:** Key string `"flux2klein"`.
+**Expected output:** `False` — the module rejects flux2klein's architecture string.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_can_handle_rejects_flux2klein -v` exits 0.

@@ -142,3 +142,62 @@ def test_infer_hyperparams_truncated_header_raises() -> None:
             os.unlink(tmp_path)
         except OSError:
             pass
+
+
+# ---------------------------------------------------------------------------
+# P25-B2: can_handle() and dispatch registration tests
+# ---------------------------------------------------------------------------
+
+
+def test_can_handle_matches_flux2klein() -> None:
+    """can_handle(\"flux2klein\") returns True — the primary match path.
+
+    Calls can_handle() with the canonical Flux 2 Klein architecture string
+    and asserts it returns True, proving the dispatcher will route a
+    ``"flux2klein"`` key to this module.
+    """
+    from worker.nodes.arch.diffusion.flux2klein import can_handle
+
+    assert can_handle("flux2klein") is True
+
+
+def test_can_handle_rejects_zit_key() -> None:
+    """can_handle(\"zit\") returns False — the module rejects unrelated keys.
+
+    Calls can_handle() with zit's architecture string and asserts it returns
+    False, proving the dispatcher will skip this module for non-Flux2Klein keys.
+    This is the cross-check against zit.py's fixture key.
+    """
+    from worker.nodes.arch.diffusion.flux2klein import can_handle
+
+    assert can_handle("zit") is False
+
+
+def test_get_module_returns_flux2klein_for_flux2klein_key() -> None:
+    """get_module(\"flux2klein\") returns the flux2klein module — end-to-end dispatch.
+
+    Calls get_module() with ``"flux2klein"`` and asserts the result is not None
+    and is the flux2klein module, proving that importing and registering flux2klein
+    in __init__.py makes the dispatcher find it as the second registered module.
+    """
+    from worker.nodes.arch.diffusion import flux2klein, get_module
+
+    result = get_module("flux2klein")
+    assert result is not None
+    assert result is flux2klein
+
+
+def test_get_module_returns_zit_for_zit_key() -> None:
+    """get_module(\"zit\") returns the zit module — two-module coexistence.
+
+    Calls get_module() with ``"zit"`` and asserts the result is not None
+    and is the zit module, proving that both zit and flux2klein coexist in
+    _REGISTERED_MODULES and each is correctly disambiguated by its own
+    can_handle(). This is the primary test for the two-module disambiguation
+    that ANVILML_DESIGN.md §20 requires.
+    """
+    from worker.nodes.arch.diffusion import get_module, zit
+
+    result = get_module("zit")
+    assert result is not None
+    assert result is zit

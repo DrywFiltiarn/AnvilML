@@ -14,15 +14,16 @@ from worker.nodes.arch import vae
 def _clear_diffusion_registry() -> None:
     """Clear the diffusion registry before each test.
 
-    The zit module is registered at import time (P20-B2), so tests that
-    assert "empty registry" behaviour must temporarily remove it.
+    The zit and flux2klein modules are registered at import time
+    (P20-B2 and P25-B2), so tests that assert "empty registry"
+    behaviour must temporarily remove them.
     """
-    # Save the zit module so we can restore it after the test.
-    _zit = diffusion.zit  # type: ignore[attr-defined]
+    # Save both registered modules so we can restore them after the test.
+    _modules = list(diffusion._REGISTERED_MODULES)
     diffusion._REGISTERED_MODULES.clear()
     yield
-    # Restore zit so other tests see the correct initial state.
-    diffusion._REGISTERED_MODULES.append(_zit)
+    # Restore both modules so other tests see the correct initial state.
+    diffusion._REGISTERED_MODULES.extend(_modules)
 
 
 def test_get_module_returns_none_when_empty() -> None:

@@ -7,9 +7,9 @@ for the Flux 2 Klein diffusion transformer architecture. It implements steps
     1. _infer_hyperparams(path) — open header-only, read all key shapes,
            return a dict of inferred hyperparameters (hidden_dim, block
            counts, latent dimensions, patch_size, arch string, native_dtype).
-    2. can_handle(key) — deferred to P25-B2.
-    3. load(path, caps, device) — deferred to P25-C1.
-    4. sample(model, model_id, conditioning, latent, steps, cfg, seed) —
+    2. can_handle(key) — implemented in P25-B2.
+     3. load(path, caps, device) — deferred to P25-C1.
+     4. sample(model, model_id, conditioning, latent, steps, cfg, seed) —
            deferred to P25-C2.
 
 Flux 2 Klein is a diffusion transformer characterised by:
@@ -392,3 +392,20 @@ def _infer_hyperparams(path: str) -> dict[str, Any]:
         # Catch-all for SafetensorError and any other deserialization
         # failures (truncated headers, corrupted files, etc.).
         raise ValueError(f"cannot parse safetensors header: {exc}") from exc
+
+
+def can_handle(key: str) -> bool:
+    """Confirm this module handles the given architecture key.
+
+    The dispatcher passes the architecture string (from safetensors
+    metadata or path fallback) as *key*. This function returns True
+    only when the key matches this module's canonical identifier.
+
+    Args:
+        key: Architecture string to check, e.g. ``"zit"`` or
+            ``"flux2klein"``.
+
+    Returns:
+        ``True`` if *key* equals ``"flux2klein"``, ``False`` otherwise.
+    """
+    return key == ARCH

@@ -176,6 +176,18 @@ def test_can_handle_rejects_unrelated_key() -> None:
     assert can_handle("flux2klein") is False
 
 
+def test_can_handle_rejects_flux2klein() -> None:
+    """can_handle(\"flux2klein\") returns False — cross-check against flux2klein fixture.
+
+    Calls can_handle() with the Flux 2 Klein architecture string and asserts
+    it returns False, proving that zit.py's can_handle correctly rejects
+    flux2klein's key. This is the bidirectional cross-check required by
+    P25-B2: flux2klein's can_handle must reject zit's fixture AND
+    zit's can_handle must reject flux2klein's fixture.
+    """
+    assert can_handle("flux2klein") is False
+
+
 def test_get_module_returns_zit_for_matching_key() -> None:
     """get_module(\"zit\") returns the zit module — end-to-end dispatch integration.
 

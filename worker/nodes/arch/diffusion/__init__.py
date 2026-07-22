@@ -5,6 +5,7 @@ architecture family (ZiT, Flux2Klein, etc.). Each concrete diffusion
 arch module defines its own ``can_handle(key)`` method; the dispatcher
 scans the registered modules and returns the first match.
 
+Currently registered modules: ``flux2klein`` and ``zit``.
 With zero registered modules (concrete arch modules are wired in later
 phases), ``get_module`` returns ``None`` silently — never raises.
 
@@ -17,9 +18,11 @@ from __future__ import annotations
 from types import ModuleType
 from typing import Any
 
+from worker.nodes.arch.diffusion import flux2klein
 from worker.nodes.arch.diffusion import zit
 
 _REGISTERED_MODULES: list[ModuleType] = []
+_REGISTERED_MODULES.append(flux2klein)
 _REGISTERED_MODULES.append(zit)
 
 
