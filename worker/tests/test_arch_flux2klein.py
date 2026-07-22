@@ -387,3 +387,154 @@ def test_collection_safety_load_import() -> None:
         f"stderr={result.stderr}"
     )
     assert "OK" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# P25-C2: Weight loading, key remapping, dtype, and .arch tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.real_mode
+def test_load_key_remapping_regular_fixture() -> None:
+    """load() remaps checkpoint keys correctly — at least some params are non-zero.
+
+    Calls ``load()`` against the regular fixture with bf16 capability, then
+    inspects the model's parameters to confirm that the key remapping
+    + weight loading successfully loaded at least some weights. Specifically
+    checks that ``time_text_emb.weight`` is non-zero (the cleanest remap:
+    ``time_text_embed.timestep_embedder.0.weight`` → ``time_text_emb.weight``
+    has matching shape 128×128).
+
+    **Mode:** real
+    """
+    pytest.importorskip("torch")
+
+    from worker.nodes.arch.diffusion.flux2klein import load
+
+    fixture_path = _FIXTURE_DIR / "flux2klein4b_tiny.safetensors"
+    caps = {"fp8": False, "bf16": True, "fp16": True, "fp32": True}
+    model = load(str(fixture_path), caps, device="cpu")
+
+    # time_text_emb.weight should be non-zero because the checkpoint
+    # key ``time_text_embed.timestep_embedder.0.weight`` (128, 128)
+    # remaps to ``time_text_emb.weight`` (128, 128) — exact shape match.
+    weight_param = model.time_text_emb.weight
+    assert weight_param is not None, "time_text_emb.weight not found"
+    assert weight_param.norm().item() > 0, (
+        "time_text_emb.weight is all zeros — key remapping failed"
+    )
+
+    # img_attn.norm → img_norm1.weight also has a matching shape (128,).
+    norm_param = model.double_blocks[0]["img_norm1"].weight
+    assert norm_param is not None, "img_norm1.weight not found"
+    assert norm_param.norm().item() > 0, (
+        "img_norm1.weight is all zeros — norm remapping failed"
+    )
+
+
+@pytest.mark.real_mode
+def test_load_arch_attribute_set() -> None:
+    """model.arch == "flux2klein" after load() — dedicated .arch contract test.
+
+    Calls ``load()`` against the regular fixture and asserts that
+    ``model.arch`` equals ``"flux2klein"``, confirming the `.arch`
+    attribute contract set in P25-B2 persists through the full
+    load() pipeline including weight loading.
+
+    **Mode:** real
+    """
+    pytest.importorskip("torch")
+
+    from worker.nodes.arch.diffusion.flux2klein import load
+
+    fixture_path = _FIXTURE_DIR / "flux2klein4b_tiny.safetensors"
+    caps = {"fp8": False, "bf16": True, "fp16": True, "fp32": True}
+    model = load(str(fixture_path), caps, device="cpu")
+
+    assert model.arch == "flux2klein"
+
+
+@pytest.mark.real_mode
+def test_load_tensor_dtype_bf16() -> None:
+    """All parameters are torch.bfloat16 after load() with bf16 caps.
+
+    Calls ``load()`` with bf16=True and asserts every parameter is
+    ``torch.bfloat16``, confirming the cast-before-assign ordering
+    works correctly (tensors are cast to target_dtype BEFORE
+    ``load_state_dict(assign=True)``).
+
+    **Mode:** real
+    """
+    pytest.importorskip("torch")
+
+    from worker.nodes.arch.diffusion.flux2klein import load
+
+    fixture_path = _FIXTURE_DIR / "flux2klein4b_tiny.safetensors"
+    caps = {"fp8": False, "bf16": True, "fp16": True, "fp32": True}
+    model = load(str(fixture_path), caps, device="cpu")
+
+    for param in model.parameters():
+        assert param.dtype == torch.bfloat16, (
+            f"expected bf16, got {param.dtype} on {param.shape}"
+        )
+
+
+@pytest.mark.real_mode
+def test_load_tensor_dtype_fp16() -> None:
+    """All parameters are torch.float16 after load() with fp16-only caps.
+
+    Calls ``load()`` with bf16=False, fp16=True and asserts every
+    parameter is ``torch.float16``, testing the dtype fallback path
+    through the load → cast → assign chain.
+
+    **Mode:** real
+    """
+    pytest.importorskip("torch")
+
+    from worker.nodes.arch.diffusion.flux2klein import load
+
+    fixture_path = _FIXTURE_DIR / "flux2klein4b_tiny.safetensors"
+    caps = {"fp8": False, "bf16": False, "fp16": True, "fp32": True}
+    model = load(str(fixture_path), caps, device="cpu")
+
+    for param in model.parameters():
+        assert param.dtype == torch.float16, (
+            f"expected fp16, got {param.dtype} on {param.shape}"
+        )
+
+
+@pytest.mark.real_mode
+def test_load_no_metadata_key_remapping() -> None:
+    """xyz_ prefixed keys are correctly remapped — at least some params are non-zero.
+
+    Calls ``load()`` against the no-metadata fixture (which uses
+    ``xyz_`` prefixed keys) and inspects parameters to confirm that
+    the xyz_ → dot remapping + Flux 2 Klein remapping successfully
+    loaded at least some weights. Specifically checks that
+    ``time_text_emb.weight`` is non-zero.
+
+    **Mode:** real
+    """
+    pytest.importorskip("torch")
+
+    from worker.nodes.arch.diffusion.flux2klein import load
+
+    fixture_path = _FIXTURE_DIR / "flux2klein4b_tiny_no_metadata.safetensors"
+    caps = {"fp8": False, "bf16": True, "fp16": True, "fp32": True}
+    model = load(str(fixture_path), caps, device="cpu")
+
+    # The no-metadata fixture has ``xyz_time_text_embed_timestep_embedder``
+    # (128, 128) which converts to ``time_text_embed.timestep_embedder``
+    # then remaps to ``time_text_emb.weight`` (128, 128) — exact shape match.
+    weight_param = model.time_text_emb.weight
+    assert weight_param is not None, "time_text_emb.weight not found"
+    assert weight_param.norm().item() > 0, (
+        "time_text_emb.weight is all zeros — xyz_ remapping failed"
+    )
+
+    # img_attn.norm → img_norm1.weight also remaps via the xyz_ chain.
+    norm_param = model.double_blocks[0]["img_norm1"].weight
+    assert norm_param is not None, "img_norm1.weight not found"
+    assert norm_param.norm().item() > 0, (
+        "img_norm1.weight is all zeros — xyz_ norm remapping failed"
+    )

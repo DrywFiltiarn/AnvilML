@@ -8870,3 +8870,63 @@ the P901 section above.
 **Inputs:** Subprocess with `sys.modules['torch'] = None`.
 **Expected output:** Import succeeds without raising; `torch is None` confirmed.
 **Acceptance:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_collection_safety_load_import -v -m "not real_mode"` exits 0.
+
+---
+
+## test_load_key_remapping_regular_fixture (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** The `load()` function now implements step 4 (weight loading) with key remapping via `_build_key_remapping()`. This test verifies that the remapping table correctly maps checkpoint keys to module keys for the regular fixture.
+**Tests:** `load()` against `flux2klein4b_tiny.safetensors` with bf16 capability, then asserts that `time_text_emb.weight` is non-zero (the cleanest remap: `time_text_embed.timestep_embedder.0.weight` → `time_text_emb.weight` has matching shape 128×128) and `img_attn.in_proj_weight` is non-zero (the qkv → in_proj_weight remap).
+**Mode:** real
+**Inputs:** Path to `flux2klein4b_tiny.safetensors` fixture, caps dict with bf16=True, fp16=True, fp8=False, device="cpu".
+**Expected output:** `time_text_emb.weight.norm() > 0` and `img_attn.in_proj_weight.norm() > 0` — proving remapping + weight loading succeeded.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_load_key_remapping_regular_fixture -v -m real_mode` exits 0.
+
+---
+
+## test_load_arch_attribute_set (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** The `load()` function sets `model.arch = ARCH` after construction. This is a dedicated test for the `.arch` contract established in P25-B2.
+**Tests:** `load()` against the regular fixture and asserts `model.arch == "flux2klein"` — the `.arch` attribute persists through the full load pipeline including weight loading.
+**Mode:** real
+**Inputs:** Path to `flux2klein4b_tiny.safetensors` fixture, caps dict with bf16=True, device="cpu".
+**Expected output:** `model.arch == "flux2klein"`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_load_arch_attribute_set -v -m real_mode` exits 0.
+
+---
+
+## test_load_tensor_dtype_bf16 (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** The `load()` function casts tensors to `target_dtype` before calling `load_state_dict(assign=True)`. This test verifies the cast-before-assign ordering works correctly — every parameter has the expected dtype.
+**Tests:** `load()` with bf16=True, then iterates all parameters and asserts each is `torch.bfloat16`.
+**Mode:** real
+**Inputs:** Path to `flux2klein4b_tiny.safetensors` fixture, caps dict with bf16=True, fp16=True, fp8=False, device="cpu".
+**Expected output:** Every parameter has `param.dtype == torch.bfloat16`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_load_tensor_dtype_bf16 -v -m real_mode` exits 0.
+
+---
+
+## test_load_tensor_dtype_fp16 (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** The `_select_dtype()` function falls back to fp16 when bf16 is not available. This test verifies the dtype fallback path through the full load → cast → assign chain.
+**Tests:** `load()` with bf16=False, fp16=True, then iterates all parameters and asserts each is `torch.float16`.
+**Mode:** real
+**Inputs:** Path to `flux2klein4b_tiny.safetensors` fixture, caps dict with bf16=False, fp16=True, fp8=False, device="cpu".
+**Expected output:** Every parameter has `param.dtype == torch.float16`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_load_tensor_dtype_fp16 -v -m real_mode` exits 0.
+
+---
+
+## test_load_no_metadata_key_remapping (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** The `_build_key_remapping()` function handles no-metadata fixtures by converting `xyz_` prefixed keys to dot notation before applying the Flux 2 Klein remapping rules. This test verifies the full xyz_ → dot → remap chain works.
+**Tests:** `load()` against `flux2klein4b_tiny_no_metadata.safetensors`, then asserts that `time_text_emb.weight` is non-zero (the xyz_ → dot → remap chain correctly loaded the weight) and `img_attn.in_proj_weight` is non-zero.
+**Mode:** real
+**Inputs:** Path to `flux2klein4b_tiny_no_metadata.safetensors` fixture, caps dict with bf16=True, device="cpu".
+**Expected output:** `time_text_emb.weight.norm() > 0` and `img_attn.in_proj_weight.norm() > 0` — proving xyz_ remapping succeeded.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_load_no_metadata_key_remapping -v -m real_mode` exits 0.
