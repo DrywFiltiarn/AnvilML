@@ -8,9 +8,10 @@ for the Flux 2 Klein diffusion transformer architecture. It implements steps
            return a dict of inferred hyperparameters (hidden_dim, block
            counts, latent dimensions, patch_size, arch string, native_dtype).
     2. can_handle(key) — implemented in P25-B2.
-     3. load(path, caps, device) — deferred to P25-C1.
-     4. sample(model, model_id, conditioning, latent, steps, cfg, seed) —
-           deferred to P25-C2.
+    3. load(path, caps, device) — implemented in P25-C1 (meta construction,
+           dtype selection, materialization; weight loading deferred to P25-C2).
+    4. sample(model, model_id, conditioning, latent, steps, cfg, seed) —
+           deferred to P25-D1.
 
 Flux 2 Klein is a diffusion transformer characterised by:
 - ``double_blocks``: modulated cross-attention blocks with ``img_mod`` /
@@ -409,3 +410,411 @@ def can_handle(key: str) -> bool:
         ``True`` if *key* equals ``"flux2klein"``, ``False`` otherwise.
     """
     return key == ARCH
+
+
+# ---------------------------------------------------------------------------
+# Flux2KleinModel — meta-device model construction
+# ---------------------------------------------------------------------------
+
+# nn.Module is unavailable when torch failed to import (see the guard above).
+# Flux2KleinModel falls back to plain `object` as its base in that case —
+# the class still defines successfully (only __init__/forward bodies touch
+# torch, and those are never invoked without going through the guarded
+# load()/sample() entry points below), which is what keeps this module
+# importable in mock-mode collection.
+_ModuleBase = nn.Module if nn is not None else object
+
+
+class Flux2KleinModel(_ModuleBase):
+    """Flux 2 Klein diffusion transformer model constructed from layer-level building blocks.
+
+    This class assembles the Flux 2 Klein architecture using ``torch.nn``
+    primitives (Linear, LayerNorm, MultiheadAttention, Sequential, GELU) that
+    mirror the tensor shapes found in the checkpoint. It is constructed on
+    ``torch.device("meta")`` so that no real GPU/CPU memory is allocated
+    during construction — this prevents large memory allocation during model
+    construction.
+
+    The Flux 2 Klein architecture consists of:
+    - ``input_proj``: latent space → hidden dimension projection
+    - ``time_text_emb``: time-step + text embedding projection
+    - ``double_blocks``: list of modulated cross-attention blocks with
+      adaptive LayerNorm modulation (``img_mod`` / ``txt_mod``), image and
+      text attention sub-layers (``img_attn`` / ``txt_attn``), and SwiGLU-style
+      MLPs (``img_mlp`` / ``txt_mlp``).
+    - ``single_blocks``: list of linear transformation blocks
+    - ``final_layer``: output projection with adaptive LN modulation
+      (``adaLN_modulation``)
+
+    The ``.arch`` attribute is set to ``"flux2klein"`` after construction
+    so that downstream code (Sampler, VaeDecode) can identify the model family.
+
+    Args:
+        hyperparams: Dict from ``_infer_hyperparams()`` containing
+            hidden_dim, double_block_count, single_block_count,
+            latent_channels, latent_height, latent_width, patch_size.
+    """
+
+    def __init__(self, hyperparams: dict[str, Any]) -> None:
+        """Construct the Flux 2 Klein model on the meta device.
+
+        Args:
+            hyperparams: Dict from ``_infer_hyperparams()`` containing
+                hidden_dim, double_block_count, single_block_count,
+                latent_channels, latent_height, latent_width, patch_size.
+        """
+        super().__init__()
+
+        # Extract hyperparameters — all derived from the checkpoint header,
+        # never hardcoded. This ensures the model structure always matches
+        # the actual checkpoint it was built from.
+        hidden_dim = hyperparams["hidden_dim"]
+        double_block_count = hyperparams["double_block_count"]
+        single_block_count = hyperparams["single_block_count"]
+        latent_channels = hyperparams["latent_channels"]
+        patch_size = hyperparams["patch_size"]
+
+        # Input projection: (latent_channels * patch_size^2) → hidden_dim
+        # The latent tensor is reshaped to (batch, latent_channels*patch_size^2,
+        # height*width) before projection into the hidden dimension.
+        latent_dim = latent_channels * patch_size * patch_size
+        self.input_proj = nn.Linear(latent_dim, hidden_dim)
+
+        # Time-step + text embedding projection (hidden_dim → hidden_dim).
+        # The time token and text embedding are combined in a single linear
+        # layer before being added to the hidden representation.
+        self.time_text_emb = nn.Linear(hidden_dim, hidden_dim)
+
+        # Double blocks with modulated cross-attention sub-layers.
+        # Each double block has:
+        # - img_mod / txt_mod: Linear layers that generate modulation parameters
+        #   for 6 LayerNorm layers (scale, shift, gate for img_attn, txt_attn,
+        #   img_mlp, txt_mlp — 3 sub-layers × 2 per sub-layer).
+        # - img_attn / txt_attn: MultiheadAttention layers for self-attention
+        #   (image) and cross-attention (text).
+        # - img_norm1/2, txt_norm1/2: LayerNorm layers for adaptive normalization.
+        # - img_mlp / txt_mlp: SwiGLU-style MLPs (Linear → GELU → Linear).
+        self.double_blocks = nn.ModuleList([
+            nn.ModuleDict({
+                "img_mod": nn.Linear(hidden_dim, hidden_dim * 6),
+                "txt_mod": nn.Linear(hidden_dim, hidden_dim * 6),
+                "img_attn": nn.MultiheadAttention(
+                    embed_dim=hidden_dim,
+                    num_heads=hidden_dim // 64,
+                    batch_first=True,
+                ),
+                "txt_attn": nn.MultiheadAttention(
+                    embed_dim=hidden_dim,
+                    num_heads=hidden_dim // 64,
+                    batch_first=True,
+                ),
+                "img_norm1": nn.LayerNorm(hidden_dim),
+                "img_norm2": nn.LayerNorm(hidden_dim),
+                "txt_norm1": nn.LayerNorm(hidden_dim),
+                "txt_norm2": nn.LayerNorm(hidden_dim),
+                "img_mlp": nn.Sequential(
+                    nn.Linear(hidden_dim, hidden_dim * 4),
+                    nn.GELU(),
+                    nn.Linear(hidden_dim * 4, hidden_dim),
+                ),
+                "txt_mlp": nn.Sequential(
+                    nn.Linear(hidden_dim, hidden_dim * 4),
+                    nn.GELU(),
+                    nn.Linear(hidden_dim * 4, hidden_dim),
+                ),
+            })
+            for _ in range(double_block_count)
+        ])
+
+        # Single blocks with linear transformation.
+        # Each single block is a simplified linear transformation block
+        # used in Flux 2 Klein's architecture after the double blocks.
+        self.single_blocks = nn.ModuleList([
+            nn.ModuleDict({
+                "linear1": nn.Linear(hidden_dim, hidden_dim * 4),
+                "linear2": nn.Linear(hidden_dim * 4, hidden_dim),
+                "norm": nn.LayerNorm(hidden_dim),
+            })
+            for _ in range(single_block_count)
+        ])
+
+        # Final layer: adaptive LayerNorm modulation + output projection.
+        # The adaLN_modulation layer produces scale and shift parameters
+        # for the final LayerNorm. The output projection maps from hidden_dim
+        # back to latent_dim (latent_channels * patch_size^2).
+        self.final_layer = nn.ModuleDict({
+            "adaLN_modulation": nn.Linear(hidden_dim, hidden_dim * 2),
+            "linear": nn.Linear(hidden_dim, latent_dim),
+        })
+
+        # Architecture identifier — set after construction so downstream
+        # code can identify this model's family.
+        self.arch: str = "flux2klein"
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        timestep: float,
+        conditioning: Any = None,
+    ) -> torch.Tensor:
+        """Forward pass through the Flux 2 Klein diffusion transformer.
+
+        **Stub implementation (P25-C1):** this forward pass is structurally
+        correct — it projects the input through the layers in the right order —
+        but does not implement the full adaptive LayerNorm modulation math.
+        The modulation (img_mod/txt_mod generating scale/shift/gate parameters)
+        is deferred to P25-D1 when ``sample()`` is implemented.
+
+        The full modulation math works as follows: each modulation layer
+        (img_mod, txt_mod) produces a vector of size ``hidden_dim * 6`` (or
+        ``hidden_dim * 2`` for final_layer), which is split into parameters
+        for the LayerNorm layers in each sub-block. For example, img_mod
+        produces 6 parameters per hidden dimension: (scale1, shift1, gate1)
+        for img_norm1 and (scale2, shift2, gate2) for img_norm2. These
+        parameters are applied as ``norm(x * scale + shift) * gate``.
+
+        Args:
+            x: The input latent tensor of shape
+                ``(batch, latent_channels, latent_height, latent_width)``.
+            timestep: A float in ``[0, 1]`` indicating the current
+                denoising step's position in the noise schedule.
+            conditioning: Optional conditioning tensor (e.g. text
+                embeddings from a CLIP encoder). Passed through to
+                the double blocks' cross-attention layers.
+
+        Returns:
+            A noise prediction tensor of the same shape as *x*,
+            ``(batch, latent_channels, latent_height, latent_width)``.
+        """
+        # ------------------------------------------------------------------
+        # 1. Project latent into hidden dimension.
+        # ------------------------------------------------------------------
+        batch = x.shape[0]
+        x_flat = x.reshape(batch, -1)  # (batch, latent_dim)
+        h = self.input_proj(x_flat)  # (batch, hidden_dim)
+
+        # ------------------------------------------------------------------
+        # 2. Time embedding (minimal pass-through — full modulation deferred).
+        # ------------------------------------------------------------------
+        # The full time embedding with sinusoidal encoding and modulation
+        # parameter generation is implemented in P25-D1. For now, we pass
+        # the hidden representation through the time_text_emb layer as a
+        # structural placeholder.
+        time_emb = self.time_text_emb(torch.zeros_like(h[:, :1]).squeeze(1))
+        h = h + time_emb
+
+        # ------------------------------------------------------------------
+        # 3. Pass through double blocks (modulated cross-attention).
+        # ------------------------------------------------------------------
+        # The full modulation math is deferred to P25-D1. For now, we pass
+        # data through the layers without modulation as a structural placeholder.
+        for block in self.double_blocks:
+            h = block["img_norm1"](h)
+            # Image self-attention: Q, K, V all come from h.
+            attn_out, _ = block["img_attn"](h, h, h)
+            h = h + attn_out
+            h = block["img_norm2"](h)
+            h = h + block["img_mlp"](h)
+
+        # ------------------------------------------------------------------
+        # 4. Pass through single blocks (linear transformation).
+        # ------------------------------------------------------------------
+        for block in self.single_blocks:
+            h = block["norm"](h)
+            h = h + block["linear2"](torch.nn.functional.gelu(block["linear1"](h)))
+
+        # ------------------------------------------------------------------
+        # 5. Final layer output projection.
+        # ------------------------------------------------------------------
+        # The full adaLN modulation is deferred to P25-D1.
+        out = self.final_layer["linear"](h)
+
+        # Reshape back to (batch, latent_channels, latent_height, latent_width).
+        latent_channels = x.shape[1]
+        resized_height = x.shape[2]
+        resized_width = x.shape[3]
+        out = out.reshape(
+            batch, latent_channels, resized_height, resized_width
+        )
+
+        return out
+
+
+# ---------------------------------------------------------------------------
+# _select_dtype — per-ANVILML_DESIGN.md §11.5 precedence chain
+# ---------------------------------------------------------------------------
+
+
+def _select_dtype(caps: dict, native_dtype: str) -> torch.dtype:
+    """Select the compute dtype per the fixed precedence in ANVILML_DESIGN.md §11.5.
+
+    Implements the precedence chain: fp8 (if caps.fp8 AND native is fp8)
+    → bf16 → fp16 → fp32. The native dtype is compared against known
+    FP8 formats to determine whether the checkpoint was originally
+    trained in FP8 — a checkpoint in F32 does not benefit from fp8
+    caps because the weights would need to be converted first.
+
+    Args:
+        caps: Worker capability dict from ``probe_capabilities()`` with keys
+            ``fp32``, ``fp16``, ``bf16``, ``fp8``, ``fp4``, ``flash_attention``.
+        native_dtype: Canonical native dtype string from the checkpoint
+            header (e.g. "fp32", "fp16", "bf16", "fp8").
+
+    Returns:
+        A ``torch.dtype`` constant for the selected compute precision.
+    """
+    # Branch 1: FP8 — only selected when the worker supports fp8 AND the
+    # checkpoint was originally saved in an FP8 format. Both conditions
+    # must hold because loading an F32 checkpoint at fp8 would require
+    # a weight conversion step that is not implemented yet.
+    if caps.get("fp8", False) and native_dtype == "fp8":
+        logger.debug(
+            "selecting fp8 dtype: caps.fp8=%s, native_dtype=%s",
+            caps.get("fp8"),
+            native_dtype,
+        )
+        return torch.float8_e4m3fn
+
+    # Branch 2: BF16 — the next-highest precision when FP8 is not viable.
+    # bfloat16 is widely supported on modern GPUs and provides dynamic
+    # range close to fp32 with half the memory footprint.
+    if caps.get("bf16", False):
+        logger.debug(
+            "selecting bf16 dtype: caps.bf16=%s (fp8 not viable)",
+            caps.get("bf16"),
+        )
+        return torch.bfloat16
+
+    # Branch 3: FP16 — the next fallback when bf16 is not available.
+    # float16 has a narrower dynamic range than bf16 but is still
+    # significantly more memory-efficient than fp32.
+    if caps.get("fp16", False):
+        logger.debug(
+            "selecting fp16 dtype: caps.fp16=%s (bf16 not available)",
+            caps.get("fp16"),
+        )
+        return torch.float16
+
+    # Branch 4: FP32 — the universal fallback. Every device supports fp32,
+    # so this path is always reachable. It is the most numerically stable
+    # but also the most memory-intensive option.
+    logger.debug(
+        "selecting fp32 dtype: no higher precision available (caps=%s)",
+        {k: v for k, v in caps.items() if k in ("fp8", "bf16", "fp16")},
+    )
+    return torch.float32
+
+
+# ---------------------------------------------------------------------------
+# load — meta construction + dtype selection + materialization (P25-C1)
+# ---------------------------------------------------------------------------
+
+# REAL_PATH_VERIFIED: worker/tests/test_arch_flux2klein.py::test_load_meta_construction_regular_fixture
+# MOCK_PATH_VERIFIED: worker/tests/test_arch_flux2klein.py::test_collection_safety_load_import
+def load(path: str, caps: dict, device: str = "cpu") -> Flux2KleinModel:
+    """Construct the Flux 2 Klein model on meta-device, materialize, and zero-init.
+
+    Implements steps 2–3 of the four-step loading contract
+    (ANVILML_DESIGN.md §11.3):
+
+    1. Infer hyperparameters from checkpoint header (step 1, delegated to
+       ``_infer_hyperparams``).
+    2. Select compute dtype based on capability flags and checkpoint native
+       dtype (step 2, delegated to ``_select_dtype``).
+    3. Construct ``Flux2KleinModel`` on ``torch.device("meta")``, apply
+       dtype, materialize onto the target device via ``to_empty()``,
+       and zero-initialize all parameters and buffers.
+
+    Weight loading (step 4: key remapping + ``load_state_dict(assign=True)``)
+    is deferred to P25-C2.
+
+    Args:
+        path: Filesystem path to a Flux 2 Klein-format safetensors
+            checkpoint file.
+        caps: Worker capability dict from ``probe_capabilities()`` with keys
+            ``fp32``, ``fp16``, ``bf16``, ``fp8``, ``fp4``, ``flash_attention``
+            (all bool). The dtype selection follows the fixed precedence in
+            ANVILML_DESIGN.md §11.5: fp8 (if caps.fp8 AND native is fp8)
+            → bf16 → fp16 → fp32.
+        device: Target device string for tensor materialization. Defaults to
+            ``"cpu"``. Passed to ``model.to_empty(device=...)``.
+
+    Returns:
+        A ``Flux2KleinModel`` instance with parameters materialized on
+        *device*, carrying the selected dtype, and ``.arch == "flux2klein"``.
+
+    Raises:
+        RuntimeError: If torch is not installed (this is a real-mode-only
+            entry point and must not be reached from mock-mode code).
+        ValueError: If the checkpoint cannot be opened or hyperparameters
+            cannot be inferred (delegated to ``_infer_hyperparams``).
+    """
+    # torch is optional at module-import time (see the guard at the top of
+    # this file); load() is a real-mode-only entry point and must never be
+    # reached from mock-mode code. Fail clearly here instead of surfacing a
+    # confusing AttributeError on a None torch/nn deep inside construction.
+    if torch is None:
+        raise RuntimeError(
+            "flux2klein.py: torch is not installed - load() is a real-mode-only "
+            "entry point (ANVILML_DESIGN.md §18.3) and must not be reached "
+            "from mock-mode code paths."
+        )
+
+    # Step 1 (from P25-B1): infer hyperparameters from checkpoint header,
+    # including the native dtype of the first weight tensor. This reads only
+    # the ~100KB metadata header — no tensor data is loaded.
+    hyperparams = _infer_hyperparams(path)
+
+    # Step 2: select the compute dtype per the fixed precedence in
+    # ANVILML_DESIGN.md §11.5. The native dtype is read from the checkpoint
+    # header; the capability flags come from the worker's own torch-level probe.
+    # This ensures the dtype decision is driven by both what the checkpoint
+    # actually uses and what the worker hardware can execute.
+    target_dtype = _select_dtype(caps, hyperparams["native_dtype"])
+
+    # Step 3: construct on meta-device with selected dtype.
+    # Using torch.device("meta") means no real memory is allocated for
+    # parameters — the module structure exists but tensors have shape
+    # metadata only. This prevents large memory allocation during construction.
+    with torch.device("meta"):
+        model = Flux2KleinModel(hyperparams)
+
+    # Apply the selected dtype to the meta-constructed module.
+    # model.to(dtype) on a module with meta-device parameters changes their
+    # dtype metadata without allocating real memory — this is the standard
+    # PyTorch idiom for dtype selection before weight loading.
+    model.to(target_dtype)
+
+    # Log materialization parameters for diagnostics.
+    logger.debug(
+        "materializing Flux2Klein model to device=%s, hidden_dim=%d, "
+        "double_blocks=%d, single_blocks=%d",
+        device,
+        hyperparams["hidden_dim"],
+        hyperparams["double_block_count"],
+        hyperparams["single_block_count"],
+    )
+
+    # Materialize all parameters from meta device to the target device.
+    # to_empty() allocates real memory for parameters but does not load
+    # weights — this is the bridge between meta-construction and weight loading.
+    model = model.to_empty(device=device)
+
+    # to_empty() allocates UNINITIALIZED memory — it does not zero anything.
+    # Zero every parameter and buffer explicitly here, before loading the
+    # checkpoint in P25-C2, so any key the checkpoint doesn't cover
+    # deterministically stays at zero — making the "zero-initialized by
+    # design" comment actually true — rather than silently propagating NaN
+    # through the first forward pass.
+    for param in model.parameters():
+        param.data.zero_()
+    for buf in model.buffers():
+        buf.data.zero_()
+
+    # Verify .arch persists after materialization. to_empty() returns the same
+    # module object (not a copy), so .arch should be preserved. If it is not,
+    # explicitly re-set it — this is a safety net for future PyTorch versions.
+    if not hasattr(model, "arch") or model.arch != ARCH:
+        model.arch = ARCH
+
+    return model

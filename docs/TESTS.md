@@ -8786,3 +8786,87 @@ the P901 section above.
 **Inputs:** Key string `"flux2klein"`.
 **Expected output:** `False` — the module rejects flux2klein's architecture string.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_zit.py::test_can_handle_rejects_flux2klein -v` exits 0.
+
+---
+
+## test_load_meta_construction_regular_fixture (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** The `load()` function is implemented in `worker/nodes/arch/diffusion/flux2klein.py` and calls `_infer_hyperparams()` to get hyperparameters, `_select_dtype()` to pick the compute dtype, constructs `Flux2KleinModel` on meta-device, applies dtype, materializes via `to_empty()`, and zero-initializes all parameters. Weight loading (key remapping + `load_state_dict`) is deferred to P25-C2.
+**Tests:** `load()` against `flux2klein4b_tiny.safetensors` with bf16 capability returns a `Flux2KleinModel` with `.arch == "flux2klein"`, all parameters on cpu device, dtype=torch.bfloat16. This serves as the `REAL_PATH_VERIFIED` parity marker.
+**Mode:** real
+**Inputs:** Path to `flux2klein4b_tiny.safetensors` fixture, caps dict with bf16=True, fp16=True, fp8=False, device="cpu".
+**Expected output:** `Flux2KleinModel` with `.arch == "flux2klein"`, all params on cpu, dtype=torch.bfloat16.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_load_meta_construction_regular_fixture -v -m real_mode` exits 0.
+
+---
+
+## test_load_meta_construction_no_metadata_fixture (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** The `load()` function loads against the no-metadata fixture which has no `arch` key in its safetensors header. The metadata-fallback path in `_infer_hyperparams()` identifies the architecture from key naming patterns.
+**Tests:** `load()` against `flux2klein4b_tiny_no_metadata.safetensors` with bf16 capability succeeds via the metadata-fallback path; `.arch == "flux2klein"`; all tensors on cpu device.
+**Mode:** real
+**Inputs:** Path to `flux2klein4b_tiny_no_metadata.safetensors` fixture, caps dict with bf16=True, fp16=True, fp8=False, device="cpu".
+**Expected output:** `Flux2KleinModel` with `.arch == "flux2klein"`, all params on cpu device.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_load_meta_construction_no_metadata_fixture -v -m real_mode` exits 0.
+
+---
+
+## test_dtype_selection_fp8_caps (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** The `_select_dtype()` function is implemented in `worker/nodes/arch/diffusion/flux2klein.py` and encodes the fixed precedence chain from ANVILML_DESIGN.md §11.5. This unit test verifies the fp8 branch with controlled inputs.
+**Tests:** `_select_dtype()` with caps.fp8=True and native_dtype="fp8" returns `torch.float8_e4m3fn` — the first branch of the §11.5 precedence.
+**Mode:** both
+**Inputs:** caps dict with fp8=True, native_dtype string "fp8".
+**Expected output:** `torch.float8_e4m3fn`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_dtype_selection_fp8_caps -v` exits 0.
+
+---
+
+## test_dtype_selection_bf16_caps (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** The `_select_dtype()` function implements the fixed precedence from ANVILML_DESIGN.md §11.5. This test verifies the bf16 branch when fp8 is not viable (caps.fp8=False).
+**Tests:** `_select_dtype()` with caps.bf16=True, fp8=False, native_dtype="fp32" returns `torch.bfloat16`.
+**Mode:** both
+**Inputs:** caps dict with bf16=True, fp8=False, native_dtype string "fp32".
+**Expected output:** `torch.bfloat16`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_dtype_selection_bf16_caps -v` exits 0.
+
+---
+
+## test_dtype_selection_fp16_caps (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** The `_select_dtype()` function implements the fixed precedence from ANVILML_DESIGN.md §11.5. This test verifies the fp16 branch when bf16 is not available.
+**Tests:** `_select_dtype()` with caps.fp16=True, bf16=False, fp8=False returns `torch.float16`.
+**Mode:** both
+**Inputs:** caps dict with fp16=True, bf16=False, fp8=False.
+**Expected output:** `torch.float16`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_dtype_selection_fp16_caps -v` exits 0.
+
+---
+
+## test_dtype_selection_fp32_caps (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** The `_select_dtype()` function implements the fixed precedence from ANVILML_DESIGN.md §11.5. This test verifies the fp32 fallback when no higher precision is available.
+**Tests:** `_select_dtype()` with caps.fp8=False, bf16=False, fp16=False returns `torch.float32` — the universal fallback.
+**Mode:** both
+**Inputs:** caps dict with fp8=False, bf16=False, fp16=False.
+**Expected output:** `torch.float32`.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_dtype_selection_fp32_caps -v` exits 0.
+
+---
+
+## test_collection_safety_load_import (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** The `load()` function is implemented in `worker/nodes/arch/diffusion/flux2klein.py` and has a torch guard at the top. This test spawns a subprocess with torch removed from sys.modules (simulating mock-mode) and asserts the module imports without error. Per ANVILML_DESIGN.md §10.6's exception for arch-module load()/sample()/decode(), the MOCK_PATH_VERIFIED marker names a collection-safety test.
+**Tests:** Subprocess imports `worker.nodes.arch.diffusion.flux2klein` with torch unavailable; asserts `m.torch is None` (import guard works).
+**Mode:** mock
+**Inputs:** Subprocess with `sys.modules['torch'] = None`.
+**Expected output:** Import succeeds without raising; `torch is None` confirmed.
+**Acceptance:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_collection_safety_load_import -v -m "not real_mode"` exits 0.

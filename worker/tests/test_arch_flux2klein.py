@@ -201,3 +201,189 @@ def test_get_module_returns_zit_for_zit_key() -> None:
     result = get_module("zit")
     assert result is not None
     assert result is zit
+
+
+# ---------------------------------------------------------------------------
+# P25-C1: Flux2KleinModel, _select_dtype(), and load() tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.real_mode
+def test_load_meta_construction_regular_fixture() -> None:
+    """load() against the regular 4B fixture returns a Flux2KleinModel on the target device.
+
+    Calls ``load()`` against ``flux2klein4b_tiny.safetensors`` with
+    bf16 capability and asserts:
+    - The returned model is a ``Flux2KleinModel`` instance.
+    - ``model.arch == "flux2klein"``.
+    - All parameters are on the ``"cpu"`` device (not ``"meta"``).
+    - The selected dtype is ``torch.bfloat16`` (bf16=True, fp8=False, fp16=True).
+
+    This is the primary real-mode test for the load() function and serves
+    as the ``REAL_PATH_VERIFIED`` parity marker.
+
+    **Mode:** real
+    """
+    pytest.importorskip("torch")
+
+    from worker.nodes.arch.diffusion.flux2klein import Flux2KleinModel, load
+
+    fixture_path = _FIXTURE_DIR / "flux2klein4b_tiny.safetensors"
+    caps = {"fp8": False, "bf16": True, "fp16": True, "fp32": True}
+    model = load(str(fixture_path), caps, device="cpu")
+
+    # Verify model type and architecture identifier.
+    assert isinstance(model, Flux2KleinModel)
+    assert model.arch == "flux2klein"
+
+    # Verify all parameters are materialized on the target device (not meta).
+    for param in model.parameters():
+        assert param.device.type == "cpu", f"param {param.dtype} on {param.device}"
+
+    # Verify the selected dtype is bf16.
+    for param in model.parameters():
+        assert param.dtype == torch.bfloat16
+
+
+@pytest.mark.real_mode
+def test_load_meta_construction_no_metadata_fixture() -> None:
+    """load() against the no-metadata fixture returns a Flux2KleinModel on the target device.
+
+    Calls ``load()`` against ``flux2klein4b_tiny_no_metadata.safetensors``
+    (which has no ``"arch"`` metadata key) and asserts the same invariants
+    as the regular fixture test — the metadata-fallback path in
+    ``_infer_hyperparams()`` identifies the architecture from key patterns.
+
+    **Mode:** real
+    """
+    pytest.importorskip("torch")
+
+    from worker.nodes.arch.diffusion.flux2klein import Flux2KleinModel, load
+
+    fixture_path = _FIXTURE_DIR / "flux2klein4b_tiny_no_metadata.safetensors"
+    caps = {"fp8": False, "bf16": True, "fp16": True, "fp32": True}
+    model = load(str(fixture_path), caps, device="cpu")
+
+    assert isinstance(model, Flux2KleinModel)
+    assert model.arch == "flux2klein"
+
+    for param in model.parameters():
+        assert param.device.type == "cpu"
+
+
+def test_dtype_selection_fp8_caps() -> None:
+    """_select_dtype() returns float8_e4m3fn when caps.fp8=True and native_dtype is fp8.
+
+    Verifies the first branch of the §11.5 precedence chain: fp8 is selected
+    only when BOTH the worker supports fp8 AND the checkpoint was saved in
+    an FP8 format.
+
+    **Mode:** both
+    """
+    pytest.importorskip("torch")
+
+    from worker.nodes.arch.diffusion.flux2klein import _select_dtype
+
+    result = _select_dtype({"fp8": True, "bf16": True, "fp16": True}, "fp8")
+    assert result == torch.float8_e4m3fn
+
+
+def test_dtype_selection_bf16_caps() -> None:
+    """_select_dtype() returns bfloat16 when bf16 is available and fp8 is not viable.
+
+    Verifies the second branch: bf16 is selected when caps.bf16=True and
+    fp8 is not viable (either caps.fp8=False or native_dtype != "fp8").
+
+    **Mode:** both
+    """
+    pytest.importorskip("torch")
+
+    from worker.nodes.arch.diffusion.flux2klein import _select_dtype
+
+    result = _select_dtype(
+        {"fp8": False, "bf16": True, "fp16": True},
+        "fp32",  # native is not fp8, so fp8 branch is skipped
+    )
+    assert result == torch.bfloat16
+
+
+def test_dtype_selection_fp16_caps() -> None:
+    """_select_dtype() returns float16 when fp16 is available but bf16 is not.
+
+    Verifies the third branch: fp16 is selected when caps.fp16=True,
+    bf16=False, and fp8 is not viable.
+
+    **Mode:** both
+    """
+    pytest.importorskip("torch")
+
+    from worker.nodes.arch.diffusion.flux2klein import _select_dtype
+
+    result = _select_dtype(
+        {"fp8": False, "bf16": False, "fp16": True},
+        "fp32",
+    )
+    assert result == torch.float16
+
+
+def test_dtype_selection_fp32_caps() -> None:
+    """_select_dtype() returns float32 when no higher precision is available.
+
+    Verifies the fourth branch: fp32 is the universal fallback when
+    caps.fp8=False, caps.bf16=False, and caps.fp16=False.
+
+    **Mode:** both
+    """
+    pytest.importorskip("torch")
+
+    from worker.nodes.arch.diffusion.flux2klein import _select_dtype
+
+    result = _select_dtype(
+        {"fp8": False, "bf16": False, "fp16": False},
+        "fp32",
+    )
+    assert result == torch.float32
+
+
+def test_collection_safety_load_import() -> None:
+    """Importing flux2klein with ANVILML_WORKER_MOCK=1 and no torch succeeds.
+
+    Spawns a subprocess that imports ``worker.nodes.arch.diffusion.flux2klein``
+    with ``torch`` removed from ``sys.modules`` (simulating the mock-mode
+    environment where torch is not installed). Asserts the import succeeds
+    without raising, confirming the module-level import guard works.
+
+    This serves as the ``MOCK_PATH_VERIFIED`` parity marker for ``load()`` —
+    per ANVILML_DESIGN.md §10.6's exception for arch-module load()/sample()/
+    decode(), the mock-mode marker names a collection-safety test rather
+    than a mock-branch test (there is no mock branch inside load()).
+
+    **Mode:** mock
+    """
+    import subprocess
+    import sys
+
+    # Import the module in a subprocess with torch unavailable — this
+    # verifies the module-level import guard (try/except ImportError)
+    # works correctly and keeps the module importable without torch.
+    code = (
+        "import sys; "
+        "sys.modules['torch'] = None; "
+        "sys.modules['torch.nn'] = None; "
+        "sys.modules['safetensors.torch'] = None; "
+        "import worker.nodes.arch.diffusion.flux2klein as m; "
+        "assert m.torch is None; "
+        "assert m.nn is None; "
+        "print('OK')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, (
+        f"flux2klein import failed in mock-mode (no torch). "
+        f"stderr={result.stderr}"
+    )
+    assert "OK" in result.stdout
