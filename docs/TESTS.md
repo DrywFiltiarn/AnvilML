@@ -8930,3 +8930,161 @@ the P901 section above.
 **Inputs:** Path to `flux2klein4b_tiny_no_metadata.safetensors` fixture, caps dict with bf16=True, device="cpu".
 **Expected output:** `time_text_emb.weight.norm() > 0` and `img_attn.in_proj_weight.norm() > 0` — proving xyz_ remapping succeeded.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_load_no_metadata_key_remapping -v -m real_mode` exits 0.
+
+---
+
+## test_compute_latent_shape_mock_default_patch_size (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** The `flux2klein` module has `MODEL_PATCH_SIZE=8` and `MODEL_LATENT_CHANNELS=4` as module-level defaults. The `_flux2klein_default_hyperparams` fixture pins these values for the test duration.
+**Tests:** `compute_latent_shape()` produces correct shapes for exact multiples (64×64→(1,4,8,8)), larger exact multiples (128×128→(1,4,16,16)), and ceiling-division non-multiples (65×65→(1,4,9,9)).
+**Mode:** mock
+**Inputs:** width/height pairs (64,64), (128,128), (65,65) with batch_size=1; patch_size pinned to 8.
+**Expected output:** (1,4,8,8), (1,4,16,16), (1,4,9,9) respectively.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_compute_latent_shape_mock_default_patch_size -v -m "not real_mode"` exits 0.
+
+---
+
+## test_compute_latent_shape_real_after_load (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** After `load()` is called, `MODEL_PATCH_SIZE` and `MODEL_LATENT_CHANNELS` are updated to the checkpoint's actual values (8 and 4). `compute_latent_shape()` uses these updated values.
+**Tests:** Calls `load()` against the Flux 2 Klein fixture, then calls `compute_latent_shape(64, 64, 1)` and asserts the result is (1, 4, 8, 8).
+**Mode:** real
+**Inputs:** Path to `flux2klein4b_tiny.safetensors` fixture, caps dict with bf16=True.
+**Expected output:** (1, 4, 8, 8) — proving load() correctly updates module-level hyperparameters.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_compute_latent_shape_real_after_load -v -m real_mode` exits 0.
+
+---
+
+## test_compute_latent_shape_non_multiple_dims (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** The `_flux2klein_default_hyperparams` fixture pins `MODEL_PATCH_SIZE=8` and `MODEL_LATENT_CHANNELS=4`.
+**Tests:** `compute_latent_shape(100, 80, 1)` with patch_size=8: 100/8=12.5→13, 80/8=10. Result is (1, 4, 13, 10).
+**Mode:** mock
+**Inputs:** width=100, height=80, batch_size=1; patch_size pinned to 8.
+**Expected output:** (1, 4, 13, 10).
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_compute_latent_shape_non_multiple_dims -v -m "not real_mode"` exits 0.
+
+---
+
+## test_compute_latent_shape_batch_size (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** The `_flux2klein_default_hyperparams` fixture pins `MODEL_PATCH_SIZE=8` and `MODEL_LATENT_CHANNELS=4`.
+**Tests:** `compute_latent_shape(64, 64, batch_size=4)` with patch_size=8: latent dims are (8, 8), batch is 4. Result is (4, 4, 8, 8).
+**Mode:** mock
+**Inputs:** width=64, height=64, batch_size=4; patch_size pinned to 8.
+**Expected output:** (4, 4, 8, 8).
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_compute_latent_shape_batch_size -v -m "not real_mode"` exits 0.
+
+---
+
+## test_resolve_conditioning_dict_with_negative (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** Pure-function test for `_resolve_conditioning()` — no torch needed.
+**Tests:** A dict with both `text_embeds` and `negative_text_embeds` splits into the correct tuple.
+**Mode:** mock
+**Inputs:** `{"text_embeds": <obj>, "negative_text_embeds": <obj>}`.
+**Expected output:** cond is text_embeds, uncond is negative_text_embeds.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_resolve_conditioning_dict_with_negative -v -m "not real_mode"` exits 0.
+
+---
+
+## test_resolve_conditioning_dict_without_negative (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** Pure-function test for `_resolve_conditioning()` — no torch needed.
+**Tests:** A dict with only `text_embeds` resolves uncond to None.
+**Mode:** mock
+**Inputs:** `{"text_embeds": <obj>}`.
+**Expected output:** cond is text_embeds, uncond is None.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_resolve_conditioning_dict_without_negative -v -m "not real_mode"` exits 0.
+
+---
+
+## test_resolve_conditioning_bare_tensor (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** Pure-function test for `_resolve_conditioning()` — no torch needed.
+**Tests:** A non-dict value (bare tensor or None) is treated as cond with uncond=None.
+**Mode:** mock
+**Inputs:** A bare object and None.
+**Expected output:** cond is the bare object (or None), uncond is None.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_resolve_conditioning_bare_tensor -v -m "not real_mode"` exits 0.
+
+---
+
+## test_sample_seed_minus_one_resolves_random (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** Calls `sample()` with seed=-1 twice on a loaded Flux 2 Klein model.
+**Tests:** Both calls return positive seeds that differ (randomness from `secrets.randbelow()`).
+**Mode:** real
+**Inputs:** `seed=-1`, model loaded from `flux2klein4b_tiny.safetensors`, latent shape (1,4,8,8), 4 steps.
+**Expected output:** Two different positive seeds in [0, 2^63).
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_sample_seed_minus_one_resolves_random -v -m real_mode` exits 0.
+
+---
+
+## test_sample_seed_positive_reproducible (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** Calls `sample()` twice with the same explicit seed on a loaded Flux 2 Klein model.
+**Tests:** Both calls return identical latent tensors (reproducibility).
+**Mode:** real
+**Inputs:** `seed=42`, model loaded from `flux2klein4b_tiny.safetensors`, latent shape (1,4,8,8), 4 steps.
+**Expected output:** Identical latent tensors, seed=42 returned both times.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_sample_seed_positive_reproducible -v -m real_mode` exits 0.
+
+---
+
+## test_sample_pipeline_assembly_caching (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** Spies on `pipeline_cache.get_or_load` to count loader invocations.
+**Tests:** First call with a model_id assembles the pipeline (loader called once); second call with the same model_id reuses the cached pipeline (loader not called again).
+**Mode:** real
+**Inputs:** Same model_id for two calls, model loaded from fixture, 4 steps.
+**Expected output:** Loader call count = 1 after two sample() calls.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_sample_pipeline_assembly_caching -v -m real_mode` exits 0.
+
+---
+
+## test_sample_denoising_real_flux2klein_fixture (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** End-to-end denoising test against the Flux 2 Klein fixture checkpoint.
+**Tests:** Calls `sample()` with a loaded model, verifies output is a tensor with the correct shape and the seed is a non-negative integer.
+**Mode:** real
+**Inputs:** Model from `flux2klein4b_tiny.safetensors`, latent (1,4,8,8), seed=42, 4 steps.
+**Expected output:** Tensor with shape (1,4,8,8), seed=42.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_sample_denoising_real_flux2klein_fixture -v -m real_mode` exits 0.
+
+---
+
+## test_sample_denoising_runs_to_completion (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** Verifies the denoising loop completes without error and returns correct output shape.
+**Tests:** Calls `sample()` with a loaded model and small steps (4), verifies output tensor shape matches input and seed is positive.
+**Mode:** real
+**Inputs:** Model from `flux2klein4b_tiny.safetensors`, latent (1,4,8,8), seed=99, 4 steps.
+**Expected output:** Tensor shape (1,4,8,8), positive seed.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_sample_denoising_runs_to_completion -v -m real_mode` exits 0.
+
+---
+
+## test_collection_safety_sample_import (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** Subprocess test importing flux2klein without torch — verifies the module-level import guard covers `EulerDiscreteScheduler` (diffusers) and all sample() entry points.
+**Tests:** Imports the module in a subprocess with torch unavailable; asserts `torch`, `nn`, and `EulerDiscreteScheduler` are all `None`.
+**Mode:** mock
+**Inputs:** Subprocess with `sys.modules['torch'] = None`, `sys.modules['diffusers'] = None`.
+**Expected output:** Import succeeds, exit code 0, "OK" in stdout.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_collection_safety_sample_import -v -m "not real_mode"` exits 0.
+
+---

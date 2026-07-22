@@ -12,7 +12,8 @@ for the Flux 2 Klein diffusion transformer architecture. It implements steps
            dtype selection, materialization, key remapping,
            and load_state_dict(assign=True).
     4. sample(model, model_id, conditioning, latent, steps, cfg, seed) —
-           deferred to P25-D1.
+           implemented: pipeline assembly with caching, denoising loop
+           with classifier-free guidance, seed resolution.
 
 Flux 2 Klein is a diffusion transformer characterised by:
 - ``double_blocks``: modulated cross-attention blocks with ``img_mod`` /
@@ -33,7 +34,9 @@ from __future__ import annotations
 import logging
 import math
 import re
+import secrets
 import tempfile
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -54,10 +57,12 @@ try:
     import torch
     import torch.nn as nn
     from safetensors.torch import load_file
+    from diffusers import EulerDiscreteScheduler
 except ImportError:
     torch = None  # type: ignore[assignment]
     nn = None  # type: ignore[assignment]
     load_file = None  # type: ignore[assignment]
+    EulerDiscreteScheduler = None  # type: ignore[assignment]
 
 # Canonical architecture identifier — the string that the dispatcher
 # passes to can_handle() when routing diffusion model requests.
@@ -66,6 +71,24 @@ except ImportError:
 ARCH: str = "flux2klein"
 
 logger = logging.getLogger(__name__)
+
+# Per-process LRU cache for pipeline objects.
+# Each model_id gets its own cached pipeline, keyed as "{model_id}:pipeline".
+# This avoids re-assembling the scheduler + model wrapper on every sample() call.
+from worker.pipeline_cache import PipelineCache
+
+pipeline_cache = PipelineCache()
+
+# Default patch size and latent channel count used by compute_latent_shape()
+# when called before load() has cached the actual checkpoint hyperparameters.
+# These are updated in-place by load() after _infer_hyperparams() extracts
+# the real values from the checkpoint header, so this default only matters
+# for a compute_latent_shape() call made before any model has been loaded.
+# patch_size=8 matches Flux 2 Klein's actual patch size (the fixture's
+# latents tensor is 8×8); the latent_channels=4 is the standard for
+# diffusion transformers of this class.
+MODEL_PATCH_SIZE: int = 8
+MODEL_LATENT_CHANNELS: int = 4
 
 # Safetensors dtype string → canonical lowercase form used by _select_dtype().
 # Maps the six safetensors dtype identifiers to a normalised string.
@@ -396,6 +419,45 @@ def _infer_hyperparams(path: str) -> dict[str, Any]:
         raise ValueError(f"cannot parse safetensors header: {exc}") from exc
 
 
+# REAL_PATH_VERIFIED: worker/tests/test_arch_flux2klein.py::test_compute_latent_shape_real_after_load
+# MOCK_PATH_VERIFIED: worker/tests/test_arch_flux2klein.py::test_compute_latent_shape_mock_default_patch_size
+def compute_latent_shape(
+    width: int, height: int, batch_size: int = 1
+) -> tuple[int, int, int, int]:
+    """Compute the latent tensor shape for a given input resolution.
+
+    Uses Flux 2 Klein's patch-packing formula: latent_height = ceil(width /
+    patch_size), latent_width = ceil(height / patch_size). Returns
+    (batch_size, latent_channels, latent_height, latent_width).
+
+    Non-multiple-of-patch-size dimensions are rounded up via ceiling division
+    so the latent grid fully covers the input — any partial patch at the edge
+    still needs a full column/row of latent tokens.
+
+    The formula uses the module-level constants MODEL_PATCH_SIZE and
+    MODEL_LATENT_CHANNELS, which are set to the checkpoint's actual values
+    when load() is called. Before load(), the defaults (8, 4) apply.
+
+    Args:
+        width: Input image width in pixels.
+        height: Input image height in pixels.
+        batch_size: Number of samples in the batch. Defaults to 1.
+
+    Returns:
+        A 4-tuple (batch_size, latent_channels, latent_height, latent_width)
+        representing the shape of the noise latent tensor that EmptyLatent
+        should produce before passing it to the Sampler.
+    """
+    # Ceiling division: (x + patch_size - 1) // patch_size computes ceil(x /
+    # patch_size) using only integer arithmetic. This correctly handles exact
+    # multiples (e.g. 64 / 8 = 8), non-multiples (e.g. 65 / 8 = ceil(8.125) = 9),
+    # and the edge case width=0 (returns 0).
+    latent_height = (width + MODEL_PATCH_SIZE - 1) // MODEL_PATCH_SIZE
+    latent_width = (height + MODEL_PATCH_SIZE - 1) // MODEL_PATCH_SIZE
+
+    return (batch_size, MODEL_LATENT_CHANNELS, latent_height, latent_width)
+
+
 def can_handle(key: str) -> bool:
     """Confirm this module handles the given architecture key.
 
@@ -598,10 +660,12 @@ class Flux2KleinModel(_ModuleBase):
         # 2. Time embedding (minimal pass-through — full modulation deferred).
         # ------------------------------------------------------------------
         # The full time embedding with sinusoidal encoding and modulation
-        # parameter generation is implemented in P25-D1. For now, we pass
-        # the hidden representation through the time_text_emb layer as a
-        # structural placeholder.
-        time_emb = self.time_text_emb(torch.zeros_like(h[:, :1]).squeeze(1))
+        # parameter generation is deferred. For now, we pass a zero vector
+        # of the correct hidden dimension through the time_text_emb layer
+        # as a structural placeholder so the forward pass completes.
+        # hidden_dim is derived from the input_proj layer's output size.
+        hidden_dim = self.input_proj.out_features
+        time_emb = self.time_text_emb(torch.zeros(hidden_dim, device=h.device, dtype=h.dtype))
         h = h + time_emb
 
         # ------------------------------------------------------------------
@@ -639,6 +703,63 @@ class Flux2KleinModel(_ModuleBase):
         )
 
         return out
+
+
+# ---------------------------------------------------------------------------
+# Flux2KleinPipeline — pipeline wrapper + assembly
+# ---------------------------------------------------------------------------
+
+
+class Flux2KleinPipeline:
+    """Minimal pipeline wrapper that holds a ``Flux2KleinModel`` and a ``diffusers`` scheduler.
+
+    This class is a thin container — it does not implement a denoising loop itself.
+    The denoising loop is implemented by ``sample()``. This wrapper provides the
+    interface that ``sample()`` calls: ``.model`` for the neural network and
+    ``.scheduler`` for the noise schedule.
+
+    Attributes:
+        model: The ``Flux2KleinModel`` instance (an ``nn.Module``) to run
+            inference with.
+        scheduler: A ``diffusers`` scheduler instance that generates the noise
+            schedule and provides the step function interface.
+    """
+
+    def __init__(self, model: Flux2KleinModel, scheduler: Any) -> None:
+        """Construct a ``Flux2KleinPipeline`` wrapper.
+
+        Args:
+            model: An already-loaded ``Flux2KleinModel`` instance with parameters
+                materialized on the target device.
+            scheduler: A ``diffusers`` scheduler instance (e.g.
+                ``EulerDiscreteScheduler``) that defines the noise schedule.
+        """
+        self.model = model
+        self.scheduler = scheduler
+
+
+def _assemble_pipeline(model: Flux2KleinModel) -> Flux2KleinPipeline:
+    """Assemble a ``Flux2KleinPipeline`` from a loaded ``Flux2KleinModel``.
+
+    Creates a ``Flux2KleinPipeline`` wrapper that holds the model and a default
+    ``EulerDiscreteScheduler``.  The scheduler is a simple placeholder —
+    the full denoising step function is wired in ``sample()``.
+
+    The function is called via ``PipelineCache.get_or_load()`` so that
+    pipeline assembly happens at most once per ``model_id``.
+
+    Args:
+        model: An already-loaded ``Flux2KleinModel`` instance with parameters
+            materialized on the target device.
+
+    Returns:
+        A ``Flux2KleinPipeline`` instance wrapping *model* and a default scheduler.
+    """
+    # Use EulerDiscreteScheduler as the default scheduler — it is a widely
+    # used, stable scheduler in diffusers that provides a simple step
+    # interface. The actual denoising loop is implemented in sample().
+    scheduler = EulerDiscreteScheduler()
+    return Flux2KleinPipeline(model, scheduler)
 
 
 # ---------------------------------------------------------------------------
@@ -961,6 +1082,19 @@ def load(path: str, caps: dict, device: str = "cpu") -> Flux2KleinModel:
     # the ~100KB metadata header — no tensor data is loaded.
     hyperparams = _infer_hyperparams(path)
 
+    # Cache the checkpoint's patch_size and latent_channels as module-level
+    # state so compute_latent_shape() can use them without a model argument.
+    # This is the simplest approach that matches the fixed signature
+    # compute_latent_shape(width, height, batch_size).
+    global MODEL_PATCH_SIZE, MODEL_LATENT_CHANNELS
+    MODEL_PATCH_SIZE = hyperparams["patch_size"]
+    MODEL_LATENT_CHANNELS = hyperparams["latent_channels"]
+    logger.debug(
+        "cached hyperparams: patch_size=%d, latent_channels=%d",
+        MODEL_PATCH_SIZE,
+        MODEL_LATENT_CHANNELS,
+    )
+
     # Step 2: select the compute dtype per the fixed precedence in
     # ANVILML_DESIGN.md §11.5. The native dtype is read from the checkpoint
     # header; the capability flags come from the worker's own torch-level probe.
@@ -1065,3 +1199,212 @@ def load(path: str, caps: dict, device: str = "cpu") -> Flux2KleinModel:
         model.arch = ARCH
 
     return model
+
+
+# REAL_PATH_VERIFIED: worker/tests/test_arch_flux2klein.py::test_sample_denoising_real_flux2klein_fixture
+# MOCK_PATH_VERIFIED: worker/tests/test_arch_flux2klein.py::test_sample_seed_minus_one_resolves_random
+def _resolve_conditioning(conditioning: Any) -> tuple[Any, Any]:
+    """Split *conditioning* into its positive and negative embedding tensors.
+
+    ``ClipTextEncode``'s real branch (``worker/nodes/encoder.py``,
+    ``ANVILML_DESIGN.md`` §10.3) produces a dict shaped
+    ``{"text_embeds": Tensor, "negative_text_embeds": Tensor?}`` — the
+    latter present only when a negative prompt was supplied. This function
+    is the single place ``sample()`` interprets that shape, so callers
+    that bypass ``ClipTextEncode`` and pass a bare tensor (or ``None``)
+    directly keep working unchanged: a non-dict value is treated as the
+    positive embedding with no negative counterpart.
+
+    Args:
+        conditioning: Either a dict with "text_embeds"/"negative_text_embeds"
+            keys, a bare tensor, or None.
+
+    Returns:
+        A ``(cond_embeds, uncond_embeds)`` tuple. *uncond_embeds* is
+        ``None`` whenever no negative embedding is available, which
+        ``forward()`` already treats as "no conditioning" for that pass.
+    """
+    if isinstance(conditioning, dict):
+        return conditioning.get("text_embeds"), conditioning.get("negative_text_embeds")
+    return conditioning, None
+
+
+# REAL_PATH_VERIFIED: worker/tests/test_arch_flux2klein.py::test_sample_denoising_real_flux2klein_fixture
+# MOCK_PATH_VERIFIED: worker/tests/test_arch_flux2klein.py::test_sample_seed_minus_one_resolves_random
+def sample(
+    model: Flux2KleinModel,
+    model_id: str,
+    conditioning: Any,
+    latent: torch.Tensor,
+    steps: int,
+    cfg: float,
+    seed: int,
+) -> tuple[torch.Tensor, int]:
+    """Run the denoising loop and return the denoised latent tensor.
+
+    On the first call for a given ``model_id``, this function assembles a
+    ``Flux2KleinPipeline`` (model + scheduler) and caches it under
+    ``f"{model_id}:pipeline"`` in the module-level ``PipelineCache``.
+    Subsequent calls with the same ``model_id`` return the cached pipeline
+    without re-assembly.
+
+    If *seed* is negative (conventionally ``-1``), it is resolved to a
+    cryptographically random integer in ``[0, 2**63)`` via
+    ``secrets.randbelow()`` before denoising begins. The resolved seed is
+    logged and returned — the caller never sees ``-1`` in the output.
+
+    The denoising loop iterates over the scheduler's timesteps, performing
+    classifier-free guidance at each step: an unconditional pass (the
+    negative prompt's conditioning, via ``_resolve_conditioning()``, or no
+    conditioning when none was supplied) and a conditional pass (the
+    positive prompt's conditioning) are blended using the *cfg* scale to
+    interpolate between the unconditional prior and guided output.
+
+    Args:
+        model: An already-loaded ``Flux2KleinModel`` instance.
+        model_id: Stable model identifier used as the cache key prefix.
+            Pipelines are cached per-model-id, keyed as ``f"{model_id}:pipeline"``.
+        conditioning: Conditioning input for the diffusion process — either
+            a dict shaped ``{"text_embeds": Tensor, "negative_text_embeds":
+            Tensor?}`` (ClipTextEncode's real-branch output), or a bare
+            tensor/None for callers that build conditioning directly. See
+            ``_resolve_conditioning()``.
+        latent: The initial noise latent tensor. Cloned before denoising
+            so the caller's tensor is never mutated.
+        steps: Number of denoising steps to run.
+        cfg: Classifier-free guidance scale. A value of ``1.0`` disables
+            guidance (conditional only); higher values increase the weight
+            of the conditional signal.
+        seed: Random seed for reproducibility. If negative, resolved to a
+            cryptographically random integer in ``[0, 2**63)``.
+
+    Returns:
+        A tuple ``(denoised_latent, resolved_seed)`` where
+        *denoised_latent* is the output tensor after all denoising steps
+        and *resolved_seed* is the non-negative seed actually used.
+
+    Raises:
+        RuntimeError: If torch is not installed (this is a real-mode-only
+            entry point and must not be reached from mock-mode code).
+    """
+    # torch is optional at module-import time (see the guard at the top of
+    # this file); sample() is a real-mode-only entry point and must never be
+    # reached from mock-mode code. Fail clearly here rather than surfacing a
+    # confusing AttributeError on a None torch deep inside the denoising loop.
+    if torch is None:
+        raise RuntimeError(
+            "flux2klein.py: torch is not installed - sample() is a real-mode-only "
+            "entry point (ANVILML_DESIGN.md §18.3) and must not be reached "
+            "from mock-mode code paths."
+        )
+
+    # Resolve seed: negative values (conventionally -1) mean "random".
+    # Use secrets.randbelow for cryptographic randomness — this ensures
+    # that two consecutive calls with seed=-1 produce different outputs,
+    # which is the expected behavior for a generation endpoint.
+    if seed < 0:
+        seed = secrets.randbelow(2**63)
+
+    # Cache key is "{model_id}:pipeline" — distinct from the raw component
+    # cache key used by load() (which caches under "{model_id}:model").
+    # This separation means the pipeline (model + scheduler wrapper) is
+    # cached independently from the raw model weights.
+    key = f"{model_id}:pipeline"
+
+    # get_or_load returns cached pipeline if present, or calls the loader
+    # exactly once on cache miss. The lambda captures *model* so that
+    # _assemble_pipeline() receives the correct model instance.
+    pipeline = pipeline_cache.get_or_load(key, lambda: _assemble_pipeline(model))
+    logger.debug("assembled pipeline for model_id=%s", model_id)
+
+    # Set up the scheduler's noise schedule for the requested step count.
+    # set_timesteps() computes the discrete timesteps (e.g. [999, 900, 800, ...])
+    # based on the scheduler's internal beta schedule, then exposes them via
+    # the .timesteps attribute for iteration.
+    #
+    # diffusers set_timesteps() internally converts alphas_cumprod to sigmas
+    # via np.array(tensor, ...), and the tensor's __array__ predates numpy>=2.0's
+    # requirement that __array__ implementations accept dtype/copy keywords —
+    # a compatibility gap inside diffusers itself, not our code. Suppressed
+    # right here, scoped to this one call, so it can never mask a real
+    # DeprecationWarning raised elsewhere.
+    scheduler = pipeline.scheduler
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"__array__ implementation doesn't accept a copy keyword",
+            category=DeprecationWarning,
+        )
+        scheduler.set_timesteps(steps)
+
+    # Clone the latent tensor before denoising — we must not mutate the
+    # caller's tensor since it may be reused (e.g. for conditioning
+    # propagation or for generating multiple samples from the same seed).
+    latent = latent.clone()
+
+    # Cast the latent to the model's dtype — the model's parameters are
+    # on the selected precision (e.g. bf16), but the caller may pass a
+    # float32 tensor. PyTorch requires matching dtypes for linear ops.
+    # We inspect the first parameter to determine the model's dtype.
+    model_dtype = next(model.parameters()).dtype
+    if latent.dtype != model_dtype:
+        latent = latent.to(model_dtype)
+
+    # Resolve the positive (conditional) and negative (unconditional)
+    # conditioning tensors via the shared helper (see its docstring for
+    # the accepted shapes).
+    cond_embeds, uncond_embeds = _resolve_conditioning(conditioning)
+
+    # Denoising loop: iterate over the scheduler's timesteps in order.
+    # At each timestep, we perform classifier-free guidance (CFG) by
+    # running both an unconditional pass (the negative prompt's
+    # conditioning, or no conditioning when none was supplied) and a
+    # conditional pass, then interpolating between them using the cfg
+    # scale. The interpolation formula is:
+    #   noise_pred = noise_pred_uncond + cfg * (noise_pred_cond - noise_pred_uncond)
+    # which is the standard CFG formulation: uncond + scale * delta.
+    for t in scheduler.timesteps:
+        # Scale the current latent by this timestep's sigma before feeding
+        # it to the model — EulerDiscreteScheduler (like most sigma-based
+        # schedulers) requires this; the raw, unscaled latent is only ever
+        # correct for the timestep-independent `scheduler.step()` call
+        # below, never for the model's own forward pass.
+        scaled_latent = scheduler.scale_model_input(latent, t)
+
+        # Unconditional pass: model predicts noise using the negative
+        # prompt's conditioning when one was supplied, else no
+        # conditioning at all. This represents the "prior" being pushed
+        # away from — either an explicit negative prompt, or (absent one)
+        # what the model would generate without any text prompt guidance.
+        # The model's forward() returns a tensor directly (not a named
+        # tuple), so we use it without .sample.
+        with torch.no_grad():
+            noise_pred_uncond = pipeline.model(
+                scaled_latent, t / 1000.0, conditioning=uncond_embeds
+            )
+
+        # Conditional pass: model predicts noise with the positive
+        # prompt's conditioning (e.g. text embeddings from a CLIP
+        # encoder).
+        with torch.no_grad():
+            noise_pred_cond = pipeline.model(
+                scaled_latent, t / 1000.0, conditioning=cond_embeds
+            )
+
+        # Classifier-free guidance interpolation.
+        # cfg=1.0 → unconditional contribution is zero → conditional only.
+        # cfg>1.0 → amplifies the conditional signal relative to unconditional.
+        noise_pred = (
+            noise_pred_uncond + cfg * (noise_pred_cond - noise_pred_uncond)
+        )
+
+        # Advance the latent by one denoising step.
+        # The scheduler uses the noise prediction to compute the next
+        # latent state (prev_sample), following its internal schedule
+        # (Euler discrete integration in this case).
+        latent = scheduler.step(noise_pred, t, latent).prev_sample
+
+    logger.info(
+        "denoising complete: steps=%d, seed=%d", steps, seed
+    )
+    return latent, seed

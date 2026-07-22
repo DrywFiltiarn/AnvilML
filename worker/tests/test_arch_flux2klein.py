@@ -389,6 +389,50 @@ def test_collection_safety_load_import() -> None:
     assert "OK" in result.stdout
 
 
+def test_collection_safety_sample_import() -> None:
+    """Importing flux2klein with ANVILML_WORKER_MOCK=1 and no torch succeeds (sample guard).
+
+    Spawns a subprocess that imports ``worker.nodes.arch.diffusion.flux2klein``
+    with ``torch`` removed from ``sys.modules`` (simulating the mock-mode
+    environment where torch is not installed). Asserts the import succeeds
+    without raising, confirming the module-level import guard covers
+    ``EulerDiscreteScheduler`` (diffusers) and all sample() entry points.
+
+    This serves as the ``MOCK_PATH_VERIFIED`` parity marker for ``sample()`` —
+    per ANVILML_DESIGN.md §10.6's exception for arch-module load()/sample()/
+    decode(), the mock-mode marker names a collection-safety test rather
+    than a mock-branch test (there is no mock branch inside sample()).
+
+    **Mode:** mock
+    """
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; "
+        "sys.modules['torch'] = None; "
+        "sys.modules['torch.nn'] = None; "
+        "sys.modules['safetensors.torch'] = None; "
+        "sys.modules['diffusers'] = None; "
+        "import worker.nodes.arch.diffusion.flux2klein as m; "
+        "assert m.torch is None; "
+        "assert m.nn is None; "
+        "assert m.EulerDiscreteScheduler is None; "
+        "print('OK')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, (
+        f"flux2klein import failed in mock-mode (no torch). "
+        f"stderr={result.stderr}"
+    )
+    assert "OK" in result.stdout
+
+
 # ---------------------------------------------------------------------------
 # P25-C2: Weight loading, key remapping, dtype, and .arch tests
 # ---------------------------------------------------------------------------
@@ -538,3 +582,386 @@ def test_load_no_metadata_key_remapping() -> None:
     assert norm_param.norm().item() > 0, (
         "img_norm1.weight is all zeros — xyz_ norm remapping failed"
     )
+
+
+# ---------------------------------------------------------------------------
+# P25-D1: compute_latent_shape() tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _flux2klein_default_hyperparams():
+    """Pin flux2klein.MODEL_PATCH_SIZE / MODEL_LATENT_CHANNELS, then restore them.
+
+    compute_latent_shape() reads module-level mutable globals that load()
+    overwrites in place with checkpoint-derived values. Any test that
+    exercises the pre-load *default* must not depend on execution order
+    relative to a real_mode test that has already called load() in the same
+    session — test_compute_latent_shape_real_after_load does exactly that,
+    and previously ran earlier in this file, which is why the unisolated
+    versions of these tests silently passed only when run in file order
+    and failed once collection was fixed.
+
+    This fixture pins both globals to the documented default (patch_size=8 —
+    Flux 2 Klein's actual patch size, and latent_channels=4) for the
+    duration of the test, then restores whatever value was present before.
+    """
+    import worker.nodes.arch.diffusion.flux2klein as flux2klein
+
+    original_patch_size = flux2klein.MODEL_PATCH_SIZE
+    original_latent_channels = flux2klein.MODEL_LATENT_CHANNELS
+    flux2klein.MODEL_PATCH_SIZE = 8
+    flux2klein.MODEL_LATENT_CHANNELS = 4
+    try:
+        yield
+    finally:
+        # Restore unconditionally, even if the test body raises.
+        flux2klein.MODEL_PATCH_SIZE = original_patch_size
+        flux2klein.MODEL_LATENT_CHANNELS = original_latent_channels
+
+
+def test_compute_latent_shape_mock_default_patch_size(
+    _flux2klein_default_hyperparams,
+) -> None:
+    """compute_latent_shape() produces correct shape with default patch_size=8.
+
+    Calls compute_latent_shape() with width=64, height=64, batch_size=1.
+    With MODEL_PATCH_SIZE=8 (Flux 2 Klein's default), this gives
+    latent_height=8, latent_width=8. The result should be (1, 4, 8, 8).
+
+    Also tests 128×128 → (1, 4, 16, 16) and 65×65 → (1, 4, 9, 9)
+    (ceiling division for non-multiples).
+
+    This is the primary mock-mode test for the formula.
+
+    # MOCK_PATH_VERIFIED: worker/tests/test_arch_flux2klein.py::test_compute_latent_shape_mock_default_patch_size
+    """
+    from worker.nodes.arch.diffusion.flux2klein import compute_latent_shape
+
+    # 64×64 with patch_size=8 → 8×8 latent
+    assert compute_latent_shape(64, 64, 1) == (1, 4, 8, 8)
+
+    # 128×128 with patch_size=8 → 16×16 latent
+    assert compute_latent_shape(128, 128, 1) == (1, 4, 16, 16)
+
+    # 65×65 with patch_size=8 → 9×9 latent (ceiling division: ceil(65/8)=9)
+    assert compute_latent_shape(65, 65, 1) == (1, 4, 9, 9)
+
+
+@pytest.mark.real_mode
+def test_compute_latent_shape_real_after_load() -> None:
+    """compute_latent_shape() uses actual checkpoint hyperparameters after load().
+
+    Calls load() against the Flux 2 Klein fixture (which has patch_size=8,
+    latent_channels=4), then calls compute_latent_shape(64, 64, 1).
+    The result should be (1, 4, 8, 8), proving that load() correctly
+    updates the module-level hyperparameters.
+
+    # REAL_PATH_VERIFIED: worker/tests/test_arch_flux2klein.py::test_compute_latent_shape_real_after_load
+    """
+    from worker.nodes.arch.diffusion.flux2klein import compute_latent_shape, load
+
+    fixture_path = _FIXTURE_DIR / "flux2klein4b_tiny.safetensors"
+    caps = {"fp8": False, "bf16": True, "fp16": True, "fp32": True}
+    load(str(fixture_path), caps, device="cpu")
+    result = compute_latent_shape(64, 64, 1)
+    assert result == (1, 4, 8, 8)
+
+
+def test_compute_latent_shape_non_multiple_dims(
+    _flux2klein_default_hyperparams,
+) -> None:
+    """compute_latent_shape() ceiling division for non-multiples of patch_size.
+
+    Calls compute_latent_shape(100, 80, 1) with patch_size=8.
+    100/8 = 12.5 → 13, 80/8 = 10. Result should be (1, 4, 13, 10).
+
+    # MOCK_PATH_VERIFIED: worker/tests/test_arch_flux2klein.py::test_compute_latent_shape_non_multiple_dims
+    """
+    from worker.nodes.arch.diffusion.flux2klein import compute_latent_shape
+
+    assert compute_latent_shape(100, 80, 1) == (1, 4, 13, 10)
+
+
+def test_compute_latent_shape_batch_size(
+    _flux2klein_default_hyperparams,
+) -> None:
+    """compute_latent_shape() scales the batch dimension correctly.
+
+    Calls compute_latent_shape(64, 64, batch_size=4) with patch_size=8.
+    Result should be (4, 4, 8, 8) — batch_size=4 in the first position.
+
+    # MOCK_PATH_VERIFIED: worker/tests/test_arch_flux2klein.py::test_compute_latent_shape_batch_size
+    """
+    from worker.nodes.arch.diffusion.flux2klein import compute_latent_shape
+
+    assert compute_latent_shape(64, 64, batch_size=4) == (4, 4, 8, 8)
+
+
+# ---------------------------------------------------------------------------
+# P25-D1: _resolve_conditioning() tests
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_conditioning_dict_with_negative() -> None:
+    """A dict with both keys splits into (text_embeds, negative_text_embeds).
+
+    This is a pure-function unit test with no torch model involved — it
+    only exercises _resolve_conditioning()'s dict-handling branch.
+    """
+    from worker.nodes.arch.diffusion.flux2klein import _resolve_conditioning
+
+    positive = object()
+    negative = object()
+    cond, uncond = _resolve_conditioning(
+        {"text_embeds": positive, "negative_text_embeds": negative}
+    )
+    assert cond is positive
+    assert uncond is negative
+
+
+def test_resolve_conditioning_dict_without_negative() -> None:
+    """A dict with only text_embeds resolves uncond to None.
+
+    This is the case ClipTextEncode produces when no negative_text was
+    supplied — the unconditional pass must fall back to no conditioning.
+    """
+    from worker.nodes.arch.diffusion.flux2klein import _resolve_conditioning
+
+    positive = object()
+    cond, uncond = _resolve_conditioning({"text_embeds": positive})
+    assert cond is positive
+    assert uncond is None
+
+
+def test_resolve_conditioning_bare_tensor() -> None:
+    """A non-dict value (bare tensor or None) is treated as cond with no uncond.
+
+    Callers that build conditioning directly rather than going through
+    ClipTextEncode must keep working unchanged.
+    """
+    from worker.nodes.arch.diffusion.flux2klein import _resolve_conditioning
+
+    bare = object()
+    cond, uncond = _resolve_conditioning(bare)
+    assert cond is bare
+    assert uncond is None
+
+    cond_none, uncond_none = _resolve_conditioning(None)
+    assert cond_none is None
+    assert uncond_none is None
+
+
+# ---------------------------------------------------------------------------
+# P25-D1: sample() tests
+# ---------------------------------------------------------------------------
+
+_DEFAULT_CAPS: dict = {
+    "fp32": True,
+    "fp16": False,
+    "bf16": False,
+    "fp8": False,
+    "fp4": False,
+    "flash_attention": False,
+}
+
+
+@pytest.mark.real_mode
+def test_sample_seed_minus_one_resolves_random() -> None:
+    """seed=-1 resolves to a random positive integer twice.
+
+    Calls ``sample()`` with ``seed=-1`` twice on the same model and
+    verifies both return positive seeds that differ (randomness).
+
+    # REAL_PATH_VERIFIED: worker/tests/test_arch_flux2klein.py::test_sample_seed_minus_one_resolves_random
+    """
+    from worker.nodes.arch.diffusion.flux2klein import (
+        load,
+        pipeline_cache,
+        sample,
+    )
+
+    fixture_path = _FIXTURE_DIR / "flux2klein4b_tiny.safetensors"
+    caps = {"fp8": False, "bf16": True, "fp16": True, "fp32": True}
+    model = load(str(fixture_path), caps, device="cpu")
+
+    latent_in = torch.zeros(1, 4, 8, 8)
+    _, seed_a = sample(
+        model, "seed_random_a", None, latent_in, 4, 7.5, -1
+    )
+    _, seed_b = sample(
+        model, "seed_random_b", None, latent_in, 4, 7.5, -1
+    )
+
+    # Both resolved seeds must be positive integers.
+    assert seed_a >= 0 and seed_a < 2**63, f"seed_a={seed_a}"
+    assert seed_b >= 0 and seed_b < 2**63, f"seed_b={seed_b}"
+    # Two independent calls with seed=-1 should produce different seeds.
+    assert seed_a != seed_b, (
+        "seed=-1 produced the same random seed twice — secrets.randbelow may not be working"
+    )
+
+    # Clean up.
+    if "seed_random_a:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache["seed_random_a:pipeline"]
+    if "seed_random_b:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache["seed_random_b:pipeline"]
+
+
+@pytest.mark.real_mode
+def test_sample_seed_positive_reproducible() -> None:
+    """Same explicit seed produces identical output tensors.
+
+    Calls ``sample()`` twice with ``seed=42`` and asserts the returned
+    latent tensors have identical values.
+
+    # REAL_PATH_VERIFIED: worker/tests/test_arch_flux2klein.py::test_sample_seed_positive_reproducible
+    """
+    from worker.nodes.arch.diffusion.flux2klein import (
+        load,
+        pipeline_cache,
+        sample,
+    )
+
+    fixture_path = _FIXTURE_DIR / "flux2klein4b_tiny.safetensors"
+    caps = {"fp8": False, "bf16": True, "fp16": True, "fp32": True}
+    model = load(str(fixture_path), caps, device="cpu")
+
+    latent_in = torch.zeros(1, 4, 8, 8)
+    latent_a, seed_a = sample(
+        model, "seed_repro", None, latent_in, 4, 7.5, 42
+    )
+    latent_b, seed_b = sample(
+        model, "seed_repro", None, latent_in, 4, 7.5, 42
+    )
+
+    # Seeds must match.
+    assert seed_a == seed_b == 42
+    # Latent tensors must have identical values.
+    assert torch.equal(latent_a, latent_b)
+
+    # Clean up.
+    if "seed_repro:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache["seed_repro:pipeline"]
+
+
+@pytest.mark.real_mode
+def test_sample_pipeline_assembly_caching() -> None:
+    """sample() caches pipeline — get_or_load called exactly once per model_id.
+
+    Spies on ``pipeline_cache.get_or_load`` to verify the loader function
+    is called exactly once on the first call with a given model_id, and
+    not called again on subsequent calls with the same model_id.
+
+    # REAL_PATH_VERIFIED: worker/tests/test_arch_flux2klein.py::test_sample_pipeline_assembly_caching
+    """
+    from worker.nodes.arch.diffusion.flux2klein import (
+        load,
+        pipeline_cache,
+        sample,
+    )
+
+    fixture_path = _FIXTURE_DIR / "flux2klein4b_tiny.safetensors"
+    caps = {"fp8": False, "bf16": True, "fp16": True, "fp32": True}
+    model = load(str(fixture_path), caps, device="cpu")
+
+    original_get_or_load = pipeline_cache.get_or_load
+    call_count = 0
+
+    def spy_get_or_load(key: str, loader_fn) -> object:
+        nonlocal call_count
+        if key not in pipeline_cache._cache:
+            call_count += 1
+        return original_get_or_load(key, loader_fn)
+
+    pipeline_cache.get_or_load = spy_get_or_load
+    try:
+        latent_in = torch.zeros(1, 4, 8, 8)
+        _, _ = sample(
+            model, "cache_test", None, latent_in, 4, 7.5, 42
+        )
+        _, _ = sample(
+            model, "cache_test", None, latent_in, 4, 7.5, 42
+        )
+
+        assert call_count == 1, (
+            f"expected loader to be called exactly once, got {call_count}"
+        )
+    finally:
+        pipeline_cache.get_or_load = original_get_or_load
+        if "cache_test:pipeline" in pipeline_cache._cache:
+            del pipeline_cache._cache["cache_test:pipeline"]
+
+
+@pytest.mark.real_mode
+def test_sample_denoising_real_flux2klein_fixture() -> None:
+    """End-to-end denoising against the real Flux 2 Klein fixture checkpoint.
+
+    Calls ``sample()`` with a model loaded from ``flux2klein4b_tiny.safetensors``,
+    verifies the output is a tensor with the correct shape and dtype,
+    and confirms the seed is a non-negative integer. This is the
+    canonical real-mode test for the denoising loop.
+
+    # REAL_PATH_VERIFIED: worker/tests/test_arch_flux2klein.py::test_sample_denoising_real_flux2klein_fixture
+    """
+    from worker.nodes.arch.diffusion.flux2klein import (
+        load,
+        pipeline_cache,
+        sample,
+    )
+
+    fixture_path = _FIXTURE_DIR / "flux2klein4b_tiny.safetensors"
+    caps = {"fp8": False, "bf16": True, "fp16": True, "fp32": True}
+    model = load(str(fixture_path), caps, device="cpu")
+
+    latent_in = torch.zeros(1, 4, 8, 8)
+    latent_out, seed = sample(
+        model, "real_flux2klein", None, latent_in, 4, 7.5, 42
+    )
+
+    # The output must be a tensor with the same shape as the input.
+    assert isinstance(latent_out, torch.Tensor)
+    assert latent_out.shape == latent_in.shape
+
+    # The seed must be a non-negative integer (explicit seed passed through).
+    assert isinstance(seed, int)
+    assert seed >= 0
+    assert seed == 42
+
+    # Clean up.
+    if "real_flux2klein:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache["real_flux2klein:pipeline"]
+
+
+@pytest.mark.real_mode
+def test_sample_denoising_runs_to_completion() -> None:
+    """sample() with a loaded model and small steps (4) returns tensor of same shape.
+
+    Verifies the denoising loop runs to completion without error, returns
+    a tensor matching the input shape, and returns a positive seed.
+
+    # REAL_PATH_VERIFIED: worker/tests/test_arch_flux2klein.py::test_sample_denoising_runs_to_completion
+    """
+    from worker.nodes.arch.diffusion.flux2klein import (
+        load,
+        pipeline_cache,
+        sample,
+    )
+
+    fixture_path = _FIXTURE_DIR / "flux2klein4b_tiny.safetensors"
+    caps = {"fp8": False, "bf16": True, "fp16": True, "fp32": True}
+    model = load(str(fixture_path), caps, device="cpu")
+
+    latent_in = torch.zeros(1, 4, 8, 8)
+    latent_out, seed = sample(
+        model, "completion_test", None, latent_in, 4, 7.5, 99
+    )
+
+    assert isinstance(latent_out, torch.Tensor)
+    assert latent_out.shape == latent_in.shape
+    assert isinstance(seed, int)
+    assert seed > 0
+
+    # Clean up.
+    if "completion_test:pipeline" in pipeline_cache._cache:
+        del pipeline_cache._cache["completion_test:pipeline"]
