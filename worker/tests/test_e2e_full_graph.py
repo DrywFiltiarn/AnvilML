@@ -41,8 +41,13 @@ except ImportError:
 
 # Server binary path — resolved relative to the repo root at import time.
 # This is the release build artifact that the test harness spawns as a subprocess.
+# Windows appends .exe to cargo build output; Unix does not.
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-_SERVER_BINARY = _REPO_ROOT / "target" / "release" / "anvilml"
+_SERVER_BINARY = (
+    _REPO_ROOT / "target" / "release" / "anvilml.exe"
+    if sys.platform == "win32"
+    else _REPO_ROOT / "target" / "release" / "anvilml"
+)
 
 # Default HTTP port for the test server. Each test uses a unique port to avoid
 # port conflicts when tests run in parallel.
