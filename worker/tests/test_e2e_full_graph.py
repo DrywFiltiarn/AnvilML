@@ -337,14 +337,20 @@ def _start_server(
         f.write(
             f"host = \"127.0.0.1\"\n"
             f"port = {port}\n"
-            f"db_path = \"{db_path}\"\n"
-            f"artifact_dir = \"{artifact_dir}\"\n"
-            f"venv_path = \"{_REPO_ROOT / 'worker' / '.venv'}\"\n"
+            # Path values use TOML literal (single-quoted) strings rather than
+            # basic (double-quoted) strings: on Windows these paths contain
+            # backslashes (e.g. C:\Users\...\Temp\...), and TOML's basic-string
+            # backslash-escape rules (\U, \A, etc.) would otherwise reject them
+            # as invalid unicode escapes. Literal strings take the value
+            # verbatim, so no escaping is needed on either platform.
+            f"db_path = '{db_path}'\n"
+            f"artifact_dir = '{artifact_dir}'\n"
+            f"venv_path = '{_REPO_ROOT / 'worker' / '.venv'}'\n"
             f"model_scan_depth = 2\n"
             f"max_ipc_payload_mib = 256\n"
             f"\n"
             f"[[model_dirs]]\n"
-            f"path = \"{fixtures_dir}\"\n"
+            f"path = '{fixtures_dir}'\n"
             f"recursive = false\n"
         )
 
