@@ -413,7 +413,18 @@ def test_tokenizer_loads_from_vendored_path_no_network() -> None:
     # qwen3.py imports it (transformers.AutoTokenizer). The mock returns
     # a simple sentinel object so load() completes without actually
     # loading the tokenizer — the test only verifies the call arguments.
+    #
+    # P903 retrofit note: load() now calls _load_tokenizer_matching_vocab(),
+    # which tries each vendored tokenizer in turn and picks the first whose
+    # len() matches the checkpoint's inferred vocab_size (128 for this
+    # fixture). A bare MagicMock's __len__ defaults to 0, which would never
+    # match and would make the loop raise RuntimeError before the call-arg
+    # assertions below ever run. Configuring __len__ to return 128 makes it
+    # match on the very first candidate (the production "qwen3_tokenizer"
+    # path), so from_pretrained is called exactly once — preserving this
+    # test's original intent of asserting against that path.
     mock_tokenizer = mock.MagicMock()
+    mock_tokenizer.__len__ = mock.MagicMock(return_value=128)
 
     with mock.patch(
         "transformers.AutoTokenizer.from_pretrained",

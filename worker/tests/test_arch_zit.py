@@ -1355,8 +1355,12 @@ def test_sample_uses_negative_text_embeds_for_uncond_pass() -> None:
     model_dtype = next(model.parameters()).dtype
 
     latent_in = torch.zeros(1, 4, 8, 8, dtype=model_dtype)
-    positive = torch.randn(3, model.time_text_emb.in_features, dtype=model_dtype)
-    negative = torch.randn(3, model.time_text_emb.in_features, dtype=model_dtype)
+    # Shape must be (batch, seq_len, hidden_dim) — zit.py's forward() passes
+    # this directly as key/value to a batch_first=True nn.MultiheadAttention
+    # alongside a (batch, 1, hidden_dim) query; a 2-D tensor here fails that
+    # layer's batched-query shape check.
+    positive = torch.randn(1, 3, model.time_text_emb.in_features, dtype=model_dtype)
+    negative = torch.randn(1, 3, model.time_text_emb.in_features, dtype=model_dtype)
 
     calls: list = []
     orig_forward = model.forward
@@ -1412,7 +1416,9 @@ def test_sample_no_negative_conditioning_falls_back_to_none() -> None:
     model_dtype = next(model.parameters()).dtype
 
     latent_in = torch.zeros(1, 4, 8, 8, dtype=model_dtype)
-    positive = torch.randn(3, model.time_text_emb.in_features, dtype=model_dtype)
+    # Shape must be (batch, seq_len, hidden_dim) — see note in
+    # test_sample_uses_negative_text_embeds_for_uncond_pass above.
+    positive = torch.randn(1, 3, model.time_text_emb.in_features, dtype=model_dtype)
 
     calls: list = []
     orig_forward = model.forward

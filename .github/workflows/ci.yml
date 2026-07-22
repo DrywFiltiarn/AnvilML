@@ -118,9 +118,24 @@ jobs:
         if: matrix.mode == 'real'
         run: python -m pytest worker/tests --collect-only -m "not real_mode"
 
-      - name: Install torch CPU wheel
-        if: matrix.mode == 'real'
-        run: pip install -r worker/requirements/cpu-runner-reqs.txt
+      - name: Provision worker venv (real mode, Linux)
+        if: matrix.mode == 'real' && matrix.os == 'ubuntu-latest'
+        run: |
+          python -m venv worker/.venv
+          worker/.venv/bin/pip install --upgrade pip
+          worker/.venv/bin/pip install -r worker/requirements/base.txt
+          worker/.venv/bin/pip install -r worker/requirements/cpu-runner-reqs.txt
+          echo "$GITHUB_WORKSPACE/worker/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Provision worker venv (real mode, Windows)
+        if: matrix.mode == 'real' && matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          python -m venv worker/.venv
+          worker/.venv/Scripts/pip.exe install --upgrade pip
+          worker/.venv/Scripts/pip.exe install -r worker/requirements/base.txt
+          worker/.venv/Scripts/pip.exe install -r worker/requirements/cpu-runner-reqs.txt
+          Add-Content -Path $env:GITHUB_PATH -Value "$pwd\worker\.venv\Scripts"
 
       - name: Run real-mode tests
         if: matrix.mode == 'real'
