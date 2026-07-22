@@ -76,16 +76,13 @@ jobs:
           cache: "pip"
           cache-dependency-path: worker/requirements/base.txt
 
-      - name: Install base dependencies
-        if: matrix.mode == 'mock'
-        run: pip install -r worker/requirements/base.txt
-
       - name: Provision worker venv (mock mode, Linux)
         if: matrix.mode == 'mock' && matrix.os == 'ubuntu-latest'
         run: |
           python -m venv worker/.venv
           worker/.venv/bin/pip install --upgrade pip
           worker/.venv/bin/pip install -r worker/requirements/base.txt
+          echo "$GITHUB_WORKSPACE/worker/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Provision worker venv (mock mode, Windows)
         if: matrix.mode == 'mock' && matrix.os == 'windows-latest'
@@ -94,6 +91,7 @@ jobs:
           python -m venv worker/.venv
           worker/.venv/Scripts/pip.exe install --upgrade pip
           worker/.venv/Scripts/pip.exe install -r worker/requirements/base.txt
+          Add-Content -Path $env:GITHUB_PATH -Value "$pwd\worker\.venv\Scripts"
 
       - name: Run mock-mode tests
         if: matrix.mode == 'mock'
