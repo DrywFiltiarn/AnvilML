@@ -8680,3 +8680,49 @@ the P901 section above.
 **Inputs:** POST /v1/jobs with a graph containing `{ "type": "NonExistentNode" }`.
 **Expected output:** 400 Bad Request with validation error message containing the unknown type name.
 **Acceptance:** `ANVILML_WORKER_MOCK=1 worker/.venv/bin/python -m pytest worker/tests/test_e2e_full_graph.py::test_full_graph_invalid_graph_returns_400 -v --timeout=30` exits 0.
+
+## test_infer_hyperparams_regular_fixture (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** The P25-A1 fixture `flux2klein4b_tiny.safetensors` exists in `worker/tests/fixtures/`. It carries `arch: "flux2klein"` metadata and uses standard Flux 2 Klein key prefixes (double_blocks, single_blocks, time_text_embed, final_layer, latents).
+**Tests:** Calls `_infer_hyperparams()` against the regular fixture and asserts all expected keys are present with correct values: hidden_dim=128, double_block_count=1, single_block_count=1, latent_channels=4, latent_height=8, latent_width=8, patch_size=8, arch="flux2klein", native_dtype="fp32".
+**Mode:** both
+**Inputs:** Path to `flux2klein4b_tiny.safetensors`.
+**Expected output:** Dict with all 9 expected keys and the values listed above.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_infer_hyperparams_regular_fixture -v` exits 0.
+
+---
+
+## test_infer_hyperparams_no_metadata_fixture (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** The P25-A1 fixture `flux2klein4b_tiny_no_metadata.safetensors` exists in `worker/tests/fixtures/`. It has no `arch` metadata in the safetensors header and uses `xyz_`-prefixed keys (e.g. `xyz_double_blocks_0_img_mod_lin`) that still contain the substrings "double_block", "single_block", "final_layer", "img_mod", "txt_mod".
+**Tests:** Calls `_infer_hyperparams()` against the no-metadata fixture and asserts the metadata-fallback path succeeds: architecture is detected from key patterns, shape-based hyperparameters match the regular fixture, and native_dtype defaults to fp32 (no `.weight` suffix keys).
+**Mode:** both
+**Inputs:** Path to `flux2klein4b_tiny_no_metadata.safetensors`.
+**Expected output:** Dict with arch="flux2klein" (from key-pattern fallback), same shape values as regular fixture, native_dtype="fp32".
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_infer_hyperparams_no_metadata_fixture -v` exits 0.
+
+---
+
+## test_infer_hyperparams_nonexistent_path_raises (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** No file exists at the test path. Tests that `_infer_hyperparams()` handles missing files gracefully.
+**Tests:** Calls `_infer_hyperparams()` with a nonexistent path and asserts that a `ValueError` is raised with "No such file" in the error message.
+**Mode:** both
+**Inputs:** Path `/tmp/this_file_does_not_exist_abc123.safetensors`.
+**Expected output:** `ValueError` raised with "No such file" in the message.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_infer_hyperparams_nonexistent_path_raises -v` exits 0.
+
+---
+
+## test_infer_hyperparams_truncated_header_raises (worker)
+
+**File:** `worker/tests/test_arch_flux2klein.py`
+**Context:** A temporary file is created with 8 bytes of invalid binary data that does not form a valid safetensors header. Tests that `_infer_hyperparams()` handles corrupted files gracefully.
+**Tests:** Calls `_infer_hyperparams()` with a file containing invalid binary data and asserts that a `ValueError` is raised.
+**Mode:** both
+**Inputs:** Temp file with bytes `b"\x00\x01\x02\x03\x04\x05\x06\x07"`.
+**Expected output:** `ValueError` raised.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_infer_hyperparams_truncated_header_raises -v` exits 0.
