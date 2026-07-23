@@ -15,9 +15,10 @@
 /// - `map_worker_event()` — performs the one-to-one mapping between `WorkerEvent`
 ///   and `WsEvent` variants.
 /// - `apply_ready_capabilities()` — writes a worker's runtime-probed `Ready`
-///   capabilities into the shared `HardwareInfo` snapshot (`AppState.hardware`,
-///   the source `GET /v1/system` serves), per `ANVILML_DESIGN.md §6.6`. This is
-///   the only writer of a `GpuDevice`'s `caps`/`capabilities_source` fields
+///   capabilities *and* real VRAM totals into the shared `HardwareInfo`
+///   snapshot (`AppState.hardware`, the source `GET /v1/system` serves), per
+///   `ANVILML_DESIGN.md §6.6`. This is the only writer of a `GpuDevice`'s
+///   `caps`/`capabilities_source`/`vram_total_mib`/`vram_free_mib` fields
 ///   after server startup.
 ///
 /// The design separates the event variant matching from the handler function so that
@@ -260,13 +261,33 @@ pub fn map_worker_event(event: WorkerEvent) -> WsEvent {
 /// `/v1/system` reporting stale pre-spawn hints (frequently all-`false` for
 /// any device absent from the seed table) for the server's entire uptime.
 ///
+/// P900-series retrofit: the same "received, then discarded" gap applied to
+/// `vram_total_mib`/`vram_free_mib` — every hardware detector
+/// (`vulkan.rs`/`dxgi.rs`/`sysfs.rs`/`cpu.rs`) sets these to `0` at
+/// `detect()` time with a "filled by refresh_vram later" comment, but
+/// nothing ever called `refresh_vram()` anywhere in the codebase. Every
+/// device — GPU and CPU alike — therefore reported `vram_free_mib: 0`
+/// forever, which made `anvilml-scheduler`'s VRAM-descending worker
+/// selection a tie between every GPU and the CPU fallback; Rust's
+/// `Iterator::max_by_key` breaks ties by returning the *last* equally-
+/// maximal element, and `detect_all_devices()` always appends the CPU
+/// device after every GPU device, so the tie was resolved in the CPU's
+/// favor on every single dispatch. The `Ready` event already carries the
+/// worker's own real, torch-probed `vram_total_mib`/`vram_free_mib`
+/// (`worker_main.py` calls `torch.cuda.mem_get_info()` — this also covers
+/// ROCm, since ROCm builds of torch alias the `torch.cuda.*` namespace) —
+/// this function now applies those fields the same way it already applies
+/// `caps`, rather than adding a separate (and currently entirely
+/// unwired) `refresh_vram()` call path.
+///
 /// # Behavior
 ///
 /// Finds the `GpuDevice` in `hardware.gpus` whose `index` matches the
 /// event's `device_index` (the same convention `WorkerPool::spawn_worker()`
 /// uses to derive `worker_id` from `device.index` — see that method's own
 /// doc comment), overwrites its `caps` with the probed values and its
-/// `capabilities_source` with `CapabilitySource::PyTorch`, then recomputes
+/// `capabilities_source` with `CapabilitySource::PyTorch`, overwrites its
+/// `vram_total_mib`/`vram_free_mib` with the probed values, then recomputes
 /// the top-level `inference_caps` field as the OR-union of every device's
 /// caps via `anvilml_hardware::compute_caps_union()` — the same function
 /// `detect_all_devices()` itself uses, so the aggregate is computed
@@ -281,6 +302,8 @@ async fn apply_ready_capabilities(
     hardware: &RwLock<HardwareInfo>,
     device_index: u32,
     caps: InferenceCaps,
+    vram_total_mib: u32,
+    vram_free_mib: u32,
 ) {
     let mut hw = hardware.write().await;
     match hw.gpus.iter_mut().find(|gpu| gpu.index == device_index) {
@@ -296,11 +319,15 @@ async fn apply_ready_capabilities(
                 fp8 = caps.fp8,
                 fp4 = caps.fp4,
                 flash_attention = caps.flash_attention,
+                vram_total_mib,
+                vram_free_mib,
                 "hardware_caps_updated_from_ready"
             );
 
             gpu.caps = caps;
             gpu.capabilities_source = CapabilitySource::PyTorch;
+            gpu.vram_total_mib = vram_total_mib;
+            gpu.vram_free_mib = vram_free_mib;
 
             hw.inference_caps = compute_caps_union(&hw.gpus);
         }
@@ -757,6 +784,8 @@ pub fn spawn_event_loop(
                 // race or duplicate that registration.
                 WorkerEvent::Ready {
                     device_index,
+                    vram_total_mib,
+                    vram_free_mib,
                     fp32,
                     fp16,
                     bf16,
@@ -773,7 +802,14 @@ pub fn spawn_event_loop(
                         fp4,
                         flash_attention,
                     };
-                    apply_ready_capabilities(&hardware, device_index, caps).await;
+                    apply_ready_capabilities(
+                        &hardware,
+                        device_index,
+                        caps,
+                        vram_total_mib,
+                        vram_free_mib,
+                    )
+                    .await;
                 }
                 // Pong, Dying, and MemoryReport are handled by other
                 // subsystems (keepalive watchdog, worker pool) and must not

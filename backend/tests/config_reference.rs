@@ -67,19 +67,23 @@ mod tests {
         // compiled-in default, since this is the one field the checked-in
         // config deliberately overrides rather than leaves at default.
         assert_eq!(
-            config.model_dirs.len(), 3,
+            config.model_dirs.len(),
+            3,
             "model_dirs should have 3 entries (diffusion, text_encoders, vae)"
         );
         assert_eq!(
-            config.model_dirs[0].path, Path::new("./models/diffusion"),
+            config.model_dirs[0].path,
+            Path::new("./models/diffusion"),
             "model_dirs[0].path mismatch"
         );
         assert_eq!(
-            config.model_dirs[1].path, Path::new("./models/text_encoders"),
+            config.model_dirs[1].path,
+            Path::new("./models/text_encoders"),
             "model_dirs[1].path mismatch"
         );
         assert_eq!(
-            config.model_dirs[2].path, Path::new("./models/vae"),
+            config.model_dirs[2].path,
+            Path::new("./models/vae"),
             "model_dirs[2].path mismatch"
         );
         for (i, dir) in config.model_dirs.iter().enumerate() {

@@ -1622,6 +1622,15 @@ fn test_hardware_info() -> Arc<tokio::sync::RwLock<anvilml_core::HardwareInfo>> 
 /// contract warns about — so this test also proves the previously-unsent
 /// `fp32`/`fp4` fields survive the full wire → apply path, not just the
 /// four fields that were already present on `WorkerEvent::Ready`.
+///
+/// P900-series retrofit: also asserts `vram_total_mib`/`vram_free_mib` are
+/// applied from the Ready event, the same "received, then discarded" gap
+/// as the caps fields originally were (see `apply_ready_capabilities()`'s
+/// own doc comment). The fixture device starts at a nonzero placeholder
+/// (8192/8192); the Ready event carries different nonzero values
+/// (16384/12000) specifically so this test can't pass by coincidence the
+/// way a 0-to-0 "no-op" write would — only a real overwrite to the Ready
+/// event's exact values proves the fields are actually wired through.
 #[tokio::test]
 async fn test_ready_event_updates_hardware_caps() {
     let demux = Arc::new(Demux::new());
@@ -1689,8 +1698,8 @@ async fn test_ready_event_updates_hardware_caps() {
         device_index: 0,
         device_name: "Mock GPU".to_string(),
         device_type: "cpu".to_string(),
-        vram_total_mib: 0,
-        vram_free_mib: 0,
+        vram_total_mib: 16384,
+        vram_free_mib: 12000,
         torch_version: "2.5.0".to_string(),
         fp32: true,
         fp16: true,
@@ -1739,6 +1748,14 @@ async fn test_ready_event_updates_hardware_caps() {
         gpu.capabilities_source,
         anvilml_core::CapabilitySource::PyTorch,
         "capabilities_source must be overwritten to PyTorch"
+    );
+    assert_eq!(
+        gpu.vram_total_mib, 16384,
+        "vram_total_mib must be overwritten from the Ready event's probed value"
+    );
+    assert_eq!(
+        gpu.vram_free_mib, 12000,
+        "vram_free_mib must be overwritten from the Ready event's probed value"
     );
 
     // The aggregate inference_caps must reflect the union across all
