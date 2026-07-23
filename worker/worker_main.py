@@ -563,7 +563,27 @@ def _real_startup_sequence() -> None:
     )
 
     # Enter the message dispatch loop — blocks until the process is terminated.
-    device = "cpu" if device_type == "cpu" else f"{device_type}:{device_index}"
+    #
+    # P900-series retrofit: this previously built the device string as
+    # f"{device_type}:{device_index}" directly — for device_type="rocm"
+    # (this file's ANVILML_DEVICE_TYPE, set by the Rust supervisor's
+    # DeviceType::Rocm => "rocm"), that produces "rocm:0", which
+    # torch.device() rejects outright: "Expected one of cpu, cuda, ipu,
+    # xpu, ... at start of device string: rocm" — "rocm" is never a
+    # backend torch.device() recognizes. capability.py's probe_capabilities()
+    # already solves this exact problem (see its own detailed comment) but
+    # that translation was never applied to this second, separate
+    # device-string construction — every node's real-mode load()/sample()/
+    # decode() call receives *this* device string (via _dispatch_loop's
+    # ctx.device), not capability.py's, so the crash happened here despite
+    # the probe itself working fine. ROCm-built PyTorch exposes AMD GPUs
+    # transparently through the *same* cuda API/device namespace — this
+    # translation is local to constructing the torch device string only;
+    # device_type itself stays "rocm" everywhere else (the Ready event
+    # above, logging, etc.) so the semantic AMD/ROCm distinction isn't
+    # lost from what's actually reported.
+    torch_device_type = "cuda" if device_type == "rocm" else device_type
+    device = "cpu" if device_type == "cpu" else f"{torch_device_type}:{device_index}"
     _dispatch_loop(device=device, caps=caps, mock=False)
 
 

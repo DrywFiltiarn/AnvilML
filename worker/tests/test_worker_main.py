@@ -260,6 +260,105 @@ class TestRealStartupSequence:
                 else:
                     os.environ[key] = value
 
+    @pytest.mark.real_mode
+    def test_real_startup_rocm_dispatches_with_cuda_device_string(self) -> None:
+        """ANVILML_DEVICE_TYPE=rocm produces a "cuda:N" torch device string,
+        never "rocm:N".
+
+        P900-series retrofit regression test. Prior to this fix,
+        ``_real_startup_sequence()`` built the device string passed to
+        ``_dispatch_loop()`` as ``f"{device_type}:{device_index}"``
+        directly — for ``device_type="rocm"`` that produced ``"rocm:0"``,
+        which every node's real-mode ``load()``/``sample()``/``decode()``
+        call eventually threads into a ``torch.device(...)`` construction
+        (e.g. ``model.to_empty(device=device)``). ``torch.device()``
+        rejects ``"rocm"`` outright: "Expected one of cpu, cuda, ipu,
+        xpu, ... at start of device string: rocm" — the exact runtime
+        error this bug produced. ROCm-built PyTorch exposes AMD GPUs
+        through the *same* cuda device namespace (HIP's CUDA-compatibility
+        layer), so the correct device string is ``"cuda:0"``.
+        ``capability.py``'s ``probe_capabilities()`` already solves this
+        exact translation (and documents it in detail) but that fix was
+        never applied to this second, separate device-string construction
+        in ``worker_main.py`` — the one every node's real execution path
+        actually receives via ``ctx.device``.
+
+        Mocks ``worker_main._dispatch_loop`` directly (rather than
+        driving ``ipc.recv_message`` to raise and exit the loop, as the
+        sibling tests in this class do) so this test can capture and
+        assert on the exact ``device=`` keyword argument
+        ``_real_startup_sequence()`` calls it with.
+
+        Env var isolation: saves and restores all four startup env vars
+        unconditionally after the test body.
+
+        Preconditions: ``ANVILML_DEVICE_TYPE=rocm``, ``ANVILML_DEVICE_INDEX=0``.
+        Expected output: ``_dispatch_loop`` is called with
+        ``device="cuda:0"`` — never ``"rocm:0"``.
+        """
+        import unittest.mock as mock
+
+        saved = {
+            "ANVILML_IPC_PORT": os.environ.get("ANVILML_IPC_PORT"),
+            "ANVILML_WORKER_ID": os.environ.get("ANVILML_WORKER_ID"),
+            "ANVILML_DEVICE_TYPE": os.environ.get("ANVILML_DEVICE_TYPE"),
+            "ANVILML_DEVICE_INDEX": os.environ.get("ANVILML_DEVICE_INDEX"),
+        }
+
+        os.environ["ANVILML_IPC_PORT"] = "5555"
+        os.environ["ANVILML_WORKER_ID"] = "rocm-worker-0"
+        os.environ["ANVILML_DEVICE_TYPE"] = "rocm"
+        os.environ["ANVILML_DEVICE_INDEX"] = "0"
+
+        try:
+            with mock.patch("worker.ipc.connect"):
+                with mock.patch(
+                    "worker.capability.probe_capabilities"
+                ) as mock_probe:
+                    mock_probe.return_value = {
+                        "fp32": True,
+                        "fp16": True,
+                        "bf16": True,
+                        "fp8": True,
+                        "fp4": True,
+                        "flash_attention": True,
+                    }
+                    import worker.worker_main as worker_main
+
+                    with mock.patch("worker.ipc.send_event"):
+                        with mock.patch(
+                            "torch.cuda.set_device"
+                        ):
+                            with mock.patch(
+                                "torch.cuda.get_device_name",
+                                return_value="AMD Radeon RX 9070",
+                            ):
+                                with mock.patch(
+                                    "torch.cuda.mem_get_info",
+                                    return_value=(0, 0),
+                                ):
+                                    with mock.patch.object(
+                                        worker_main, "_dispatch_loop"
+                                    ) as mock_dispatch_loop:
+                                        worker_main._real_startup_sequence()
+
+                                        # The actual bug: this must be
+                                        # "cuda:0", never "rocm:0".
+                                        mock_dispatch_loop.assert_called_once()
+                                        _, kwargs = mock_dispatch_loop.call_args
+                                        assert kwargs.get("device") == "cuda:0", (
+                                            f"expected device='cuda:0', got "
+                                            f"device={kwargs.get('device')!r} — "
+                                            f"torch.device() rejects 'rocm:0' "
+                                            f"outright"
+                                        )
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
 
     @pytest.mark.real_mode
     def test_real_startup_calls_probe_capabilities(self) -> None:
