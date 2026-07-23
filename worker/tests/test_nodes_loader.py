@@ -719,8 +719,12 @@ def test_empty_latent_real_produces_latent_with_loaded_model() -> None:
     This test exercises the real code path end-to-end: LoadModel →
     EmptyLatent, confirming the dispatch chain and latent allocation work.
 
-    Expected outcome: {"latent": torch.Tensor} with shape (1, 4, 8, 8)
-    on CPU device.
+    Expected outcome: {"latent": torch.Tensor} with shape (1, 4, 64, 64)
+    on CPU device — the full requested resolution (P900-series retrofit:
+    compute_latent_shape() no longer divides by patch_size). This test's
+    assertion compares against compute_latent_shape()'s own live output
+    rather than a hardcoded tuple, so it required no change beyond this
+    docstring.
     """
     from pathlib import Path
 
@@ -773,9 +777,11 @@ def test_empty_latent_real_different_dimensions() -> None:
 
     Loads the ZiT fixture, calls EmptyLatent.execute() with width=128,
     height=128, and verifies the returned latent tensor has shape
-    (1, 4, 32, 32) — since patch_size=4 (set by load()), 128/4=32.
+    (1, 4, 128, 128) — the full requested resolution (P900-series
+    retrofit: compute_latent_shape() no longer divides by patch_size;
+    see that function's docstring for why).
 
-    Expected outcome: {"latent": torch.Tensor} with shape (1, 4, 32, 32).
+    Expected outcome: {"latent": torch.Tensor} with shape (1, 4, 128, 128).
     """
     from pathlib import Path
 
@@ -804,8 +810,8 @@ def test_empty_latent_real_different_dimensions() -> None:
     assert "latent" in result
     latent = result["latent"]
     assert isinstance(latent, torch.Tensor)
-    assert tuple(latent.shape) == (1, 4, 32, 32), (
-        f"expected shape (1, 4, 32, 32), got {tuple(latent.shape)}"
+    assert tuple(latent.shape) == (1, 4, 128, 128), (
+        f"expected shape (1, 4, 128, 128), got {tuple(latent.shape)}"
     )
 
 
@@ -815,9 +821,11 @@ def test_empty_latent_real_batch_size_scaling() -> None:
 
     Loads the ZiT fixture, calls EmptyLatent.execute() with width=64,
     height=64, batch_size=3, and verifies the returned latent tensor
-    has shape (3, 4, 8, 8) — batch_size scales the first dimension.
+    has shape (3, 4, 64, 64) — batch_size scales the first dimension;
+    the spatial dims are the full requested resolution (P900-series
+    retrofit: compute_latent_shape() no longer divides by patch_size).
 
-    Expected outcome: {"latent": torch.Tensor} with shape (3, 4, 8, 8).
+    Expected outcome: {"latent": torch.Tensor} with shape (3, 4, 64, 64).
     """
     from pathlib import Path
 
@@ -847,8 +855,8 @@ def test_empty_latent_real_batch_size_scaling() -> None:
     assert "latent" in result
     latent = result["latent"]
     assert isinstance(latent, torch.Tensor)
-    assert tuple(latent.shape) == (3, 4, 16, 16), (
-        f"expected shape (3, 4, 16, 16), got {tuple(latent.shape)}"
+    assert tuple(latent.shape) == (3, 4, 64, 64), (
+        f"expected shape (3, 4, 64, 64), got {tuple(latent.shape)}"
     )
 
 
@@ -858,10 +866,12 @@ def test_empty_latent_real_zero_dimensions() -> None:
 
     Loads the ZiT fixture, calls EmptyLatent.execute() with width=0
     and height=32, and verifies the returned latent tensor has shape
-    (1, 4, 0, 4) — zero width produces zero latent height via the
-    ceiling-division formula in compute_latent_shape().
+    (1, 4, 0, 32) — the width/height pass straight through
+    (P900-series retrofit: compute_latent_shape() no longer divides by
+    patch_size, so there's no ceiling-division edge case here — a
+    zero input dimension simply produces a zero output dimension).
 
-    Expected outcome: {"latent": torch.Tensor} with shape (1, 4, 0, 4).
+    Expected outcome: {"latent": torch.Tensor} with shape (1, 4, 0, 32).
     """
     from pathlib import Path
 
@@ -890,8 +900,8 @@ def test_empty_latent_real_zero_dimensions() -> None:
     assert "latent" in result
     latent = result["latent"]
     assert isinstance(latent, torch.Tensor)
-    assert tuple(latent.shape) == (1, 4, 0, 8), (
-        f"expected shape (1, 4, 0, 8), got {tuple(latent.shape)}"
+    assert tuple(latent.shape) == (1, 4, 0, 32), (
+        f"expected shape (1, 4, 0, 32), got {tuple(latent.shape)}"
     )
 
 

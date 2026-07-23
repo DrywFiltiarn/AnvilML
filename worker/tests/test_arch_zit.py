@@ -808,92 +808,94 @@ def test_load_raises_on_invalid_path() -> None:
 
 @pytest.fixture
 def _default_patch_hyperparams():
-    """Pin zit.MODEL_PATCH_SIZE / MODEL_LATENT_CHANNELS, then restore them.
+    """Pin zit.MODEL_LATENT_CHANNELS, then restore it.
 
-    compute_latent_shape() reads module-level mutable globals that load()
-    overwrites in place with checkpoint-derived values (P21-A1). Any test that
-    exercises the pre-load *default* must not depend on execution order
-    relative to a real_mode test that has already called load() in the same
-    session — test_compute_latent_shape_real_after_load and its
-    non_multiple sibling do exactly that, and previously ran earlier in this
-    file, which is why the un-isolated versions of these tests silently
-    passed only when run in file order and failed once collection was fixed
-    and they could be run standalone (P900-series retrofit).
+    compute_latent_shape() reads MODEL_LATENT_CHANNELS, a module-level
+    mutable global that load() overwrites in place with the checkpoint's
+    actual value. Any test that exercises the pre-load default must not
+    depend on execution order relative to a real_mode test that has
+    already called load() in the same session.
 
-    This fixture pins both globals to the documented default (patch_size=2 —
-    Z-Image Turbo's actual patchify default, not an arbitrary placeholder —
-    and latent_channels=4) for the duration of the test, then restores
-    whatever value was present before, so these tests are correct however
-    they're invoked: `-m "not real_mode"` alone, `-m real_mode` alone, or the
-    full file with no marker filter at all.
+    P900-series retrofit: this fixture previously also pinned
+    MODEL_PATCH_SIZE, back when compute_latent_shape() divided by it. That
+    division was removed (see compute_latent_shape()'s docstring: it was
+    a genuine defect — dividing the requested resolution by patch_size
+    produced a latent smaller than requested, and since zit_vae.py never
+    upsamples, the final decoded image came out at that smaller size
+    instead of the requested width/height). compute_latent_shape() no
+    longer reads MODEL_PATCH_SIZE at all, so pinning it here would have
+    no effect; only MODEL_LATENT_CHANNELS still matters.
     """
-    original_patch_size = zit.MODEL_PATCH_SIZE
     original_latent_channels = zit.MODEL_LATENT_CHANNELS
-    zit.MODEL_PATCH_SIZE = 2
     zit.MODEL_LATENT_CHANNELS = 4
     try:
         yield
     finally:
         # Restore unconditionally, even if the test body raises, so a failing
         # test can never leak a pinned value into whatever runs next.
-        zit.MODEL_PATCH_SIZE = original_patch_size
         zit.MODEL_LATENT_CHANNELS = original_latent_channels
 
 
 def test_compute_latent_shape_mock_exact_multiple(_default_patch_hyperparams) -> None:
-    """compute_latent_shape() produces correct shape for exact-patch-size dimensions.
+    """compute_latent_shape() returns the full requested resolution.
 
     Calls compute_latent_shape() with width=32, height=32, batch_size=1.
-    With MODEL_PATCH_SIZE=2 (Z-Image Turbo's actual patchify default, pinned
-    by the _default_patch_hyperparams fixture), this gives latent_height=16,
-    latent_width=16. The result should be (1, 4, 16, 16).
 
-    This is the primary mock-mode test for the formula — it exercises the
-    exact-multiple path of the ceiling division.
+    P900-series retrofit: this previously divided width/height by
+    MODEL_PATCH_SIZE, giving (1, 4, 16, 16) for a 32x32 request — a
+    formula mismatch with zit_vae.py's actual (compression-free)
+    architecture that produced a wrong-sized final image end to end (a
+    64x64 EmptyLatent request, for example, decoded to a 16x16 PNG through
+    the real full-graph pipeline). zit_vae.py never spatially compresses
+    at all, so the Sampler-bound latent must be the full requested
+    resolution; ZiTModel.forward() already handles the model's fixed
+    internal processing capacity via its own resize-in/resize-out step,
+    so compute_latent_shape() no longer needs patch_size at all. See
+    compute_latent_shape()'s docstring for the full rationale.
 
     # MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_mock_exact_multiple
     """
     result = compute_latent_shape(32, 32, 1)
-    assert result == (1, 4, 16, 16)
+    assert result == (1, 4, 32, 32)
 
 
 def test_compute_latent_shape_mock_non_multiple(_default_patch_hyperparams) -> None:
-    """compute_latent_shape() rounds up non-multiple dimensions via ceiling division.
+    """compute_latent_shape() returns the exact requested resolution, no rounding.
 
     Calls compute_latent_shape() with width=33, height=33, batch_size=1.
-    With MODEL_PATCH_SIZE=2, 33/2 = 16.5, which rounds up to 17.
-    The result should be (1, 4, 17, 17).
-
-    This verifies the ceiling-division path: non-multiples of patch_size
-    are rounded up so the latent grid fully covers the input.
+    Since this function no longer divides by patch_size (P900-series
+    retrofit), there is no ceiling division to exercise here — the result
+    is exactly (1, 4, 33, 33).
 
     # MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_mock_non_multiple
     """
     result = compute_latent_shape(33, 33, 1)
-    assert result == (1, 4, 17, 17)
+    assert result == (1, 4, 33, 33)
 
 
 def test_compute_latent_shape_mock_batch_scaling(_default_patch_hyperparams) -> None:
     """compute_latent_shape() scales the batch dimension correctly.
 
     Calls compute_latent_shape() with width=64, height=64, batch_size=4.
-    With MODEL_PATCH_SIZE=2, this gives latent_height=32, latent_width=32.
-    The result should be (4, 4, 32, 32) — batch_size=4 in the first position.
+    The result should be (4, 4, 64, 64) — batch_size=4 in the first
+    position, full requested resolution elsewhere.
 
     # MOCK_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_mock_batch_scaling
     """
     result = compute_latent_shape(64, 64, 4)
-    assert result == (4, 4, 32, 32)
+    assert result == (4, 4, 64, 64)
 
 
 @pytest.mark.real_mode
 def test_compute_latent_shape_real_after_load() -> None:
-    """compute_latent_shape() uses actual checkpoint hyperparameters after load().
+    """compute_latent_shape() returns the full requested resolution after load().
 
-    Calls load() against the ZiT fixture (which has patch_size=4,
-    latent_channels=4), then calls compute_latent_shape(32, 32, 1).
-    The result should be (1, 4, 8, 8), proving that load() correctly
-    updates the module-level hyperparameters.
+    Calls load() against the ZiT fixture, then calls
+    compute_latent_shape(32, 32, 1). The result should be (1, 4, 32, 32) —
+    the full requested resolution, confirming load() setting
+    MODEL_LATENT_CHANNELS doesn't reintroduce any patch_size-based
+    division (P900-series retrofit; see the mock-mode test's docstring
+    above for the full rationale).
 
     # REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_real_after_load
     """
@@ -908,16 +910,17 @@ def test_compute_latent_shape_real_after_load() -> None:
     }
     load(str(fixture_path), caps, device="cpu")
     result = compute_latent_shape(32, 32, 1)
-    assert result == (1, 4, 8, 8)
+    assert result == (1, 4, 32, 32)
 
 
 @pytest.mark.real_mode
 def test_compute_latent_shape_real_non_multiple_after_load() -> None:
-    """compute_latent_shape() ceiling division works after load() updates hyperparams.
+    """compute_latent_shape() returns exact width/height with no rounding, after load().
 
-    Calls load() against the ZiT fixture, then calls compute_latent_shape(50, 50, 1).
-    With patch_size=4, 50/4 = 12.5, which rounds up to 13.
-    The result should be (1, 4, 13, 13).
+    Calls load() against the ZiT fixture, then calls
+    compute_latent_shape(50, 50, 1). The result should be exactly
+    (1, 4, 50, 50) — no ceiling division applies since patch_size is no
+    longer part of this formula (P900-series retrofit).
 
     # REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_compute_latent_shape_real_non_multiple_after_load
     """
@@ -932,36 +935,34 @@ def test_compute_latent_shape_real_non_multiple_after_load() -> None:
     }
     load(str(fixture_path), caps, device="cpu")
     result = compute_latent_shape(50, 50, 1)
-    assert result == (1, 4, 13, 13)
+    assert result == (1, 4, 50, 50)
 
 
 def test_compute_latent_shape_default_batch_size(_default_patch_hyperparams) -> None:
     """compute_latent_shape() defaults batch_size to 1 when omitted.
 
     Calls compute_latent_shape(32, 32) without the batch_size argument.
-    With MODEL_PATCH_SIZE=2 (pinned by the _default_patch_hyperparams
-    fixture — this test previously ran after the real_after_load tests in
-    file order and silently depended on their leaked fixture-derived
-    patch_size instead of any real default; P900-series retrofit), the
-    result should be (1, 4, 16, 16), confirming batch_size defaults to 1.
+    The result should be (1, 4, 32, 32), confirming batch_size defaults
+    to 1 and the full requested resolution is returned unchanged.
     """
     result = compute_latent_shape(32, 32)
-    assert result == (1, 4, 16, 16)
+    assert result == (1, 4, 32, 32)
 
 
 def test_compute_latent_shape_zero_dims(_default_patch_hyperparams) -> None:
-    """compute_latent_shape() returns zero latent dims for zero-width or zero-height.
+    """compute_latent_shape() passes zero-width/zero-height straight through.
 
-    Calls compute_latent_shape(0, 32) and compute_latent_shape(32, 0) with
-    MODEL_PATCH_SIZE=2 pinned by the _default_patch_hyperparams fixture.
-    Should return (1, 4, 0, 16) and (1, 4, 16, 0) respectively, proving the
-    ceiling division handles the edge case correctly.
+    Calls compute_latent_shape(0, 32) and compute_latent_shape(32, 0).
+    Should return (1, 4, 0, 32) and (1, 4, 32, 0) respectively — since
+    this function no longer divides by patch_size (P900-series retrofit),
+    there is no division-by-zero-adjacent ceiling-division edge case to
+    handle; the inputs pass straight through.
     """
     result_zero_width = compute_latent_shape(0, 32, 1)
-    assert result_zero_width == (1, 4, 0, 16)
+    assert result_zero_width == (1, 4, 0, 32)
 
     result_zero_height = compute_latent_shape(32, 0, 1)
-    assert result_zero_height == (1, 4, 16, 0)
+    assert result_zero_height == (1, 4, 32, 0)
 
     result_both_zero = compute_latent_shape(0, 0, 1)
     assert result_both_zero == (1, 4, 0, 0)

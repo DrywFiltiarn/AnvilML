@@ -412,17 +412,33 @@ def compute_latent_shape(
 ) -> tuple[int, int, int, int]:
     """Compute the latent tensor shape for a given input resolution.
 
-    Uses ZiT's patch-packing formula: latent_height = ceil(width / patch_size),
-    latent_width = ceil(height / patch_size). Returns (batch_size, latent_channels,
-    latent_height, latent_width).
+    Returns (batch_size, latent_channels, width, height) — note the
+    width/height axis order matches this project's established convention
+    (dim 2 comes from *width*, dim 3 from *height*), not a height-then-width
+    image convention.
 
-    Non-multiple-of-patch-size dimensions are rounded up via ceiling division
-    so the latent grid fully covers the input — any partial patch at the edge
-    still needs a full column/row of latent tokens.
+    P900-series retrofit: this function previously divided width/height by
+    MODEL_PATCH_SIZE (derived from input_proj.weight's fixed in_features —
+    a property of the model's internal processing capacity, not of the
+    VAE), on the mistaken assumption that zit_vae.py spatially compresses
+    images the way a real Stable-Diffusion-style VAE does. It does not:
+    zit_vae.py's decoder is a stride-1, same-padding convolution stack with
+    zero spatial resizing anywhere in its architecture (confirmed by
+    inspection — no Upsample/ConvTranspose/strided layer anywhere in the
+    module). Dividing by patch_size here produced a latent smaller than
+    requested, and since the VAE never compensates by upsampling, the final
+    decoded image came out at that smaller size instead of the requested
+    width/height (e.g. a 64x64 request produced a 16x16 PNG when
+    MODEL_PATCH_SIZE was 4, as inferred from the zit_tiny fixture's
+    input_proj.weight shape).
 
-    The formula uses the module-level constants MODEL_PATCH_SIZE and
-    MODEL_LATENT_CHANNELS, which are set to the checkpoint's actual values
-    when load() is called. Before load(), the defaults (16, 4) apply.
+    This is the same defect (and the same fix) as
+    flux2klein.py's compute_latent_shape() — see that function's docstring
+    for the full rationale, including why flux2klein.py's
+    Flux2KleinModel.forward() needed a matching resize-in/resize-out step
+    added. ZiTModel.forward() already has that step (it always has, since
+    at least Phase 20) — only this function needed the patch_size division
+    removed; no forward() change was needed here.
 
     Args:
         width: Input image width in pixels.
@@ -430,18 +446,12 @@ def compute_latent_shape(
         batch_size: Number of samples in the batch. Defaults to 1.
 
     Returns:
-        A 4-tuple (batch_size, latent_channels, latent_height, latent_width)
-        representing the shape of the noise latent tensor that EmptyLatent
-        should produce before passing it to the Sampler.
+        A 4-tuple (batch_size, latent_channels, width, height) representing
+        the shape of the noise latent tensor that EmptyLatent should
+        produce before passing it to the Sampler — at the full requested
+        resolution, since the VAE performs no spatial compression.
     """
-    # Ceiling division: (x + patch_size - 1) // patch_size computes ceil(x /
-    # patch_size) using only integer arithmetic. This correctly handles exact
-    # multiples (e.g. 32 / 16 = 2), non-multiples (e.g. 33 / 16 = ceil(2.0625)
-    # = 3), and the edge case width=0 (returns 0).
-    latent_height = (width + MODEL_PATCH_SIZE - 1) // MODEL_PATCH_SIZE
-    latent_width = (height + MODEL_PATCH_SIZE - 1) // MODEL_PATCH_SIZE
-
-    return (batch_size, MODEL_LATENT_CHANNELS, latent_height, latent_width)
+    return (batch_size, MODEL_LATENT_CHANNELS, width, height)
 
 
 # REAL_PATH_VERIFIED: worker/tests/test_arch_zit.py::test_load_real_zit_fixture
