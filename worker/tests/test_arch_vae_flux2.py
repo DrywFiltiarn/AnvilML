@@ -146,6 +146,30 @@ def test_infer_hyperparams_truncated_header_raises() -> None:
             pass
 
 
+def test_infer_hyperparams_rejects_zit_vae_no_metadata_fixture() -> None:
+    """_infer_hyperparams() raises ValueError for an unrecognized (ZiT VAE) checkpoint.
+
+    P900-series retrofit regression test — the Flux 2 VAE counterpart of
+    ``test_arch_vae_zit.py``'s identical regression test. Prior to this
+    fix, ``_infer_hyperparams_inner()`` ended with an unconditional
+    "if arch is still None, default to flux2" — meaning it NEVER raised
+    for an unrecognized checkpoint, and would have silently misclassified
+    ``zit_vae_tiny_no_metadata.safetensors`` (a different architecture
+    family, whose ``"xyz_encoder_block*_conv.weight"``-style no-metadata
+    keys carry a ``.weight`` suffix that Flux 2 VAE's own no-metadata
+    fixture omits) as ``"flux2"`` instead of raising. This broke
+    ``worker/nodes/arch/vae/__init__.py``'s ``detect_arch()`` fallback,
+    which relies on each VAE module's ``_infer_hyperparams()`` correctly
+    rejecting checkpoints it doesn't recognize.
+
+    Expected outcome: ValueError is raised, not a silently-wrong
+    ``{"arch": "flux2", ...}`` result.
+    """
+    fixture_path = _FIXTURE_DIR / "zit_vae_tiny_no_metadata.safetensors"
+    with pytest.raises(ValueError, match="unknown VAE architecture"):
+        _infer_hyperparams(str(fixture_path))
+
+
 def test_arch_constant() -> None:
     """ARCH equals "flux2" — the canonical architecture identifier.
 

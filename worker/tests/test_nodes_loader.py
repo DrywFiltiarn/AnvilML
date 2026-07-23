@@ -103,6 +103,48 @@ def test_load_model_real_loads_zit_fixture() -> None:
         assert param.device.type == "cpu"
 
 
+@pytest.mark.real_mode
+def test_load_model_real_loads_flux2klein_fixture() -> None:
+    """LoadModel.execute() dispatches to flux2klein.py, not a hardcoded 'zit'.
+
+    Regression test for the P25-F1 Runnable Proof gap: prior to the
+    detect_arch() retrofit, LoadModel.execute()'s real branch called
+    ``get_module("zit")`` unconditionally, so any non-ZiT checkpoint
+    (including this Flux 2 Klein 4B fixture) failed inside zit.py's own
+    ``_infer_hyperparams_inner()`` with a ValueError about missing ZiT-
+    specific keys — dispatched to the wrong module entirely, never
+    reaching flux2klein.py. This test exercises the real code path against
+    the P25-A1 fixture and confirms LoadModel now resolves the correct
+    architecture from the checkpoint's "arch" safetensors metadata.
+
+    Expected outcome: {"model": Flux2KleinModel(...)} is returned, with
+    .arch == "flux2klein" — not an exception, and not a ZiT model.
+    """
+    from pathlib import Path
+
+    import torch
+
+    from worker.nodes.loader import LoadModel
+    from worker.pipeline_cache import PipelineCache
+
+    fixture_path = str(
+        Path(__file__).parent / "fixtures" / "flux2klein4b_tiny.safetensors"
+    )
+
+    node = LoadModel()
+    ctx = _make_ctx(mock=False, pipeline_cache=PipelineCache())
+    result = node.execute(ctx, model_id=fixture_path)
+
+    assert "model" in result
+    model = result["model"]
+
+    assert isinstance(model, torch.nn.Module)
+    assert model.arch == "flux2klein"
+
+    for param in model.parameters():
+        assert param.device.type == "cpu"
+
+
 def test_load_model_passes_ctx_device_to_arch_load() -> None:
     """LoadModel.execute() forwards ctx.device to module.load() (P901 retrofit).
 
@@ -138,6 +180,8 @@ def test_load_model_passes_ctx_device_to_arch_load() -> None:
     ctx = _make_ctx(mock=False, pipeline_cache=PipelineCache(), device="cuda:0")
 
     with patch(
+        "worker.nodes.arch.diffusion.detect_arch", return_value="stub-arch"
+    ), patch(
         "worker.nodes.arch.diffusion.get_module", return_value=stub_module
     ):
         node.execute(ctx, model_id="some-model-id")
@@ -278,6 +322,49 @@ def test_load_vae_real_loads_zit_vae_fixture() -> None:
         assert param.device.type == "cpu"
 
 
+@pytest.mark.real_mode
+def test_load_vae_real_loads_flux2_vae_fixture() -> None:
+    """LoadVae.execute() dispatches to flux2_vae.py, not a hardcoded 'zit_vae'.
+
+    Regression test for the P25-F1 Runnable Proof gap: prior to the
+    detect_arch() retrofit, LoadVae.execute()'s real branch called
+    ``get_module("zit_vae")`` unconditionally, so this Flux 2 VAE fixture
+    would have been routed to zit_vae.py regardless of its actual
+    architecture. This test exercises the real code path against the
+    P25-A1 fixture and confirms LoadVae now resolves the correct
+    architecture from the checkpoint's "arch" safetensors metadata — note
+    flux2_vae.py's own ``ARCH`` constant is ``"flux2"``, not
+    ``"flux2_vae"``; this test asserts against the actual value the
+    checkpoint declares, not the module's filename.
+
+    Expected outcome: {"vae": Flux2VaeModel(...)} is returned, with
+    .arch == "flux2" — not an exception, and not a ZiT VAE.
+    """
+    from pathlib import Path
+
+    import torch
+
+    from worker.nodes.loader import LoadVae
+    from worker.pipeline_cache import PipelineCache
+
+    fixture_path = str(
+        Path(__file__).parent / "fixtures" / "flux2_vae_tiny.safetensors"
+    )
+
+    node = LoadVae()
+    ctx = _make_ctx(mock=False, pipeline_cache=PipelineCache())
+    result = node.execute(ctx, model_id=fixture_path)
+
+    assert "vae" in result
+    vae = result["vae"]
+
+    assert isinstance(vae, torch.nn.Module)
+    assert vae.arch == "flux2"
+
+    for param in vae.parameters():
+        assert param.device.type == "cpu"
+
+
 def test_load_vae_passes_ctx_device_to_arch_load() -> None:
     """LoadVae.execute() forwards ctx.device to module.load() (P901 retrofit).
 
@@ -305,7 +392,9 @@ def test_load_vae_passes_ctx_device_to_arch_load() -> None:
     node = LoadVae()
     ctx = _make_ctx(mock=False, pipeline_cache=PipelineCache(), device="cuda:0")
 
-    with patch("worker.nodes.arch.vae.get_module", return_value=stub_module):
+    with patch(
+        "worker.nodes.arch.vae.detect_arch", return_value="stub-arch"
+    ), patch("worker.nodes.arch.vae.get_module", return_value=stub_module):
         node.execute(ctx, model_id="some-vae-id")
 
     assert len(captured_calls) == 1, f"expected 1 call to load(), got {len(captured_calls)}"

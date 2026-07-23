@@ -144,8 +144,12 @@ def _infer_hyperparams_inner(f: Any, path: str) -> dict[str, Any]:
 
     5. **Architecture string** — primary path reads
        ``f.metadata().get("arch")``; fallback checks for recognisable VAE
-       key patterns (``encoder.blocks``, ``decoder.blocks``, ``mid_block``)
-       and sets ``arch = "flux2"`` if found.
+       key patterns (``encoder.blocks``, ``decoder.blocks``, ``mid_block``,
+       or their ``xyz_``-prefixed no-metadata-fixture equivalents) and
+       sets ``arch = "flux2"`` if found; raises ``ValueError`` if neither
+       the metadata nor any recognizable pattern is found (P900 retrofit
+       — this previously defaulted to ``"flux2"`` unconditionally instead
+       of raising).
 
     P904 regression prevention: reads ALL keys via ``f.keys()`` without
     truncation — never ``list(f.keys())[:N]``.
@@ -162,9 +166,8 @@ def _infer_hyperparams_inner(f: Any, path: str) -> dict[str, Any]:
 
     Raises:
         ValueError: If the safetensors header cannot be parsed (e.g.
-            corrupted file). This is raised by the caller wrapping
-            ``safe_open`` — the inner function itself should not raise
-            beyond exceptions from safetensors internals.
+            corrupted file), or if no ``arch`` metadata key and no
+            recognizable VAE key pattern is found.
     """
     # Read ALL keys — P904 regression prevention: never truncate.
     keys = f.keys()  # type: ignore[union-attr]
@@ -248,16 +251,48 @@ def _infer_hyperparams_inner(f: Any, path: str) -> dict[str, Any]:
         pass
 
     # Fallback: detect from key naming patterns.
+    #
+    # P900-series retrofit: this previously ended with an unconditional
+    # "if arch is still None, default to flux2" — meaning this function
+    # NEVER raised for an unrecognized checkpoint, silently claiming every
+    # unrecognized VAE file was a Flux 2 VAE. This is the Flux 2 VAE
+    # counterpart of the same defect fixed in zit_vae.py — see that
+    # module's identical comment for the full rationale.
     if arch is None:
         has_encoder = any(re.match(r"^encoder\.blocks", k) for k in keys)
         has_decoder = any(re.match(r"^decoder\.blocks", k) for k in keys)
         has_mid_block = any(re.match(r"^mid_block", k) for k in keys)
-        if has_encoder and has_decoder and has_mid_block:
+
+        # No-metadata regression fixture: xyz_-prefixed rename of the
+        # real key pattern, WITHOUT a ".weight" suffix
+        # (build_flux2_vae_fixture.py's _no_metadata_tensors()). This
+        # match is deliberately STRICT (no suffix allowed) — deliberately
+        # narrower than this function's own channel-count fallback regex
+        # above, which tolerates an optional ".weight" suffix for
+        # robustness. zit_vae.py's own no-metadata fixture uses the
+        # identical "xyz_encoder_block*"/"xyz_decoder_block*" prefix WITH
+        # a ".weight" suffix, so a loose (optional-suffix) match here
+        # would misclassify a ZiT VAE checkpoint as Flux 2 VAE. mid_block's
+        # xyz key is identical in both fixtures ("xyz_mid_block_conv", no
+        # suffix either way) and is therefore not usable as a
+        # distinguishing signal — only encoder/decoder are checked here.
+        has_xyz_encoder = any(
+            re.match(r"^xyz_encoder_block\d+_conv$", k) for k in keys
+        )
+        has_xyz_decoder = any(
+            re.match(r"^xyz_decoder_block\d+_conv$", k) for k in keys
+        )
+
+        if (has_encoder and has_decoder and has_mid_block) or (
+            has_xyz_encoder and has_xyz_decoder
+        ):
             arch = "flux2"
 
-    # If arch is still None after all fallbacks, default to "flux2".
     if arch is None:
-        arch = "flux2"
+        raise ValueError(
+            f"unknown VAE architecture in {path}: no arch metadata key "
+            "and no recognizable Flux 2 VAE key patterns found"
+        )
 
     return {
         "encoder_channels": encoder_channels,

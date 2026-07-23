@@ -1,9 +1,10 @@
 """LoadModel node — loads a diffusion model from a safetensors file.
 
 This node is the entry point for model loading in the AnvilML worker.
-The mock branch returns a sentinel dict; the real branch dispatches
-to the registered diffusion architecture module (currently "zit")
-via ``arch.diffusion.get_module()`` and ``pipeline_cache.get_or_load()``.
+The mock branch returns a sentinel dict; the real branch detects the
+checkpoint's architecture via ``arch.diffusion.detect_arch()`` and
+dispatches to the matching registered module via
+``arch.diffusion.get_module()`` and ``pipeline_cache.get_or_load()``.
 """
 
 from worker.nodes.base import BaseNode, NodeContext, SlotSpec, register
@@ -78,15 +79,22 @@ class LoadModel(BaseNode):
             # model_id is loaded again, the cached ZiTModel is returned
             # without re-loading. The cache is not modified on exception
             # per the PipelineCache contract.
-            from worker.nodes.arch.diffusion import get_module
+            from worker.nodes.arch.diffusion import get_module, detect_arch
 
-            module = get_module("zit")
+            # Architecture-aware dispatch (P25-F1 retrofit): detect_arch()
+            # reads the "arch" safetensors metadata field (or falls back to
+            # each registered module's own key-pattern detection) instead of
+            # assuming "zit" — a hardcoded assumption that broke the moment
+            # a second diffusion module (flux2klein) was registered in
+            # Phase 25. See ANVILML_DESIGN.md §10.4.
+            arch_key = detect_arch(inputs["model_id"])
+            module = get_module(arch_key)
             if module is None:
-                # Defensive guard — zit is imported and appended to
-                # _REGISTERED_MODULES in diffusion/__init__.py (P20-B2),
-                # so this should never trigger in normal operation.
+                # No registered module recognizes this architecture string —
+                # either an unsupported checkpoint, or a new arch module
+                # that hasn't been registered in diffusion/__init__.py yet.
                 raise RuntimeError(
-                    f"no diffusion arch module registered for 'zit'; "
+                    f"no diffusion arch module registered for '{arch_key}'; "
                     f"cannot load model '{inputs['model_id']}'"
                 )
 
@@ -168,15 +176,22 @@ class LoadVae(BaseNode):
             # model_id is loaded again, the cached ZiTVaeModel is returned
             # without re-loading. The cache is not modified on exception
             # per the PipelineCache contract.
-            from worker.nodes.arch.vae import get_module
+            from worker.nodes.arch.vae import get_module, detect_arch
 
-            module = get_module("zit_vae")
+            # Architecture-aware dispatch (P25-F1 retrofit): detect_arch()
+            # reads the "arch" safetensors metadata field (or falls back to
+            # each registered module's own key-pattern detection) instead of
+            # assuming "zit_vae" — a hardcoded assumption that broke the
+            # moment a second VAE module (flux2_vae) was registered in
+            # Phase 25. See ANVILML_DESIGN.md §10.4.
+            arch_key = detect_arch(inputs["model_id"])
+            module = get_module(arch_key)
             if module is None:
-                # Defensive guard — zit_vae is imported and appended to
-                # _REGISTERED_MODULES in vae/__init__.py (P23-B2),
-                # so this should never trigger in normal operation.
+                # No registered module recognizes this architecture string —
+                # either an unsupported checkpoint, or a new arch module
+                # that hasn't been registered in vae/__init__.py yet.
                 raise RuntimeError(
-                    f"no VAE arch module registered for 'zit_vae'; "
+                    f"no VAE arch module registered for '{arch_key}'; "
                     f"cannot load VAE '{inputs['model_id']}'"
                 )
 

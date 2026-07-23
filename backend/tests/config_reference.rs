@@ -55,7 +55,40 @@ mod tests {
         );
 
         // Verify every nested/optional field matches the compiled-in default.
-        assert!(config.model_dirs.is_empty(), "model_dirs should be empty");
+        //
+        // model_dirs is intentionally NOT asserted empty here: the checked-in
+        // anvilml.toml's three [[model_dirs]] entries were uncommented as part
+        // of the P25-F1 Runnable Proof (previously ADDENDUM_P903's manual-only
+        // retrofit patch, never committed) — without them the model scanner
+        // finds no models and resolve_model_ids() fails every real job with
+        // UnknownModelId. ServerConfig::default() itself still yields an empty
+        // Vec (compiled-in default, unaffected by the checked-in TOML); this
+        // test asserts against the *file's* declared entries, not the
+        // compiled-in default, since this is the one field the checked-in
+        // config deliberately overrides rather than leaves at default.
+        assert_eq!(
+            config.model_dirs.len(), 3,
+            "model_dirs should have 3 entries (diffusion, text_encoders, vae)"
+        );
+        assert_eq!(
+            config.model_dirs[0].path, Path::new("./models/diffusion"),
+            "model_dirs[0].path mismatch"
+        );
+        assert_eq!(
+            config.model_dirs[1].path, Path::new("./models/text_encoders"),
+            "model_dirs[1].path mismatch"
+        );
+        assert_eq!(
+            config.model_dirs[2].path, Path::new("./models/vae"),
+            "model_dirs[2].path mismatch"
+        );
+        for (i, dir) in config.model_dirs.iter().enumerate() {
+            assert!(!dir.recursive, "model_dirs[{i}].recursive should be false");
+            assert!(
+                dir.max_depth.is_none(),
+                "model_dirs[{i}].max_depth should be None"
+            );
+        }
         assert_eq!(
             config.gpu_selection.default_device, defaults.gpu_selection.default_device,
             "gpu_selection.default_device mismatch"
