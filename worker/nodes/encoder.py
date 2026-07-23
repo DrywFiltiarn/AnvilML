@@ -115,9 +115,24 @@ class ClipTextEncode(BaseNode):
                 return_tensors="pt",
             )
 
+            # HuggingFace tokenizers always return CPU tensors regardless
+            # of where the model lives — return_tensors="pt" has no
+            # device parameter at all. Without this move, a GPU-loaded
+            # clip_encoder.forward() call raises "Expected all tensors to
+            # be on the same device, but got index is on cpu, different
+            # from other tensors on cuda:0" the moment it reaches its
+            # first embedding lookup (nn.Embedding requires its index
+            # tensor on the same device as its weight). ctx.device is the
+            # same device string every other node already materializes
+            # its own tensors on directly (e.g. EmptyLatent's
+            # torch.zeros(..., device=ctx.device) in loader.py) — this is
+            # the one place a tensor arrives from an external library
+            # (the tokenizer) already on the wrong device instead.
+            positive_input_ids = positive_tokens["input_ids"].to(ctx.device)
+
             # Run encoder forward pass to get hidden states.
             # Shape: (batch=1, seq_len=77, hidden_dim).
-            positive_embeds = clip_encoder.forward(positive_tokens["input_ids"])
+            positive_embeds = clip_encoder.forward(positive_input_ids)
 
             # Build the conditioning dict with positive text embeds.
             # This is the standard ComfyUI conditioning format that
@@ -136,7 +151,11 @@ class ClipTextEncode(BaseNode):
                     truncation=True,
                     return_tensors="pt",
                 )
-                negative_embeds = clip_encoder.forward(negative_tokens["input_ids"])
+                # Same CPU-tensor-from-tokenizer fix as positive_input_ids
+                # above — see that assignment's comment for the full
+                # rationale.
+                negative_input_ids = negative_tokens["input_ids"].to(ctx.device)
+                negative_embeds = clip_encoder.forward(negative_input_ids)
                 conditioning["negative_text_embeds"] = negative_embeds
 
             logger.debug(

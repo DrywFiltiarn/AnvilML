@@ -214,6 +214,70 @@ def test_clip_text_encode_real_positive_only() -> None:
 
 
 @pytest.mark.real_mode
+def test_clip_text_encode_real_moves_input_ids_to_ctx_device() -> None:
+    """ClipTextEncode.execute() moves tokenized input_ids to ctx.device before forward().
+
+    P900-series retrofit regression test. HuggingFace tokenizers always
+    return CPU tensors regardless of where the model lives —
+    ``return_tensors="pt"`` has no device parameter at all. Before this
+    fix, ``positive_tokens["input_ids"]`` (and the negative-text
+    equivalent) were passed straight to ``clip_encoder.forward()``
+    without ever being moved — harmless on a CPU-only worker (the exact
+    scenario every other test in this file runs under, which is why none
+    of them caught this), but on a real GPU worker this raised "Expected
+    all tensors to be on the same device, but got index is on cpu,
+    different from other tensors on cuda:0" the moment
+    ``nn.Embedding.forward()`` tried to index its GPU-resident weight
+    with a CPU index tensor.
+
+    This test can't exercise a real CUDA mismatch without GPU hardware,
+    so it verifies the fix directly and deterministically instead: mocks
+    the tokenizer to return a ``MagicMock`` in place of the real
+    ``input_ids`` tensor, sets ``ctx.device`` to a distinguishable
+    non-"cpu" string, and asserts that mock's ``.to()`` method was called
+    with exactly that device string — and that ``clip_encoder.forward()``
+    received the *result* of that ``.to()`` call, not the original
+    pre-move mock. Both assertions fail cleanly against the pre-fix code
+    (``.to()`` is never called at all).
+
+    Expected outcome: ``input_ids_mock.to`` is called once with
+    ``"cuda:0"``, and ``clip_encoder.forward`` is called with that call's
+    return value.
+    """
+    from unittest.mock import MagicMock
+
+    from worker.nodes.base import NodeContext
+    from worker.nodes.encoder import ClipTextEncode
+
+    moved_input_ids = MagicMock(name="moved_input_ids")
+    input_ids_mock = MagicMock(name="input_ids")
+    input_ids_mock.to.return_value = moved_input_ids
+
+    tokenizer_mock = MagicMock(name="tokenizer")
+    tokenizer_mock.return_value = {"input_ids": input_ids_mock}
+
+    clip_encoder = MagicMock(name="clip_encoder")
+    clip_encoder.tokenizer = tokenizer_mock
+    clip_encoder.forward.return_value = MagicMock(name="embeds")
+
+    node = ClipTextEncode()
+    ctx = NodeContext(
+        job_id="test-job",
+        device="cuda:0",
+        caps={"bf16": True, "fp8": False},
+        cancel_flag=threading.Event(),
+        emit=lambda e: None,
+        pipeline_cache={},
+        mock=False,
+    )
+
+    node.execute(ctx, clip=clip_encoder, positive_text="a red fox")
+
+    input_ids_mock.to.assert_called_once_with("cuda:0")
+    clip_encoder.forward.assert_called_once_with(moved_input_ids)
+
+
+@pytest.mark.real_mode
 def test_clip_text_encode_real_with_negative() -> None:
     """Real-mode ClipTextEncode with both positive and negative text produces both embeds.
 
