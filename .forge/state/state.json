@@ -234,16 +234,17 @@
     "P25-C1",
     "P25-C2",
     "P25-D1",
-    "P25-E1"
+    "P25-E1",
+    "P25-F1"
   ],
-  "in_progress": "P25-F1",
+  "in_progress": "P26-A1",
   "plan_approved": true,
   "current_plan": "",
   "failed": [],
   "needs_review": [],
-  "last_updated": "2026-07-23T15:08:53+0200",
-  "plan_approval_message_id": "1529831319918350509",
+  "last_updated": "2026-07-23T18:57:51+0200",
+  "plan_approval_message_id": "1529895059930222834",
   "push_approval_message_id": null,
-  "plan_report_message_id": "1529831318127382579",
+  "plan_report_message_id": "1529895057619157122",
   "impl_report_message_id": null
 }
