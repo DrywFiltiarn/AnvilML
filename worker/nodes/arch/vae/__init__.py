@@ -17,10 +17,11 @@ from __future__ import annotations
 from types import ModuleType
 from typing import Any
 
-from worker.nodes.arch.vae import zit_vae
+from worker.nodes.arch.vae import zit_vae, flux2_vae
 
 _REGISTERED_MODULES: list[ModuleType] = []
 _REGISTERED_MODULES.append(zit_vae)
+_REGISTERED_MODULES.append(flux2_vae)
 
 
 def get_module(key: Any) -> ModuleType | None:

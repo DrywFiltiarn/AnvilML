@@ -9088,3 +9088,245 @@ the P901 section above.
 **Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_flux2klein.py::test_collection_safety_sample_import -v -m "not real_mode"` exits 0.
 
 ---
+
+---
+
+## test_infer_hyperparams_regular_fixture (worker)
+
+**File:** `worker/tests/test_arch_vae_flux2.py`
+**Context:** Verifies `_infer_hyperparams()` correctly parses the Flux 2 VAE fixture header and returns accurate hyperparameters.
+**Tests:** Calls `_infer_hyperparams()` against `flux2_vae_tiny.safetensors` and asserts encoder_channels=8, decoder_channels=6, latent_channels=4, arch="flux2", native_dtype="fp32".
+**Mode:** mock
+**Inputs:** `flux2_vae_tiny.safetensors` fixture path.
+**Expected output:** Dict with correct channel counts, arch="flux2", native_dtype="fp32".
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_flux2.py::test_infer_hyperparams_regular_fixture -v` exits 0.
+
+---
+
+## test_infer_hyperparams_no_metadata_fixture (worker)
+
+**File:** `worker/tests/test_arch_vae_flux2.py`
+**Context:** Verifies the metadata-fallback path in `_infer_hyperparams()` correctly infers arch="flux2" from xyz_ prefixed key patterns.
+**Tests:** Calls `_infer_hyperparams()` against `flux2_vae_tiny_no_metadata.safetensors` and asserts arch="flux2" and correct channel counts.
+**Mode:** mock
+**Inputs:** `flux2_vae_tiny_no_metadata.safetensors` fixture path.
+**Expected output:** Dict with arch="flux2", encoder_channels=8, decoder_channels=4, latent_channels=4.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_flux2.py::test_infer_hyperparams_no_metadata_fixture -v` exits 0.
+
+---
+
+## test_infer_hyperparams_nonexistent_path_raises (worker)
+
+**File:** `worker/tests/test_arch_vae_flux2.py`
+**Context:** Verifies `_infer_hyperparams()` raises ValueError for a non-existent file path.
+**Tests:** Calls `_infer_hyperparams()` with a nonexistent path and asserts ValueError is raised.
+**Mode:** mock
+**Inputs:** Nonexistent file path string.
+**Expected output:** ValueError raised.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_flux2.py::test_infer_hyperparams_nonexistent_path_raises -v` exits 0.
+
+---
+
+## test_infer_hyperparams_truncated_header_raises (worker)
+
+**File:** `worker/tests/test_arch_vae_flux2.py`
+**Context:** Verifies `_infer_hyperparams()` raises ValueError for a corrupted/truncated safetensors file.
+**Tests:** Writes invalid binary data to a temp file and asserts ValueError is raised.
+**Mode:** mock
+**Inputs:** Temp file with 8 random bytes (not a valid safetensors header).
+**Expected output:** ValueError raised.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_flux2.py::test_infer_hyperparams_truncated_header_raises -v` exits 0.
+
+---
+
+## test_arch_constant (worker)
+
+**File:** `worker/tests/test_arch_vae_flux2.py`
+**Context:** Verifies the ARCH constant equals "flux2".
+**Tests:** Imports ARCH from flux2_vae and asserts it equals "flux2".
+**Mode:** mock
+**Inputs:** None.
+**Expected output:** ARCH == "flux2".
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_flux2.py::test_arch_constant -v` exits 0.
+
+---
+
+## test_can_handle_matches_flux2_key (worker)
+
+**File:** `worker/tests/test_arch_vae_flux2.py`
+**Context:** Verifies can_handle("flux2") returns True.
+**Tests:** Imports can_handle and calls it with "flux2".
+**Mode:** mock
+**Inputs:** Key string "flux2".
+**Expected output:** True.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_flux2.py::test_can_handle_matches_flux2_key -v` exits 0.
+
+---
+
+## test_can_handle_rejects_zit_vae_key (worker)
+
+**File:** `worker/tests/test_arch_vae_flux2.py`
+**Context:** Verifies can_handle("zit_vae") returns False (disambiguation from zit_vae module).
+**Tests:** Calls can_handle("zit_vae") and asserts False.
+**Mode:** mock
+**Inputs:** Key string "zit_vae".
+**Expected output:** False.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_flux2.py::test_can_handle_rejects_zit_vae_key -v` exits 0.
+
+---
+
+## test_get_module_returns_flux2_vae_for_matching_key (worker)
+
+**File:** `worker/tests/test_arch_vae_flux2.py`
+**Context:** Verifies the VAE dispatcher correctly routes "flux2" to the flux2_vae module.
+**Tests:** Calls get_module("flux2") from the dispatcher and asserts the returned module's __name__ is "worker.nodes.arch.vae.flux2_vae".
+**Mode:** mock
+**Inputs:** Key string "flux2".
+**Expected output:** Module with __name__ == "worker.nodes.arch.vae.flux2_vae".
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_flux2.py::test_get_module_returns_flux2_vae_for_matching_key -v` exits 0.
+
+---
+
+## test_load_meta_construction_succeeds (worker)
+
+**File:** `worker/tests/test_arch_vae_flux2.py`
+**Context:** Verifies the full load() pipeline (meta construction → materialization → weight loading) completes successfully.
+**Tests:** Calls load() against the regular fixture with bf16 caps and asserts the model is a Flux2VaeModel with bf16 params on cpu and .arch="flux2".
+**Mode:** real
+**Inputs:** `flux2_vae_tiny.safetensors`, caps with bf16=True.
+**Expected output:** Flux2VaeModel with bf16 params on cpu, .arch="flux2".
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_flux2.py::test_load_meta_construction_succeeds -v -m real_mode` exits 0.
+
+---
+
+## test_load_meta_construction_no_metadata_fixture (worker)
+
+**File:** `worker/tests/test_arch_vae_flux2.py`
+**Context:** Verifies load() succeeds against the no-metadata fixture variant.
+**Tests:** Calls load() against `flux2_vae_tiny_no_metadata.safetensors` and asserts the model loads correctly with .arch set.
+**Mode:** real
+**Inputs:** `flux2_vae_tiny_no_metadata.safetensors`, caps with bf16=True.
+**Expected output:** Flux2VaeModel with .arch="flux2" on cpu.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_flux2.py::test_load_meta_construction_no_metadata_fixture -v -m real_mode` exits 0.
+
+---
+
+## test_load_dtype_fp32_fallback (worker)
+
+**File:** `worker/tests/test_arch_vae_flux2.py`
+**Context:** Verifies the fp32 fallback branch of _select_dtype() is exercised through load().
+**Tests:** Calls load() with all capability flags False and asserts parameters have dtype=float32.
+**Mode:** real
+**Inputs:** `flux2_vae_tiny.safetensors`, caps with all caps False.
+**Expected output:** Flux2VaeModel with fp32 params on cpu.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_flux2.py::test_load_dtype_fp32_fallback -v -m real_mode` exits 0.
+
+---
+
+## test_build_key_remapping_direct_match (worker)
+
+**File:** `worker/tests/test_arch_vae_flux2.py`
+**Context:** Verifies _build_key_remapping() returns identity mapping for keys present in both checkpoint and module.
+**Tests:** Calls _build_key_remapping() with checkpoint keys including mid_block direct match and latents (excluded).
+**Mode:** mock
+**Inputs:** Checkpoint keys list and module keys list.
+**Expected output:** Identity mapping for mid_block keys, latents excluded.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_flux2.py::test_build_key_remapping_direct_match -v` exits 0.
+
+---
+
+## test_build_key_remapping_pattern_match (worker)
+
+**File:** `worker/tests/test_arch_vae_flux2.py`
+**Context:** Verifies _build_key_remapping() correctly converts encoder.blocks.N → encoder.block_N and decoder.blocks.N → decoder.block_N patterns.
+**Tests:** Calls _build_key_remapping() with checkpoint keys using "blocks.N" pattern and module keys using "block_N" pattern.
+**Mode:** mock
+**Inputs:** Checkpoint keys with "blocks.N" pattern, module keys with "block_N" pattern.
+**Expected output:** Correct remapping table mapping all pattern keys.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_flux2.py::test_build_key_remapping_pattern_match -v` exits 0.
+
+---
+
+## test_load_weights_loaded_regular_fixture (worker)
+
+**File:** `worker/tests/test_arch_vae_flux2.py`
+**Context:** Verifies that weights are actually loaded (not just zero-initialized) from the regular fixture.
+**Tests:** Calls load() and asserts at least one parameter has non-zero values, confirming data flowed through the load path.
+**Mode:** real
+**Inputs:** `flux2_vae_tiny.safetensors`, caps with bf16=True.
+**Expected output:** Flux2VaeModel with non-zero parameters, bf16 dtype.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_flux2.py::test_load_weights_loaded_regular_fixture -v -m real_mode` exits 0.
+
+---
+
+## test_load_weights_loaded_no_metadata_fixture (worker)
+
+**File:** `worker/tests/test_arch_vae_flux2.py`
+**Context:** Verifies load() against the no-metadata fixture succeeds with .arch set.
+**Tests:** Calls load() and asserts the model loads correctly even though no weights match (xyz_ keys don't match VAE patterns).
+**Mode:** real
+**Inputs:** `flux2_vae_tiny_no_metadata.safetensors`, caps with bf16=True.
+**Expected output:** Flux2VaeModel with .arch="flux2" on cpu.
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_flux2.py::test_load_weights_loaded_no_metadata_fixture -v -m real_mode` exits 0.
+
+---
+
+## test_load_arch_attribute_set (worker)
+
+**File:** `worker/tests/test_arch_vae_flux2.py`
+**Context:** Verifies the .arch attribute is correctly set to "flux2" after load().
+**Tests:** Calls load() and asserts model.arch == "flux2".
+**Mode:** real
+**Inputs:** `flux2_vae_tiny.safetensors`, caps with bf16=True.
+**Expected output:** model.arch == "flux2".
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_flux2.py::test_load_arch_attribute_set -v -m real_mode` exits 0.
+
+---
+
+## test_load_mock_returns_sentinel (worker)
+
+**File:** `worker/tests/test_arch_vae_flux2.py`
+**Context:** Verifies the remapping + load_state_dict code path executes without error when load_file returns sentinel tensors.
+**Tests:** Patches load_file to return sentinel tensors (ones) with correct shapes, calls load(), asserts model is valid.
+**Mode:** real
+**Inputs:** Patched load_file returning sentinel tensors, `flux2_vae_tiny.safetensors` path.
+**Expected output:** Flux2VaeModel with parameters on cpu, .arch="flux2".
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_flux2.py::test_load_mock_returns_sentinel -v -m real_mode` exits 0.
+
+---
+
+## test_load_real_flux2_vae_fixture (worker)
+
+**File:** `worker/tests/test_arch_vae_flux2.py`
+**Context:** End-to-end acceptance test for the full Flux 2 VAE loading contract.
+**Tests:** Calls load() against the regular fixture and verifies all steps: model type, device, dtype, non-zero weights, .arch.
+**Mode:** real
+**Inputs:** `flux2_vae_tiny.safetensors`, caps with bf16=True.
+**Expected output:** Flux2VaeModel with bf16 params, non-zero weights, .arch="flux2".
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_flux2.py::test_load_real_flux2_vae_fixture -v -m real_mode` exits 0.
+
+---
+
+## test_decode_real_flux2_vae_fixture (worker)
+
+**File:** `worker/tests/test_arch_vae_flux2.py`
+**Context:** Verifies decode() produces valid PIL Images from a loaded Flux 2 VAE model.
+**Tests:** Loads a model, creates a (1,4,8,8) latent, calls decode(), asserts result is 1 RGB PIL Image of size (8,8).
+**Mode:** real
+**Inputs:** `flux2_vae_tiny.safetensors`, caps with bf16=True, latent (1,4,8,8).
+**Expected output:** List of 1 PIL Image, mode="RGB", size=(8,8).
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_flux2.py::test_decode_real_flux2_vae_fixture -v -m real_mode` exits 0.
+
+---
+
+## test_decode_mock_returns_sentinel (worker)
+
+**File:** `worker/tests/test_arch_vae_flux2.py`
+**Context:** Verifies decode() post-processing path (clamp, convert, NCHW→HWC, PIL creation) works with a patched forward.
+**Tests:** Patches Flux2VaeModel.forward to return a sentinel tensor, calls decode(), asserts PIL Image output.
+**Mode:** real
+**Inputs:** Patched forward returning (1,16,8,8) tensor, latent (1,4,8,8).
+**Expected output:** List of 1 PIL Image, mode="RGB".
+**Acceptance:** `worker/.venv/bin/python -m pytest worker/tests/test_arch_vae_flux2.py::test_decode_mock_returns_sentinel -v -m real_mode` exits 0.
+
+---
