@@ -15,17 +15,17 @@ venv_path = "./worker/.venv"
 model_scan_depth = 2
 max_ipc_payload_mib = 256
 
-# [[model_dirs]]
-# path = "./models/diffusion"
-# recursive = false
-#
-# [[model_dirs]]
-# path = "./models/text_encoders"
-# recursive = false
-#
-# [[model_dirs]]
-# path = "./models/vae"
-# recursive = false
+[[model_dirs]]
+path = "./models/diffusion"
+recursive = false
+
+[[model_dirs]]
+path = "./models/text_encoders"
+recursive = false
+
+[[model_dirs]]
+path = "./models/vae"
+recursive = false
 
 [gpu_selection]
 default_device = "auto"
