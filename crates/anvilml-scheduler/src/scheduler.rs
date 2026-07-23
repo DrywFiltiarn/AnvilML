@@ -1000,9 +1000,10 @@ impl JobScheduler {
                     // Parse worker_id as u32 to look up the device.
                     // worker_id is the bare device index as a string (e.g. "0").
                     if let Ok(device_index) = handle.worker_id.parse::<u32>()
-                        && let Some(vram) = self.vram_free_mib_for(workers, device_index).await {
-                            ranked.push((idx, vram));
-                        }
+                        && let Some(vram) = self.vram_free_mib_for(workers, device_index).await
+                    {
+                        ranked.push((idx, vram));
+                    }
                 }
 
                 // Sort descending by vram_free_mib and pick the top.
