@@ -263,12 +263,26 @@ async fn main() {
     ));
 
     let job_store = JobStore::new(pool.clone());
-    let scheduler = Arc::new(JobScheduler::new(
+    // Scheduler is constructed as a plain (not-yet-Arc'd) value so
+    // set_hardware() can still take &mut self — once wrapped in Arc below,
+    // the scheduler is shared and no longer mutably accessible.
+    // set_hardware() wires in the same Arc<RwLock<HardwareInfo>> instance
+    // `hardware` already holds (constructed earlier in this function) —
+    // the live snapshot event_loop.rs's apply_ready_capabilities() keeps
+    // updated with real, Ready-event-probed VRAM, so dispatch_one()'s
+    // worker selection reads real VRAM instead of WorkerPool's own
+    // frozen-at-spawn-time device list. See JobScheduler::set_hardware()'s
+    // and the `hardware` field's doc comments
+    // (crates/anvilml-scheduler/src/scheduler.rs) for the full P900-series
+    // retrofit rationale.
+    let mut scheduler = JobScheduler::new(
         job_store,
         Arc::clone(&node_registry),
         Arc::clone(&artifact_store),
         Arc::clone(&workers).transport().clone(),
-    ));
+    );
+    scheduler.set_hardware(Arc::clone(&hardware));
+    let scheduler = Arc::new(scheduler);
 
     // Keep the dispatch loop's JoinHandle (not discarded via `_`) — the
     // graceful shutdown sequence below needs to abort and await it, to

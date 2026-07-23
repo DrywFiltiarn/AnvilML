@@ -24,12 +24,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anvilml_artifacts::ArtifactStore;
 use anvilml_core::types::worker::WorkerStatus;
-use anvilml_core::{AnvilError, Job, JobSettings, JobStatus, NodeTypeRegistry};
+use anvilml_core::{AnvilError, HardwareInfo, Job, JobSettings, JobStatus, NodeTypeRegistry};
 use anvilml_ipc::{RouterTransport, WorkerMessage};
 use anvilml_registry::JobStore;
 use chrono::Utc;
 use serde_json::Value;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, RwLock};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -158,6 +158,33 @@ pub struct JobScheduler {
     /// entire pool.
     #[allow(dead_code)] // Used by cancel() for Running jobs (P17-A2).
     transport: Arc<RouterTransport>,
+
+    /// The live, continuously-updated hardware snapshot — the same
+    /// `Arc<RwLock<HardwareInfo>>` instance `AppState.hardware` holds and
+    /// `event_loop.rs`'s `apply_ready_capabilities()` writes real
+    /// `vram_total_mib`/`vram_free_mib` into on every `Ready` event.
+    ///
+    /// P900-series retrofit. `dispatch_one()`'s VRAM-ranking selection
+    /// previously read `workers.devices()` — `WorkerPool`'s own `devices`
+    /// field, a *separate* `Vec<GpuDevice>` cloned once at
+    /// `spawn_all_impl()` time from the pre-`Ready` detection snapshot and
+    /// never updated afterward. That meant every device's `vram_free_mib`
+    /// stayed at its startup placeholder (`0`) for dispatch purposes even
+    /// after `apply_ready_capabilities()` started correctly updating
+    /// `AppState.hardware` — `GET /v1/system` and the scheduler's own
+    /// worker-selection logic were reading two different, disconnected
+    /// copies of the same data, only one of which was ever refreshed.
+    ///
+    /// `Option` rather than a required constructor argument: adding a
+    /// required `JobScheduler::new()` parameter would have forced updating
+    /// every one of its ~13 call sites across `anvilml-scheduler` and
+    /// `anvilml-server`'s test suites, none of which exercise this VRAM
+    /// path. `None` (the default — see `new()`) preserves the exact prior
+    /// behavior (fall back to `workers.devices()`); `set_hardware()` opts a
+    /// running scheduler in, called once from `backend/src/main.rs` after
+    /// construction, before the scheduler is wrapped in `Arc` for
+    /// `start_dispatch_loop()`.
+    hardware: Option<Arc<RwLock<HardwareInfo>>>,
 }
 
 impl JobScheduler {
@@ -192,7 +219,27 @@ impl JobScheduler {
             dispatch_wake_count: Arc::new(AtomicUsize::new(0)),
             artifact_store,
             transport,
+            hardware: None,
         }
+    }
+
+    /// Opt this scheduler into live-VRAM-aware dispatch selection.
+    ///
+    /// Stores the same `Arc<RwLock<HardwareInfo>>` instance `AppState`
+    /// holds and `event_loop.rs`'s `apply_ready_capabilities()` keeps
+    /// updated with each worker's real, `Ready`-event-probed VRAM —
+    /// `dispatch_one()` reads it (falling back to `workers.devices()`'s
+    /// stale, spawn-time snapshot when this is unset) instead of the
+    /// disconnected copy `WorkerPool` never refreshes after startup. See
+    /// this struct's `hardware` field doc comment for the full rationale.
+    ///
+    /// Call once, after `new()` and before wrapping the scheduler in `Arc`
+    /// for `start_dispatch_loop()` — `backend/src/main.rs` is the only
+    /// production caller. Not part of `new()`'s own parameter list
+    /// specifically to avoid touching every existing call site (see the
+    /// `hardware` field's doc comment).
+    pub fn set_hardware(&mut self, hardware: Arc<RwLock<HardwareInfo>>) {
+        self.hardware = Some(hardware);
     }
 
     /// Submit a job graph for execution.
@@ -812,6 +859,67 @@ impl JobScheduler {
     ///   IPC send failed; the job remains queued and the worker is `Idle`
     ///   again. This is unrelated to idle-worker availability, so the caller
     ///   must keep attempting subsequent jobs in the same wake cycle.
+    ///
+    /// Look up a device's current `vram_free_mib`, preferring the live
+    /// hardware snapshot over `WorkerPool`'s stale one.
+    ///
+    /// P900-series retrofit. If `self.hardware` is set (via
+    /// `set_hardware()` — `backend/src/main.rs` does this at startup),
+    /// reads `vram_free_mib` from that live snapshot, which
+    /// `event_loop.rs`'s `apply_ready_capabilities()` keeps updated with
+    /// each worker's real, `Ready`-event-probed VRAM. Falls back to
+    /// `workers.devices()` — `WorkerPool`'s own device list, cloned once
+    /// at spawn time and never updated afterward — when `self.hardware`
+    /// is unset (e.g. most existing tests, which construct a
+    /// `JobScheduler` via `new()` alone and never call `set_hardware()`).
+    ///
+    /// Before this retrofit, `dispatch_one()` read `workers.devices()`
+    /// unconditionally, meaning every device's `vram_free_mib` stayed at
+    /// its startup placeholder (`0`) for dispatch/reservation purposes
+    /// even once `apply_ready_capabilities()` started correctly updating
+    /// the live snapshot — `GET /v1/system` and the scheduler's own
+    /// worker-selection logic were silently reading two different,
+    /// disconnected copies of the same conceptual data. With every
+    /// device tied at `0`, `Iterator::max_by_key`'s last-element-wins tie
+    /// break combined with `detect_all_devices()` always appending the
+    /// CPU device last meant CPU was selected over any GPU on every
+    /// dispatch, regardless of actual VRAM.
+    ///
+    /// Args:
+    ///     workers: The worker pool, used for the fallback lookup.
+    ///     device_index: The device's `GpuDevice.index` (and the parsed
+    ///         `WorkerHandle.worker_id`, by this project's index-as-string
+    ///         convention).
+    ///
+    /// Returns:
+    ///     `Some(vram_free_mib)` if the device was found in whichever
+    ///     source was consulted, `None` if neither the live snapshot
+    ///     (when set) nor `workers.devices()` (as a last-resort fallback,
+    ///     even with `self.hardware` set — see below) has an entry for
+    ///     it.
+    async fn vram_free_mib_for(
+        &self,
+        workers: &anvilml_worker::WorkerPool,
+        device_index: u32,
+    ) -> Option<u32> {
+        if let Some(hardware) = &self.hardware {
+            let hw = hardware.read().await;
+            if let Some(gpu) = hw.gpus.iter().find(|g| g.index == device_index) {
+                return Some(gpu.vram_free_mib);
+            }
+            // Live snapshot is set but has no entry for this device_index
+            // (shouldn't happen given the index-as-worker_id convention,
+            // but fall through to the stale snapshot rather than treating
+            // this as "no VRAM data at all" — a worker that legitimately
+            // exists in workers.devices() should still be rankable).
+        }
+
+        workers
+            .devices()
+            .get(device_index as usize)
+            .map(|d| d.vram_free_mib)
+    }
+
     #[tracing::instrument(skip(self, job, workers), fields(job_id = %job.id))]
     async fn dispatch_one(
         &self,
@@ -872,22 +980,29 @@ impl JobScheduler {
             }
             None => {
                 // No device preference match — rank by VRAM.
-                // Build a list of (worker_index, vram_free_mib) pairs from
-                // workers.devices(). The device at index i corresponds to
-                // handles()[i], so we match by index.
-                let devices = workers.devices();
+                // Build a list of (worker_index, vram_free_mib) pairs.
+                //
+                // P900-series retrofit: vram_free_mib now comes from
+                // self.vram_free_mib_for(), which prefers the live
+                // self.hardware snapshot (kept current by
+                // event_loop.rs's apply_ready_capabilities() on every
+                // Ready event) over workers.devices() — WorkerPool's own
+                // device list, cloned once at spawn time and never
+                // updated afterward, which previously left every
+                // device's vram_free_mib frozen at its startup
+                // placeholder (0) for dispatch purposes even after
+                // /v1/system started reporting real values. See
+                // vram_free_mib_for()'s own doc comment and the
+                // `hardware` field's doc comment for the full history.
                 let mut ranked: Vec<(usize, u32)> = Vec::with_capacity(idle_workers.len());
 
                 for (idx, handle) in idle_workers.iter().enumerate() {
                     // Parse worker_id as u32 to look up the device.
                     // worker_id is the bare device index as a string (e.g. "0").
-                    if let Ok(device_index) = handle.worker_id.parse::<u32>() {
-                        // Find the device in the pool's device list by index.
-                        // devices()[i].index == i, so we can index directly.
-                        if device_index < devices.len() as u32 {
-                            ranked.push((idx, devices[device_index as usize].vram_free_mib));
+                    if let Ok(device_index) = handle.worker_id.parse::<u32>()
+                        && let Some(vram) = self.vram_free_mib_for(workers, device_index).await {
+                            ranked.push((idx, vram));
                         }
-                    }
                 }
 
                 // Sort descending by vram_free_mib and pick the top.
@@ -949,10 +1064,15 @@ impl JobScheduler {
         // based on model metadata. The ledger is advisory, so over-
         // reservation is recoverable via release() on job completion.
         // Compute the reservation amount before acquiring the lock.
-        let vram_to_reserve = workers
-            .devices()
-            .get(device_index as usize)
-            .map(|d| d.vram_free_mib)
+        //
+        // Same self.vram_free_mib_for() lookup as the ranking step above,
+        // for the same reason (P900-series retrofit) — using
+        // workers.devices() here would reserve against the stale,
+        // never-refreshed snapshot even after the ranking step itself was
+        // fixed to use live data.
+        let vram_to_reserve = self
+            .vram_free_mib_for(workers, device_index)
+            .await
             .unwrap_or(0);
         {
             let mut ledger = self.ledger.lock().await;

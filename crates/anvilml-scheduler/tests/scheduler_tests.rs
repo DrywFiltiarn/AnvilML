@@ -1546,6 +1546,139 @@ async fn test_busy_worker_excluded_from_ranking() {
     );
 }
 
+/// Test that `set_hardware()` makes dispatch selection use the live
+/// `HardwareInfo` snapshot's VRAM instead of `WorkerPool.devices()`'s
+/// stale, spawn-time-only snapshot.
+///
+/// P900-series retrofit regression test. Before this fix,
+/// `dispatch_one()` read `workers.devices()` unconditionally —
+/// `WorkerPool`'s own `devices` field, cloned once at
+/// `spawn_all_impl()` time and never updated afterward, even though
+/// `event_loop.rs`'s `apply_ready_capabilities()` correctly keeps
+/// `AppState.hardware` (the `Arc<RwLock<HardwareInfo>>` `GET /v1/system`
+/// serves) up to date with each worker's real, `Ready`-event-probed
+/// VRAM. The two were silently disconnected copies of conceptually the
+/// same data.
+///
+/// This test constructs two idle workers whose `WorkerPool.devices()`
+/// VRAM values are the *opposite* ranking from what `set_hardware()`'s
+/// live snapshot reports — worker "0" has the higher stale/pool value,
+/// worker "1" has the higher live/hardware value — specifically so the
+/// two data sources disagree and the test can distinguish "reads the
+/// live snapshot" from "reads the stale pool snapshot" unambiguously,
+/// rather than a same-values case where either source would produce the
+/// same (and therefore inconclusive) answer.
+///
+/// Expected outcome: dispatch selects worker "1" — the live snapshot's
+/// higher-VRAM device — proving `dispatch_one()` consults
+/// `self.hardware` (set via `set_hardware()`) rather than
+/// `workers.devices()`.
+#[tokio::test]
+async fn test_dispatch_prefers_live_hardware_over_stale_pool_devices() {
+    use anvilml_core::GpuDevice;
+    use tokio::sync::{Mutex, RwLock};
+    use tokio::task::JoinHandle;
+
+    let store = create_job_store().await;
+    let registry = make_registry();
+
+    let make_handle = |worker_id: &str, status: anvilml_core::types::worker::WorkerStatus| {
+        let status = Arc::new(RwLock::new(status));
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel();
+        let (force_shutdown_tx, _force_shutdown_rx) = tokio::sync::oneshot::channel();
+        let join_handle: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>> =
+            Arc::new(Mutex::new(None));
+        let handle = anvilml_worker::WorkerHandle::new(
+            worker_id.into(),
+            Arc::clone(&status),
+            Some(shutdown_tx),
+            Some(force_shutdown_tx),
+            join_handle,
+        );
+        (handle, status)
+    };
+
+    let (handle_0, _status_0) = make_handle("0", anvilml_core::types::worker::WorkerStatus::Idle);
+    let (handle_1, _status_1) = make_handle("1", anvilml_core::types::worker::WorkerStatus::Idle);
+
+    let make_device = |index: u32, vram_free_mib: u32| GpuDevice {
+        index,
+        name: format!("Mock GPU {index}"),
+        device_type: anvilml_core::DeviceType::Cuda,
+        vram_total_mib: 24576,
+        vram_free_mib,
+        driver_version: "550.54".into(),
+        pci_vendor_id: 0x10de,
+        pci_device_id: 0x2204,
+        arch: Some("Ada Lovelace".into()),
+        caps: anvilml_core::InferenceCaps::default(),
+        enumeration_source: anvilml_core::types::hardware::EnumerationSource::Mock,
+        capabilities_source: anvilml_core::types::hardware::CapabilitySource::DeviceTable,
+    };
+
+    // WorkerPool.devices() (the stale snapshot): worker "0" has the
+    // HIGHER value here — if dispatch_one() were still reading this
+    // source, worker "0" would win.
+    let pool_device_0 = make_device(0, 20480); // stale: high
+    let pool_device_1 = make_device(1, 8192); // stale: low
+
+    let mut pool = Arc::new(
+        anvilml_worker::WorkerPool::new()
+            .await
+            .expect("empty pool must construct"),
+    );
+    if let Some(p) = Arc::get_mut(&mut pool) {
+        p.set_up_test_workers(vec![(handle_0, pool_device_0), (handle_1, pool_device_1)]);
+    }
+
+    // The live hardware snapshot (set_hardware()): worker "1" has the
+    // HIGHER value here — the opposite ranking from the stale pool
+    // snapshot above. This is the value that must win.
+    let hardware_device_0 = make_device(0, 4096); // live: low
+    let hardware_device_1 = make_device(1, 22000); // live: high
+    let hardware = Arc::new(RwLock::new(anvilml_core::HardwareInfo {
+        host: anvilml_core::HostInfo {
+            hostname: "test-host".to_string(),
+            os: "linux".to_string(),
+        },
+        gpus: vec![hardware_device_0, hardware_device_1],
+        inference_caps: anvilml_core::InferenceCaps::default(),
+    }));
+
+    let mut scheduler = JobScheduler::new(
+        store,
+        registry,
+        create_test_artifact_store().await,
+        Arc::clone(&pool).transport().clone(),
+    );
+    scheduler.set_hardware(Arc::clone(&hardware));
+
+    let (job_id, _queue_position) = scheduler
+        .submit(
+            make_valid_graph(),
+            JobSettings {
+                device_preference: None,
+            },
+        )
+        .await
+        .expect("submit must succeed");
+    let job = scheduler
+        .get_job(job_id)
+        .await
+        .expect("get_job must not error")
+        .expect("job must exist");
+
+    let (_outcome, selected) = scheduler.dispatch_one_selection_test(&job, &pool).await;
+
+    assert_eq!(
+        selected.as_deref(),
+        Some("1"),
+        "dispatch must select worker \"1\" — the higher-VRAM device per the \
+         live hardware snapshot set via set_hardware() — not worker \"0\", \
+         which only wins under the stale WorkerPool.devices() snapshot"
+    );
+}
+
 /// Test that worker status is reverted to Idle after a send failure.
 ///
 /// Constructs a single idle mock worker, dispatches a job, and verifies
