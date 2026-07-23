@@ -426,17 +426,33 @@ def compute_latent_shape(
 ) -> tuple[int, int, int, int]:
     """Compute the latent tensor shape for a given input resolution.
 
-    Uses Flux 2 Klein's patch-packing formula: latent_height = ceil(width /
-    patch_size), latent_width = ceil(height / patch_size). Returns
-    (batch_size, latent_channels, latent_height, latent_width).
+    Returns (batch_size, latent_channels, width, height) — note the
+    width/height axis order matches this project's established convention
+    (the same order zit.py's compute_latent_shape() uses; see that
+    function's docstring), not a height-then-width image convention.
 
-    Non-multiple-of-patch-size dimensions are rounded up via ceiling division
-    so the latent grid fully covers the input — any partial patch at the edge
-    still needs a full column/row of latent tokens.
+    P900-series retrofit: this function previously divided width/height by
+    MODEL_PATCH_SIZE (derived from the fixture's arbitrary "latents"
+    marker-tensor size, not any real compression ratio), on the mistaken
+    assumption that the VAE spatially compresses images the way a real
+    Stable-Diffusion-style VAE does. Neither zit_vae.py nor flux2_vae.py
+    actually do this — both decoders are stride-1, same-padding convolution
+    stacks with zero spatial resizing anywhere in their architecture
+    (confirmed by inspection: no Upsample/ConvTranspose/strided layer in
+    either module). Dividing by patch_size here produced a latent smaller
+    than requested, and since the VAE never compensates by upsampling, the
+    final decoded image came out at that smaller size instead of the
+    requested width/height (e.g. a 64x64 request produced an 8x8 PNG when
+    MODEL_PATCH_SIZE happened to be 8).
 
-    The formula uses the module-level constants MODEL_PATCH_SIZE and
-    MODEL_LATENT_CHANNELS, which are set to the checkpoint's actual values
-    when load() is called. Before load(), the defaults (8, 4) apply.
+    The model itself still has an internal fixed processing resolution
+    (MODEL_PATCH_SIZE x MODEL_PATCH_SIZE, driven by input_proj's fixed
+    in_features) — Flux2KleinModel.forward() now handles that internally
+    via a resize-in/resize-out step (mirroring zit.py's ZiTModel.forward(),
+    which already does this), so this function no longer needs to know
+    about patch_size at all: it always returns the full requested
+    resolution, and forward() transparently downsamples-then-upsamples
+    around its fixed internal capacity.
 
     Args:
         width: Input image width in pixels.
@@ -444,18 +460,12 @@ def compute_latent_shape(
         batch_size: Number of samples in the batch. Defaults to 1.
 
     Returns:
-        A 4-tuple (batch_size, latent_channels, latent_height, latent_width)
-        representing the shape of the noise latent tensor that EmptyLatent
-        should produce before passing it to the Sampler.
+        A 4-tuple (batch_size, latent_channels, width, height) representing
+        the shape of the noise latent tensor that EmptyLatent should
+        produce before passing it to the Sampler — at the full requested
+        resolution, since the VAE performs no spatial compression.
     """
-    # Ceiling division: (x + patch_size - 1) // patch_size computes ceil(x /
-    # patch_size) using only integer arithmetic. This correctly handles exact
-    # multiples (e.g. 64 / 8 = 8), non-multiples (e.g. 65 / 8 = ceil(8.125) = 9),
-    # and the edge case width=0 (returns 0).
-    latent_height = (width + MODEL_PATCH_SIZE - 1) // MODEL_PATCH_SIZE
-    latent_width = (height + MODEL_PATCH_SIZE - 1) // MODEL_PATCH_SIZE
-
-    return (batch_size, MODEL_LATENT_CHANNELS, latent_height, latent_width)
+    return (batch_size, MODEL_LATENT_CHANNELS, width, height)
 
 
 def can_handle(key: str) -> bool:
@@ -636,6 +646,21 @@ class Flux2KleinModel(_ModuleBase):
         for img_norm1 and (scale2, shift2, gate2) for img_norm2. These
         parameters are applied as ``norm(x * scale + shift) * gate``.
 
+        P900-series retrofit: ``input_proj`` is a plain ``nn.Linear`` that
+        flattens the *entire* latent (channels and spatial dims together)
+        into one vector, so it only ever accepts one fixed total input
+        size — whatever ``patch_size x patch_size`` the checkpoint was
+        built with. Any latent at a different spatial resolution is
+        bilinear-resized down to that fixed size before ``input_proj``,
+        processed, then resized back up to the original requested
+        resolution before returning — the exact same trick
+        ``zit.py``'s ``ZiTModel.forward()`` already uses (this model never
+        had it; see ``compute_latent_shape()``'s docstring for the other
+        half of why a 64x64 request previously produced an 8x8 image).
+        When the input already matches the fixed size (as in every
+        existing unit test that constructs an 8x8 latent directly), both
+        resize calls are no-ops.
+
         Args:
             x: The input latent tensor of shape
                 ``(batch, latent_channels, latent_height, latent_width)``.
@@ -653,6 +678,28 @@ class Flux2KleinModel(_ModuleBase):
         # 1. Project latent into hidden dimension.
         # ------------------------------------------------------------------
         batch = x.shape[0]
+        orig_height = x.shape[2]
+        orig_width = x.shape[3]
+
+        # Derive the expected spatial dimensions from the model's fixed
+        # input_proj capacity. latent_dim = latent_channels * patch_size^2,
+        # so expected_spatial = latent_dim / latent_channels = patch_size^2.
+        # If the input tensor has different spatial dimensions, resize it
+        # to match before the flatten+Linear projection — matches zit.py's
+        # ZiTModel.forward() convention exactly.
+        latent_channels = x.shape[1]
+        expected_spatial = self.input_proj.in_features // latent_channels
+        expected_height = int(expected_spatial**0.5)
+        expected_width = expected_height
+
+        if x.shape[2] != expected_height or x.shape[3] != expected_width:
+            x = torch.nn.functional.interpolate(
+                x,
+                size=(expected_height, expected_width),
+                mode="bilinear",
+                align_corners=False,
+            )
+
         x_flat = x.reshape(batch, -1)  # (batch, latent_dim)
         h = self.input_proj(x_flat)  # (batch, hidden_dim)
 
@@ -694,13 +741,26 @@ class Flux2KleinModel(_ModuleBase):
         # The full adaLN modulation is deferred to P25-D1.
         out = self.final_layer["linear"](h)
 
-        # Reshape back to (batch, latent_channels, latent_height, latent_width).
+        # Reshape back to (batch, latent_channels, resized_height, resized_width) —
+        # the (possibly downsized) resolution actually processed above.
         latent_channels = x.shape[1]
         resized_height = x.shape[2]
         resized_width = x.shape[3]
         out = out.reshape(
             batch, latent_channels, resized_height, resized_width
         )
+
+        # Resize back up to the originally-requested resolution if the
+        # input was downsized in step 1. A no-op when orig == expected
+        # (every existing unit test that constructs an 8x8 latent directly
+        # takes this path).
+        if out.shape[2] != orig_height or out.shape[3] != orig_width:
+            out = torch.nn.functional.interpolate(
+                out,
+                size=(orig_height, orig_width),
+                mode="bilinear",
+                align_corners=False,
+            )
 
         return out
 
@@ -888,29 +948,41 @@ def _build_key_remapping(
     # load loop. This is correct for the fixture which uses simplified
     # dimensions.
     remapping_patterns: list[tuple[str, str]] = [
-        # Image attention QKV: combined tensor → PyTorch in_proj_weight
-        # NOTE: checkpoint shape (hidden_dim, hidden_dim*3) does NOT match
-        # module shape (3*embed_dim, embed_dim) — tensor is transposed and
-        # will be filtered by the shape check in the load loop.
+        # Image attention QKV: combined tensor → PyTorch in_proj_weight.
+        # Checkpoint shape (hidden_dim, hidden_dim*3) is the transpose of
+        # module shape (3*embed_dim, embed_dim) — the load loop's
+        # transpose-fallback (see load()) handles this, no longer a dead
+        # mapping (P900 retrofit).
         (
             r"double_blocks\.(\d+)\.img_attn\.qkv",
             r"double_blocks.\1.img_attn.in_proj_weight",
         ),
-        # Text attention QKV: combined tensor → PyTorch in_proj_weight
-        # NOTE: checkpoint shape (context_dim, hidden_dim*3) does NOT match
-        # module shape (3*context_dim, context_dim) — tensor is transposed.
+        # Text attention QKV: combined tensor → PyTorch in_proj_weight.
+        # NOTE: checkpoint shape (context_dim=768, hidden_dim*3=384) does
+        # NOT match module shape (3*hidden_dim=384, hidden_dim=128) even
+        # after a transpose ([384,768] vs [384,128]) — txt_attn is
+        # currently constructed with embed_dim=hidden_dim, never given a
+        # distinct context_dim, and is not called anywhere in forward()
+        # (the text/adaLN modulation path is a documented stub — see
+        # Flux2KleinModel.forward()'s docstring). This mapping is kept so
+        # the key is at least *attempted*, but will keep being filtered by
+        # the shape check until a future task gives txt_attn its own
+        # context_dim and wires conditioning into forward(). Flagged, not
+        # silently dropped — see docs/ADDENDUM_P901_flux2klein_txt_attn.md.
         (
             r"double_blocks\.(\d+)\.txt_attn\.qkv",
             r"double_blocks.\1.txt_attn.in_proj_weight",
         ),
-        # Image attention projection: single proj → PyTorch out_proj.weight
+        # Image attention projection: single proj → PyTorch out_proj.weight.
+        # Checkpoint and module shapes both (embed_dim, embed_dim) — square,
+        # already loads without needing the transpose fallback.
         (
             r"double_blocks\.(\d+)\.img_attn\.proj",
             r"double_blocks.\1.img_attn.out_proj.weight",
         ),
-        # Text attention projection: single proj → PyTorch out_proj.weight
-        # NOTE: checkpoint shape (context_dim, hidden_dim) does NOT match
-        # module shape (embed_dim, embed_dim) — different dimensions.
+        # Text attention projection: single proj → PyTorch out_proj.weight.
+        # Same context_dim caveat as txt_attn.qkv above — dead path until
+        # txt_attn is given its own context_dim.
         (
             r"double_blocks\.(\d+)\.txt_attn\.proj",
             r"double_blocks.\1.txt_attn.out_proj.weight",
@@ -920,24 +992,58 @@ def _build_key_remapping(
             r"double_blocks\.(\d+)\.img_attn\.norm",
             r"double_blocks.\1.img_norm1.weight",
         ),
-        # Text attention norm → txt_norm1.weight (LayerNorm weight)
+        # Text attention norm → txt_norm1.weight (LayerNorm weight).
+        # txt_norm1 is defined but not called in forward() — see the
+        # module-level docstring note on the stub modulation path.
         (
             r"double_blocks\.(\d+)\.txt_attn\.norm",
             r"double_blocks.\1.txt_norm1.weight",
         ),
-        # Image MLP up-projection (Sequential index match)
-        # NOTE: checkpoint shape (hidden_dim, hidden_dim*4) does NOT match
-        # module shape (hidden_dim*4, hidden_dim) — tensor is transposed.
+        # Image/text modulation vectors → img_mod.bias / txt_mod.bias.
+        # The checkpoint stores only a 1D [hidden_dim*6] tensor per block
+        # (no separate weight matrix) — its shape matches nn.Linear's
+        # *bias* parameter exactly, not .weight. img_mod/txt_mod are
+        # defined but not called in forward() (stub modulation path).
         (
-            r"double_blocks\.(\d+)\.img_mlp\.(\d+)",
-            r"double_blocks.\1.img_mlp.\2.weight",
+            r"double_blocks\.(\d+)\.img_mod\.lin",
+            r"double_blocks.\1.img_mod.bias",
         ),
-        # Text MLP up-projection (Sequential index match)
-        # NOTE: checkpoint shape (hidden_dim, hidden_dim*4) does NOT match
-        # module shape (hidden_dim*4, hidden_dim) — tensor is transposed.
         (
-            r"double_blocks\.(\d+)\.txt_mlp\.(\d+)",
-            r"double_blocks.\1.txt_mlp.\2.weight",
+            r"double_blocks\.(\d+)\.txt_mod\.lin",
+            r"double_blocks.\1.txt_mod.bias",
+        ),
+        # Single blocks: linear1 / linear2 / norm → their .weight params.
+        # No pattern rule existed for single_blocks.* at all previously —
+        # every single_blocks parameter was unconditionally missing.
+        (
+            r"single_blocks\.(\d+)\.linear1$",
+            r"single_blocks.\1.linear1.weight",
+        ),
+        (
+            r"single_blocks\.(\d+)\.linear2$",
+            r"single_blocks.\1.linear2.weight",
+        ),
+        (
+            r"single_blocks\.(\d+)\.norm$",
+            r"single_blocks.\1.norm.weight",
+        ),
+        # Final layer output projection → final_layer.linear.weight.
+        # No pattern rule existed for this at all previously, despite it
+        # being on forward()'s live execution path — this was the single
+        # highest-impact missing mapping. Checkpoint shape (hidden_dim,
+        # latent_dim) is the transpose of module shape (latent_dim,
+        # hidden_dim); handled by load()'s transpose fallback.
+        (
+            r"final_layer\.linear$",
+            r"final_layer.linear.weight",
+        ),
+        # Final layer adaLN modulation vector → adaLN_modulation.bias.
+        # Same 1D-tensor-matches-bias-not-weight situation as img_mod/
+        # txt_mod above. adaLN_modulation is defined but not called in
+        # forward() (stub modulation path).
+        (
+            r"final_layer\.adaLN_modulation\.\d+$",
+            r"final_layer.adaLN_modulation.bias",
         ),
         # Time/text embedder timestep weight → time_text_emb.weight
         # Matches both ``time_text_embed.timestep_embedder.0.weight``
@@ -947,12 +1053,46 @@ def _build_key_remapping(
             r"time_text_embed\.timestep_embedder(?:\.\d+)?(?:\.weight)?",
             r"time_text_emb.weight",
         ),
-        # Context embedder → context_embedding.weight (no-metadata fallback)
-        (
-            r"time_text_embed\.context_embedder",
-            r"context_embedding.weight",
-        ),
+        # NOTE: the checkpoint's "time_text_embed.context_embedder" tensor
+        # is deliberately left unmapped — Flux2KleinModel never constructs
+        # a corresponding submodule (no self.context_embedding anywhere in
+        # __init__). A prior version of this table mapped it to
+        # "context_embedding.weight", which never existed in
+        # module_key_set and therefore never matched anything; that dead
+        # rule has been removed rather than left in place. Wiring a real
+        # context-embedding stage is part of the same future task that
+        # gives txt_attn its own context_dim (see the txt_attn.qkv note
+        # above).
     ]
+
+    # Image/text MLP: checkpoint uses 2-linear indexing ("img_mlp.0",
+    # "img_mlp.1" for the two real nn.Linear layers), but the module's
+    # nn.Sequential is [Linear, GELU, Linear] — the GELU at index 1 means
+    # the module's second Linear lives at index 2, not 1. A prior version
+    # of this remapping copied the checkpoint index straight through
+    # (checkpoint "img_mlp.1" -> module "img_mlp.1.weight", which is the
+    # GELU — has no weight parameter at all, so the mapping silently
+    # failed the "exists in module" check). This table fixes the
+    # translation: checkpoint index N -> module Sequential index N*2.
+    mlp_pattern = re.compile(r"(double_blocks\.\d+\.(?:img|txt)_mlp)\.(\d+)$")
+
+    def _translate_mlp_key(key: str) -> str | None:
+        """Translate a checkpoint MLP key to its module Sequential index.
+
+        Args:
+            key: A (possibly xyz_-converted) checkpoint key, e.g.
+                ``"double_blocks.0.img_mlp.1"``.
+
+        Returns:
+            The module key with the Sequential index corrected (e.g.
+            ``"double_blocks.0.img_mlp.2.weight"``), or ``None`` if *key*
+            doesn't match the MLP pattern at all.
+        """
+        m = mlp_pattern.match(key)
+        if m is None:
+            return None
+        prefix, ckpt_index = m.group(1), int(m.group(2))
+        return f"{prefix}.{ckpt_index * 2}.weight"
 
     # xyz_ → dot-notation conversion for no-metadata fixtures.
     # Strip the xyz_ prefix, protect compound words (double_blocks, single_blocks,
@@ -960,66 +1100,79 @@ def _build_key_remapping(
     # then replace remaining underscores with dots.
     # e.g. xyz_double_blocks_0_img_attn_norm → double_blocks.0.img_attn.norm
 
+    def _convert_xyz_key(key: str) -> str:
+        """Convert an ``xyz_``-prefixed no-metadata key to dot notation.
+
+        Args:
+            key: A checkpoint key, e.g. ``"xyz_double_blocks_0_img_attn_norm"``.
+
+        Returns:
+            The dot-notation equivalent, or *key* unchanged if it doesn't
+            start with ``"xyz_"``.
+        """
+        if not key.startswith("xyz_"):
+            return key
+        s = key[4:]
+        compound_words = [
+            "time_text_embed", "timestep_embedder",
+            "double_blocks", "single_blocks", "final_layer",
+            "img_attn", "txt_attn", "img_mlp", "txt_mlp",
+            "img_mod", "txt_mod", "adaLN_modulation",
+            "context_embedder",
+        ]
+        placeholder = "\x00"
+        for word in compound_words:
+            s = s.replace(word, word.replace("_", placeholder))
+        s = s.replace("_", ".")
+        for word in compound_words:
+            s = s.replace(placeholder, "_")
+        return s
+
+    def _try_remap(key: str) -> str | None:
+        """Attempt every remapping strategy against a single (converted) key.
+
+        Tries, in order: direct match, the MLP Sequential-index
+        translation, then each generic regex pattern. This is the shared
+        core both the direct checkpoint key and its xyz_-converted form
+        (for no-metadata fixtures) run through.
+
+        Args:
+            key: A checkpoint key already converted out of xyz_ form if
+                applicable (see ``_convert_xyz_key``).
+
+        Returns:
+            The matching module key, or ``None`` if nothing matched.
+        """
+        if key in module_key_set:
+            return key
+
+        mlp_key = _translate_mlp_key(key)
+        if mlp_key is not None and mlp_key in module_key_set:
+            return mlp_key
+
+        for pattern, replacement in remapping_patterns:
+            match = re.match(pattern, key)
+            if match:
+                mod_key = re.sub(pattern, replacement, key)
+                if mod_key in module_key_set:
+                    return mod_key
+        return None
+
     remap: dict[str, str] = {}
 
     for ckpt_key in checkpoint_keys:
-        # Case 1: direct match — the key exists in both checkpoint and module.
-        if ckpt_key in module_key_set:
-            remap[ckpt_key] = ckpt_key
-            continue
-
-        # Case 2: pattern-based remapping — try each Flux 2 Klein remapping rule.
-        for pattern, replacement in remapping_patterns:
-            match = re.match(pattern, ckpt_key)
-            if match:
-                mod_key = re.sub(pattern, replacement, ckpt_key)
-                # Only include the remapped key if it actually exists
-                # in the module's state_dict.
-                if mod_key in module_key_set:
-                    remap[ckpt_key] = mod_key
-                    break
-            # If the pattern doesn't match, silently continue to the next rule.
-
-        # Case 3: xyz_ fallback — convert no-metadata fixture keys to
-        # dot notation, then try the Flux 2 Klein remapping rules again.
-        if ckpt_key not in remap:
-            # Strip xyz_ prefix, protect compound words, replace remaining
-            # underscores with dots. Compound words like double_blocks,
-            # single_blocks, final_layer, time_text_embed, img_attn, etc.
-            # are protected so their internal underscores stay as underscores.
-            converted_key = ckpt_key
-            if converted_key.startswith("xyz_"):
-                s = converted_key[4:]
-                # Protect compound words from underscore replacement
-                compound_words = [
-                    "time_text_embed", "timestep_embedder",
-                    "double_blocks", "single_blocks", "final_layer",
-                    "img_attn", "txt_attn", "img_mlp", "txt_mlp",
-                    "img_mod", "txt_mod", "adaLN_modulation",
-                    "context_embedder",
-                ]
-                placeholder = "\x00"
-                for word in compound_words:
-                    s = s.replace(word, word.replace("_", placeholder))
-                s = s.replace("_", ".")
-                for word in compound_words:
-                    s = s.replace(placeholder, "_")
-                converted_key = s
-            # Now try the Flux 2 Klein remapping patterns on the converted key.
+        mod_key = _try_remap(ckpt_key)
+        if mod_key is None:
+            converted_key = _convert_xyz_key(ckpt_key)
             if converted_key != ckpt_key:
-                for pattern, replacement in remapping_patterns:
-                    match = re.match(pattern, converted_key)
-                    if match:
-                        mod_key = re.sub(pattern, replacement, converted_key)
-                        if mod_key in module_key_set:
-                            remap[ckpt_key] = mod_key
-                            break
-                    # If the pattern doesn't match, silently continue.
+                mod_key = _try_remap(converted_key)
+        if mod_key is not None:
+            remap[ckpt_key] = mod_key
 
     # Keys not in the remapping are silently skipped during load.
-    # This is correct for metadata-only keys (latents) and for keys where
-    # the shape doesn't match the module's parameters (e.g. txt_attn.qkv
-    # has a different shape than the module's in_proj_weight).
+    # This is correct for metadata-only keys (latents) and for keys with
+    # no corresponding module parameter (e.g. txt_attn.* until a future
+    # task gives it its own context_dim — see the notes above).
     return remap
 
 
@@ -1166,17 +1319,35 @@ def load(path: str, caps: dict, device: str = "cpu") -> Flux2KleinModel:
     # measure that prevented the P904 dtype-swap incident.
     #
     # We also filter by shape: assign=True does NOT bypass shape checks.
+    #
+    # P900-series retrofit: the checkpoint stores 2D Linear weights as
+    # (in_features, out_features) — the transpose of PyTorch's own
+    # (out_features, in_features) convention. Every non-square Linear
+    # weight (img_attn.qkv, img_mlp.*, final_layer.linear, etc.) failed
+    # this shape check outright before this fix, even though the
+    # remapped key name was otherwise correct. A 2D tensor whose shape is
+    # the module parameter's shape reversed is transposed before the
+    # comparison; this is a no-op for square weights (embed_dim ==
+    # embed_dim cases like img_attn.out_proj.weight) and correctly
+    # recovers every rectangular one.
     remapped_state_dict: dict[str, torch.Tensor] = {}
     for ckpt_key, mod_key in remap.items():
         tensor = state_dict[ckpt_key].to(target_dtype)
-        if tensor.shape == model.state_dict()[mod_key].shape:
+        module_shape = model.state_dict()[mod_key].shape
+        if tensor.shape == module_shape:
             remapped_state_dict[mod_key] = tensor
+        elif (
+            tensor.dim() == 2
+            and tuple(tensor.shape) == tuple(reversed(module_shape))
+        ):
+            remapped_state_dict[mod_key] = tensor.T.contiguous()
         else:
             logger.debug(
-                "skipping %s: checkpoint shape %s != module shape %s",
+                "skipping %s: checkpoint shape %s != module shape %s "
+                "(transposed shape also checked)",
                 mod_key,
                 tuple(tensor.shape),
-                tuple(model.state_dict()[mod_key].shape),
+                tuple(module_shape),
             )
 
     # Load the remapped state dict into the model.

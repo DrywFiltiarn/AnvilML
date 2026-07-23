@@ -623,14 +623,24 @@ def _flux2klein_default_hyperparams():
 def test_compute_latent_shape_mock_default_patch_size(
     _flux2klein_default_hyperparams,
 ) -> None:
-    """compute_latent_shape() produces correct shape with default patch_size=8.
+    """compute_latent_shape() returns the full requested resolution.
 
     Calls compute_latent_shape() with width=64, height=64, batch_size=1.
-    With MODEL_PATCH_SIZE=8 (Flux 2 Klein's default), this gives
-    latent_height=8, latent_width=8. The result should be (1, 4, 8, 8).
 
-    Also tests 128×128 → (1, 4, 16, 16) and 65×65 → (1, 4, 9, 9)
-    (ceiling division for non-multiples).
+    P900-series retrofit: this previously divided width/height by
+    MODEL_PATCH_SIZE, giving (1, 4, 8, 8) for a 64x64 request — a
+    formula mismatch with the VAE's actual (compression-free)
+    architecture that produced a wrong-sized final image end to end.
+    Neither zit_vae.py nor flux2_vae.py spatially compress at all,
+    so the Sampler-bound latent must be the full requested resolution;
+    Flux2KleinModel.forward() now handles the model's fixed internal
+    processing capacity via its own resize-in/resize-out step (mirroring
+    zit.py's ZiTModel.forward()), so compute_latent_shape() no longer
+    needs patch_size at all. See compute_latent_shape()'s docstring for
+    the full rationale.
+
+    Also tests 128x128 and 65x65 to confirm no rounding/division is
+    applied at any resolution.
 
     This is the primary mock-mode test for the formula.
 
@@ -638,24 +648,21 @@ def test_compute_latent_shape_mock_default_patch_size(
     """
     from worker.nodes.arch.diffusion.flux2klein import compute_latent_shape
 
-    # 64×64 with patch_size=8 → 8×8 latent
-    assert compute_latent_shape(64, 64, 1) == (1, 4, 8, 8)
-
-    # 128×128 with patch_size=8 → 16×16 latent
-    assert compute_latent_shape(128, 128, 1) == (1, 4, 16, 16)
-
-    # 65×65 with patch_size=8 → 9×9 latent (ceiling division: ceil(65/8)=9)
-    assert compute_latent_shape(65, 65, 1) == (1, 4, 9, 9)
+    assert compute_latent_shape(64, 64, 1) == (1, 4, 64, 64)
+    assert compute_latent_shape(128, 128, 1) == (1, 4, 128, 128)
+    assert compute_latent_shape(65, 65, 1) == (1, 4, 65, 65)
 
 
 @pytest.mark.real_mode
 def test_compute_latent_shape_real_after_load() -> None:
-    """compute_latent_shape() uses actual checkpoint hyperparameters after load().
+    """compute_latent_shape() returns the full requested resolution after load().
 
-    Calls load() against the Flux 2 Klein fixture (which has patch_size=8,
-    latent_channels=4), then calls compute_latent_shape(64, 64, 1).
-    The result should be (1, 4, 8, 8), proving that load() correctly
-    updates the module-level hyperparameters.
+    Calls load() against the Flux 2 Klein fixture, then calls
+    compute_latent_shape(64, 64, 1). The result should be (1, 4, 64, 64) —
+    the full requested resolution, confirming load() setting
+    MODEL_LATENT_CHANNELS doesn't reintroduce any patch_size-based
+    division (P900-series retrofit; see the mock-mode test's docstring
+    above for the full rationale).
 
     # REAL_PATH_VERIFIED: worker/tests/test_arch_flux2klein.py::test_compute_latent_shape_real_after_load
     """
@@ -665,22 +672,23 @@ def test_compute_latent_shape_real_after_load() -> None:
     caps = {"fp8": False, "bf16": True, "fp16": True, "fp32": True}
     load(str(fixture_path), caps, device="cpu")
     result = compute_latent_shape(64, 64, 1)
-    assert result == (1, 4, 8, 8)
+    assert result == (1, 4, 64, 64)
 
 
 def test_compute_latent_shape_non_multiple_dims(
     _flux2klein_default_hyperparams,
 ) -> None:
-    """compute_latent_shape() ceiling division for non-multiples of patch_size.
+    """compute_latent_shape() returns exact width/height with no rounding.
 
-    Calls compute_latent_shape(100, 80, 1) with patch_size=8.
-    100/8 = 12.5 → 13, 80/8 = 10. Result should be (1, 4, 13, 10).
+    Calls compute_latent_shape(100, 80, 1). Since this function no longer
+    divides by patch_size (P900-series retrofit), there is no ceiling
+    division to exercise here — the result is exactly (1, 4, 100, 80).
 
     # MOCK_PATH_VERIFIED: worker/tests/test_arch_flux2klein.py::test_compute_latent_shape_non_multiple_dims
     """
     from worker.nodes.arch.diffusion.flux2klein import compute_latent_shape
 
-    assert compute_latent_shape(100, 80, 1) == (1, 4, 13, 10)
+    assert compute_latent_shape(100, 80, 1) == (1, 4, 100, 80)
 
 
 def test_compute_latent_shape_batch_size(
@@ -688,14 +696,14 @@ def test_compute_latent_shape_batch_size(
 ) -> None:
     """compute_latent_shape() scales the batch dimension correctly.
 
-    Calls compute_latent_shape(64, 64, batch_size=4) with patch_size=8.
-    Result should be (4, 4, 8, 8) — batch_size=4 in the first position.
+    Calls compute_latent_shape(64, 64, batch_size=4).
+    Result should be (4, 4, 64, 64) — batch_size=4 in the first position.
 
     # MOCK_PATH_VERIFIED: worker/tests/test_arch_flux2klein.py::test_compute_latent_shape_batch_size
     """
     from worker.nodes.arch.diffusion.flux2klein import compute_latent_shape
 
-    assert compute_latent_shape(64, 64, batch_size=4) == (4, 4, 8, 8)
+    assert compute_latent_shape(64, 64, batch_size=4) == (4, 4, 64, 64)
 
 
 # ---------------------------------------------------------------------------

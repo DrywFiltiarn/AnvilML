@@ -1,0 +1,23 @@
+ZiT tiny models:
+{"graph":{"nodes":[
+    {"id":"model","type":"LoadModel","inputs":{"model_id":"e037f5ee838139d01fbc06db3caf13d9d088a62483dba92f22a57d080f6c3a56"}},
+    {"id":"vae","type":"LoadVae","inputs":{"model_id":"065187bc06789ba1d32f517ef89ab632345468cfcc00e701040a772739824af8"}},
+    {"id":"encoder","type":"LoadClip","inputs":{"model_id":"069211c06b13a5989965f30308669e721d44be31a87a7c1236f4dc4e531fe321","clip_type":"qwen3"}},
+    {"id":"latent","type":"EmptyLatent","inputs":{"width":64,"height":64,"model":{"node_id":"model","output_slot":"model"}}},
+    {"id":"cond","type":"ClipTextEncode","inputs":{"clip":{"node_id":"encoder","output_slot":"clip"},"positive_text":"a photograph of a red fox in a snowy forest"}},
+    {"id":"sampled","type":"Sampler","inputs":{"model":{"node_id":"model","output_slot":"model"},"conditioning":{"node_id":"cond","output_slot":"conditioning"},"clip":{"node_id":"encoder","output_slot":"clip"},"latent":{"node_id":"latent","output_slot":"latent"},"steps":4,"cfg":1.0,"seed":-1}},
+    {"id":"decoded","type":"VaeDecode","inputs":{"vae":{"node_id":"vae","output_slot":"vae"},"latent":{"node_id":"sampled","output_slot":"latent"}}},
+    {"id":"saved","type":"SaveImage","inputs":{"image":{"node_id":"decoded","output_slot":"image"},"seed":{"node_id":"sampled","output_slot":"seed"}}}
+  ]},"settings":{}}
+
+F2K tiny models:
+{"graph":{"nodes":[
+    {"id":"model","type":"LoadModel","inputs":{"model_id":"8eecf4c7f5fba8ce0cf61da61ba4ae588ef0a3649075e8fa344b68163561eb58"}},
+    {"id":"vae","type":"LoadVae","inputs":{"model_id":"78fac074280081a4f88926e435bb39e2e6f730775b710189a2f009e260224d2c"}},
+    {"id":"encoder","type":"LoadClip","inputs":{"model_id":"069211c06b13a5989965f30308669e721d44be31a87a7c1236f4dc4e531fe321","clip_type":"qwen3"}},
+    {"id":"latent","type":"EmptyLatent","inputs":{"width":64,"height":64,"model":{"node_id":"model","output_slot":"model"}}},
+    {"id":"cond","type":"ClipTextEncode","inputs":{"clip":{"node_id":"encoder","output_slot":"clip"},"positive_text":"a photograph of a red fox in a snowy forest"}},
+    {"id":"sampled","type":"Sampler","inputs":{"model":{"node_id":"model","output_slot":"model"},"conditioning":{"node_id":"cond","output_slot":"conditioning"},"clip":{"node_id":"encoder","output_slot":"clip"},"latent":{"node_id":"latent","output_slot":"latent"},"steps":4,"cfg":1.0,"seed":-1}},
+    {"id":"decoded","type":"VaeDecode","inputs":{"vae":{"node_id":"vae","output_slot":"vae"},"latent":{"node_id":"sampled","output_slot":"latent"}}},
+    {"id":"saved","type":"SaveImage","inputs":{"image":{"node_id":"decoded","output_slot":"image"},"seed":{"node_id":"sampled","output_slot":"seed"}}}
+  ]},"settings":{}}

@@ -68,18 +68,44 @@ def _flux2_vae_tensors() -> dict[str, torch.Tensor]:
     structurally valid shapes but tiny dimensions to keep file size under
     10 MB.
 
+    P900-series retrofit: two defects fixed relative to the original
+    version of this function (both confirmed against Flux2VaeModel's
+    actual channel-interpolation formula in flux2_vae.py, and against
+    build_zit_vae_fixture.py's correct, working equivalent):
+
+    1. **Channel chaining.** Block i>0's ``in_ch`` was hardcoded back to
+       the anchor constant (``_LATENT_CHANNELS`` / re-using block 0's
+       input) instead of the *previous* block's actual ``out_ch`` —
+       despite the comment already saying "previous block's output".
+       ``Flux2VaeModel.__init__`` computes each block's in/out channels
+       via linear interpolation between the anchor points
+       (``encoder_channels``/``latent_channels`` for the encoder,
+       ``latent_channels``/``encoder_channels`` for the decoder); this
+       fixture must reproduce that exact formula; a real (non-tiny)
+       Flux 2 VAE checkpoint would to. With
+       ``_ENCODER_CHANNELS=8, _LATENT_CHANNELS=4, block_count=2``, this
+       makes block 1's ``in_ch`` become ``6`` (block 0's real out_ch),
+       not ``4``.
+    2. **Missing bias tensors.** Every ``Conv2d``/``GroupNorm`` layer in
+       ``Flux2VaeModel`` has both a weight AND a bias parameter, but this
+       function previously wrote only ``.weight`` keys — guaranteeing
+       every bias stayed at its zero-initialized default regardless of
+       remap-table correctness.
+
     Returns:
         Dict mapping tensor names to ``torch.Tensor`` values.
     """
     tensors: dict[str, torch.Tensor] = {}
 
     # Encoder blocks — channel interpolation from encoder_channels to
-    # latent_channels across blocks (same formula as ZiT VAE).
+    # latent_channels across blocks (same formula as ZiT VAE, and as
+    # Flux2VaeModel.__init__'s own construction loop).
+    encoder_out_channels: list[int] = []
     for i in range(_ENCODER_BLOCK_COUNT):
         if i == 0:
             in_ch = _ENCODER_CHANNELS
         else:
-            in_ch = _LATENT_CHANNELS  # previous block's output
+            in_ch = encoder_out_channels[i - 1]  # previous block's real output
         out_ch = int(
             _ENCODER_CHANNELS
             + ((i + 1) / _ENCODER_BLOCK_COUNT) * (
@@ -88,24 +114,33 @@ def _flux2_vae_tensors() -> dict[str, torch.Tensor]:
         )
         if out_ch < 1:
             out_ch = 1
+        encoder_out_channels.append(out_ch)
         tensors[f"encoder.blocks.{i}.conv.weight"] = torch.randn(
             out_ch, in_ch, 3, 3
         )
+        tensors[f"encoder.blocks.{i}.conv.bias"] = torch.randn(out_ch)
         tensors[f"encoder.blocks.{i}.norm.weight"] = torch.randn(out_ch)
+        tensors[f"encoder.blocks.{i}.norm.bias"] = torch.randn(out_ch)
 
     # Mid block — operates at latent resolution
     tensors["mid_block.conv.weight"] = torch.randn(
         _LATENT_CHANNELS, _LATENT_CHANNELS, 3, 3
     )
+    tensors["mid_block.conv.bias"] = torch.randn(_LATENT_CHANNELS)
     tensors["mid_block.norm.weight"] = torch.randn(_LATENT_CHANNELS)
+    tensors["mid_block.norm.bias"] = torch.randn(_LATENT_CHANNELS)
 
     # Decoder blocks — channel interpolation from latent_channels back to
-    # decoder_channels across blocks (same formula as ZiT VAE).
+    # encoder_channels across blocks (same formula as ZiT VAE, and as
+    # Flux2VaeModel.__init__'s own construction loop — note the decoder's
+    # target anchor is encoder_channels, matching the round-trip: pixel
+    # space -> encoder -> latent -> decoder -> pixel-equivalent space).
+    decoder_out_channels: list[int] = []
     for i in range(_DECODER_BLOCK_COUNT):
         if i == 0:
             in_ch = _LATENT_CHANNELS
         else:
-            in_ch = _LATENT_CHANNELS  # previous block's output
+            in_ch = decoder_out_channels[i - 1]  # previous block's real output
         out_ch = int(
             _LATENT_CHANNELS
             + ((i + 1) / _DECODER_BLOCK_COUNT) * (
@@ -114,10 +149,13 @@ def _flux2_vae_tensors() -> dict[str, torch.Tensor]:
         )
         if out_ch < 1:
             out_ch = 1
+        decoder_out_channels.append(out_ch)
         tensors[f"decoder.blocks.{i}.conv.weight"] = torch.randn(
             out_ch, in_ch, 3, 3
         )
+        tensors[f"decoder.blocks.{i}.conv.bias"] = torch.randn(out_ch)
         tensors[f"decoder.blocks.{i}.norm.weight"] = torch.randn(out_ch)
+        tensors[f"decoder.blocks.{i}.norm.bias"] = torch.randn(out_ch)
 
     # Marker tensor for _infer_hyperparams()'s shape-inference contract
     # (not a real Flux 2 VAE parameter).
